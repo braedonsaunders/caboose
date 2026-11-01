@@ -384,6 +384,7 @@ Server → client (`0x01`–`0x7F`):
 | `0x26` | `scene.commit` | `id`, `seq`, `pts_us`, `root: uint`, `reset?: bool`, `nodes?: [{ id, kind: "group"\|"clip"\|"rclip"\|"scroll"\|"rect"\|"border"\|"shadow"\|"glyphs"\|"path"\|"surface", rect?, radius?: [u32 × 4], color?: uint, scroll?: rect, children?: [uint], font?: uint, size?: float, glyphs?: bytes, path?: bytes, surface?: uint }]`, `remove?: [uint]` |
 | `0x27` | `scroll.tree` | `id`, `tag?: uint`, `tag_rect?: rect`, `applied: uint`, `epoch: uint`, `scrollers: [{ id: uint, rect, offset: [x, y], range: [x, y], fixed?: [rect] }]`, `zoom?: float`, `zoom_range?: [min, max]` ([Scroll reports](#scroll-reports)) |
 | `0x28` | `targets` | `id`, `serial: uint`, `targets: [[x, y, w, h, kind]]` ([Touch targets](#touch-targets)) |
+| `0x29` | `text_focus` | `id`, `editing: bool` ([Touch targets](#touch-targets)) |
 | `0x30` | `clipboard` | `mime`, `data: bytes`, `alternatives?: [{ mime, data: bytes }]` (see "Clipboard") |
 | `0x31` | `notification` | `id`, `app`, `summary`, `body` |
 | `0x32` | `drop.status` | `accepted?: bool`, absent while the application answers only on the drop (see "Drag and drop") |
@@ -1024,8 +1025,17 @@ pointer window whose tree lists nothing is aimed among the shapes that stand out
 background of its picture around the finger (`PictureTargets.swift`), read back from the
 phone's copy of the picture.
 
-`targets`, `targets-empty` and `client-hello-targets` in `guest/display/vectors/` pin the
-messages. [guest/touch-targets](../guest/touch-targets) is the target-acquisition benchmark.
+**`text_focus`** (`0x29`): whether window `id`'s accessible focus is where typed text goes,
+sent by the same provider when the focused window's focus moves into or out of such a place.
+A focused object takes typing when it is editable and a text or has lines (a field, a text
+view, a spreadsheet cell's editor); an editable table does not, and a window's own frame
+taking focus says nothing. Where it reports, it decides over the window's input method
+state, which an application can keep on where nothing is being edited: LibreOffice Calc
+keeps GTK's input method on for its whole grid, and only its accessibility focus moves into
+a cell's editor and back out. The phone uses it for its keyboard and for Laptop's input.
+
+`targets`, `targets-empty`, `text-focus` and `client-hello-targets` in
+`guest/display/vectors/` pin the messages. [guest/touch-targets](../guest/touch-targets) is the target-acquisition benchmark.
 
 ### Audio
 

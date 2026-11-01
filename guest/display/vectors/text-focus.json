@@ -1,0 +1,8 @@
+{
+  "name": "text-focus",
+  "description": "Window 7's focus moved into a spreadsheet cell's editor.",
+  "messages": [
+    {"direction": "server", "type": "text_focus", "type_id": 41, "fields": {"id": 7, "editing": true}}
+  ],
+  "hex": "290e000000a2626964076765646974696e67f5"
+}

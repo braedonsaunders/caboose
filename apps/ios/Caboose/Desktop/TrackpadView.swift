@@ -152,6 +152,8 @@ final class TrackpadSurface: RemoteTextInputView {
     }
     private var point = CGPoint(x: 0.5, y: 0.5)
     private var focusTask: Task<Void, Never>?
+    /// What a click's check found: whether it put the keyboard in a text field.
+    var textFocusAnswered: ((Bool) -> Void)?
 
     private let scrollDriver = ScrollDriver()
     private var scrolling = false
@@ -397,6 +399,7 @@ final class TrackpadSurface: RemoteTextInputView {
                                                     isText: session.cursorIsText, keyboardVisible: self.model?.keyboardVisible == true) {
                     self.followField(purpose: session.textPurpose, isCode: RemoteWindowView.isCodeApp(target))
                     self.model?.keyboardVisible = wanted
+                    self.textFocusAnswered?(wanted)
                     return
                 }
             }

@@ -1060,8 +1060,11 @@ minimum size is larger keeps its own, and a fixed-size one such as a starter win
 middle); there is no separate Full Screen route or Exit App Full
 Screen action. Keyboard fills the lower panel with Laptop's own keyboard under the shared
 shortcut header; Keyboard & Trackpad puts a full-width trackpad across the upper third and
-the same keyboard and header in the lower two-thirds. Neither opens the system keyboard: a
-text field the trackpad focuses opens Keyboard & Trackpad. The keyboard's globe button opens
+the same keyboard and header in the lower two-thirds. Neither opens the system keyboard: on
+the Trackpad page, any text field on the computer taking focus (its input method turning on,
+or its accessibility focus moving into something that takes typing, such as a Calc cell's
+editor) switches to Keyboard & Trackpad, and focus leaving it for 0.3 s switches back
+(`TextFocusInput`); a page the owner picks in between stays. The keyboard's globe button opens
 the system keyboard for languages, emoji and dictation, without the shortcut header (which
 would land above the hinge) and with a button above it that returns to Laptop's keyboard.
 Hide Keyboard returns to the trackpad. Gamepad fills the lower panel with the [on-screen controller](#on-screen-controller). The dock becomes a thin, full-width taskbar at the top of the lower half; controls stay below
