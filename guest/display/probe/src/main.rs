@@ -68,6 +68,7 @@ OPTIONS:
                            click:X,Y, wait:MS, maximize (fill the display),
                            scroll:X,Y,DY (precise, DY pixels), wheel:X,Y,DY (the same,
                            with the next action 16 ms later, as a trackpad sends them),
+                           notch:X,Y,N (N clicks of a mouse wheel, down for positive N),
                            look:X,Y,DX,DY (relative
                            motion, the pointer left at X,Y), resize:W,H, close,
                            decline (refuse the game handed to the probe, as a device that
@@ -823,7 +824,7 @@ fn action_messages(id: u64, action: &str) -> Result<Vec<Message>, String> {
                 ..Default::default()
             })]
         }
-        "scroll" | "wheel" => {
+        "scroll" | "wheel" | "notch" => {
             let mut parts = arg.splitn(3, ',');
             let mut next = || parts.next().and_then(|v| v.parse::<f64>().ok()).ok_or(format!("bad scroll {arg}"));
             let (x, y, dy) = (next()?, next()?, next()?);
@@ -832,7 +833,7 @@ fn action_messages(id: u64, action: &str) -> Result<Vec<Message>, String> {
                 x,
                 y,
                 buttons: 0,
-                scroll: Some(proto::Scroll { dx: 0.0, dy, precise: true, seq: None }),
+                scroll: Some(proto::Scroll { dx: 0.0, dy, precise: verb != "notch", seq: None }),
                 relative: None,
             })]
         }

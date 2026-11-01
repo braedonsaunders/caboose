@@ -292,6 +292,17 @@ first picture committed after it and the bytes per second the server sent:
 
     guest/display/scripts/dev.sh python3 scripts/atlas-scroll-exact.py [--rounds N]
 
+`scripts/check-finger-scroll.py` checks finger scrolling through Xwayland
+([docs/input.md](../../docs/input.md)). It runs Chromium on X11 at scale 2 (a
+1338×1902 display) with pages/finger-scroll.html and pans twice, ten precise scrolls of
+40 window pixels 16 ms apart (the probe's `wheel:` action), then turns a mouse wheel one
+click (`notch:`). It fails unless each pan scrolls the page 200 CSS pixels (within 5%)
+and stops with the finger (within 50 ms), and the click scrolls an animated step. It
+needs the computer's Xwayland ([guest/xwayland](../xwayland/README.md)); `--step` and
+`--samples` change the pan:
+
+    guest/display/scripts/dev.sh python3 scripts/check-finger-scroll.py [--step PX] [--samples N]
+
 `scripts/wsl-check.sh` runs on a WSL2 host with an NVIDIA GPU (`/dev/dxg`): in a
 disposable container it plays a 60 fps test video full-window in Chromium at 1080p and
 4K, streamed with libx264 and with NVENC, and prints the probe's report and the server's
