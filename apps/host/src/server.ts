@@ -23,6 +23,7 @@ import { WebSocket, WebSocketServer } from 'ws'
 import { authenticate } from './auth.js'
 import { NOT_FOUND, RequestTooLargeError, json, noContent, readJson } from './http.js'
 import { createDesktopShortcut, parseAppLaunch, type AppAction } from './guest-apps.js'
+import { endRunningApp, listRunningApps, parseRunningAppId, type RunningAppAction } from './running-apps.js'
 import { crossSite } from './cross-site.js'
 import { dropUntrustedForwarding, type TrustedProxies } from './proxies.js'
 import { AgentCatalog } from './agent-catalog.js'
@@ -374,6 +375,13 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
     // An existing/custom store may require an interactive unlock or recovery tool.
     // Keep that route available; the persistent status carries the preparation error.
   }
+  /** The guest, when it tracks app scopes (container computers; docs/architecture.md § Running apps). */
+  function scopesGuest(): AgentGuest {
+    if (controller.componentsMode !== 'container') throw new ComputerConflictError('This computer does not track running apps')
+    const guest = controller.guest()
+    if (!guest) throw new AgentUnavailableError()
+    return guest
+  }
   function managementStatus() {
     const desired = settings.get()
     const active = controller.activeResources()
@@ -383,7 +391,7 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
       restartRequired: controller.hasSavedState() && (!active || active.memoryMb !== desired.memoryMb || active.vcpus !== desired.vcpus),
       clients: { display: sockets.size - controls.size - terminals.size - gpuSockets.size, control: controls.size, terminal: terminals.size },
       tasks: { running: tasks.filter(task => task.status === 'running').length, paused: tasks.filter(task => task.status === 'paused').length },
-      capabilities: { restart: typeof controller.restart === 'function', push: !!push },
+      capabilities: { restart: typeof controller.restart === 'function', push: !!push, runningApps: controller.componentsMode === 'container' },
       upgrade, keyring,
       routines: { error: routineError },
       agentTools: { error: toolsError },
@@ -803,6 +811,15 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
     if (request.method === 'DELETE' && removeApp?.[1]) return leased(async () => { if (craftBusy) throw new ComputerConflictError('A Craft job is running'); if (upgrading) throw new ComputerConflictError('Caboose components are updating'); await appCatalog.restore().catch(() => {}); await appCatalog.ready(); appCatalog.start(decodeURIComponent(removeApp[1]!), 'remove'); return json(response, 202, { accepted: true }) })
     if (request.method === 'GET' && path === '/v1/apps') {
       return json(response, 200, await computer.run(() => controller.apps()))
+    }
+    if (request.method === 'GET' && path === '/v1/running-apps') {
+      return json(response, 200, await leased(() => listRunningApps(scopesGuest())))
+    }
+    const runningApp = /^\/v1\/running-apps\/([^/]+)\/(quit|force-quit|kill)$/.exec(path)
+    if (request.method === 'POST' && runningApp?.[1]) {
+      const id = parseRunningAppId(decodeURIComponent(runningApp[1]))
+      // Leased, not serialized: Force Quit may wait seconds for an app, and nothing else should.
+      return json(response, 200, await leased(() => endRunningApp(scopesGuest(), id, runningApp[2] as RunningAppAction)))
     }
     const desktopShortcut = /^\/v1\/apps\/([^/]+)\/desktop-shortcut$/.exec(path)
     if (request.method === 'POST' && desktopShortcut?.[1]) {

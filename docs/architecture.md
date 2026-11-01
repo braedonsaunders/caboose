@@ -1292,7 +1292,7 @@ Management status:
   restartRequired: boolean,
   clients: { display: number, control: number, terminal: number },
   tasks: { running: number, paused: number },
-  capabilities: { restart: boolean, push: boolean },
+  capabilities: { restart: boolean, push: boolean, runningApps: boolean },
   lastError: string | null
 }
 ```
@@ -1354,6 +1354,54 @@ Repeated launches of the same pending app coalesce; each app has an independent 
 A matching real window or launch error settles it; an HTTP acknowledgement does not. After
 30 seconds without a matching window the app reports that opening may still be in progress.
 Disconnect clears pending feedback. Existing windows are focused immediately.
+
+### Running apps
+
+On a container computer, `capabilities.runningApps` in the management status is true and
+the host serves the guest's app scopes. These routes do not wake the computer.
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/v1/running-apps` | The running apps, with live resource use (below) |
+| `POST` | `/v1/running-apps/:id/quit` | Ask every window of the app to close → `{ closed }`, the number of windows asked. 409 when the app has no windows |
+| `POST` | `/v1/running-apps/:id/force-quit` | SIGTERM every process, then kill what remains after 5 s → `{ ended, killed }`: whether the app has ended (within a further 2 s), and whether it had to be killed |
+| `POST` | `/v1/running-apps/:id/kill` | Kill every process of the app at once → `{ ended, killed: true }` |
+
+`:id` is the app's `id`, percent-encoded. Unknown apps answer 404; the session scope
+(`kind: "session"`) answers 409, as does a computer without app scopes. The listing:
+
+```ts
+{
+  version: 1,
+  sampledAt: number,          // Unix ms of the guest's latest sample
+  intervalMs: number,         // what the rates are measured over; 0 before a second sample
+  machine: { cpus: number, memoryBytes: number },   // the computer's limits
+  apps: Array<{
+    id: string,               // the scope: "session.scope" or "app-<key>-<n>.scope", at most 255 characters
+    kind: "app" | "session",
+    desktopId: string | null, // the desktop entry it was launched from or matched to
+    name: string,             // the entry's Name, a Steam game's name, else a window class; at most 200 characters
+    origin: "launch" | "window" | "game" | "terminal" | "session",
+    startedAt: number,        // Unix ms the scope was made; 0 for the session
+    windows: number[],        // the owner display's window ids (toplevels and dialogs) of its processes
+    cpuPercent: number,       // of one CPU, over intervalMs
+    memoryBytes: number,      // charged memory less inactive page cache
+    io: { readBytesPerSecond: number, writeBytesPerSecond: number },
+    gpu: { streams: number, surfaces: number, toPhoneBytesPerSecond: number, fromPhoneBytesPerSecond: number } | null,
+    processCount: number,
+    processes: Array<{        // at most 256, busiest first
+      pid: number, ppid: number,
+      name: string,           // at most 64 characters
+      command: string,        // its arguments joined by spaces, at most 512 characters; empty when unreadable
+      state: "running" | "sleeping" | "waiting" | "stopped" | "zombie" | "idle" | "other",
+      cpuPercent: number, memoryBytes: number   // resident set
+    }>
+  }>
+}
+```
+
+The host checks the guest's answer field by field and drops what fails. Window ids are the
+display protocol's (`window.create`).
 
 ### Files
 
