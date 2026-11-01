@@ -64,7 +64,9 @@ OPTIONS:
                            drop-text:STRING, drop-files:PATH[,PATH...] (a drop from
                            the phone), drag-take (the phone takes a drag),
                            click:X,Y, wait:MS, maximize (fill the display),
-                           scroll:X,Y,DY (precise, DY pixels), look:X,Y,DX,DY (relative
+                           scroll:X,Y,DY (precise, DY pixels), wheel:X,Y,DY (the same,
+                           with the next action 16 ms later, as a trackpad sends them),
+                           look:X,Y,DX,DY (relative
                            motion, the pointer left at X,Y), resize:W,H, close,
                            decline (refuse the game handed to the probe, as a device that
                            cannot run it does),
@@ -786,7 +788,7 @@ fn action_messages(id: u64, action: &str) -> Result<Vec<Message>, String> {
                 ..Default::default()
             })]
         }
-        "scroll" => {
+        "scroll" | "wheel" => {
             let mut parts = arg.splitn(3, ',');
             let mut next = || parts.next().and_then(|v| v.parse::<f64>().ok()).ok_or(format!("bad scroll {arg}"));
             let (x, y, dy) = (next()?, next()?, next()?);
@@ -926,7 +928,8 @@ fn run(args: Args) -> Result<bool, String> {
         if let (Some(id), Some(action)) = (target, pending.front().cloned()) {
             if now >= next_action {
                 pending.pop_front();
-                next_action = now + Duration::from_millis(if action.starts_with("finger-") { 16 } else { 300 });
+                next_action = now
+                    + Duration::from_millis(if action.starts_with("finger-") || action.starts_with("wheel:") { 16 } else { 300 });
                 if action == "decline" {
                     // The game handed to the probe, not the window: game ids are their own namespace.
                     if let Some(game) = games.keys().next().copied() {
