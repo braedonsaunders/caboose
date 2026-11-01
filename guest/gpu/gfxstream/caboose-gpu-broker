@@ -372,9 +372,12 @@ class Session:
     def __init__(self, broker, executor, generation, reader, writer, indexed=False, features=frozenset()):
         self.broker, self.executor, self.generation = broker, executor, generation
         self.reader, self.writer = reader, writer
-        self.deflate_requested = os.environ.get("CABOOSE_PRIVATE_GPU_DEFLATE") == "1"
-        if self.deflate_requested and not indexed:
+        # Broker-to-phone DATA of an indexed (v4) session is compressed (live_compression.py)
+        # unless CABOOSE_PRIVATE_GPU_DEFLATE=0; asking for it explicitly without v4 is refused.
+        setting = os.environ.get("CABOOSE_PRIVATE_GPU_DEFLATE")
+        if setting == "1" and not indexed:
             raise ValueError("private GPU DEFLATE requires indexed v4")
+        self.deflate_requested = indexed and setting != "0"
         self.deflate_enabled = False
         self.transport_requested = False
         self.session_received = False

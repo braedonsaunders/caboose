@@ -34,7 +34,8 @@ int main() {
     // Steam's update window stays on the computer, its CPU device presented as a GPU.
     const std::string updateUi = "/home/u/.local/share/Steam/steamrt64/steam -child-update-ui -child-update-ui-socket 9";
     assert(hidesPhone(updateUi) && keptOnComputer(updateUi));
-    assert(!keptOnComputer("/home/u/.local/share/Steam/steamrt64/steam -srt-logger-opened"));
+    assert(keptOnComputer("/home/u/.local/share/Steam/steamrt64/steam -srt-logger-opened"));
+    assert(!keptOnComputer("/usr/games/steam"));
     assert(!keptOnComputer("fossilize_replay a.foz"));
     assert(keptOnComputer("/home/u/.local/share/Steam/steamrt64/steamwebhelper --type=zygote --no-zygote-sandbox"));
     assert(hidesPhone("./steamwebhelper -nocrashdialog -lang=en_US"));

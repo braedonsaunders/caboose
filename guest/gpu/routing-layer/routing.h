@@ -68,7 +68,9 @@ inline std::vector<size_t> order(const std::vector<int>& ranks) {
 // keeps no cache on the computer, so on the phone that work would only be sent across the
 // network and thrown away.
 //
-// Steam's web views (steamwebhelper, all of its processes), whose Chromium on OpenGL sends
+// Steam's client (steamrt64/steam: its GPU probes and overlay need no phone, and a slow phone
+// must never hold up its start) and its web views (steamwebhelper, all of its processes),
+// whose Chromium on OpenGL sends
 // the phone a command stream of several MB/s for one window: they render on the computer.
 //
 // Steam's update window, which its bootstrap shows from a child process (`-child-update-ui`)
@@ -81,7 +83,10 @@ inline bool keptOnComputer(const std::string& commandLine) {
     std::string program = commandLine.substr(0, commandLine.find(' '));
     const auto slash = program.rfind('/');
     if (slash != std::string::npos) program = program.substr(slash + 1);
-    return program == "steamwebhelper" || commandLine.find(" -child-update-ui") != std::string::npos;
+    const std::string path = commandLine.substr(0, commandLine.find(' '));
+    const bool steamClient = program == "steam" &&
+        (path.find("/steamrt64/steam") != std::string::npos || path.find("/steamrt32/steam") != std::string::npos);
+    return program == "steamwebhelper" || steamClient || commandLine.find(" -child-update-ui") != std::string::npos;
 }
 inline bool hidesPhone(const std::string& commandLine) {
     std::string program = commandLine.substr(0, commandLine.find(' '));

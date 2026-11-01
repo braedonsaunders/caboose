@@ -14,6 +14,8 @@ import unittest
 from unittest import mock
 
 HERE = Path(__file__).resolve().parent
+# Sessions here send raw DATA unless a test turns transport compression on.
+os.environ.setdefault('CABOOSE_PRIVATE_GPU_DEFLATE', '0')
 sys.path.insert(0, str(HERE.parent / 'broker'))
 loader = SourceFileLoader('caboose_live_broker', str(HERE / 'caboose-gpu-broker'))
 spec = importlib.util.spec_from_loader(loader.name, loader)
@@ -1038,13 +1040,13 @@ class TransportNegotiationTests(unittest.IsolatedAsyncioTestCase):
                 await session.message(Envelope(Kind.SESSION_READY,b'a'*16,1,0,0,3,broker.HELLO_V4))
         finally: session.bindings.finish(session.binding_generation)
 
-    async def test_default_v4_is_raw_and_unrequested_or_late_ack_fails(self):
+    async def test_v4_is_compressed_unless_turned_off_and_unrequested_or_late_ack_fails(self):
         for setting in ('', 'true', '0', '1'):
             with mock.patch.dict(os.environ, {'CABOOSE_PRIVATE_GPU_DEFLATE':setting}):
                 session=broker.Session(None,b'a'*16,1,None,Writer(),indexed=True)
             try:
                 await session.message(Envelope(Kind.SESSION_READY,b'a'*16,1,0,0,1,broker.HELLO_V4))
-                if setting == '1': session.draining=True
+                if setting != '0': session.draining=True
                 else:
                     self.assertTrue(session.session_ready.is_set())
                     session.send(Kind.DATA,1,1,b'x'*1024)

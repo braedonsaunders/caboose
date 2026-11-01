@@ -1,6 +1,9 @@
 import asyncio
 import unittest
 from test_live_broker import broker, Writer, Kind, Decoder, Envelope, mock, ReadyReader
+import os as _os
+# Sessions here send raw DATA unless a test turns transport compression on.
+_os.environ.setdefault('CABOOSE_PRIVATE_GPU_DEFLATE', '0')
 
 
 class BrokerCreditTests(unittest.IsolatedAsyncioTestCase):
