@@ -843,6 +843,13 @@ honors every accepted parameter or returns an explicit error. Creation has no
 queue argument. A nonzero old swapchain names an existing object in the same
 surface; it does not authorize early destruction or identity reuse.
 
+Composite alpha is OPAQUE or PRE_MULTIPLIED: the surface capabilities offer exactly those
+two (MoltenVK's POST_MULTIPLIED layer is what Core Animation composites as premultiplied,
+so it is offered as PRE_MULTIPLIED and created as POST_MULTIPLIED). A premultiplied
+swapchain, such as an ARGB menu or tooltip, presents into a non-opaque layer, and the view
+under it draws none of the window's own picture, so what is behind the window shows
+through its transparent pixels. An opaque swapchain's layer sits on black.
+
 With the `guest-query-pools` capability (hello feature `0x1000`, which requires `0x80`)
 the guest also assigns query pool handles (gfxstream fork commit 0041).
 

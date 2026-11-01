@@ -21,6 +21,28 @@ struct LiveGPUSwapchainCreate: Equatable, Sendable {
     let sharingMode: UInt32
     let families: [UInt32]
 }
+/// How a window's GPU pictures blend with what is behind them. Core Animation composites a
+/// non-opaque Metal layer as premultiplied alpha; MoltenVK calls that POST_MULTIPLIED (it only
+/// clears the layer's `opaque`). The guest is offered what the phone really does, OPAQUE and
+/// PRE_MULTIPLIED, and a premultiplied swapchain is a non-opaque layer.
+enum LiveGPUCompositeAlpha {
+    static let opaque: UInt32 = 0x1, preMultiplied: UInt32 = 0x2, postMultiplied: UInt32 = 0x4
+
+    /// The guest's supportedCompositeAlpha for the native surface's.
+    static func offered(native: UInt32) -> UInt32 {
+        (native & opaque) | (native & postMultiplied != 0 ? preMultiplied : 0)
+    }
+    /// The native swapchain's compositeAlpha for the guest's request; 0, which native
+    /// refuses, for anything the guest was not offered.
+    static func native(requested: UInt32) -> UInt32 {
+        switch requested {
+        case opaque: opaque
+        case preMultiplied: postMultiplied
+        default: 0
+        }
+    }
+}
+
 struct LiveGPUSwapchainAcquire: Equatable, Sendable {
     let swapchain: UInt64
     let request: UInt64

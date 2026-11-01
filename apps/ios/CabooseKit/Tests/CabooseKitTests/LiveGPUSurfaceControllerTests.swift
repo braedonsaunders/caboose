@@ -449,6 +449,59 @@ final class LiveGPUSurfaceControllerTests: XCTestCase {
     }
 
     @MainActor
+    func testAPopupPresentsInItsOwnViewOverItsParentAtItsOwnSize() throws {
+        let stream = MockStream()
+        let decoder = FakeDecoder()
+        let display = DisplayInfo(id: 0, width: 1600, height: 1200, scale: 2, refreshHz: 120)
+        let session = CabooseDisplaySession(stream: { stream }, token: "wake", displays: [display],
+                                            decoders: [.hevc, .h264], makeDecoder: { _ in decoder })
+        let parentSurface = WindowSurface(), popupSurface = WindowSurface()
+        parentSurface.resize(width: 800, height: 600)
+        popupSurface.resize(width: 240, height: 180)
+        let parent = RemoteWindow(id: 7, frame: CGRect(x: 0, y: 0, width: 800, height: 600),
+                                  overrideRedirect: false, surface: parentSurface)
+        // A menu: override-redirect, at its own place, not the display's size.
+        let popup = RemoteWindow(id: 9, frame: CGRect(x: 100, y: 80, width: 240, height: 180),
+                                 overrideRedirect: true, surface: popupSurface)
+        let host = UIWindow(frame: CGRect(x: 0, y: 0, width: 400, height: 300))
+        host.isHidden = false
+        let parentView = RemoteWindowView(session: session, window: parent)
+        parentView.frame = host.bounds
+        host.addSubview(parentView)
+        // Where the popup's picture is placed over its parent, at half scale like the parent.
+        let popupView = RemoteWindowView(session: session, window: popup)
+        popupView.frame = CGRect(x: 50, y: 40, width: 120, height: 90)
+        host.addSubview(popupView)
+
+        let owners = LiveGPUPresentationOwners { _ in XCTFail("no invalidation expected") }
+        owners.update(epoch: identity.epoch, windows: [7: parent, 9: popup])
+        parentView.layoutLiveGPU(); popupView.layoutLiveGPU()
+        var claimed: Result<LiveGPULayerLease, Error>?
+        owners.requestClaim(identity: identity, windowID: 9) { claimed = $0 }
+        let lease = try XCTUnwrap(claimed?.get())
+        XCTAssertFalse(lease.parked)
+        XCTAssertTrue(lease.view === popupView)
+        XCTAssertTrue(lease.content?.superview === popupView)
+        XCTAssertEqual(lease.content?.frame.size, popupView.bounds.size)
+        XCTAssertEqual(lease.extent, CGSize(width: 240, height: 180))
+        XCTAssertFalse(owners.presents(in: parentView))
+        XCTAssertTrue(owners.presents(in: popupView))
+        // A premultiplied swapchain (an ARGB menu) shows the parent through its clear pixels.
+        XCTAssertEqual(lease.content?.isOpaque, true)
+        lease.setTranslucent(true)
+        XCTAssertTrue(owners.presentsTranslucent(in: popupView))
+        XCTAssertEqual(lease.content?.isOpaque, false)
+        XCTAssertEqual(lease.content?.backgroundColor, .clear)
+        XCTAssertTrue(popupView.showsThrough)
+        lease.setTranslucent(false)
+        XCTAssertFalse(owners.presentsTranslucent(in: popupView))
+        XCTAssertEqual(lease.content?.isOpaque, true)
+        XCTAssertFalse(popupView.showsThrough)
+        owners.revoke()
+        owners.release(lease)
+    }
+
+    @MainActor
     func testClaimWithNoViewShowingTheWindowBindsParkedAtTheServerExtent() throws {
         let surface = WindowSurface()
         surface.resize(width: 800, height: 600)

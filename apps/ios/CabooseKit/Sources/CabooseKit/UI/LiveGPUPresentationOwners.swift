@@ -61,12 +61,18 @@ public final class LiveGPUPresentationOwners {
                 #endif
             }
             lease.content?.removeFromSuperview()
+            if lease.translucent { lease.view?.liveGPUTranslucencyChanged() }
         }
     }
 
     /// Whether a live GPU layer presents in `view`, over the picture the view draws itself.
     func presents(in view: RemoteWindowView) -> Bool {
         leases.values.contains { $0.isValid && $0.view === view }
+    }
+
+    /// Whether the live GPU layer in `view` blends with what is behind the window.
+    func presentsTranslucent(in view: RemoteWindowView) -> Bool {
+        leases.values.contains { $0.isValid && $0.view === view && $0.translucent }
     }
 
     /// For diagnosis: where `window`'s live GPU layer presents, if anywhere.
@@ -120,7 +126,11 @@ public final class LiveGPUPresentationOwners {
             #endif
             lease.updateExtent(currentExtent)
         }
-        lease.view = view
+        if lease.view !== view {
+            let previous = lease.view
+            lease.view = view
+            if lease.translucent { previous?.liveGPUTranslucencyChanged(); view.liveGPUTranslucencyChanged() }
+        }
         if let content = lease.content, content.superview !== view {
             // The layer still holds the last frame presented while parked.
             view.insertSubview(content, at: 0)
@@ -167,6 +177,7 @@ public final class LiveGPUPresentationOwners {
         }
         #endif
         lease.content?.removeFromSuperview()
+        if lease.translucent { lease.view?.liveGPUTranslucencyChanged() }
         invalidated(lease.identity)
     }
     private func eligible(_ view: RemoteWindowView) -> Bool {
@@ -247,6 +258,7 @@ public final class LiveGPUPresentationOwners {
         guard leases[lease.windowID] === lease else { return }
         lease.invalidate()
         lease.content?.removeFromSuperview()
+        if lease.translucent { lease.view?.liveGPUTranslucencyChanged() }
         lease.content = nil
         leases.removeValue(forKey: lease.windowID)
     }
@@ -275,6 +287,16 @@ private final class LiveGPULayerView: UIView {
     override func layoutSubviews() {
         super.layoutSubviews()
         applyDrawableExtent()
+    }
+    /// Whether the window's pictures carry alpha: the layer then shows what is behind it
+    /// instead of sitting on black.
+    var translucent = false {
+        didSet {
+            guard translucent != oldValue else { return }
+            isOpaque = !translucent
+            backgroundColor = translucent ? .clear : .black
+            metal.isOpaque = !translucent
+        }
     }
     func configurePresentationExtent(_ size: CGSize, configure: (CAMetalLayer) -> Int32) -> Int32 {
         guard !configuringExtent, !extentQuarantined else { return EBUSY }
@@ -357,6 +379,15 @@ final class LiveGPULayerLease: @unchecked Sendable {
         // it: the view holds the picture on screen over it meanwhile.
         if content.pixelExtent != size { view?.liveGPUExtentWillChange(from: content.pixelExtent, to: size) }
         return content.configurePresentationExtent(size, configure: configure)
+    }
+    /// The window's current swapchain is premultiplied: its layer is not opaque, and the view
+    /// under it draws no picture of its own there.
+    @MainActor private(set) var translucent = false
+    @MainActor func setTranslucent(_ value: Bool) {
+        guard isValid, translucent != value else { return }
+        translucent = value
+        (content as? LiveGPULayerView)?.translucent = value
+        view?.liveGPUTranslucencyChanged()
     }
     private let lock = NSLock()
     private var valid = true

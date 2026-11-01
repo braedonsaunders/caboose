@@ -3,6 +3,15 @@ import XCTest
 @testable import CabooseKit
 
 final class LiveGPUSwapchainMessageTests: XCTestCase {
+    func testTheGuestIsOfferedOpaqueAndPremultipliedAndPremultipliedIsANonOpaqueLayer() {
+        // MoltenVK's surface: OPAQUE | POST_MULTIPLIED | INHERIT.
+        XCTAssertEqual(LiveGPUCompositeAlpha.offered(native: 0x1 | 0x4 | 0x8), 0x1 | 0x2)
+        XCTAssertEqual(LiveGPUCompositeAlpha.offered(native: 0x1), 0x1)
+        XCTAssertEqual(LiveGPUCompositeAlpha.native(requested: 0x1), 0x1)
+        XCTAssertEqual(LiveGPUCompositeAlpha.native(requested: 0x2), 0x4)
+        for unoffered: UInt32 in [0, 0x4, 0x8, 0x3] { XCTAssertEqual(LiveGPUCompositeAlpha.native(requested: unoffered), 0) }
+    }
+
     private let executor = Data([0,17,34,51,68,85,102,119,136,153,170,187,204,221,238,255])
     private func bytes(_ name: String) -> Data {
         let chars = Array(Self.vectors[name]!.utf8)

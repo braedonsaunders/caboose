@@ -160,9 +160,10 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     /// rounded corners and shadow); an opaque window sits on black.
     public private(set) var showsThrough = false
 
-    /// Matches the layer and background to the window's alpha, which `window.update` can change.
+    /// Matches the layer and background to the window's alpha, which `window.update` can change,
+    /// or to a translucent live GPU layer presenting here.
     private func followAlpha() {
-        let alpha = remoteWindow?.hasAlpha ?? false
+        let alpha = (remoteWindow?.hasAlpha ?? false) || (liveGPUOwners?.presentsTranslucent(in: self) ?? false)
         guard alpha != showsThrough || metalLayer.isOpaque == alpha else { return }
         showsThrough = alpha
         metalLayer.isOpaque = !alpha
@@ -505,6 +506,13 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     fileprivate func present() {
         followAlpha()
         layoutDrawnControls()
+        // Under a translucent live GPU layer the window's own picture would show through it:
+        // the view shows nothing of its own until the layer leaves or turns opaque.
+        if liveGPUOwners?.presentsTranslucent(in: self) ?? false {
+            if !clearedForLiveGPU, clearPicture() { clearedForLiveGPU = true }
+            return
+        }
+        if clearedForLiveGPU { clearedForLiveGPU = false; presentedGeneration = .max }
         guard let picture = remoteWindow?.surface.presentation() else { return }
         let texture = picture.texture, generation = picture.generation
         guard generation != presentedGeneration else { return }
@@ -531,6 +539,27 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         presentedGeneration = generation
         sampleDrawnControls(texture)
     }
+
+    /// Whether the view's own picture is cleared under a translucent live GPU layer.
+    private var clearedForLiveGPU = false
+
+    private func clearPicture() -> Bool {
+        let pass = MTLRenderPassDescriptor()
+        guard let drawable = metalLayer.nextDrawable(),
+              let commands = SurfaceRenderer.shared.queue.makeCommandBuffer() else { return false }
+        pass.colorAttachments[0].texture = drawable.texture
+        pass.colorAttachments[0].loadAction = .clear
+        pass.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 0)
+        pass.colorAttachments[0].storeAction = .store
+        guard let encoder = commands.makeRenderCommandEncoder(descriptor: pass) else { return false }
+        encoder.endEncoding()
+        commands.present(drawable)
+        commands.commit()
+        return true
+    }
+
+    /// A live GPU layer in this view turned translucent or opaque, arrived or left.
+    func liveGPUTranslucencyChanged() { present() }
 
     /// Called after acquiring a drawable. Adoption belongs to the attached window,
     /// even when its first picture has the same dimensions as the preceding window.
