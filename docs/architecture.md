@@ -1136,9 +1136,11 @@ The computer has one state: `parked`, `waking`, `running`, `frozen`, `parking`, 
   minute after, and the computer parks one full idle timeout after it was last found busy. A
   failed check counts as idle. A running managed service, or an app using 5% of a core or
   1 MB/s of disk in its last sample, also keeps a container computer busy.
-- **Autostart.** Five seconds after the host starts, it wakes, headless, every parked
-  computer it last saw with services that start with it (`services.json`), so they run
-  unattended after a host restart.
+- **Host restarts.** A container outlives the host. When the host stops, a container computer
+  the busy check finds in use keeps running (the host closes its sockets and lets it go);
+  others park. Five seconds after the host starts, it adopts, headless, every container
+  computer still running, and wakes every parked one it last saw with services that start
+  with it (`services.json`). Either then parks only once idle.
 - **Freeze.** On a microVM backend that supports resident pause, three seconds without a
   lease pauses the guest in memory. A new operation resumes it before guest access. The
   computer parks at the earlier of its configured idle timeout or the freeze-to-park timeout;

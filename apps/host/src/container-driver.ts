@@ -423,6 +423,7 @@ export function createContainerController(config: Config, dependencies: { docker
     renameNetwork: () => networkTask(async () => { await tailnet?.rename() }),
     onNetworkChange(listener) { networkChanged = listener },
     existingContainerSpec: existingSpec,
+    resident: async () => await state() === 'running',
     async containerSpecApplied() {
       const existing = await existingSpec()
       if (!existing) return null

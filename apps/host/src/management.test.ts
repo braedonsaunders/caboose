@@ -39,7 +39,7 @@ async function fixture(configure?: (controller: Controller) => void, extra: Part
   const app = createCabooseServer({ token: 'owner', settings, controller, webRoot, ...extra })
   app.server.listen(0, '127.0.0.1')
   await once(app.server, 'listening')
-  cleanup.push(() => app.shutdown())
+  cleanup.push(() => app.shutdown().catch(() => {})) // A test may have stopped it already.
   const base = `http://127.0.0.1:${(app.server.address() as AddressInfo).port}`
   const request = (path: string, method = 'GET', body?: unknown) => fetch(base + path, {
     method, headers: { authorization: 'Bearer owner', 'content-type': 'application/json' },
@@ -272,4 +272,38 @@ it('keeps a container computer’s image, folders and devices for the operator, 
 it('has no container settings for a microVM computer', async () => {
   const { request } = await fixture()
   expect((await request('/v1/computers/owner/container')).status).toBe(409)
+})
+
+it('leaves a busy container running when the host stops, and the next host adopts it', async () => {
+  const tables = '@@ /proc/net/tcp\n  sl local rem st\n   0: 00000000:6984 00000000:0000 0A 0 0 0 0 0 0 0 1\n'
+  const guest = { run: vi.fn(async (command: string) => command === '/bin/sh' ? tables : JSON.stringify({ ok: true, result: { services: { active: 0, autostart: 0, failed: 0 }, listening: [] } })) }
+  let running = true
+  const first = await fixture(controller => {
+    controller.componentsMode = 'container'
+    controller.guest = () => running ? guest : undefined
+    controller.park = vi.fn(async () => { running = false })
+  }, { autostartDelayMs: 60_000 })
+  await first.request('/v1/session', 'POST')
+  await first.app.shutdown()
+  expect(first.controller.park).not.toHaveBeenCalled()
+  expect(running).toBe(true)
+  // The next host finds it running and takes it back, headless.
+  const second = await fixture(controller => {
+    controller.componentsMode = 'container'
+    controller.resident = async () => running
+    controller.guest = () => running ? guest : undefined
+  }, { autostartDelayMs: 10 })
+  await vi.waitFor(() => expect(second.app.computer.state).toBe('running'))
+  expect(second.controller.wake).toHaveBeenCalledWith('headless')
+})
+
+it('parks an idle container when the host stops', async () => {
+  const guest = { run: vi.fn(async (command: string) => command === '/bin/sh' ? '@@ /proc/net/tcp\n' : '') }
+  const { app, controller, request } = await fixture(controller => {
+    controller.componentsMode = 'container'
+    controller.guest = () => guest
+  }, { autostartDelayMs: 60_000 })
+  await request('/v1/session', 'POST')
+  await app.shutdown()
+  expect(controller.park).toHaveBeenCalledOnce()
 })

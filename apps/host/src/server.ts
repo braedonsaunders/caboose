@@ -114,6 +114,8 @@ export interface Controller extends ComputerDriver<Session> {
   existingContainerSpec?(): Promise<ContainerSpec | null>
   /** Whether the existing container already has this computer's container settings; null without one. */
   containerSpecApplied?(): Promise<boolean | null>
+  /** Whether the computer is running without this host having woken it (a container left running by the last host). */
+  resident?(): Promise<boolean>
   /** Called whenever network() may answer differently. */
   onNetworkChange?(listener: () => void): void
   /** Deletes the computer and its disk; only when the computer itself is deleted. */
@@ -1305,7 +1307,9 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
     await agents.drainToolWork()
     await (await toolJournalReady)?.drain()
     await upgradeWork
-    await computer.park(closeSockets)
+    // A container outlives the host: a busy one keeps running, and the next host adopts it.
+    if (controller.componentsMode === 'container' && await computer.busyNow().catch(() => false)) await computer.leave(closeSockets)
+    else await computer.park(closeSockets)
   }
 
   /**
@@ -1423,12 +1427,17 @@ export function createCabooseServer(options: ComputerPieces & {
   const owner = createComputerRuntime(OWNER_COMPUTER, options, shared)
   const runtimes = new Map<string, ComputerRuntime>([[OWNER_COMPUTER, owner]])
   for (const { record, pieces } of options.fleet?.existing ?? []) runtimes.set(record.id, createComputerRuntime(record.id, pieces, shared))
-  // A computer whose services start with it keeps running unattended: after the host starts,
-  // it wakes headless, and its running services keep it awake.
+  // After the host starts, it adopts a computer still running from before (a container
+  // outlives the host), and wakes one whose services start with it. Both are then headless
+  // and park only once idle.
   const autostart = setTimeout(() => {
     for (const runtime of runtimes.values()) {
-      if (!runtime.autostartServices() || runtime.computer.state !== 'parked') continue
-      void runtime.computer.wake('headless').catch(error => console.error(`Could not start ${runtime.id} for its services:`, error instanceof Error ? error.message : error))
+      if (runtime.computer.state !== 'parked') continue
+      void (async () => {
+        const resident = await runtime.controller.resident?.().catch(() => false)
+        if (!resident && !runtime.autostartServices()) return
+        if (runtime.computer.state === 'parked') await runtime.computer.wake('headless')
+      })().catch(error => console.error(`Could not start ${runtime.id} after the host started:`, error instanceof Error ? error.message : error))
     }
   }, options.autostartDelayMs ?? 5000)
   autostart.unref()

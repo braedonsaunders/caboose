@@ -305,6 +305,22 @@ export class ComputerLifecycle<T> {
     }
   }
 
+  /** Whether something holding no lease keeps the computer in use now (setBusyCheck); false unless it is running. */
+  busyNow(): Promise<boolean> {
+    return this.serialize(async () => this.current === 'running' && !this.retired && await this.isBusy())
+  }
+
+  /**
+   * Lets go of a running computer without parking it, when the host stops and the computer
+   * outlives it (a container): `before` closes the caller's sockets, and nothing is accepted
+   * afterwards. The next host adopts it again.
+   */
+  leave(before: () => void = () => {}): Promise<void> {
+    this.clearIdle()
+    this.retired = true
+    return this.serialize(async () => { before(); this.clearIdle() })
+  }
+
   /** Explicit park ignores leases; the caller must first close its sockets. */
   park(before: () => void = () => {}): Promise<void> {
     this.clearIdle()

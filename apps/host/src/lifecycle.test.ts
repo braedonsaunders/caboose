@@ -169,6 +169,18 @@ describe('computer lifecycle', () => {
     expect(checks).toBe(15)
     expect(driver.park).not.toHaveBeenCalled()
   })
+  it('lets go of a running computer without parking it, and accepts nothing after', async () => {
+    const driver = { wake: vi.fn(async () => 'desk'), park: vi.fn(async () => {}) }
+    const computer = new ComputerLifecycle(driver, 10_000)
+    computer.setBusyCheck(async () => true)
+    await computer.wake()
+    expect(await computer.busyNow()).toBe(true)
+    const closed = vi.fn()
+    await computer.leave(closed)
+    expect(closed).toHaveBeenCalledOnce()
+    expect(driver.park).not.toHaveBeenCalled()
+    await expect(computer.wake()).rejects.toThrow()
+  })
   it('treats a failing busy check as idle', async () => {
     vi.useFakeTimers()
     const driver = { wake: async () => 'desk', park: vi.fn(async () => {}) }
