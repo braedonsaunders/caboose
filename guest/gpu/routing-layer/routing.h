@@ -68,6 +68,9 @@ inline std::vector<size_t> order(const std::vector<int>& ranks) {
 // keeps no cache on the computer, so on the phone that work would only be sent across the
 // network and thrown away.
 //
+// Steam's web views (steamwebhelper, all of its processes), whose Chromium on OpenGL sends
+// the phone a command stream of several MB/s for one window: they render on the computer.
+//
 // Steam's update window, which its bootstrap shows from a child process (`-child-update-ui`)
 // that keeps the bootstrap's single-instance pipe open until it exits. On the phone its OpenGL
 // context (Zink) takes seconds to tear down across the network, long enough for the Steam
@@ -75,7 +78,10 @@ inline std::vector<size_t> order(const std::vector<int>& ranks) {
 // and exit. It draws a progress window on the computer's CPU instead, presented as a GPU as
 // for a process with no phone (Zink refuses CPU devices).
 inline bool keptOnComputer(const std::string& commandLine) {
-    return commandLine.find(" -child-update-ui") != std::string::npos;
+    std::string program = commandLine.substr(0, commandLine.find(' '));
+    const auto slash = program.rfind('/');
+    if (slash != std::string::npos) program = program.substr(slash + 1);
+    return program == "steamwebhelper" || commandLine.find(" -child-update-ui") != std::string::npos;
 }
 inline bool hidesPhone(const std::string& commandLine) {
     std::string program = commandLine.substr(0, commandLine.find(' '));
