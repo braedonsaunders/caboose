@@ -686,8 +686,12 @@ server fences the old executor (the host relay ends only after both of its sides
 and the broker revokes the old lease). While the app is in the foreground, an executor
 that ends, including after a lost transport, is started again after 1 s, doubling to
 30 s, reset by one that ran a minute. That includes an executor whose native cleanup
-failed, as after a lost device: the app keeps it, with whatever native state it still
-holds, for its lifetime, and a new executor with new processes and devices takes over.
+failed, as after a lost device, and one whose cleanup has not returned 10 s after it
+ended (a decoder still blocked in the driver), which counts as failed: the app keeps it,
+with whatever native state it still holds, for its lifetime, and a new executor with new
+processes and devices takes over. A socket that hears neither a pong nor any message for
+10 s ends its executor (3 s, and a resume, when the session is resumable), so a connection
+that died silently cannot hold the phone's GPU.
 Each end is printed on standard output as `CABOOSE_GPU_OWNER_ENDED cause=… cleanup=…
 retirement_confirmed=0|1`.
 

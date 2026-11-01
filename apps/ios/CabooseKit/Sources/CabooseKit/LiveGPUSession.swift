@@ -62,15 +62,21 @@ public final class LiveGPUSession: @unchecked Sendable {
     public var remoteRetirementCompleted: Bool { lock.withLock { confirmedRetirement } }
     private var drainDeadline: DispatchWorkItem?
     private let drainTimeout: TimeInterval
+    /// A cleanup still running after this (a decoder blocked in the driver) no longer holds
+    /// the owner back: the executor is reported ended with a failed cleanup, which keeps its
+    /// native state for the app's lifetime, and a new one can take over.
+    private let cleanupTimeout: TimeInterval
     private var event: (@Sendable (LiveGPUSessionEvent) -> Void)?
 
     public convenience init(transport: LiveGPUTransport, nativeBinding: LiveGPUByteConsumer?) throws {
         try self.init(transport: transport, nativeBinding: nativeBinding, drainTimeout: 10)
     }
-    init(transport: LiveGPUTransport, nativeBinding: LiveGPUByteConsumer?, drainTimeout: TimeInterval) throws {
+    init(transport: LiveGPUTransport, nativeBinding: LiveGPUByteConsumer?, drainTimeout: TimeInterval,
+         cleanupTimeout: TimeInterval = 10) throws {
         guard let nativeBinding else { throw LiveGPUError.missingNativeBinding }
-        precondition(drainTimeout.isFinite && drainTimeout > 0)
+        precondition(drainTimeout.isFinite && drainTimeout > 0 && cleanupTimeout.isFinite && cleanupTimeout > 0)
         self.transport = transport; consumer = nativeBinding; self.drainTimeout = drainTimeout
+        self.cleanupTimeout = cleanupTimeout
     }
 
     public func start(_ event: @escaping @Sendable (LiveGPUSessionEvent) -> Void) {
@@ -169,7 +175,7 @@ public final class LiveGPUSession: @unchecked Sendable {
                 do {
                     try consumer.start(output: { [weak self] bytes in self?.output(bytes) ?? false },
                                        failed: { [weak self] error in self?.stop(error) })
-                    if ingress.active { event?(.transportOpened) }
+                    if ingress.active { lock.withLock { event }?(.transportOpened) }
                 } catch { stop(error) }
             }
             lock.unlock()
@@ -208,6 +214,9 @@ public final class LiveGPUSession: @unchecked Sendable {
         LiveGPUMemoryAudit.sessionStop(cause, normalPeerClose: normalPeerClose)
         #endif
         transport.close()
+        DispatchQueue.global().asyncAfter(deadline: .now() + cleanupTimeout) { [self] in
+            report(cause: cause, cleanupError: LiveGPUError.cleanupTimedOut)
+        }
         // A blocked socketpair writer cannot prevent revocation from interrupting it.
         cleanup.async { [self] in
             var revokeError: Error?
@@ -217,10 +226,19 @@ public final class LiveGPUSession: @unchecked Sendable {
                 var cleanupError = priorError
                 do { try consumer.finish() } catch { if cleanupError == nil { cleanupError = error } }
                 let receipt = (consumer as? any LiveGPURetirementReporting)?.retirementReceiptSent == true
-                lock.withLock { confirmedRetirement = normalPeerClose && cause == nil && cleanupError == nil && receipt }
-                event?(.ended(cause: cause, cleanupError: cleanupError))
-                event = nil
+                report(cause: cause, cleanupError: cleanupError,
+                       confirmed: normalPeerClose && cause == nil && cleanupError == nil && receipt)
             }
         }
+    }
+
+    /// The single end event: from returned cleanup or from the cleanup deadline, whichever is first.
+    private func report(cause: Error?, cleanupError: Error?, confirmed: Bool = false) {
+        let event = lock.withLock { () -> (@Sendable (LiveGPUSessionEvent) -> Void)? in
+            defer { self.event = nil }
+            if self.event != nil { confirmedRetirement = confirmed }
+            return self.event
+        }
+        event?(.ended(cause: cause, cleanupError: cleanupError))
     }
 }
