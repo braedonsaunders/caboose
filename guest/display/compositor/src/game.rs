@@ -1,8 +1,7 @@
-//! Game handoff (docs/game-handoff.md) and GPU streams (docs/gpu-stream.md): the game
-//! socket `caboose-game-run` and `caboose-gpu-run` connect to, the binding of a launcher to
-//! its window, and the messages that tell a client to run the window's game itself
-//! (`game.*`) or to render the window from its application's Vulkan stream (`gpu.*`).
-//! While a client does either, the window sends no pictures.
+//! Game handoff (docs/game-handoff.md): the game socket `caboose-game-run` connects to,
+//! the binding of a launcher to its window, and the messages that tell a client to run the
+//! window's game (`game.*`) or agent app (`webview.*`) itself. While a client does, the
+//! window presents no pictures.
 
 use crate::state::State;
 use caboose_display_protocol::cbor::{self, Value};
@@ -11,9 +10,8 @@ use smithay::reexports::calloop::generic::Generic;
 use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
 use smithay::reexports::calloop::{Interest, LoopHandle, Mode as Trigger, PostAction, RegistrationToken};
 use std::collections::HashMap;
-use std::fs::File;
 use std::io::{self, Read, Write};
-use std::os::unix::fs::{FileExt, FileTypeExt, OpenOptionsExt};
+use std::os::fd::AsRawFd;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -22,11 +20,6 @@ use std::time::Duration;
 pub const MAX_PAYLOAD: usize = 64 * 1024;
 /// How long a launcher's window may take to appear after its hello.
 pub const BIND_TIMEOUT: Duration = Duration::from_secs(5);
-/// How far a client may fall behind a Vulkan stream before sending pauses.
-pub const GPU_WINDOW: u64 = 4 << 20;
-/// How far the spool may run ahead of the client before the application is held back.
-pub const GPU_BACKLOG: u64 = 64 << 20;
-const GPU_CHUNK: usize = 512 << 10;
 const HELLO: u8 = 0x01;
 const MODE: u8 = 0x81;
 
@@ -44,40 +37,6 @@ pub enum Kind {
     Game { root: String, entry: String, saves: Option<Vec<proto::GameSave>> },
     /// An agent app rendered by the client.
     Webview { app: String, bridge: String, root: String, entry: String },
-    /// An application whose Vulkan calls arrive on this FIFO for the client to render
-    /// (docs/gpu-stream.md).
-    Gpu { stream: PathBuf },
-}
-
-/// The directory GPU stream FIFOs live in: `$XDG_RUNTIME_DIR/caboose-gpu`.
-pub fn gpu_stream_dir() -> Option<PathBuf> {
-    std::env::var_os("XDG_RUNTIME_DIR").map(|d| Path::new(&d).join("caboose-gpu"))
-}
-
-/// A Vulkan stream being relayed: the FIFO its application writes, the spool every byte is
-/// kept in (a client that connects later replays it from the start), and how far the
-/// connected client has been sent and has consumed.
-struct GpuStream {
-    fifo: Option<File>,
-    token: Option<RegistrationToken>,
-    reading: bool,
-    spool: File,
-    spool_path: PathBuf,
-    length: u64,
-    sent: u64,
-    acked: u64,
-    /// The stream outgrew the spool limit: it is over for the client, and what the application
-    /// still writes is read and dropped so that it does not wait forever.
-    failed: bool,
-}
-
-/// Whether to read a GPU stream's FIFO now. A failed stream is drained. Otherwise the stream is
-/// read only while a client renders streams: before its window is announced without limit
-/// beyond the spool's (an application uploads much of its data before it maps its window, and
-/// nothing can be acknowledged until then), and after that while the client is less than
-/// `GPU_BACKLOG` behind.
-fn gpu_read_allowed(takes: bool, announced: bool, failed: bool, length: u64, acked: u64) -> bool {
-    failed || (takes && (!announced || length - acked < GPU_BACKLOG))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -113,9 +72,8 @@ fn contained(path: &str) -> bool {
 }
 
 impl Hello {
-    /// `None` for anything but a version 1 hello with contained paths, or a GPU stream in
-    /// `stream_dir`.
-    pub fn parse(payload: &[u8], stream_dir: Option<&Path>) -> Option<Hello> {
+    /// `None` for anything but a version 1 hello with contained paths.
+    pub fn parse(payload: &[u8]) -> Option<Hello> {
         let Value::Map(map) = cbor::decode(payload).ok()? else { return None };
         let version = map.iter().find(|(k, _)| k == "version").map(|(_, v)| v);
         if !matches!(version, Some(Value::Int(1))) {
@@ -123,13 +81,6 @@ impl Hello {
         }
         let title = text(&map, "title")?.to_owned();
         let app_id = text(&map, "app_id")?.to_owned();
-        if let Some(stream) = text(&map, "stream") {
-            let stream = PathBuf::from(stream);
-            let dir = stream_dir?;
-            let inside = stream.parent() == Some(dir)
-                && stream.file_name().and_then(|n| n.to_str()).is_some_and(|n| contained(n) && n.ends_with(".gfxr"));
-            return inside.then_some(Hello { title, app_id, kind: Kind::Gpu { stream } });
-        }
         if text(&map, "kind") == Some("webview") {
             let app = text(&map, "app")?;
             let bridge = text(&map, "bridge")?;
@@ -254,7 +205,6 @@ struct Launcher {
     /// A bound launcher that may still get its first `handoff`.
     waiting: bool,
     token: Option<RegistrationToken>,
-    gpu: Option<GpuStream>,
     /// The client declined the game: it stays with the computer from now on.
     declined: bool,
 }
@@ -313,30 +263,24 @@ impl State {
         self.session.as_ref().is_some_and(|s| s.ready && s.wasm)
     }
 
-    /// Whether the connected client renders Vulkan streams.
-    fn client_renders_gpu(&self) -> bool {
-        self.session.as_ref().is_some_and(|s| s.ready && s.gpu)
-    }
-
     /// Whether the connected client takes over this launcher's window.
     fn client_takes(&self, conn: u64) -> bool {
         let Some(l) = self.games.launchers.get(&conn) else { return false };
         match l.hello.as_ref().map(|h| &h.kind) {
             Some(Kind::Game { .. }) => !l.declined && self.client_runs_games(),
-            Some(Kind::Gpu { .. }) => self.client_renders_gpu(),
             Some(Kind::Webview { .. }) => !l.declined && self.session.as_ref().is_some_and(|s| s.ready && s.webview),
             None => false,
         }
     }
 
-    /// The window's game runs on the client, or the client renders it from its Vulkan
-    /// stream, so the window sends no pictures.
+    /// The window's game or agent app runs on the client, so the window presents no
+    /// pictures.
     pub fn game_shown(&self, window: u64) -> bool {
         self.games.of_window(window).is_some_and(|conn| self.client_takes(conn))
     }
 
     fn accept_launcher(&mut self, stream: UnixStream) {
-        let Some(pid) = crate::video::server::peer_pid(&stream) else {
+        let Some(pid) = peer_pid(&stream) else {
             tracing::warn!("game socket: no peer credentials");
             return;
         };
@@ -356,7 +300,6 @@ impl State {
                 sent: None,
                 waiting: false,
                 token: None,
-                gpu: None,
                 declined: false,
             },
         );
@@ -410,7 +353,7 @@ impl State {
         loop {
             let Some(l) = self.games.launchers.get_mut(&conn) else { return };
             match l.framer.next_message() {
-                Ok(Some((HELLO, payload))) => match Hello::parse(&payload, gpu_stream_dir().as_deref()) {
+                Ok(Some((HELLO, payload))) => match Hello::parse(&payload) {
                     Some(hello) => self.on_launcher_hello(conn, hello),
                     None => {
                         tracing::warn!("game launcher {conn}: invalid hello; closing");
@@ -434,17 +377,6 @@ impl State {
         match &hello.kind {
             Kind::Game { root, entry, .. } => tracing::info!("game {:?} (pid {pid}): {root}/{entry}", hello.title),
             Kind::Webview { app, .. } => tracing::info!("agent app {app} (pid {pid})"),
-            Kind::Gpu { stream } => {
-                tracing::info!("gpu stream {:?} (pid {pid}): {}", hello.title, stream.display());
-                match self.open_gpu_stream(conn, stream) {
-                    Ok(gpu) => self.games.launchers.get_mut(&conn).unwrap().gpu = Some(gpu),
-                    Err(e) => {
-                        tracing::warn!("gpu stream {}: {e}; closing", stream.display());
-                        self.drop_launcher(conn);
-                        return;
-                    }
-                }
-            }
         }
         // A second connection from the same process replaces the first.
         let older: Vec<u64> =
@@ -452,12 +384,11 @@ impl State {
         for c in older {
             self.drop_launcher(c);
         }
-        let gpu = matches!(hello.kind, Kind::Gpu { .. });
         let l = self.games.launchers.get_mut(&conn).unwrap();
         l.hello = Some(hello);
-        l.waiting = !gpu;
+        l.waiting = true;
         self.bind_launcher(conn);
-        if !gpu && self.games.launchers.get(&conn).is_some_and(|l| l.bound.is_none()) {
+        if self.games.launchers.get(&conn).is_some_and(|l| l.bound.is_none()) {
             let timer = Timer::from_duration(BIND_TIMEOUT);
             let armed = self.handle.insert_source(timer, move |_, _, state: &mut State| {
                 if let Some(l) = state.games.launchers.get_mut(&conn).filter(|l| l.bound.is_none()) {
@@ -472,7 +403,6 @@ impl State {
             }
         }
         self.update_game_mode(conn);
-        self.pump_gpu_stream(conn);
     }
 
     /// Binds a launcher that said hello to the first toplevel its process made.
@@ -521,7 +451,7 @@ impl State {
         }
     }
 
-    /// Sends `game.create` or `gpu.create` for a bound launcher whose window the client knows.
+    /// Sends `game.create` or `webview.create` for a bound launcher whose window the client knows.
     fn announce_game(&mut self, conn: u64) {
         if !self.client_takes(conn) {
             return;
@@ -529,14 +459,6 @@ impl State {
         let Some(session) = self.session.as_ref().map(|s| s.conn) else { return };
         let Some(l) = self.games.launchers.get(&conn) else { return };
         let (Some((id, window)), Some(hello), false) = (l.bound, l.hello.as_ref(), l.announced) else { return };
-        if l.gpu.as_ref().is_some_and(|g| g.failed) {
-            // Its spool is gone, so a client can no longer render it: it is told so, and why.
-            if self.windows.get(window).is_some_and(|w| w.announced.is_some()) {
-                self.net.send(session, &Message::GpuCreate { id, window });
-                self.net.send(session, &Message::GpuDestroy { id, reason: Some("spool-limit".into()) });
-            }
-            return;
-        }
         if self.windows.get(window).is_none_or(|w| w.announced.is_none()) {
             return;
         }
@@ -548,7 +470,6 @@ impl State {
                 entry: entry.clone(),
                 saves: saves.clone(),
             }),
-            Kind::Gpu { .. } => Message::GpuCreate { id, window },
             Kind::Webview { app, bridge, root, entry } => {
                 let Some(grant) = self.session.as_ref().and_then(|s| s.webview_grant.clone()) else { return };
                 Message::WebviewCreate(proto::WebviewCreate {
@@ -565,12 +486,6 @@ impl State {
         self.net.send(session, &message);
         let l = self.games.launchers.get_mut(&conn).unwrap();
         l.announced = true;
-        if let Some(gpu) = l.gpu.as_mut() {
-            // A new client renders the stream from its first byte.
-            gpu.sent = 0;
-            gpu.acked = 0;
-            self.pump_gpu_stream(conn);
-        }
     }
 
     /// The window was just announced to the client: its game follows it.
@@ -589,19 +504,12 @@ impl State {
     }
 
     fn withdraw_game(&mut self, conn: u64) {
-        self.withdraw_game_because(conn, None);
-    }
-
-    fn withdraw_game_because(&mut self, conn: u64, reason: Option<&str>) {
         let Some(l) = self.games.launchers.get_mut(&conn) else { return };
         let (Some((id, _)), true) = (l.bound, l.announced) else { return };
         l.announced = false;
-        let gpu = l.gpu.is_some();
         let webview = matches!(l.hello.as_ref().map(|h| &h.kind), Some(Kind::Webview { .. }));
         if let Some(session) = self.session.as_ref().map(|s| s.conn) {
-            let message = if gpu {
-                Message::GpuDestroy { id, reason: reason.map(str::to_owned) }
-            } else if webview {
+            let message = if webview {
                 Message::WebviewDestroy { id }
             } else {
                 Message::GameDestroy { id }
@@ -629,13 +537,8 @@ impl State {
             if let Some(l) = self.games.launchers.get_mut(&conn) {
                 l.announced = false;
                 l.sent = None;
-                if let Some(gpu) = l.gpu.as_mut() {
-                    gpu.sent = 0;
-                    gpu.acked = 0;
-                }
             }
             self.update_game_mode(conn);
-            self.pump_gpu_stream(conn);
         }
     }
 
@@ -648,8 +551,6 @@ impl State {
         }
         let now = match l.bound {
             Some((_, window)) if runs => (Mode::Handoff, Some(window)),
-            // A Vulkan application makes its window only after it hears this answer.
-            None if runs && l.gpu.is_some() => (Mode::Handoff, None),
             // Still looking for its window: the answer waits, for up to BIND_TIMEOUT.
             None if runs && l.waiting && l.sent.is_none() => return,
             Some((_, window)) => (Mode::Local, Some(window)),
@@ -664,12 +565,9 @@ impl State {
         let grant = if webview && now.0 == Mode::Handoff { grant.as_deref() } else { None };
         l.pending.extend_from_slice(&mode_message_with_grant(now.0, now.1, declined, grant));
         self.flush_launcher(conn);
-        // A window whose game the client stopped running sends its picture again.
+        // A window whose game the client stopped running presents its picture again.
         if let (Mode::Local, Some(window)) = now {
-            if let Some(w) = self.windows.get_mut(window) {
-                w.stream.need_keyframe = true;
-                w.stream.dirty = true;
-            }
+            self.repaint_window(window);
         }
     }
 
@@ -696,147 +594,14 @@ impl State {
         if let Some(t) = l.token {
             self.handle.remove(t);
         }
-        if let Some(gpu) = l.gpu {
-            if let Some(t) = gpu.token {
-                self.handle.remove(t);
-            }
-            let _ = std::fs::remove_file(&gpu.spool_path);
-            tracing::info!("gpu stream (pid {}) ended after {} bytes", l.pid, gpu.length);
-        }
         if let Some((game, window)) = l.bound {
             tracing::info!("game {game} (pid {}) gone", l.pid);
-            if let Some(w) = self.windows.get_mut(window) {
-                w.stream.need_keyframe = true;
-                w.stream.dirty = true;
-            }
+            self.repaint_window(window);
         }
     }
 }
 
 impl State {
-    /// Opens the application's FIFO (read and write, so it never reports end of file between
-    /// writers) and a spool for everything it carries.
-    fn open_gpu_stream(&mut self, conn: u64, stream: &Path) -> io::Result<GpuStream> {
-        let meta = std::fs::symlink_metadata(stream)?;
-        use std::os::unix::fs::MetadataExt;
-        // SAFETY: getuid has no preconditions.
-        if !meta.file_type().is_fifo() || meta.uid() != unsafe { libc::getuid() } {
-            return Err(io::Error::other("not a FIFO of this user"));
-        }
-        let fifo = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW)
-            .open(stream)?;
-        let dir = std::env::var_os("HOME")
-            .map(|h| Path::new(&h).join(".cache/caboose/gpu-streams"))
-            .ok_or_else(|| io::Error::other("HOME is not set"))?;
-        std::fs::create_dir_all(&dir)?;
-        let spool_path = dir.join(format!("{}-{conn}.gfxr", std::process::id()));
-        let spool = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(true).open(&spool_path)?;
-        let source = fifo.try_clone()?;
-        let token = self
-            .handle
-            .insert_source(Generic::new(source, Interest::READ, Trigger::Level), move |_, _, state: &mut State| {
-                state.read_gpu_stream(conn);
-                Ok(PostAction::Continue)
-            })
-            .map_err(|e| io::Error::other(e.to_string()))?;
-        // Nothing is read until a client renders the stream: the application waits.
-        self.handle.disable(&token).map_err(|e| io::Error::other(e.to_string()))?;
-        Ok(GpuStream {
-            fifo: Some(fifo),
-            token: Some(token),
-            reading: false,
-            spool,
-            spool_path,
-            length: 0,
-            sent: 0,
-            acked: 0,
-            failed: false,
-        })
-    }
-
-    /// Reads what the application wrote into the spool, while the client keeps up.
-    fn read_gpu_stream(&mut self, conn: u64) {
-        let takes = self.client_takes(conn);
-        let limit = self.config.gpu_spool_limit;
-        let Some(l) = self.games.launchers.get_mut(&conn) else { return };
-        let announced = l.announced;
-        let Some(gpu) = l.gpu.as_mut() else { return };
-        let mut buf = vec![0u8; GPU_CHUNK];
-        let mut outgrew = false;
-        while gpu_read_allowed(takes, announced, gpu.failed, gpu.length, gpu.acked) {
-            let Some(fifo) = gpu.fifo.as_mut() else { break };
-            match fifo.read(&mut buf) {
-                Ok(0) => break,
-                Ok(_) if gpu.failed => {}
-                Ok(n) if gpu.length + n as u64 > limit => {
-                    gpu.failed = true;
-                    outgrew = true;
-                    let _ = gpu.spool.set_len(0);
-                }
-                Ok(n) => {
-                    if let Err(e) = gpu.spool.write_all_at(&buf[..n], gpu.length) {
-                        tracing::warn!("gpu stream spool: {e}");
-                        break;
-                    }
-                    gpu.length += n as u64;
-                }
-                Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
-                Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
-                Err(e) => {
-                    tracing::warn!("gpu stream: {e}");
-                    break;
-                }
-            }
-        }
-        if outgrew {
-            tracing::warn!("gpu stream (launcher {conn}) outgrew the {limit}-byte spool limit; ended");
-            self.withdraw_game_because(conn, Some("spool-limit"));
-        }
-        self.pump_gpu_stream(conn);
-    }
-
-    /// Sends the client what it has room for, and reads from the application while a client
-    /// renders streams and is close enough behind. Reading starts before the window is bound:
-    /// an application writes much of its stream (its first uploads) before it maps its window.
-    fn pump_gpu_stream(&mut self, conn: u64) {
-        let takes = self.client_takes(conn);
-        let session = self.session.as_ref().map(|s| s.conn);
-        let Some(l) = self.games.launchers.get_mut(&conn) else { return };
-        let (bound, announced) = (l.bound, l.announced);
-        let Some(gpu) = l.gpu.as_mut() else { return };
-        if let (true, true, false, Some(session), Some((id, _))) = (takes, announced, gpu.failed, session, bound) {
-            while gpu.sent < gpu.length && gpu.sent - gpu.acked < GPU_WINDOW {
-                let n = (gpu.length - gpu.sent).min(GPU_CHUNK as u64) as usize;
-                let mut data = vec![0u8; n];
-                if gpu.spool.read_exact_at(&mut data, gpu.sent).is_err() {
-                    break;
-                }
-                let message = Message::GpuData(proto::GpuData { id, offset: gpu.sent, data });
-                gpu.sent += n as u64;
-                self.net.send(session, &message);
-            }
-        }
-        let should_read = gpu_read_allowed(takes, announced, gpu.failed, gpu.length, gpu.acked);
-        if should_read != gpu.reading {
-            if let Some(token) = gpu.token.as_ref() {
-                let toggled = if should_read { self.handle.enable(token) } else { self.handle.disable(token) };
-                if toggled.is_ok() {
-                    gpu.reading = should_read;
-                }
-            }
-        }
-    }
-
-    /// The window's application streams its Vulkan calls and X has mapped its window: it is
-    /// shown although it has no buffer, because it never presents one here.
-    pub fn streams_unbuffered(&self, window: u64) -> bool {
-        let gpu = self.games.of_window(window).is_some_and(|c| self.games.launchers[&c].gpu.is_some());
-        gpu && matches!(self.windows.get(window).map(|w| &w.surface), Some(crate::windows::Surface::X11(x)) if x.is_mapped())
-    }
-
     /// The client cannot run game `id`: it is withdrawn from the client, and its launcher hears
     /// `local` with `declined`, which runs the bundle's native build in the window's place.
     /// Only the connected client's own announced game counts; a repeated or late decline, or
@@ -855,8 +620,7 @@ impl State {
             .launchers
             .iter()
             .find(|(_, l)| {
-                l.gpu.is_none()
-                    && matches!(l.hello.as_ref().map(|h| &h.kind), Some(Kind::Webview { .. })) == webview
+                matches!(l.hello.as_ref().map(|h| &h.kind), Some(Kind::Webview { .. })) == webview
                     && l.announced
                     && !l.declined
                     && l.bound.is_some_and(|(g, _)| g == id)
@@ -873,20 +637,23 @@ impl State {
         self.update_game_mode(conn);
     }
 
-    /// The client consumed a stream up to `offset`.
-    pub fn gpu_ack(&mut self, id: u64, offset: u64) {
-        let conn = self
-            .games
-            .launchers
-            .iter()
-            .find(|(_, l)| l.gpu.is_some() && l.bound.is_some_and(|(g, _)| g == id))
-            .map(|(c, _)| *c);
-        let Some(conn) = conn else { return };
-        if let Some(gpu) = self.games.launchers.get_mut(&conn).and_then(|l| l.gpu.as_mut()) {
-            gpu.acked = gpu.acked.max(offset.min(gpu.sent));
-        }
-        self.pump_gpu_stream(conn);
-    }
+}
+
+/// The peer's pid, from the kernel rather than from what it says.
+fn peer_pid(stream: &UnixStream) -> Option<u32> {
+    let mut cred = libc::ucred { pid: 0, uid: 0, gid: 0 };
+    let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+    // SAFETY: getsockopt writes at most `len` bytes into `cred`.
+    let r = unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            (&mut cred as *mut libc::ucred).cast(),
+            &mut len,
+        )
+    };
+    (r == 0 && cred.pid > 0).then_some(cred.pid as u32)
 }
 
 #[cfg(test)]
@@ -909,7 +676,7 @@ mod tests {
 
     #[test]
     fn a_hello_parses_with_and_without_saves() {
-        let h = Hello::parse(&hello(valid()), None).unwrap();
+        let h = Hello::parse(&hello(valid())).unwrap();
         let Kind::Game { root, saves, .. } = h.kind else { panic!("a game") };
         assert_eq!(root, ".local/share/caboose/games/powder-toy/web");
         assert_eq!(saves, None);
@@ -921,7 +688,7 @@ mod tests {
                 ("path".into(), Value::Text(".local/share/The Powder Toy".into())),
             ])]),
         ));
-        let h = Hello::parse(&hello(with), None).unwrap();
+        let h = Hello::parse(&hello(with)).unwrap();
         let Kind::Game { saves, .. } = h.kind else { panic!("a game") };
         assert_eq!(
             saves,
@@ -944,17 +711,17 @@ mod tests {
             ])
         };
         assert!(matches!(
-            Hello::parse(&message("notes", "Apps/notes", "index.html", "0123456789abcdef0123456789abcdef"), None),
+            Hello::parse(&message("notes", "Apps/notes", "index.html", "0123456789abcdef0123456789abcdef")),
             Some(Hello { kind: Kind::Webview { .. }, .. })
         ));
-        assert_eq!(Hello::parse(&message("notes", "Apps/notes", "index.html", "../bad"), None), None);
+        assert_eq!(Hello::parse(&message("notes", "Apps/notes", "index.html", "../bad")), None);
         for (app, root, entry) in [
             ("../x", "Apps/../x", "index.html"),
             ("notes", "Apps/other", "index.html"),
             ("notes", "Apps/notes", "../secret"),
             ("1notes", "Apps/1notes", "index.html"),
         ] {
-            assert_eq!(Hello::parse(&message(app, root, entry, "0123456789abcdef0123456789abcdef"), None), None);
+            assert_eq!(Hello::parse(&message(app, root, entry, "0123456789abcdef0123456789abcdef")), None);
         }
     }
 
@@ -963,7 +730,7 @@ mod tests {
         for root in ["/etc", "../x", "a/../../b", "a//b", "", "./a"] {
             let mut h = valid();
             h[3] = ("root", Value::Text(root.into()));
-            assert_eq!(Hello::parse(&hello(h), None), None, "{root}");
+            assert_eq!(Hello::parse(&hello(h)), None, "{root}");
         }
         let mut h = valid();
         h.push((
@@ -973,52 +740,14 @@ mod tests {
                 ("path".into(), Value::Text("../outside".into())),
             ])]),
         ));
-        assert_eq!(Hello::parse(&hello(h), None), None);
-    }
-
-    #[test]
-    fn a_gpu_stream_must_be_a_fifo_name_in_the_stream_directory() {
-        let dir = Path::new("/run/user/1000/caboose-gpu");
-        let gpu = |stream: &str| {
-            hello(vec![
-                ("version", Value::Int(1)),
-                ("title", Value::Text("vkcube".into())),
-                ("app_id", Value::Text("vkcube".into())),
-                ("stream", Value::Text(stream.into())),
-            ])
-        };
-        let h = Hello::parse(&gpu("/run/user/1000/caboose-gpu/4242.gfxr"), Some(dir)).unwrap();
-        assert_eq!(h.kind, Kind::Gpu { stream: dir.join("4242.gfxr") });
-        for bad in [
-            "/tmp/4242.gfxr",
-            "/run/user/1000/caboose-gpu/../x.gfxr",
-            "/run/user/1000/caboose-gpu/a/b.gfxr",
-            "/run/user/1000/caboose-gpu/x",
-        ] {
-            assert_eq!(Hello::parse(&gpu(bad), Some(dir)), None, "{bad}");
-        }
-        assert_eq!(Hello::parse(&gpu("/run/user/1000/caboose-gpu/4242.gfxr"), None), None);
-    }
-
-    #[test]
-    fn gpu_streams_are_read_before_their_window_and_then_paced() {
-        // No client renders streams: the application waits.
-        assert!(!gpu_read_allowed(false, false, false, 0, 0));
-        // Before the window is announced, however much the application uploads first.
-        assert!(gpu_read_allowed(true, false, false, 512 << 20, 0));
-        // Then only while the client is less than GPU_BACKLOG behind.
-        assert!(gpu_read_allowed(true, true, false, GPU_BACKLOG - 1, 0));
-        assert!(!gpu_read_allowed(true, true, false, GPU_BACKLOG, 0));
-        assert!(gpu_read_allowed(true, true, false, GPU_BACKLOG, 1));
-        // A failed stream is drained whatever the client does.
-        assert!(gpu_read_allowed(false, false, true, 0, 0));
+        assert_eq!(Hello::parse(&hello(h)), None);
     }
 
     #[test]
     fn other_versions_are_refused() {
         let mut h = valid();
         h[0] = ("version", Value::Int(2));
-        assert_eq!(Hello::parse(&hello(h), None), None);
+        assert_eq!(Hello::parse(&hello(h)), None);
     }
 
     #[test]

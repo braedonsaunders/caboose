@@ -604,7 +604,7 @@ environment, not in shell history. `check-fs.mjs`, `check-terminal.mjs`, `check-
 
 | Command | What it checks |
 | --- | --- |
-| `CABOOSE_OWNER_TOKEN=… apps/host/scripts/e2e.sh` | Wakes the computer (cold only without a snapshot), says an authenticated hello to the owner's display and the agent seat through the relay with `scripts/display-client.mjs` and requires an encoder it decodes, checks the app list has PNG icons and the core apps, launches the Xfce terminal, parks, resumes, says hello again, checks `/v1/health` has no desk error, and parks. |
+| `CABOOSE_OWNER_TOKEN=… apps/host/scripts/e2e.sh` | Wakes the computer (cold only without a snapshot), says an authenticated hello to the owner's display and the agent seat through the relay with `scripts/display-client.mjs`, checks the app list has PNG icons and the core apps, launches the Xfce terminal, parks, resumes, says hello again, checks `/v1/health` has no desk error, and parks. |
 | `node apps/host/scripts/check-lineup.mjs` | Opens Mousepad, btop and OpenCode and requires a new window for each on the owner's display. Leaves them open and does not park. |
 | `node apps/host/scripts/check-catalog.mjs` | Installs PhotoCraft (or the catalog app `CABOOSE_CATALOG_APP` names, such as `powder-toy`) if needed, launches it and requires a new window with its name and a PNG icon in the app list. Close the app's windows first. |
 | `node apps/host/scripts/check-management.mjs [--write \| --restart]` | The management API: read-only by default; `--write` saves the existing name unchanged; `--restart` performs a cold restart (discarding open applications) and checks the applied resources. |

@@ -25,7 +25,7 @@
  * Apps show a hidden frame later with show_existing_frame, which never reaches a
  * VA driver. So a hidden showable frame is followed, in its temporal unit, by a
  * show_existing_frame of a slot it was stored in, and flagged CB_FRAME_HIDDEN:
- * the client decodes and keeps it, and presents it if the app does. A hidden key
+ * the phone decodes and keeps it, and presents it if the app does. A hidden key
  * frame is not shown that way, since showing a key frame resets every slot. When
  * the next picture's slots show the app did it, the same show_existing_frame is
  * sent then; decoding locally, the frame's pixels are decoded at once instead.

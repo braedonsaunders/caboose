@@ -1,6 +1,6 @@
 [package]
 name = "caboose-display"
-description = "Caboose Display: a headless Wayland compositor that streams each window as its own video"
+description = "Caboose Display: a headless Wayland compositor that renders each window on the phone's GPU"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -21,4 +21,4 @@ tungstenite = { version = "0.27", default-features = false, features = ["handsha
 [dependencies.smithay]
 version = "0.7.0"
 default-features = false
-features = ["wayland_frontend", "desktop", "xwayland", "renderer_pixman"]
+features = ["wayland_frontend", "desktop", "xwayland", "renderer_gl", "backend_egl", "backend_gbm"]

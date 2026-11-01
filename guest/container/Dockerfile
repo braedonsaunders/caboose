@@ -11,7 +11,7 @@ RUN curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-to
 COPY display /src
 ARG CARGO_BUILD_JOBS=2
 RUN cd /src && cargo build --release --locked --jobs "$CARGO_BUILD_JOBS" -p caboose-display -p caboose-display-probe
-# The codec passthrough VA-API driver (guest/vaapi).
+# The Caboose VA-API driver (guest/vaapi).
 COPY vaapi /vaapi
 RUN make -C /vaapi BUILD=/out/vaapi /out/vaapi/caboose_drv_video.so
 # The GBM backend for the computer's render node (guest/gpu/gbm).
@@ -28,39 +28,6 @@ RUN printf 'deb-src https://deb.debian.org/debian trixie main\ndeb-src https://s
 COPY xwayland /xwayland
 ARG XWAYLAND_BUILD_JOBS=2
 RUN apt-get update && XWAYLAND_JOBS="$XWAYLAND_BUILD_JOBS" /xwayland/build.sh /out/xwayland && rm -rf /var/lib/apt/lists/*
-
-# The GPU stream driver and layers (guest/gpu), at the commits of one Vulkan SDK release.
-FROM debian:trixie-slim AS gpu
-ENV DEBIAN_FRONTEND=noninteractive
-RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates git cmake ninja-build g++ python3 python3-venv libpython3-dev pkg-config \
-      libx11-dev libx11-xcb-dev libxcb1-dev libxcb-keysyms1-dev libxrandr-dev libwayland-dev wayland-protocols && \
-    rm -rf /var/lib/apt/lists/*
-COPY gpu /gpu
-ARG GPU_BUILD_JOBS=2
-RUN CABOOSE_GPU_JOBS="$GPU_BUILD_JOBS" /gpu/build.sh /out/caboose-gpu
-
-# The preload libraries: the GTK and Qt scroll reporters (guest/scroll-reporter) and the cairo
-# draw-list recorder (guest/draw), each built into a directory named by its multiarch triplet.
-# On x86-64 they are built for i386 too, for 32-bit applications.
-FROM debian:trixie-slim AS preloads
-ENV DEBIAN_FRONTEND=noninteractive
-RUN dev="libgtk-3-dev libgtk-4-dev qt6-declarative-dev libcairo2-dev libfreetype-dev libfontconfig-dev libwayland-dev" && \
-    extra= && \
-    if [ "$(dpkg --print-architecture)" = amd64 ]; then \
-      dpkg --add-architecture i386 && \
-      extra="gcc-i686-linux-gnu g++-i686-linux-gnu $(for p in $dev; do printf '%s:i386 ' "$p"; done)"; \
-    fi && \
-    apt-get update && apt-get install -y --no-install-recommends gcc g++ libc6-dev binutils pkg-config $dev $extra && \
-    rm -rf /var/lib/apt/lists/*
-COPY scroll-reporter /scroll-reporter
-COPY draw /draw
-RUN /scroll-reporter/gtk/build.sh && /scroll-reporter/qt/build.sh && /draw/build.sh && \
-    if command -v i686-linux-gnu-gcc >/dev/null; then \
-      export CC=i686-linux-gnu-gcc CXX=i686-linux-gnu-g++ \
-        PKG_CONFIG="env PKG_CONFIG_LIBDIR=/usr/lib/i386-linux-gnu/pkgconfig:/usr/share/pkgconfig pkg-config" && \
-      /scroll-reporter/gtk/build.sh && /scroll-reporter/qt/build.sh && /draw/build.sh; \
-    fi
 
 FROM debian:trixie-slim
 ENV DEBIAN_FRONTEND=noninteractive
@@ -112,13 +79,6 @@ COPY apps/install.sh apps/caboose-app apps/appcore.py apps/net.py apps/remote.py
 RUN bash /tmp/bundle/components/install.sh image-container && rm -rf /tmp/bundle
 COPY media-handoff /tmp/media-handoff
 RUN /tmp/media-handoff/install.sh && rm -rf /tmp/media-handoff
-COPY scroll-reporter /tmp/scroll-reporter
-COPY --from=preloads /scroll-reporter/gtk/out /tmp/scroll-reporter/gtk/out
-COPY --from=preloads /scroll-reporter/qt/out /tmp/scroll-reporter/qt/out
-RUN /tmp/scroll-reporter/install.sh && rm -rf /tmp/scroll-reporter
-COPY draw /tmp/draw
-COPY --from=preloads /draw/build /tmp/draw/build
-RUN /tmp/draw/install.sh && rm -rf /tmp/draw
 RUN export USER=root HOME=/root TERM=xterm && mkdir -p /tmp/themes && \
     for spec in 'WhiteSur-gtk-theme d5782652d412137e26fb8ff55b55a5572e4c6995' 'WhiteSur-icon-theme 73d8040da51a9ed74e47c7366e7e9ff437601a5c' 'WhiteSur-cursors e190baf618ed95ee217d2fd45589bd309b37672b'; do \
       set -- $spec; git clone -q "https://github.com/vinceliuice/$1.git" "/tmp/themes/$1" && git -C "/tmp/themes/$1" checkout -q "$2" || exit 1; \
@@ -143,7 +103,6 @@ RUN triplet=$(dpkg --print-architecture) && \
 COPY --from=xwayland /out/xwayland /tmp/xwayland
 RUN dpkg -i /tmp/xwayland/xwayland_*.deb && apt-mark hold xwayland && rm -rf /tmp/xwayland
 COPY display/caboose-display-ready /usr/local/bin/caboose-display-ready
-COPY --from=gpu /out/caboose-gpu /usr/local/lib/caboose-gpu
 COPY container/caboose-session /usr/local/bin/caboose-session
 RUN chmod 0755 /usr/local/bin/caboose-session
 ENV LD_PRELOAD= CABOOSE_GPU=none DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus GDK_SCALE=1 QT_QPA_PLATFORMTHEME=gtk3 \

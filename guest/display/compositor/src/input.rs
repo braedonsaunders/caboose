@@ -203,9 +203,6 @@ impl State {
         }
         self.input.pointer_buttons = m.buttons;
         if let Some(scroll) = &m.scroll {
-            if let (Some(seq), Some(w)) = (scroll.seq, self.windows.get_mut(m.id)) {
-                w.scroll_seq_delivered = w.scroll_seq_delivered.max(seq);
-            }
             pointer.axis(self, scroll::axis_frame(scroll, display_scale, time));
             if scroll.precise {
                 self.arm_scroll_stop();
@@ -394,31 +391,12 @@ impl State {
         let (fullscreen, maximized) = (w.fullscreen, w.maximized);
         let display_size = display.logical_size();
         let display_origin = display.origin;
-        let mut geometry = m.geometry.map(|g| {
+        let geometry = m.geometry.map(|g| {
             smithay::utils::Rectangle::<i32, Logical>::new(
                 (to_logical(g.x), to_logical(g.y)).into(),
                 (to_logical(g.w).max(1), to_logical(g.h).max(1)).into(),
             )
         });
-        // Overscan (docs/display.md): lay the window out wider/taller than the geometry the
-        // client shows. It stays asked for until [0, 0]; fullscreen and maximized windows
-        // have a fixed size and get none.
-        let shown = w.shown.unwrap_or_else(|| w.shown_size());
-        if let Some(o) = m.overscan {
-            w.overscan = (to_logical(o.w.max(0)), to_logical(o.h.max(0))).into();
-            // Only the size changes: the window stays where it is.
-            let at = match &w.surface {
-                Surface::Toplevel(_) => Some(w.position),
-                Surface::X11(x) => Some(x.geometry().loc - display_origin),
-                Surface::Popup(_) => None,
-            };
-            if geometry.is_none() {
-                geometry = at.map(|at| smithay::utils::Rectangle::new(at, shown));
-            }
-        }
-        if fullscreen || maximized {
-            w.overscan_size = None;
-        }
         // A maximized window takes the geometry configured with that state: Laptop lays a
         // filled window out below its title bar, grown to its minimum size.
         if maximized {
@@ -427,18 +405,6 @@ impl State {
             }
         }
         let filled = filled_rect(fullscreen, maximized, w.maximized_geometry, display_size);
-        if let Some(g) = geometry.as_mut() {
-            w.overscan_size = None;
-            w.shown = Some(g.size);
-            if !fullscreen && !maximized && (w.overscan.w > 0 || w.overscan.h > 0) {
-                let limit = to_logical(crate::windows::OVERSCAN_MAX_PICTURE);
-                let (whole, applied) = crate::windows::overscan_layout(g.size, w.overscan, w.max_size(), limit);
-                if applied.w > 0 || applied.h > 0 {
-                    g.size = whole;
-                    w.overscan_size = Some(whole);
-                }
-            }
-        }
         let id = m.id;
         match &w.surface {
             Surface::Toplevel(t) => {

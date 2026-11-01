@@ -211,10 +211,8 @@ def main():
                 while packet:
                     kind, size = packet[0], int.from_bytes(packet[1:5], 'little')
                     assert len(packet) >= size + 5
-                    fields, _ = decode(packet[5:5 + size])
+                    decode(packet[5:5 + size])
                     packet = packet[5 + size:]
-                    if kind in (0x10, 0x11):
-                        send(0x83, dict(id=fields['id'], pts_us=fields['pts_us'], decoded_us=0))
                     if kind == 0x7f:
                         raise AssertionError('Server ended fixture session')
         except Exception as e:
@@ -225,7 +223,7 @@ def main():
         return dict(id=id, width=width, height=height, scale=1.0, refresh_hz=60.0, hdr=False)
     deadline = time.monotonic() + 18
     try:
-        send(0x81, dict(version=0, token=Path(args.token_file).read_text().strip(), decoders=['h264'],
+        send(0x81, dict(version=0, token=Path(args.token_file).read_text().strip(),
                         displays=[output(0, 1200, 800)]))
         reader.start()
         initial_deadline = min(deadline, time.monotonic() + 10)

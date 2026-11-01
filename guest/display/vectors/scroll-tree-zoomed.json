@@ -1,8 +1,0 @@
-{
-  "name": "scroll-tree-zoomed",
-  "description": "The root scroller of a page pinch-zoomed to 2.5 (of 1 to 5): offset and range in zoomed pixels.",
-  "messages": [
-    {"direction": "server", "type": "scroll.tree", "type_id": 39, "fields": {"id": 7, "tag": 207377, "zoom": {"$float": 2.5}, "epoch": 2, "applied": 19, "tag_rect": [0, 2560, 1024, 32], "scrollers": [{"id": 0, "rect": [0, 180, 1179, 4932], "fixed": [[0, 2560, 1024, 32]], "range": [{"$float": 1768.5}, {"$float": 47261.25}], "offset": [{"$float": 1473.75}, {"$float": 6031.875}]}], "zoom_range": [{"$float": 1.0}, {"$float": 5.0}]}}
-  ],
-  "hex": "27c0000000a862696407637461671a00032a11647a6f6f6dfb40040000000000006565706f636802676170706c69656413687461675f726563748400190a001904001820697363726f6c6c65727381a5626964006472656374840018b419049b191344656669786564818400190a0019040018206572616e676582fb409ba20000000000fb40e713a800000000666f666673657482fb4097070000000000fb40b78fe0000000006a7a6f6f6d5f72616e676582fb3ff0000000000000fb4014000000000000"
-}

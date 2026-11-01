@@ -17,8 +17,7 @@
 # and writes a throwaway bundle with a native fallback under caboose's home. Then:
 #
 #   1. a probe that plays games (--wasm) gets game.create for the launcher's window, with the
-#      bundle's root, entry and saves, and no picture of that window; the native fallback
-#      does not run; closing the window from the probe ends the launcher, and the game is
+#      bundle's root, entry and saves; the native fallback does not run; closing the window from the probe ends the launcher, and the game is
 #      destroyed;
 #   2. with a probe that does not play games, native_fallback replaces the launcher (same
 #      process id);
@@ -157,10 +156,9 @@ assert game['destroyed'], 'the game was not destroyed when its window closed'
 window = next((w for w in report['windows'] if w['id'] == game['window']), None)
 assert window, f'game window {game["window"]} was never created'
 assert window['title'] == title, window
-assert window['frames'] == 0, f'the game window sent {window["frames"]} pictures'
 assert window['destroyed'], 'the game window was not destroyed'
 PY
-echo "handoff: game.create for the launcher's window, no pictures, destroyed on close"
+echo "handoff: game.create for the launcher's window, destroyed on close"
 
 # 2. A client that does not play games.
 probe --json --duration 6 > "$work/local.json" 2> "$work/local.err" &

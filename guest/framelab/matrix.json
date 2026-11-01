@@ -1,5 +1,5 @@
 {
-  "comment": "Frame lab's fixed matrix (README.md). Each app is launched the generic way: its desktop entry or its command, with the seat's launch environment and nothing per app beyond its arguments. {tmp} is a fresh private directory per run, {page} the long local article, {video} a generated clip, {listing} a long text file, {qml} a scrolling Qt Quick list.",
+  "comment": "Frame lab's fixed matrix (README.md). Each app is launched the generic way: its desktop entry or its command, with the seat's launch environment and nothing per app beyond its arguments. {tmp} is a fresh private directory per run, {page} the long local article, {video} a generated clip, {listing} a long text file, {qml} a scrolling Qt Quick list. `requires` names the programs a shell command line launches.",
   "apps": [
     {
       "id": "chromium-wikipedia",
@@ -255,6 +255,142 @@
         }
       ],
       "correctness": true
+    },
+    {
+      "id": "foot",
+      "name": "foot running cat (Wayland, shared-memory buffers)",
+      "command": [
+        "foot",
+        "--window-size-chars=100x40",
+        "cat"
+      ],
+      "window": "foot",
+      "ready_s": 20,
+      "warmup_s": 2,
+      "measure_s": 12,
+      "input": [
+        {
+          "type": "x",
+          "every_ms": 250,
+          "count": 30
+        },
+        {
+          "key": "Return",
+          "every_ms": 250,
+          "count": 4
+        }
+      ],
+      "correctness": true
+    },
+    {
+      "id": "xterm",
+      "name": "xterm running cat (X11 core drawing)",
+      "command": [
+        "xterm",
+        "-geometry",
+        "100x40",
+        "-e",
+        "cat"
+      ],
+      "window": "xterm",
+      "ready_s": 20,
+      "warmup_s": 2,
+      "measure_s": 20,
+      "input": [
+        {
+          "type": "x",
+          "every_ms": 250,
+          "count": 30
+        },
+        {
+          "key": "Return",
+          "every_ms": 250,
+          "count": 4
+        },
+        {
+          "key": "Return",
+          "every_ms": 100,
+          "count": 45
+        }
+      ],
+      "correctness": true
+    },
+    {
+      "id": "gtk3",
+      "name": "GTK 3 and cairo, Mousepad on a long file",
+      "command": [
+        "mousepad",
+        "--disable-server",
+        "{listing}"
+      ],
+      "window": "mousepad",
+      "ready_s": 30,
+      "warmup_s": 3,
+      "measure_s": 15,
+      "input": [
+        {
+          "scroll": [
+            0,
+            3
+          ],
+          "every_ms": 80,
+          "count": 80
+        },
+        {
+          "scroll": [
+            0,
+            -3
+          ],
+          "every_ms": 80,
+          "count": 40
+        }
+      ],
+      "correctness": true
+    },
+    {
+      "id": "idle-desktop",
+      "name": "Idle desktop: a terminal and an editor, nothing happening",
+      "command": [
+        "sh",
+        "-c",
+        "xterm -geometry 100x40 & mousepad --disable-server {listing} & wait"
+      ],
+      "requires": [
+        "xterm",
+        "mousepad"
+      ],
+      "window": "xterm|mousepad",
+      "ready_s": 30,
+      "warmup_s": 5,
+      "measure_s": 20
+    },
+    {
+      "id": "session-20",
+      "name": "20-window session, typing into one",
+      "command": [
+        "sh",
+        "-c",
+        "for i in $(seq 1 20); do xterm -geometry 80x24 -e cat & done; wait"
+      ],
+      "requires": [
+        "xterm"
+      ],
+      "window": "xterm",
+      "ready_s": 40,
+      "warmup_s": 5,
+      "measure_s": 20,
+      "input": [
+        {
+          "type": "x",
+          "every_ms": 250,
+          "count": 30
+        },
+        {
+          "key": "Return",
+          "every_ms": 250,
+          "count": 4
+        }
+      ]
     },
     {
       "id": "video",

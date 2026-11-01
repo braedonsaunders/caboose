@@ -133,9 +133,6 @@ impl<'a> Fields<'a> {
     pub fn opt_u32(&self, key: &'static str) -> Result<Option<u32>, ProtocolError> {
         self.opt(key, as_u32)
     }
-    pub fn i64(&self, key: &'static str) -> Result<i64, ProtocolError> {
-        self.req(key, as_i64)
-    }
     pub fn f64(&self, key: &'static str) -> Result<f64, ProtocolError> {
         self.req(key, as_f64)
     }
@@ -172,9 +169,6 @@ impl<'a> Fields<'a> {
     pub fn opt_rect(&self, key: &'static str) -> Result<Option<crate::Rect>, ProtocolError> {
         self.opt(key, as_rect)
     }
-    pub fn size(&self, key: &'static str) -> Result<crate::Size, ProtocolError> {
-        self.req(key, as_size)
-    }
     pub fn opt_size(&self, key: &'static str) -> Result<Option<crate::Size>, ProtocolError> {
         self.opt(key, as_size)
     }
@@ -189,12 +183,6 @@ pub(crate) fn as_u64(v: &Value) -> Option<u64> {
 pub(crate) fn as_u32(v: &Value) -> Option<u32> {
     match v {
         Value::Int(i) => u32::try_from(*i).ok(),
-        _ => None,
-    }
-}
-pub(crate) fn as_i64(v: &Value) -> Option<i64> {
-    match v {
-        Value::Int(i) => i64::try_from(*i).ok(),
         _ => None,
     }
 }
@@ -264,12 +252,6 @@ pub(crate) fn as_i32_pair(v: &Value) -> Option<[i32; 2]> {
 pub(crate) fn as_u32_pair(v: &Value) -> Option<[u32; 2]> {
     match as_array(v)? {
         [a, b] => Some([as_u32(a)?, as_u32(b)?]),
-        _ => None,
-    }
-}
-pub(crate) fn as_u32_quad(v: &Value) -> Option<[u32; 4]> {
-    match as_array(v)? {
-        [a, b, c, d] => Some([as_u32(a)?, as_u32(b)?, as_u32(c)?, as_u32(d)?]),
         _ => None,
     }
 }

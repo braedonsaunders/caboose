@@ -129,8 +129,8 @@ a turn (including the history an agent replays on `session/load`) are not writte
   environment from the runner's: `CABOOSE_AGENT_DISPLAY` (the runner's `DISPLAY`),
   `WAYLAND_DISPLAY`, `CABOOSE_DISPLAY_CONTROL`, `XAUTHORITY`, `XDG_RUNTIME_DIR`,
   `DBUS_SESSION_BUS_ADDRESS`, `GDK_BACKEND`, `QT_QPA_PLATFORM`, `MOZ_ENABLE_WAYLAND`,
-  `SDL_VIDEODRIVER`, `ELECTRON_OZONE_PLATFORM_HINT`, `GALLIUM_DRIVER`, `LIBVA_DRIVER_NAME`,
-  `GST_VA_ALL_DRIVERS` and `CABOOSE_VIDEO_SOCKET`. When `/opt/caboose/apps/apps-mcp.mjs`
+  `SDL_VIDEODRIVER`, `ELECTRON_OZONE_PLATFORM_HINT`, `GALLIUM_DRIVER`, `LIBVA_DRIVER_NAME`
+  and `GST_VA_ALL_DRIVERS`. When `/opt/caboose/apps/apps-mcp.mjs`
   exists (`CABOOSE_APPS_MCP` overrides the path), `caboose-apps` (see `guest/apps`) follows
   with the same environment, for making agent apps. The host also snapshots installed catalog MCP commands into
   `task.json` and the runner passes them, with `caboose-desktop`, to new, load and resume

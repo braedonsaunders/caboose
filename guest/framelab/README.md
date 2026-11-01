@@ -32,22 +32,28 @@ specific to one app beyond the app's arguments and its input script in
 | `glxgears` | glxgears (OpenGL, through Zink where the seat routes it) | none, animated | no |
 | `vkquake` | vkQuake, from its desktop entry (present on the GPU acceptance seat) | none, animated | no |
 | `terminal` | xfce4-terminal running `cat` (drawn on the CPU) | typed characters, echoed | yes |
+| `foot` | foot running `cat`: a Wayland terminal drawing into shared-memory buffers | typed characters, echoed | yes |
+| `xterm` | xterm running `cat`: X11 core drawing | typed characters, then a screen of new lines (a scroll) | yes |
+| `gtk3` | Mousepad on a 5000-line file (GTK 3, cairo) | wheel scrolling | yes |
+| `idle-desktop` | xterm and Mousepad open, nothing happening | none, idle | no |
+| `session-20` | twenty xterms running `cat` | typed characters into one | no |
 | `video` | mpv looping a generated 720p30 clip | none, animated | no |
 
-An app the computer lacks is reported as not installed. Each entry sets how long to wait
-for its window (`ready_s`), to let it settle (`warmup_s`) and to measure (`measure_s`).
+An app the computer lacks is reported as not installed; an entry whose command is a shell
+line names the programs it launches in `requires`. Each entry sets how long to wait for its
+window (`ready_s`), to let it settle (`warmup_s`) and to measure (`measure_s`).
 
 ## What a scorecard holds
 
-One JSON file per app (`<app>.json`), and `summary.md`, a table with one row per app.
+One JSON file per app (`<app>.json`), and `summary.md`, a table with one row per app (its `B/input` column is `wire`'s bytes per input).
 
 - **`path`**: where its frames were seen. `gpu` when the GPU broker forwarded its presents
-  to the phone, `video` when the compositor sent its pictures to the client, `none` when
-  nothing drew.
+  to the phone, `computer` when only the compositor saw its windows commit (no phone, or the
+  app drew with the computer's own driver), `none` when nothing drew.
 - **`pacing`**: frames per second and the gap between frames (p50, p95, max) over the
   measured span. On the GPU path these are the presents from the guest
   (`CABOOSE_GPU_PRESENT`), and also the rate and gaps of the phone's present results; on the
-  video path, the pictures sent with new content (not those that only sharpen it). When the broker has only its two-second
+  computer path, the window's commits. When the broker has only its two-second
   `CABOOSE_GPU_PRESENT_RATE` counters, the rate and the largest gap come from them.
 - **`input`**: for each injected input, the time to the first frame after it, to the
   phone's result for that frame (GPU path), and to the phone's glass when the phone reports
@@ -68,8 +74,13 @@ One JSON file per app (`<app>.json`), and `summary.md`, a table with one row per
   compositor's words (`CABOOSE_GPU_BROKER executor session ended: …`, `private GPU control
   failed at …`), with the second of the run each was logged.
 - **`resources`**: the CPU of the app's process tree in the computer (percent of one core,
-  mean and the largest half-second sample) and the bytes per second on its stream: the GPU
-  stream to the phone (`CABOOSE_GPU_STREAM`) or the encoded window pictures.
+  mean and the largest half-second sample) and the bytes per second of the GPU stream to the
+  phone (`CABOOSE_GPU_STREAM`).
+- **`wire`**: what crossed to the phone over the measured span, from the broker's
+  `CABOOSE_GPU_STREAM` counters: bytes to and from the phone per second, and bytes to the
+  phone per injected input. For an app with no input, such as `idle-desktop`, the bytes per
+  second are its idle cost; for a typing app, the bytes per input are the cost of one
+  echoed character. Absent when the broker reported no counters.
 - **`correctness`**: the app's picture after it settles, before any input, compared with
   the same scene drawn on the computer's CPU (the app run again without the phone's Vulkan
   driver: its driver-list entries and socket variables removed from the launch
@@ -95,7 +106,7 @@ One JSON file per app (`<app>.json`), and `summary.md`, a table with one row per
 All guest times are the computer's CLOCK_MONOTONIC.
 
 - The compositor's control socket: `windows`, `screenshot`, injected input, and `frames`,
-  its timeline of each window's commits and sent pictures and of input
+  its timeline of each window's commits and of input
   ([architecture.md § Displays](../../docs/architecture.md#displays)).
 - The GPU broker's present trace, switched on for the run by creating
   `$XDG_RUNTIME_DIR/caboose-gpu-present-trace` and read from the broker's stderr, which it
@@ -120,7 +131,7 @@ is kept as `<app>.display.log`, each line prefixed with its receive time.
 
 The phone's console can arrive many seconds late, in a steady delay the driver cannot see
 from arrival times alone. Lines that carry the phone's own clock (`uptimeSeconds` in the
-memory audit, `caboose-scroll: rtt sent=`) give the delay's variation, reported at the end
+memory audit) give the delay's variation, reported at the end
 of `summary.md`, and `caboose-framelab: present` times are placed by that clock. Lines
 without one, such as `CABOOSE_GPU_DECODE_TIMING`, are placed by arrival, so a steady console
 delay shifts them; compare phone events with each other by their own clock first.

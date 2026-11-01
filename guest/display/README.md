@@ -14,9 +14,6 @@ This directory is a Cargo workspace:
 | `probe/` | `caboose-display-probe`: a headless client that decodes every window and reports fps, latency and server CPU; also the readiness check |
 | `vectors/` | Golden vectors every client replays (see [vectors/README.md](vectors/README.md)) |
 | `scripts/check.py` | Scripted checks against real applications |
-| `scripts/profile.py` | Server CPU per update for Chromium at phone and TV sizes |
-| `scripts/atlas-cpu-windows.py` | CPU-drawn windows (LibreOffice, GTK 3, xterm) scrolled on a phone stay lossless atlas, never video |
-| `scripts/wsl-check.sh` | Chromium video at 1080p and 4K on a WSL2 GPU host, with libx264 and NVENC |
 | `systemd/`, `install.sh`, `caboose-display-ready` | Running it in a guest |
 | `Dockerfile`, `scripts/dev.sh` | The build and test environment |
 
@@ -212,26 +209,18 @@ probe. Every check asserts on what arrived, not on a picture:
 | `wayland-terminal` | text typed from the client reaches weston-terminal exactly (key fallback) |
 | `x11-terminal` | the same through Xwayland into xterm |
 | `taskbar` | an X11 window a shell started, with a class no desktop entry has and a `_NET_WM_PID` from another namespace, reports the X server's PID for its process and its `_NET_WM_ICON`, and its icon change follows as an update (`scripts/x11-icon-window.py`) |
-| `shm-animation` | an animating client is paced on vsync at ≥ 55 fps |
-| `hevc` | a client that decodes only HEVC gets x265 |
-| `two-windows` | two applications stream as two windows |
-| `chromium` | Chromium as a native Wayland client animates at ≥ 55 fps |
+| `two-windows` | two applications are announced as two windows |
 | `chromium-text-input` | touch reaches the page; text-input-v3 is enabled and its commit arrives exactly |
 | `chromium-touch-fling` | a timed native finger swipe scrolls a real Chromium page, then continues after release without client-generated wheel events |
-| `reconnect` | window ids survive a reconnect and each window restarts with a keyframe |
-| `reconnect-idle` | a window streamed in place from its shm buffer that draws nothing between two clients gives the second client the same picture |
-| `encoder-eviction` | a quiet Chromium window changes after encoder eviction; its new keyframe decodes on the same connection |
+| `reconnect` | window ids survive a reconnect |
 | `replace` | a second client takes over; the first gets `bye(replaced)` |
-| `storm` | 48 broken connections while a window animates (closed at once, left silent, handshakes cut short, a wrong token, clients killed mid-stream): the next client streams normally, and the server's threads and memory are back where they were |
-| `takeover` | six clients take the display from each other in turn: each starts with a keyframe, each one replaced gets `bye(replaced)` |
-| `resize-streaming` | Chromium animates while the client resizes its window ten times: every size starts with a keyframe, nothing fails to decode, the last size sticks |
-| `app-crash` | two of three applications (one an X11 app) are killed mid-stream: their windows go, the survivor keeps streaming, the next client gets it |
+| `storm` | 48 broken connections while a window animates (closed at once, left silent, handshakes cut short, a wrong token, clients killed mid-session): the next client is served as usual, and the server's threads and memory are back where they were |
+| `takeover` | six clients take the display from each other in turn: each is told of the window, each one replaced gets `bye(replaced)` |
+| `app-crash` | two of three applications (one an X11 app) are killed: their windows go, the survivor stays, the next client gets it |
 | `stalled-client` | a client stops reading while sound plays: memory does not grow, the server closes it after `--client-timeout`, the next client is served |
-| `popup` | a `<select>` list is its own popup window with the page as parent |
+| `popup` | a `<select>` list is its own popup window with the page as parent, with alpha over an opaque toplevel |
 | `text-input-on-connect` | a client that connects after a field was focused is still told text input is enabled |
 | `autocorrect` | `text` with `delete_before` (autocorrect, the delete key) edits a Chromium field exactly, one grapheme cluster per deletion |
-| `direct-matches-compose` | a window streamed straight from its shm buffer is the picture composition makes, byte for byte |
-| `passthrough` | `video-admission.py` opens all four driver codecs before/during an advertising probe session and requires local-decode mode; no owner windows or media |
 | `clipboard-wayland` | the phone's text pastes into Chromium (Ctrl+V), and Chromium's copy (Ctrl+A, Ctrl+C) reaches the phone |
 | `clipboard-x11` | an X11 copy (xclip) reaches the phone on connect, and the phone's copy reaches X11 |
 | `clipboard-bridge` | on the computer, a Wayland copy (wl-copy) pastes into X11 and an X11 copy into Wayland |
@@ -242,8 +231,6 @@ probe. Every check asserts on what arrived, not on a picture:
 | `drag-out` | a pointer drag of a Chromium page's draggable text that the phone takes: the phone is told of it, receives the text, and the release drops nothing on the page |
 | `clipboard-files` | a file manager's copy (`x-special/gnome-copied-files`) reaches the phone as a `text/uri-list`; a file the phone uploaded to the transfer area pastes as both lists, and a file outside it is refused |
 | `audio` | a tone played into the session's default output reaches the probe as stereo Opus it decodes, at the tone's level, and the silence before it is not sent |
-| `refine` | a quiet terminal gets its keyframe, one sharpening picture 300 ms later and then nothing; against a near-lossless reference the sharpened picture is at least 3 dB closer; a blinking caret costs at most 4 extra pictures in 6 s, not one per blink |
-| `tiles` | 31 characters typed into Chromium at 1179×2556 go as tiles: every tile decodes, at most a third of the pictures of a run without tiles, the server spends at most 60% of the CPU, and the final picture (frame plus tiles, as the client paints it) matches the one without tiles (≥ 40 dB); a 250×250 animation at 60 Hz stays video |
 | `idle` | an idle window with a client ticking vsync costs under 2% of a core |
 
 `scripts/check-devices.py` checks the phone's devices ([docs/devices.md](../../docs/devices.md))
@@ -268,30 +255,6 @@ sudo python3 check-devices.py --only microphone   # a container computer
 | `microphone` | `parec` recording from the phone's source opens it and records the 1 kHz Opus tone sent to it |
 | `disconnect` | closing the connection removes the gamepad and the battery |
 
-`scripts/profile.py` measures the server CPU per update for Chromium at the display sizes
-the app uses. It connects with a phone's display (1179×2556 at 3×) or a TV's
-(3840×2160 at 2×) and maximises the window, as the app does. It then types, scrolls an
-article, or leaves a caret blinking, and prints the server's CPU per picture and its
-split by thread:
-
-    guest/display/scripts/dev.sh python3 scripts/profile.py [phone|tv] [type|scroll|caret] [-- FLAGS]
-
-`scripts/atlas-cpu-windows.py` connects as the phone does (1179×2556 at 3×, Surface Atlas)
-to LibreOffice Writer, a GTK 3 text view, Chromium on X11 and xterm, on Wayland and on X11,
-and scrolls each as a trackpad does for five seconds. Then it asks for a keyframe and fails
-if the picture the probe rebuilt from every batch differs from it in any pixel; it prints
-the picture size, rate, bandwidth, latency and server CPU. LibreOffice needs
-`libreoffice-writer libreoffice-gtk3` in the container:
-
-    guest/display/scripts/dev.sh python3 scripts/atlas-cpu-windows.py [writer|gtk3|xterm|x11|wayland]
-
-`scripts/atlas-scroll-exact.py` does the same for a store page (pages/store.html: a
-sidebar, a sticky header over a scrolled pane, photograph-like artwork) in Chromium on X11
-at scale 2, as Steam's client draws, and prints the latency from a scroll input to the
-first picture committed after it and the bytes per second the server sent:
-
-    guest/display/scripts/dev.sh python3 scripts/atlas-scroll-exact.py [--rounds N]
-
 `scripts/check-finger-scroll.py` checks finger scrolling through Xwayland
 ([docs/input.md](../../docs/input.md)). It runs Chromium on X11 at scale 2 (a
 1338×1902 display) with pages/finger-scroll.html and pans twice, ten precise scrolls of
@@ -302,14 +265,6 @@ needs the computer's Xwayland ([guest/xwayland](../xwayland/README.md)); `--step
 `--samples` change the pan:
 
     guest/display/scripts/dev.sh python3 scripts/check-finger-scroll.py [--step PX] [--samples N]
-
-`scripts/wsl-check.sh` runs on a WSL2 host with an NVIDIA GPU (`/dev/dxg`): in a
-disposable container it plays a 60 fps test video full-window in Chromium at 1080p and
-4K, streamed with libx264 and with NVENC, and prints the probe's report and the server's
-CPU summary. The encoder alone is benchmarked by
-`cargo test -p caboose-display bench_text -- --ignored --nocapture`. Recorded results,
-with the hardware they were measured on, are in
-[docs/display.md, "Measurements"](../../docs/display.md#measurements).
 
 Two scripted checks outside this directory exercise both instances together:
 `guest/desktop-mcp/check-a11y.sh` runs the owner's display and the agent seat in Docker
@@ -610,31 +565,6 @@ The pure `DesktopGeometryTests`/`FullscreenGeometryTests` and iOS hosted
 `DesktopSurfaceLayoutTests` check ordinary top fitting, fullscreen centering during
 rotation/settling, and consistent input, popup and text-drop geometry. These are
 presentation checks; they do not establish a scroll-delivery fix.
-
-### Internal marker regression
-
-The production `passthrough` check verifies local-decode admission. The historical
-marker binding/forwarding check is retained separately in
-`scripts/check-marker-binding.py`. It is explicitly opt-in and requires
-`CABOOSE_DISPLAY_BIN` pointing to compositor and probe binaries built together from
-pinned legacy source `7f3b94796bcc1e691ac39a5754048fe26ddd158f`. Record both binary
-SHA-256 hashes with the run and use a disposable fixture environment; this is not a
-production launch recipe:
-
-```sh
-CABOOSE_DISPLAY_BIN=/path/to/isolated/test-binaries python3 scripts/check-marker-binding.py --legacy-marker-binding
-```
-
-It intentionally fails against the current production admission policy; it adds no
-runtime override to the compositor. Source tests in `video::marker` and `video::tests`
-cover marker detection, geometry, internal binding fields, decode order and the
-reconnect presentation fence without accepting a production passthrough stream.
-
-`.github/workflows/check-video.yml` builds the declared display test image, tests video
-internals, builds compositor/probe from the checked source, then runs admission with
-those exact binaries. Its separate VAAPI job builds `guest/vaapi/Dockerfile`, which
-includes FFmpeg and Xvfb, and runs state tests plus four selected codec roundtrips.
-These hosted software checks do not establish native phone decode or overlay correctness.
 
 Device checks accept `--token-file` and `--display-env` for isolated test instances,
 and `--expect-no-devices` verifies the agent seat omits capability and ignores offers.

@@ -145,6 +145,9 @@ impl State {
             return;
         }
         let mut command = Command::new("python3");
+        for key in crate::render::OWN_ENV {
+            command.env_remove(key);
+        }
         command
             .arg(PROVIDER)
             .arg("serve")

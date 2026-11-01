@@ -209,7 +209,7 @@ impl XwmHandler for State {
         if let Some(id) = self.windows.by_x11(&window) {
             let now = self.now_us();
             if let Some(w) = self.windows.get_mut(id) {
-                w.stream.mark_dirty(now);
+                w.picture.mark_dirty(now);
             }
         }
     }

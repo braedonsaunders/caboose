@@ -5,8 +5,8 @@
  * show_existing_frame, which never reaches a VA driver, and a hidden frame may
  * also never be shown. So a hidden frame is sent as a superframe with a one-byte
  * show_existing_frame of a slot it was stored in appended, flagged
- * CB_FRAME_HIDDEN: the client decodes and keeps the picture, and presents it
- * only if the app shows it (the marker carries its sequence number). */
+ * CB_FRAME_HIDDEN: the phone decodes and keeps the picture, and presents it
+ * only if the app shows it (its surface's identity names the picture). */
 #include "cbva.h"
 
 #include <va/va_dec_vp9.h>

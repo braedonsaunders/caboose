@@ -19,7 +19,7 @@ if [ -e /dev/udmabuf ]; then set -- --device /dev/udmabuf --group-add "$(stat -c
 if [ "${CABOOSE_VAAPI_DRI:-0}" = 1 ] && [ -d /dev/dri ]; then
   for node in /dev/dri/renderD*; do set -- --device "$node" --group-add "$(stat -c %g "$node")" "$@"; done
 fi
-for var in CBVA_BUILD CBVA_WORK CBVA_SANDBOX; do
+for var in CBVA_BUILD CBVA_WORK CBVA_CASES; do
   if eval "[ -n \"\${$var:-}\" ]"; then set -- -e "$var" "$@"; fi
 done
 if [ -t 0 ] && [ -t 1 ]; then set -- -t "$@"; fi

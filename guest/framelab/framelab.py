@@ -88,8 +88,8 @@ def parse_line(line, received_ns=None):
 
 def phone_uptime(line):
     """The phone's own clock in a console line, in nanoseconds, where it has one: the
-    memory audit's uptimeSeconds or a scroll rtt line's send time."""
-    found = re.search(r'"uptimeSeconds":([0-9.]+)', line) or re.search(r'caboose-scroll: rtt sent=([0-9.]+)', line)
+    memory audit's uptimeSeconds."""
+    found = re.search(r'"uptimeSeconds":([0-9.]+)', line)
     return int(float(found.group(1)) * 1e9) if found else None
 
 
@@ -248,6 +248,21 @@ def input_latency(inputs, frames, results=(), glass=()):
     return {'inputs': len(rows), 'unanswered': sum(1 for row in rows if row[0] is None), 'to_frame_ms': summary(0), 'to_phone_result_ms': summary(1), 'to_glass_ms': summary(2)}
 
 
+def wire(streams, measured, inputs):
+    """What crossed to the phone over the measured span, from the broker's
+    CABOOSE_GPU_STREAM counters: bytes per second, and per input for an app driven by
+    input (an idle app's per-second figure is its idle cost). None without counters."""
+    inside = [r for r in streams if measured[0] <= r['t'] <= measured[1]]
+    elapsed = sum(r['elapsed_ms'] for r in inside) / 1000
+    if not inside or not elapsed:
+        return None
+    to_phone = sum(r['to_phone_bytes'] for r in inside)
+    from_phone = sum(r['from_phone_bytes'] for r in inside)
+    return {'to_phone_bytes': to_phone, 'seconds': round(elapsed, 1),
+            'to_phone_per_s': int(to_phone / elapsed), 'from_phone_per_s': int(from_phone / elapsed),
+            'inputs': len(inputs), 'to_phone_per_input': int(to_phone / len(inputs)) if inputs else None}
+
+
 def scorecard(app, run, phone_records=(), offset=None):
     """One app's scorecard from its run record (what framelab-guest.py measured) and the
     phone's records over the same time (driver clock, moved by `offset`)."""
@@ -256,7 +271,6 @@ def scorecard(app, run, phone_records=(), offset=None):
     records = [r for r in run.get('records', []) if r.get('t') is not None and span[0] <= r['t'] <= span[1]]
     presents = [r['t'] for r in records if r['kind'] == 'gpu_present' and r['event'] == 'present']
     results = [r['t'] for r in records if r['kind'] == 'gpu_present' and r['event'] == 'result']
-    sent = [s for w in run.get('windows', {}).values() for s in w.get('sent', [])]
     commits = [t for w in run.get('windows', {}).values() for t in w.get('commits', [])]
     rates = [r for r in records if r['kind'] == 'present_rate']
     phone = []
@@ -271,9 +285,10 @@ def scorecard(app, run, phone_records=(), offset=None):
     # only when the per-present trace is off.
     traced = any(r['kind'] in ('gpu_present', 'gpu_stream') for r in records)
     rated = not traced and any(r['presented'] for r in rates)
-    path = 'gpu' if presents or rated else 'video' if sent or commits else 'none'
-    # A sharpened picture of content already sent is not a frame (its bytes still count).
-    frames = presents if path == 'gpu' else [s[0] for s in sent if not (len(s) > 3 and s[3])]
+    # Without GPU presents, the window's commits on the computer are its frames: the app
+    # drew, and nothing of it reached the phone's GPU (no phone, or a computer driver).
+    path = 'gpu' if presents or rated else 'computer' if commits else 'none'
+    frames = presents if path == 'gpu' else commits
     card = {
         'app': app['id'],
         'name': app.get('name', app['id']),
@@ -292,7 +307,7 @@ def scorecard(app, run, phone_records=(), offset=None):
                 'gap_ms': {'p50': None, 'p95': None, 'max': max((r['gap_max_ms'] for r in window), default=None)},
                 'source': 'CABOOSE_GPU_PRESENT_RATE'}
     else:
-        pace['source'] = {'gpu': 'CABOOSE_GPU_PRESENT', 'video': 'compositor frames', 'none': None}[path]
+        pace['source'] = {'gpu': 'CABOOSE_GPU_PRESENT', 'computer': 'compositor commits', 'none': None}[path]
     if path == 'gpu' and results:
         pace['phone_results_per_s'] = pacing(results, measured)['per_s']
         pace['phone_result_gap_ms'] = pacing(results, measured)['gap_ms']
@@ -318,15 +333,9 @@ def scorecard(app, run, phone_records=(), offset=None):
     else:
         card['input'] = None
 
-    streams = [r for r in records if r['kind'] == 'gpu_stream' and measured[0] <= r['t'] <= measured[1]]
-    seconds = (measured[1] - measured[0]) / 1e9
-    if path == 'gpu' and streams:
-        elapsed = sum(r['elapsed_ms'] for r in streams) / 1000
-        to_phone = sum(r['to_phone_bytes'] for r in streams) / elapsed if elapsed else None
-    elif path == 'video':
-        to_phone = sum(s[2] for s in sent if measured[0] <= s[0] <= measured[1]) / seconds if seconds else None
-    else:
-        to_phone = None
+    streams = [r for r in records if r['kind'] == 'gpu_stream']
+    card['wire'] = wire(streams, measured, inputs)
+    to_phone = card['wire']['to_phone_per_s'] if card['wire'] else None
     usage = cpu_between(cpu, *measured)
     peak = None
     for a, b in zip(cpu, cpu[1:]):
@@ -334,8 +343,7 @@ def scorecard(app, run, phone_records=(), offset=None):
             pct = 100 * (b[1] - a[1]) / ((b[0] - a[0]) / 1e9)
             peak = pct if peak is None else max(peak, pct)
     card['resources'] = {'guest_cpu_pct': _r(usage), 'guest_cpu_pct_max': _r(peak),
-                         'stream_bytes_per_s': None if to_phone is None else int(to_phone),
-                         'stream': {'gpu': 'GPU stream to the phone', 'video': 'window pictures to the client'}.get(path)}
+                         'stream_bytes_per_s': to_phone, 'stream': 'GPU stream to the phone' if to_phone is not None else None}
     card['correctness'] = run.get('correctness')
     # The GPU session's own account of ending, from the broker and the compositor.
     card['session_events'] = [{'at_s': round((r['t'] - span[0]) / 1e9, 1), 'event': r['event']}
@@ -526,7 +534,7 @@ def _fmt(value, suffix=''):
 def summary_table(cards):
     """A Markdown table with one row per scorecard."""
     head = ['app', 'path', 'ok', 'fps', 'gap p50', 'gap p95', 'gap max', 'stalls', 'causes', 'input p50/p95',
-            'cpu %', 'stream kB/s', 'picture']
+            'cpu %', 'stream kB/s', 'B/input', 'picture']
     rows = [head, ['---'] * len(head)]
     for c in cards:
         p, inp, res, cor = c.get('pacing') or {}, c.get('input'), c.get('resources') or {}, c.get('correctness')
@@ -538,6 +546,7 @@ def summary_table(cards):
                 which = 'glass' if inp.get('to_glass_ms') else 'result' if inp.get('to_phone_result_ms') else 'frame'
                 latency = f"{_fmt(best['p50'])}/{_fmt(best['p95'])} ms ({which})"
         stream = res.get('stream_bytes_per_s')
+        per_input = (c.get('wire') or {}).get('to_phone_per_input')
         if cor is None:
             picture = '-'
         elif cor.get('skipped'):
@@ -548,5 +557,6 @@ def summary_table(cards):
         rows.append([c['app'], c['path'], 'yes' if c.get('ok') else 'NO', _fmt(p.get('per_s')), _fmt(gap.get('p50')),
                      _fmt(gap.get('p95')), _fmt(gap.get('max')), str(c['stalls']['count']),
                      ' '.join(f'{k}:{v}' for k, v in sorted(c['stalls']['by_cause'].items())) or '-',
-                     latency, _fmt(res.get('guest_cpu_pct')), _fmt(None if stream is None else stream / 1000), picture])
+                     latency, _fmt(res.get('guest_cpu_pct')), _fmt(None if stream is None else stream / 1000),
+                     _fmt(per_input), picture])
     return '\n'.join('| ' + ' | '.join(r) + ' |' for r in rows) + '\n'

@@ -1,8 +1,0 @@
-{
-  "name": "draw-present",
-  "description": "Window 7 now shows surface 1 of draw stream 3.",
-  "messages": [
-    {"direction": "server", "type": "draw.present", "type_id": 43, "fields": {"id": 7, "pts_us": 1234567890, "stream": 3, "surface": 1}}
-  ],
-  "hex": "2b22000000a462696407667074735f75731a499602d26673747265616d03677375726661636501"
-}

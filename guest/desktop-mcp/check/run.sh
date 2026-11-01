@@ -120,7 +120,6 @@ done
 display() {  # display NAME BUS ARGS...
   local name=$1 bus=$2; shift 2
   as_user XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/1000/$bus" \
-    CABOOSE_VIDEO_SOCKET="/run/user/1000/caboose-video-$name.sock" \
     /usr/local/bin/caboose-display --no-auth --no-audio --env-file "$logs/$name.env" "$@" >"$logs/$name.log" 2>&1 &
 }
 display owner owner-bus --listen 127.0.0.1:14600

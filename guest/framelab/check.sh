@@ -19,7 +19,7 @@
 # presents do not reach the scorecard. Apps the image lacks are reported and skipped.
 #
 # The image needs chromium, firefox-esr, gtk-4-examples, qml-qt6, code, vulkan-tools,
-# mesa-utils, xfce4-terminal, mpv and ffmpeg. CABOOSE_CHECK_CPUS and CABOOSE_CHECK_MEMORY
+# mesa-utils, xfce4-terminal, foot, xterm, mousepad, mpv and ffmpeg. CABOOSE_CHECK_CPUS and CABOOSE_CHECK_MEMORY
 # (default 4 and 6g) bound the container.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)

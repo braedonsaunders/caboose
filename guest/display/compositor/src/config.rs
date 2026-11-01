@@ -1,11 +1,10 @@
 //! Command line.
 
-use crate::encode::{Choice, Settings};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
 pub const USAGE: &str = "\
-caboose-display: Caboose's headless Wayland compositor and per-window stream server
+caboose-display: Caboose's headless Wayland compositor, which renders each window on the phone's GPU
 
 USAGE:
     caboose-display [OPTIONS] [-- COMMAND [ARGS...]]
@@ -23,28 +22,11 @@ OPTIONS:
     --private-gpu-stream-socket PATH   private live GPU stream socket (owner only)
     --private-gpu-surface-socket PATH  private live GPU surface socket (owner only)
     --private-gpu-indexed  select the private indexed v4 transport
-    --gpu-spool-limit BYTES  the most of one GPU stream kept on disk; a stream that outgrows
-                           it ends [default: 2147483648]
     --audio-bitrate BPS    Opus bitrate [default: 128000]
     --env-file PATH        write WAYLAND_DISPLAY/DISPLAY for launchers here once ready
-    --renderer KIND        pixman [default: pixman]
-    --always-compose       compose every window, never copy a shm buffer directly (for
-                           comparisons)
     --client-timeout SECS  close a client that has sent nothing for this long; 0 = never
                            [default: 30]
-    --encoder KIND         auto | software | nvenc [default: auto]
-    --crf N                encoder quality, lower is better [default: 23]
-    --preset NAME          x264 preset [default: ultrafast]
-    --refine-qp N          code areas that went quiet once more at this QP, so text
-                           sharpens (H.264 software); 0 turns it off [default: 12]
-    --refine-after MS      how long an area must be quiet first [default: 300]
-    --tile-max-px N        send changes of at most N pixels as lossless PNG tiles instead
-                           of a picture (software encoders); 0 turns tiles off
-                           [default: 65536]
-    --encoder-threads N    threads per software encoder; 0 = 1 up to 2560x1600, 2 above
-                           [default: 0]
     --display WxH@HZxS     the display used before a client connects [default: 1920x1080@60x1]
-    --list-encoders        print the usable encoders and exit
     --host-pads            on a container computer's host: make the gamepads its owner
                            display asks for over standard input (docs/devices.md)
     --pad-link             in a container computer: join the owner display's gamepad
@@ -54,12 +36,6 @@ OPTIONS:
 A COMMAND after `--` is started once the compositor is ready, with WAYLAND_DISPLAY and
 DISPLAY set, and the compositor exits when it does.
 ";
-
-/// The renderer that composes each window's surface tree: Pixman, on the CPU.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RendererChoice {
-    Pixman,
-}
 
 #[derive(Debug, Clone)]
 pub struct DisplaySpec {
@@ -99,17 +75,10 @@ pub struct Config {
     pub games: bool,
     /// Make the phone's hardware the computer's devices (docs/devices.md).
     pub devices: bool,
-    /// The most of one GPU stream kept in its spool (docs/gpu-stream.md).
-    pub gpu_spool_limit: u64,
     pub env_file: Option<PathBuf>,
-    pub renderer: RendererChoice,
-    pub always_compose: bool,
     /// Close a client that has sent nothing for this long.
     pub client_timeout: Option<std::time::Duration>,
-    pub encoder: Choice,
-    pub settings: Settings,
     pub display: DisplaySpec,
-    pub list_encoders: bool,
     pub command: Vec<String>,
 }
 
@@ -127,15 +96,9 @@ impl Default for Config {
             audio_bitrate: 128_000,
             games: true,
             devices: true,
-            gpu_spool_limit: 2 << 30,
             env_file: None,
-            renderer: RendererChoice::Pixman,
-            always_compose: false,
             client_timeout: Some(std::time::Duration::from_secs(30)),
-            encoder: Choice::Auto,
-            settings: Settings::default(),
             display: DisplaySpec { width: 1920, height: 1080, refresh_hz: 60.0, scale: 1.0 },
-            list_encoders: false,
             command: Vec::new(),
         }
     }
@@ -190,40 +153,17 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Parsed, String> {
             "--no-audio" => config.audio = false,
             "--no-games" => config.games = false,
             "--no-devices" => config.devices = false,
-            "--gpu-spool-limit" => config.gpu_spool_limit = number(value(&mut args, &arg)?, &arg)?,
             "--audio-bitrate" => config.audio_bitrate = number(value(&mut args, &arg)?, &arg)?,
             "--env-file" => config.env_file = Some(value(&mut args, &arg)?.into()),
-            "--renderer" => {
-                config.renderer = match value(&mut args, &arg)?.as_str() {
-                    "pixman" => RendererChoice::Pixman,
-                    other => return Err(format!("--renderer: unknown {other}")),
-                }
-            }
-            "--encoder" => {
-                config.encoder = match value(&mut args, &arg)?.as_str() {
-                    "auto" => Choice::Auto,
-                    "software" => Choice::Software,
-                    "nvenc" => Choice::Nvenc,
-                    other => return Err(format!("--encoder: unknown {other}")),
-                }
-            }
-            "--crf" => config.settings.crf = number(value(&mut args, &arg)?, &arg)?,
-            "--preset" => config.settings.preset = value(&mut args, &arg)?,
-            "--refine-qp" => config.settings.refine_qp = number(value(&mut args, &arg)?, &arg)?,
-            "--refine-after" => config.settings.refine_after_ms = number(value(&mut args, &arg)?, &arg)?,
-            "--tile-max-px" => config.settings.tile_max_px = number(value(&mut args, &arg)?, &arg)?,
-            "--encoder-threads" => config.settings.threads = number(value(&mut args, &arg)?, &arg)?,
             "--display" => {
                 let v = value(&mut args, &arg)?;
                 config.display =
                     DisplaySpec::parse(&v).ok_or_else(|| format!("--display: expected WxH@HZxSCALE, got {v}"))?;
             }
-            "--always-compose" => config.always_compose = true,
             "--client-timeout" => {
                 let secs: u64 = number(value(&mut args, &arg)?, &arg)?;
                 config.client_timeout = (secs > 0).then(|| std::time::Duration::from_secs(secs));
             }
-            "--list-encoders" => config.list_encoders = true,
             "-h" | "--help" => return Ok(Parsed::Help),
             "--host-pads" => return Ok(Parsed::HostPads),
             "--pad-link" => return Ok(Parsed::PadLink),
@@ -308,8 +248,6 @@ mod tests {
         assert!(!run(&["--no-games"]).games);
         assert!(owner.devices);
         assert!(!run(&["--no-devices"]).devices);
-        assert_eq!(owner.gpu_spool_limit, 2 << 30);
-        assert_eq!(run(&["--gpu-spool-limit", "1048576"]).gpu_spool_limit, 1 << 20);
     }
 
     #[test]
@@ -321,15 +259,11 @@ mod tests {
     }
 
     #[test]
-    fn refinement_is_on_by_default_and_tunable() {
-        let c = run(&[]);
-        assert_eq!((c.settings.refine_qp, c.settings.refine_after_ms), (12, 300));
-        let c = run(&["--refine-qp", "0", "--refine-after", "1000"]);
-        assert_eq!((c.settings.refine_qp, c.settings.refine_after_ms), (0, 1000));
-    }
-
-    #[test]
     fn rejects_unknown_flags() {
         assert!(parse(["--nope".to_string()]).is_err());
+        // The picture streaming options are gone with the pipeline they tuned.
+        for gone in ["--renderer", "--encoder", "--crf", "--tile-max-px", "--always-compose", "--list-encoders"] {
+            assert!(parse([gone.to_string(), "1".to_string()]).is_err(), "{gone}");
+        }
     }
 }
