@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process'
 import type { Docker } from './container-driver.js'
-import { CABOOSE_PORTS } from './network-activity.js'
+import { CABOOSE_PORTS, type NetworkServer } from './network-activity.js'
 
 /**
  * Each container computer as its own device on the owner's tailnet (docs/network.md). A
@@ -68,7 +68,11 @@ export interface TailnetStatus {
 }
 
 /** Where other machines reach a computer (docs/network.md). */
-export interface ComputerNetwork { tailnet?: TailnetStatus }
+export interface ComputerNetwork {
+  tailnet?: TailnetStatus
+  /** The servers another machine can reach on it, while it has an address of its own. */
+  servers?: NetworkServer[]
+}
 
 const IPV4 = /^100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}$/
 const IPV6 = /^fd7a:115c:a1e0:[0-9a-f:]+$/i

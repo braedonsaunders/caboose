@@ -147,3 +147,38 @@ it('reports asynchronous component updates without blocking the display', async 
   expect(events.some(e => e.type === 'computer.upgrade' && e.upgrade.state === 'failed')).toBe(true)
   expect((await (await request('/v1/computer')).json()).state).toBe('running')
 })
+
+it('shows the computer’s own address and reachable servers, tells caboose-ports, follows a rename, and stays awake for a server', async () => {
+  const tailnet = { state: 'running' as const, name: 'caboose.tailnet.ts.net', addresses: ['100.64.1.2'] }
+  const commands: string[][] = []
+  let listening = true
+  const tables = () => `@@ /proc/sys/net/ipv4/ip_local_port_range\n32768 60999\n@@ /proc/net/tcp\n  sl local rem st\n${listening ? '   0: 00000000:1538 00000000:0000 0A 0 0 0 0 0 0 0 1\n' : ''}@@ /proc/net/tcp6\n@@ /proc/net/udp\n@@ /proc/net/udp6\n`
+  let network!: () => void
+  const guest = { run: vi.fn(async (command: string, args: string[]) => { commands.push([command, ...args]); return args[1]?.includes('/proc/net/tcp') ? tables() : '' }) }
+  let running = false
+  const { request, app, controller } = await fixture(controller => {
+    controller.network = () => ({ tailnet })
+    controller.onNetworkChange = listener => { network = listener }
+    controller.renameNetwork = vi.fn(async () => {})
+    const wake = controller.wake
+    controller.wake = async mode => { running = true; return wake(mode) }
+    controller.park = vi.fn(async () => { running = false })
+    controller.guest = () => running ? guest : undefined
+  })
+  await request('/v1/session', 'POST')
+  network()
+  await vi.waitFor(() => expect(commands.some(args => args.at(-1) === '{"forward":true}')).toBe(true))
+  await request('/v1/computer')
+  await vi.waitFor(async () => expect((await (await request('/v1/computer')).json()).network)
+    .toEqual({ tailnet, servers: [{ protocol: 'tcp', address: '0.0.0.0', port: 5432 }] }))
+  await request('/v1/computer/settings', 'PATCH', { forwardLoopback: false })
+  await vi.waitFor(() => expect(commands.some(args => args.at(-1) === '{"forward":false}')).toBe(true))
+  await request('/v1/computer/settings', 'PATCH', { name: 'Dev Box' })
+  expect(controller.renameNetwork).toHaveBeenCalledOnce()
+  // Postgres listening on the computer's own address keeps it awake past its idle timeout.
+  app.computer.setIdleMs(100)
+  await new Promise(resolve => setTimeout(resolve, 400))
+  expect(app.computer.state).toBe('running')
+  listening = false
+  await vi.waitFor(() => expect(app.computer.state).toBe('parked'))
+})

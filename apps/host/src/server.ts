@@ -46,7 +46,7 @@ import { AgentRegistry } from './registry.js'
 import { PhoneHandoff, readPhoneFile } from './phone.js'
 import { SettingsInputError, settingsLimits, updateSettings, type ComputerSettings, type SettingsStore } from './settings.js'
 import { MAX_SLOTS } from './network.js'
-import { networkBusy, readNetworkActivity } from './network-activity.js'
+import { networkBusy, readNetworkActivity, type NetworkServer } from './network-activity.js'
 import type { ComputerNetwork } from './tailnet.js'
 import { ComputerCapacityError, OWNER_COMPUTER, PairingCodes, PairingRateLimitError, personName, phoneName, type ComputerAssignment, type ComputerRecord, type ComputerRegistry, type PhoneTokens } from './computers.js'
 import { toNodeHandler } from 'better-auth/node'
@@ -341,9 +341,26 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
   /** Whether another machine can reach the computer at an address of its own. */
   function reachable(): boolean { return controller.network?.().tailnet?.state === 'running' }
   // A server another machine can reach, or an outside connection, keeps the computer awake (docs/network.md).
+  /** The servers another machine can reach, as last read; shown with the computer's address. */
+  let servers: { list: NetworkServer[]; readAt: number } = { list: [], readAt: 0 }
+  async function readServers(guest: AgentGuest) {
+    const activity = await readNetworkActivity(guest)
+    const changed = JSON.stringify(activity.servers) !== JSON.stringify(servers.list)
+    servers = { list: activity.servers, readAt: Date.now() }
+    if (changed) broadcastSettings()
+    return activity
+  }
+  /** Reads them again for someone looking, at most every 5 s and never waking the computer. */
+  function refreshServers(): void {
+    const guest = controller.guest()
+    if (!guest || computer.state !== 'running' || !reachable() || Date.now() - servers.readAt < 5000) return
+    servers.readAt = Date.now()
+    void readServers(guest).catch(() => {})
+  }
+  computer.subscribe(state => { if (state !== 'running' && servers.list.length) servers = { list: [], readAt: 0 } })
   computer.setBusyCheck(async () => {
     const guest = controller.guest()
-    return guest ? networkBusy(await readNetworkActivity(guest), reachable()) : false
+    return guest ? networkBusy(await readServers(guest), reachable()) : false
   })
   /** What caboose-ports (guest/ports) was last told, so it is told again only on a change. */
   let forwarding: boolean | undefined
@@ -429,7 +446,7 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
       routines: { error: routineError },
       agentTools: { error: toolsError },
       lastError: computer.lastError ?? controller.lastError?.() ?? null,
-      network: controller.network?.() ?? {},
+      network: { ...controller.network?.(), ...(reachable() ? { servers: servers.list } : {}) },
     }
   }
   /**
@@ -703,7 +720,7 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
       await push.devices.remove((await readJson(request)).token)
       return json(response, 200, { removed: true })
     }
-    if (request.method === 'GET' && path === '/v1/computer') return json(response, 200, managementStatus())
+    if (request.method === 'GET' && path === '/v1/computer') { refreshServers(); return json(response, 200, managementStatus()) }
     if (request.method === 'PATCH' && path === '/v1/computer/settings') {
       const rawInput = await readJson(request)
       await shared.validateSize(rawInput)
