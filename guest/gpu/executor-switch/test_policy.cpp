@@ -26,6 +26,14 @@ int main() {
     assert(!movesToPhone("auto", "glxgears", none));
     assert(!movesToPhone("auto", "chromium --type=renderer", none));
 
+    // Steam's web views, its update window and fossilize_replay stay on the computer.
+    assert(keptOnComputer("/home/u/.local/share/Steam/steamrt64/steamwebhelper --type=zygote --no-zygote-sandbox"));
+    assert(keptOnComputer("./steamwebhelper -nocrashdialog -lang=en_US"));
+    assert(keptOnComputer("/s/steamrt64/steam -child-update-ui -child-update-ui-socket 9"));
+    assert(keptOnComputer("fossilize_replay a.foz"));
+    assert(!keptOnComputer("/s/steamrt64/steam -srt-logger-opened"));
+    assert(!keptOnComputer("Z:\\MCC\\Binaries\\Win64\\MCC-Win64-Shipping.exe -no-eac"));
+
     assert(placementLine(123456) == "cpu-until-relaunch 123456\n");
     // A command name with spaces and ')' does not shift the fields.
     std::string stat = "4242 (my app) x) S";

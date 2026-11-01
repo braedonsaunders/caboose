@@ -85,6 +85,15 @@ bool processMoves() {
     return moves;
 }
 
+bool processKept() {
+    static const bool kept = [] {
+        std::string commandLine = readFile("/proc/self/cmdline");
+        for (char& c : commandLine) if (c == '\0') c = ' ';
+        return keptOnComputer(commandLine);
+    }();
+    return kept;
+}
+
 // The process's placement record, beside the broker's socket where the running-apps list
 // (and a Flatpak sandbox) sees it: present while the process keeps a CPU device after a
 // phone attached.
@@ -307,7 +316,7 @@ VKAPI_ATTR VkResult VKAPI_CALL CreateDevice(VkPhysicalDevice physical, const VkD
     VkPhysicalDeviceProperties properties{};
     if (owner->properties) owner->properties(physical, &properties);
     // Decided before creation: a device made while the executor existed stays where it is.
-    const bool switchable = executor().configured() &&
+    const bool switchable = executor().configured() && !processKept() &&
                             cpuImplementation(properties.vendorID, properties.deviceType) && !executor().available();
     VkResult result = create(physical, info, allocator, device);
     if (result != VK_SUCCESS) return result;

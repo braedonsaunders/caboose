@@ -19,6 +19,17 @@ inline bool cpuImplementation(uint32_t vendor, int deviceType) {
     return deviceType == 4 /* VK_PHYSICAL_DEVICE_TYPE_CPU */ || vendor == kMesaVendor;
 }
 
+// Processes that render on the computer by design (the routing layer keeps the phone from
+// them): Steam's web views (steamwebhelper, every one of its processes), its update window
+// and fossilize_replay. Their CPU devices are neither lost nor recorded as waiting to move.
+inline bool keptOnComputer(const std::string& commandLine) {
+    std::string program = commandLine.substr(0, commandLine.find(' '));
+    const auto slash = program.rfind('/');
+    if (slash != std::string::npos) program = program.substr(slash + 1);
+    return program == "steamwebhelper" || program == "fossilize_replay" ||
+           commandLine.find(" -child-update-ui") != std::string::npos;
+}
+
 // Whether a process moves to the phone when one attaches: its CPU devices report loss and it
 // recreates them on the phone. That suits processes that recover from device loss, which is
 // what CABOOSE_GPU_ON_LOSS says, as the phone's driver reads it: `pause` stays where it is;

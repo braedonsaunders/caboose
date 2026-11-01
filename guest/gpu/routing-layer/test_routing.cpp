@@ -36,6 +36,9 @@ int main() {
     assert(hidesPhone(updateUi) && keptOnComputer(updateUi));
     assert(!keptOnComputer("/home/u/.local/share/Steam/steamrt64/steam -srt-logger-opened"));
     assert(!keptOnComputer("fossilize_replay a.foz"));
+    assert(keptOnComputer("/home/u/.local/share/Steam/steamrt64/steamwebhelper --type=zygote --no-zygote-sandbox"));
+    assert(hidesPhone("./steamwebhelper -nocrashdialog -lang=en_US"));
+    assert(!keptOnComputer("Z:\\MCC\\Binaries\\Win64\\MCC-Win64-Shipping.exe -no-eac"));
 
     // Without the phone, lavapipe is presented as a GPU; not with it, nor where the phone is
     // hidden by policy (fossilize_replay compiles for the device it really runs on).
