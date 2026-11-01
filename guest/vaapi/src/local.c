@@ -1,8 +1,8 @@
-/* Local decoding: the fallback when passthrough cannot serve a stream (the app
- * reads pixels back, the compositor cannot bind or the client cannot decode
- * it). The rebuilt bitstream goes through libavcodec's software decoders and the
- * pixels land in the app's surfaces, so the app sees an ordinary decoder and the
- * compositor sees ordinary video (layers 2 and 3).
+/* Local decoding: every stream the phone does not decode (no media connection, no
+ * Vulkan driver in the process to latch the phone's pictures, a format the phone
+ * does not decode, the app reads pixels back, or the phone fails the stream). The
+ * rebuilt bitstream goes through libavcodec's software decoders and the pixels land
+ * in the app's surfaces, so the app sees an ordinary decoder.
  *
  * Pixels are taken from the decoder's own picture buffer as soon as a picture is
  * decoded, not when libavcodec would output it after reordering: the app may
@@ -158,7 +158,7 @@ static void store(cb_context *c, const AVFrame *f, uint32_t seq)
         }
     }
     cb_surface_end_cpu(s);
-    s->mark = -1;
+    s->pending = 0;
     cb_surface_pixels(c->drv, s);
 }
 

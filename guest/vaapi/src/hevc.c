@@ -26,10 +26,10 @@
  *
  * Output can differ from the original, decoding cannot: no_output_of_prior_pics_flag
  * is cleared, because which earlier pictures it drops depends on the reorder
- * depth we do not reproduce. The client gets every picture and presents the ones
+ * depth we do not reproduce. The phone gets every picture and presents the ones
  * the app shows. A CRA picture that the app decoded as the start of a sequence
  * (POC MSB reset after a seek, or after an end of sequence VA does not see) is
- * sent as BLA, so the client derives the same POC and skips the same leading
+ * sent as BLA, so the phone derives the same POC and skips the same leading
  * pictures.
  *
  * Not expressible from VA, so the stream is refused (the app falls back to
@@ -798,8 +798,8 @@ static int hevc_picture(cb_context *c, const cb_picture *p, uint32_t seq)
                 type = pic_type = t;
                 tid = (nal[1] & 7u) - 1u;
                 /* A CRA picture the app decoded as a sequence start (POC MSB reset,
-                 * leading pictures dropped) where the client would not: send it
-                 * as BLA. Otherwise the client derives POC from earlier pictures. */
+                 * leading pictures dropped) where the phone would not: send it
+                 * as BLA. Otherwise the phone derives POC from earlier pictures. */
                 if (type == NAL_CRA && st->have_prev) {
                     uint32_t max = 1u << lsb_bits, lsb = (uint32_t)rf.poc & (max - 1);
                     uint32_t prev_lsb = (uint32_t)st->prev_tid0_poc & (max - 1);

@@ -2,21 +2,20 @@
 # Bitstream round trips through caboose_drv_video.so, for every case in
 # tests/cases/<codec>.cases (or the codecs named on the command line).
 #
-# Each case is a reference clip encoded with ffmpeg. It is then decoded twice
+# Each case is a reference clip encoded with ffmpeg. It is then decoded three times
 # through the driver with `ffmpeg -hwaccel vaapi`:
-#   passthrough  frames stay on the "GPU" (-hwaccel_output_format vaapi); the
-#                driver forwards the rebuilt bitstream to a capture file, which
-#                is decoded with ffmpeg's software decoder and must match the
-#                source decode frame for frame, bit for bit.
-#   readback     ffmpeg downloads every frame; the first readback switches the
-#                stream to local decoding, and the downloaded frames must match
-#                the source decode bit for bit.
-#   phone        as passthrough, but the stream goes to the phone over the media
-#                connection (docs/gpu-media.md), with tools/cbva-phone as the phone
-#                and the consumer stub preloaded; the units it receives must decode
-#                to the source, and it must see no contract violation.
-#   phone-rb     as readback with the phone connected: the first readback moves the
-#                stream from the phone to local decoding, exact as before.
+#   phone        frames stay on the "GPU" (-hwaccel_output_format vaapi) and the
+#                stream goes to the phone over the media connection
+#                (docs/gpu-media.md), with tools/cbva-phone as the phone and the
+#                consumer stub preloaded. The rebuilt bitstream it receives is
+#                decoded with ffmpeg's software decoder and must match the source
+#                decode frame for frame, bit for bit, and the phone must see no
+#                contract violation.
+#   phone-rb     ffmpeg downloads every frame with the phone connected: the first
+#                readback moves the stream from the phone to local decoding, and the
+#                downloaded frames must match the source decode bit for bit.
+#   local        CABOOSE_VA_MODE=decode: the driver decodes every frame itself, and
+#                the downloaded frames must match the source decode bit for bit.
 # Case line: name | lavfi source | encoder args | container. Encoder args that
 # start with "2pass" are run as a two-pass encode.
 # Runs in the dev container (scripts/dev.sh tests/roundtrip.sh); needs Xvfb for a
@@ -43,8 +42,6 @@ hashes() { grep -v '^#' "$1" | awk -F, '{gsub(/ /, "", $6); print $6}'; }
 # Splits CAPTURE into PREFIX-* streams, decodes the first in software and compares
 # it with the source decode ($work/$name.src): $result is ok or what differs, and
 # $summary the first stream's summary line.
-# it with the source decode ($work/$name.src); prints ok or what differs, and sets
-# $summary to the capture's first stream summary.
 forwarded() {
   summary=$("$build/cbva-capture" split "$1" "$2" | head -1)
   fwd=$(ls "$2"-1.* 2>/dev/null | head -1)
@@ -92,15 +89,7 @@ run_case() {
   ffmpeg -nostdin -hide_banner -loglevel error -y -i "$clip" -f framemd5 "$work/$name.src.md5"
   hashes "$work/$name.src.md5" > "$work/$name.src"
 
-  # Passthrough: rebuild, forward, decode in software.
-  # shellcheck disable=SC2086
-  if ! CABOOSE_VA_SINK="$work/$name.cap" ffmpeg -nostdin -hide_banner -loglevel error -y $va \
-      -hwaccel_output_format vaapi -reinit_filter 0 -i "$clip" -f null - 2> "$work/$name.pass.log"; then
-    echo "FAIL $name: passthrough decode: $(tail -1 "$work/$name.pass.log")"; fail=$((fail + 1)); return
-  fi
-  forwarded "$work/$name.cap" "$work/$name.fwd"; p1=$result; pass_summary=$summary
-
-  # Phone: the same frames, forwarded over the media connection.
+  # Phone: rebuild, forward over the media connection, decode in software.
   "$build/cbva-phone" "$work/$name.sock" "$work/$name.ph.cap" > "$work/$name.ph.out" 2>&1 &
   phone=$!
   for _ in 1 2 3 4 5 6 7 8 9 10; do [ -S "$work/$name.sock" ] && break; sleep 0.1; done
@@ -109,7 +98,7 @@ run_case() {
     ffmpeg -nostdin -hide_banner -loglevel error -y $va -hwaccel_output_format vaapi -reinit_filter 0 \
     -i "$clip" -f null - 2> "$work/$name.ph.log" || true
   kill -TERM $phone; wait $phone 2>/dev/null && ph_ok=1 || ph_ok=0
-  forwarded "$work/$name.ph.cap" "$work/$name.ph"; p3=$result; summary=$pass_summary
+  forwarded "$work/$name.ph.cap" "$work/$name.ph"; p3=$result
   # The stand-in phone decodes H.264 at 8 bits only, like a real one: the driver does
   # not offer High 10, and ffmpeg decodes it in software.
   case $codec/$fmt in
@@ -129,16 +118,16 @@ run_case() {
   hashes "$work/$name.phrb.md5" > "$work/$name.phrb"
   if cmp -s "$work/$name.src" "$work/$name.phrb"; then p4=ok; else p4="MISMATCH($(wc -l < "$work/$name.phrb"))"; fi
 
-  # Readback: the driver decodes locally; downloaded frames must be exact.
+  # Local: the driver decodes every frame; downloaded frames must be exact.
   # shellcheck disable=SC2086
-  CABOOSE_VA_SINK="$work/$name.rb.cap" ffmpeg -nostdin -hide_banner -loglevel error -y $va -i "$clip" \
+  CABOOSE_VA_MODE=decode ffmpeg -nostdin -hide_banner -loglevel error -y $va -i "$clip" \
     -pix_fmt "$fmt" -f framemd5 "$work/$name.rb.md5" 2> "$work/$name.rb.log" || true
   hashes "$work/$name.rb.md5" > "$work/$name.rb"
   if cmp -s "$work/$name.src" "$work/$name.rb"; then p2=ok; else p2="MISMATCH($(wc -l < "$work/$name.rb"))"; fi
 
-  if [ "$p1" = ok ] && [ "$p2" = ok ] && [ "$p3" = ok ] && [ "$p4" = ok ]; then pass=$((pass + 1)); s=PASS
+  if [ "$p2" = ok ] && [ "$p3" = ok ] && [ "$p4" = ok ]; then pass=$((pass + 1)); s=PASS
   else fail=$((fail + 1)); s=FAIL; fi
-  printf '%s %-28s passthrough=%s readback=%s phone=%s phone-rb=%s  %s\n' "$s" "$name" "$p1" "$p2" "$p3" "$p4" "$summary"
+  printf '%s %-28s phone=%s phone-rb=%s local=%s  %s\n' "$s" "$name" "$p3" "$p4" "$p2" "$summary"
 }
 
 for codec in $codecs; do
