@@ -835,11 +835,14 @@ uses it differently:
   to it. A touch on moving content stops it without clicking, as in any iOS scroll view.
 
 - **Resizes hold the picture.** When a window's drawable is about to change size (an
-  overscan enlarging or ending, a new scale) or a drawn window's frame changes, the phone
+  overscan enlarging or ending, a new scale) or a drawn window's overscan changes, the phone
   keeps showing the picture on screen, unscaled, until the application has drawn the new
   size and stopped drawing for 120 ms (0.6 s after its first picture of the new size at
   most, 4 s in all, or until a gesture begins). A picture
   of the old size is never shown stretched to the new one, nor a half-drawn one.
+  When a window's frame changes (a fold, a resize), what was measured of its old layout is
+  forgotten, and its pictures show as they arrive. A picture longer than the window's shape
+  (one of the older, larger size) is cut off at the window's shape, never squashed into it.
 - **Overscan windows.** While a window has been scrolled locally within the last 30
   seconds and its scrolling region is measured, or while a reporter's `scroll.tree` names a
   scroller with a range (so the first gesture already carries frame tags), the phone asks

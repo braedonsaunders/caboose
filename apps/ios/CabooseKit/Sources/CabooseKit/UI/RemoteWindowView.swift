@@ -436,9 +436,15 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         }
         seenGeometry = now
         LocalScrollProfile.note("window \(window.id) frame \(Int(seen.frame.width))x\(Int(seen.frame.height)) -> \(Int(now.0.width))x\(Int(now.0.height)), overscan \(Int(seen.overscan.width))x\(Int(seen.overscan.height)) -> \(Int(now.1.width))x\(Int(now.1.height)), view \(Int(bounds.width))x\(Int(bounds.height)) pt")
-        // A drawn picture of the old geometry would show scaled or cropped wrongly until the
-        // app draws the new one: the picture on screen holds.
-        if !(liveGPUOwners?.presents(in: self) ?? false) { localScroll?.holdPicture(expecting: nil) }
+        if seen.frame != now.0 {
+            // A new frame (a fold, a resize): what was measured of the old layout (its
+            // scrolling region, its pictures) no longer applies, and an old picture would only
+            // show stretched, so the app's pictures show as they come, cut to the new shape.
+            if !(localScroll?.isActive ?? false) { localScroll?.cancel() }
+        } else if !(liveGPUOwners?.presents(in: self) ?? false) {
+            // Only the overscan changed: the picture on screen holds until the app draws it.
+            localScroll?.holdPicture(expecting: nil)
+        }
     }
 
     func liveGPUPictureCaptured(_ texture: MTLTexture, serial: UInt64, release: @escaping @Sendable () -> Void) {
@@ -478,8 +484,12 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         let texture = picture.texture, generation = picture.generation
         guard generation != presentedGeneration else { return }
         // An overscan picture shows its viewport.
-        let overscan = pictureOverscan(CGSize(width: texture.width, height: texture.height))
+        let overscan = pictureExcess(CGSize(width: texture.width, height: texture.height))
         let size = CGSize(width: CGFloat(texture.width) - overscan.width.rounded(), height: CGFloat(texture.height) - overscan.height.rounded())
+        if overscan != .zero, !croppingOverscan, LocalScrollProfile.enabled, lastExcessNoted != texture.width * 100_000 + texture.height {
+            lastExcessNoted = texture.width * 100_000 + texture.height
+            LocalScrollProfile.note("picture window=\(remoteWindow?.id ?? 0) \(texture.width)x\(texture.height) is longer than its frame \(Int(remoteWindow?.frame.width ?? 0))x\(Int(remoteWindow?.frame.height ?? 0)) without overscan; showing \(Int(size.width))x\(Int(size.height))")
+        }
         if metalLayer.drawableSize != size { metalLayer.drawableSize = size }
         guard let drawable = metalLayer.nextDrawable(),
               let commands = SurfaceRenderer.shared.queue.makeCommandBuffer(),
@@ -527,7 +537,14 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     /// How many of `picture`'s pixels lie past the viewport, right and below: the window's
     /// overscan once its pictures are of the enlarged window (by their shape), none before.
     func pictureOverscan(_ picture: CGSize) -> CGSize {
-        guard croppingOverscan, let window = remoteWindow, picture.width > 0, picture.height > 0,
+        croppingOverscan ? pictureExcess(picture) : .zero
+    }
+
+    /// How much of `picture` lies past the window's shape, right and below: an overscan, or,
+    /// without one, a picture of an older, larger size (a fold, a resize) whose excess the
+    /// app has not redrawn. Shown pictures cut it off rather than squash it into the window.
+    func pictureExcess(_ picture: CGSize) -> CGSize {
+        guard let window = remoteWindow, picture.width > 0, picture.height > 0,
               window.frame.width > 0, window.frame.height > 0 else { return .zero }
         // By shape alone: the picture may still be of the enlarged window after the overscan
         // was announced over, or already before its announcement settles.
@@ -537,6 +554,8 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         if wide > 2 { return CGSize(width: wide.rounded(), height: 0) }
         return .zero
     }
+
+    private var lastExcessNoted = 0
 
     /// The window was asked for, or still shows, an overscan: pictures longer than the
     /// viewport's shape are its enlarged pictures and show their viewport, never scaled.
