@@ -423,13 +423,15 @@ X11 `_NET_WM_PID` is not authority.
 
 - A Wayland bind matches a toplevel whose own `wl_surface` has that ID and whose
   accepted Wayland peer is the bound process (its held pidfd and the broker's).
-- An X11 bind matches a managed, non-override-redirect X11 toplevel that is the
+- An X11 bind matches a managed X11 toplevel, or an override-redirect window (a menu,
+  tooltip or dropdown, which the phone shows as a popup over its parent), that is the
   window or that the window covers exactly (a descendant at the toplevel's origin
   with its size, as Chromium's GPU process draws into). The X server's own record of
   the client that created the window (X-Resource `LocalClientPID`) must be the bound
   process, the broker's pidfd must identify that live process (PID, start time and
   owner), and the owner must be the compositor's user. The grant is the toplevel's
-  window, which is configured to the display's extent like a Wayland toplevel.
+  window, which is configured to the display's extent like a Wayland toplevel; a popup
+  keeps the place and size its application gave it.
   X11 has no client isolation: any client of the seat's Xwayland can create a child
   window inside another's toplevel, so an X11 grant proves only that the bound
   process made the window it presents to on the owner's own display.
