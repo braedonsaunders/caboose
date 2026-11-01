@@ -40,8 +40,8 @@ public struct LaptopFill: Sendable {
     }
 
     private var holds: [Int: Hold] = [:]
-    /// The windows last configured maximized, until they are configured otherwise.
-    public private(set) var maximized: Set<Int> = []
+    /// Whether each window was last configured maximized, where that is known.
+    private var configured: [Int: Bool] = [:]
 
     public init() {}
 
@@ -72,14 +72,17 @@ public struct LaptopFill: Sendable {
         size.width > screen.width + tolerance || size.height > screen.height + tolerance
     }
 
-    /// Whether a window at `current` must be configured to take `layout`.
+    /// Whether a window at `current` must be configured to take `layout`: it is elsewhere, or
+    /// its maximized state is another or not known.
     public func needsConfigure(_ id: Int, _ layout: Layout, current: CGRect) -> Bool {
-        current != layout.frame || maximized.contains(id) != layout.maximized
+        current != layout.frame || configured[id] != layout.maximized
     }
+
+    public func isMaximized(_ id: Int) -> Bool { configured[id] == true }
 
     /// The window was configured to `layout` while it was at `current`.
     public mutating func laidOut(_ id: Int, _ layout: Layout, current: CGRect) {
-        if layout.maximized { maximized.insert(id) } else { maximized.remove(id) }
+        configured[id] = layout.maximized
         guard layout.held else { holds[id] = nil; return }
         holds[id] = Hold(layout: layout, seen: current, restored: holds[id]?.restored ?? [])
     }
@@ -87,17 +90,20 @@ public struct LaptopFill: Sendable {
     /// The window was configured to a frame of the owner's, unmaximized: a drag or a resize.
     public mutating func release(_ id: Int) {
         holds[id] = nil
-        maximized.remove(id)
+        configured[id] = false
     }
 
-    /// Laptop closed: nothing is held, and the maximized windows are still known, so the
-    /// next layout configures them otherwise.
-    public mutating func releaseAll() { holds.removeAll() }
+    /// Laptop opened or closed, and other layouts may have configured the windows since:
+    /// nothing is held, and each window is configured again by its next layout.
+    public mutating func reset() {
+        holds.removeAll()
+        configured.removeAll()
+    }
 
     /// Keeps only these windows.
     public mutating func keep(_ ids: Set<Int>) {
         holds = holds.filter { ids.contains($0.key) }
-        maximized.formIntersection(ids)
+        configured = configured.filter { ids.contains($0.key) }
     }
 
     public func isHeld(_ id: Int) -> Bool { holds[id] != nil }

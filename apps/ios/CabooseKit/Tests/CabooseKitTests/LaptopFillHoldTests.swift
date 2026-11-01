@@ -188,12 +188,16 @@ struct LaptopFillHoldTests {
         fill.laidOut(1, layout, current: own)
         fill.laidOut(2, layout, current: own)
         fill.release(1)
-        #expect(!fill.isHeld(1) && !fill.maximized.contains(1))
+        #expect(!fill.isHeld(1) && !fill.isMaximized(1))
         #expect(fill.restore(1, committed: own, now: 0) == nil)
-        // Leaving Laptop lets go of every window but still knows which are maximized.
-        fill.releaseAll()
-        #expect(!fill.isHeld(2) && fill.maximized.contains(2))
-        fill.keep([])
-        #expect(fill.maximized.isEmpty)
+        // Laptop opening or closing: each window is configured again by its next layout,
+        // even one already at its frame, since another layout may have unmaximized it.
+        #expect(!fill.needsConfigure(2, layout, current: screen))
+        fill.reset()
+        #expect(!fill.isHeld(2) && fill.needsConfigure(2, layout, current: screen))
+        let own = LaptopFill.Layout(frame: self.own, maximized: false, held: false)
+        #expect(fill.needsConfigure(2, own, current: self.own))
+        fill.laidOut(2, own, current: self.own)
+        #expect(!fill.needsConfigure(2, own, current: self.own))
     }
 }
