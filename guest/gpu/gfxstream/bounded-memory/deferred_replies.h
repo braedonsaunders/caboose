@@ -41,9 +41,13 @@ bool drainDeferredReplies(uint32_t& pending, Stream* stream) {
     return true;
 }
 
-// The device link holds about 1 MiB of unacknowledged data and closes the
-// stream beyond it, so deferred commands stay under this many bytes in flight.
-inline constexpr uint64_t deferredByteLimit = 960 * 1024;
+// Deferred commands in flight before their replies must be read. The broker reads a
+// process's stream under flow control (it waits, it never closes), and the commands it
+// retains for a resume are bounded by its 8 MiB window, so commands may run well ahead.
+// What must stay small is the replies left unread: they wait in the socket back to the
+// process, and a full socket would stall the broker's writer and with it the phone.
+inline constexpr uint64_t deferredByteLimit = 6 * 1024 * 1024;
+inline constexpr uint64_t deferredReplyByteLimit = 64 * 1024;
 
 // A fence wait sent right after the submit that signals the fence, so its
 // result arrives while the caller presents. Bounded so a fence that depends on
@@ -71,7 +75,9 @@ public:
         {
             std::lock_guard<std::mutex> lock(mutex_);
             auto found = pending_.find(encoder);
-            if (found == pending_.end() || found->second.bytes + bytes <= limit) return true;
+            if (found == pending_.end() ||
+                (found->second.bytes + bytes <= limit && found->second.replyBytes <= deferredReplyByteLimit))
+                return true;
         }
         return drain(encoder, stream);
     }
@@ -83,6 +89,7 @@ public:
         entry.replies.insert(entry.replies.end(), replies, Reply{});
         entry.replies.back().bytes = bytes;
         entry.bytes += bytes;
+        entry.replyBytes += uint64_t(replies) * sizeof(int32_t);
         total_.fetch_add(replies, std::memory_order_relaxed);
     }
 
@@ -97,6 +104,7 @@ public:
         auto& entry = pending_[encoder];
         entry.replies.push_back({0, 0, first, false, count, bytes, nullptr, lastOpcode});
         entry.bytes += bytes;
+        entry.replyBytes += wireSize(entry.replies.back());
         total_.fetch_add(1, std::memory_order_relaxed);
     }
     // A command whose reply is data and then a result, kept in `reply` when it is read
@@ -107,6 +115,7 @@ public:
         Reply value; value.data = std::move(reply); value.bytes = bytes;
         entry.replies.push_back(std::move(value));
         entry.bytes += bytes;
+        entry.replyBytes += wireSize(entry.replies.back());
         total_.fetch_add(1, std::memory_order_relaxed);
     }
     // A command whose failure the application can no longer observe: any failure is device loss.
@@ -120,6 +129,7 @@ public:
         entry.replies.insert(entry.replies.end(), results, Reply{0, 0, 0, true, 1, 0, nullptr});
         entry.replies.back().bytes = bytes;
         entry.bytes += bytes;
+        entry.replyBytes += uint64_t(results) * sizeof(int32_t);
         total_.fetch_add(results, std::memory_order_relaxed);
     }
     void addFenceWait(const void* encoder, uint64_t fence, uint64_t bytes) {
@@ -127,6 +137,7 @@ public:
         auto& entry = pending_[encoder];
         entry.replies.push_back({fence, generations_[fence], 0, false, 1, bytes, nullptr});
         entry.bytes += bytes;
+        entry.replyBytes += sizeof(int32_t);
         total_.fetch_add(1, std::memory_order_relaxed);
     }
 
@@ -160,8 +171,10 @@ public:
                 replies.assign(queued.begin(), queued.begin() + count);
                 queued.erase(queued.begin(), queued.begin() + count);
                 uint64_t remaining = 0;
-                for (const Reply& reply : queued) remaining += reply.bytes;
+                uint64_t replyBytes = 0;
+                for (const Reply& reply : queued) { remaining += reply.bytes; replyBytes += wireSize(reply); }
                 found->second.bytes = remaining;
+                found->second.replyBytes = replyBytes;
             }
             total_.fetch_sub(replies.size(), std::memory_order_relaxed);
         }
@@ -199,6 +212,7 @@ public:
                 reply = queued.front();
                 queued.erase(queued.begin());
                 found->second.bytes -= std::min(found->second.bytes, reply.bytes);
+                found->second.replyBytes -= std::min<uint64_t>(found->second.replyBytes, size);
                 if (queued.empty()) pending_.erase(found);
                 total_.fetch_sub(1, std::memory_order_relaxed);
             }
@@ -347,7 +361,7 @@ private:
         std::shared_ptr<QueryReply> data;  // a data reply (addDataReply)
         uint32_t opcode = 0;  // the create's call, for the log when the device refuses it
     };
-    struct Entry { std::vector<Reply> replies; uint64_t bytes = 0; };
+    struct Entry { std::vector<Reply> replies; uint64_t bytes = 0, replyBytes = 0; };
     std::mutex mutex_;
     std::unordered_map<const void*, Entry> pending_;
     std::unordered_map<uint64_t, uint64_t> generations_;

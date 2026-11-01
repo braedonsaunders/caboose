@@ -67,6 +67,22 @@ int main() {
     // Reserving within the byte limit keeps replies pending; past it drains them.
     assert(table.reserve(&a, &first, 800, 1000) && first.next == 0 && table.pending() == 3);
     assert(table.reserve(&a, &first, 801, 1000) && first.next == 3 && table.pending() == 0);
+
+    // The default bound lets commands run megabytes ahead while their replies stay small,
+    // and drains once the replies owed pass 64 KiB.
+    {
+        DeferredReplies big;
+        Stream results;
+        const uint32_t many = uint32_t(deferredReplyByteLimit / sizeof(int32_t));
+        results.replies.assign(many + 2, 0);
+        big.addCheckedResults(&a, 1, 4 * 1024 * 1024);  // one 4 MiB flush, one result
+        assert(big.reserve(&a, &results, 1024 * 1024) && results.next == 0);
+        assert(big.reserve(&a, &results, 3 * 1024 * 1024) && results.next == 1 && big.pending() == 0);  // past 6 MiB
+        big.addCheckedResults(&a, many, 1024);                 // exactly 64 KiB of results owed
+        assert(big.reserve(&a, &results, 64) && results.next == 1);
+        big.addCheckedResult(&a, 64);                          // one more: past the reply bound
+        assert(big.reserve(&a, &results, 64) && results.next == many + 2 && big.pending() == 0);
+    }
     table.add(&a, 1, 10);
     assert(table.drain(&a, &first) && first.next == 4);
     assert(table.drain(&a, &first) && first.next == 4);

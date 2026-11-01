@@ -10,10 +10,11 @@ transfer and reply handling, so it can be tested without Mesa.
 | `ranges.h` | The process memory budget (96 MiB) shared by shadows and staging, and the planning of flush and invalidate ranges into atom-aligned chunks of at most 64 KiB per RPC |
 | `flush_packet.h` | One multi-range flush packet: up to 64 fragments under 15 × 64 KiB; an upload cache piece takes a fragment of its own |
 | `flush_shadow.h` | The bytes the host last received per allocation; a flush sends only the 256-byte blocks that differ among the blocks the host holds whole, and every block the device wrote is sent again |
+| `poll_stall.h` | Status polls that never change: an object polled for 10 seconds without change is named in `CABOOSE_GPU_POLL_STALLED`, again every minute |
 | `write_watch.h` | The blocks an application wrote to coherent memory since they were last sent, recorded with userfaultfd write protection (`/dev/userfaultfd`), so the flush before a submit sends only those; without the device, whole mappings |
 | `upload_cache.h` | The phone's upload cache (docs/gpu-live.md, "Upload cache"): the inventory and allowance per executor, the pieces each device stream stored, what a whole 4096-byte piece of a range of at least 16 KiB is sent as, and its wire form; BLAKE3 and the bytes are checked against `../upload-cache/vectors.json` by `../upload-cache/test_upload_cache_vectors.cpp` |
 | `cb_staging.h` | A command buffer's local, budgeted recording stream, sent with its queue submit |
-| `deferred_replies.h` | Replies the caller does not wait for, drained in order; prefetched fence waits; guest-assigned handle checks |
+| `deferred_replies.h` | Replies the caller does not wait for, drained in order once 6 MiB of commands or 64 KiB of their replies are owed; prefetched fence waits; guest-assigned handle checks |
 | `async_allocation.h` | Which device-memory allocations may skip the round trip: plain ones that keep their heap at most half committed |
 | `requirements_cache.h` | Image and buffer memory requirements by exact creation parameters, so an identical object needs no query |
 | `static_query_cache.h` | Answers of physical-device format queries, which cannot change, by their exact parameters |
@@ -43,7 +44,7 @@ submit in one round trip. A command buffer that overflows fails its submit with
 
 Flushes, fence and command-pool resets, binds, queue submits, guest-assigned creates and
 plain allocations within the heap budget do not wait for their replies. `DeferredReplies` queues them per encoder; every later read drains them
-first, in stream order, and in-flight deferred commands stay under 960 KiB. A failed
+first, in stream order, and in-flight deferred commands stay under 6 MiB and 64 KiB of owed replies. A failed
 reset or flush is reported on stderr. A failed bind, or a create whose handle the
 device refused or renamed, invalidates the stream: the application can no longer observe
 that failure, so the device is lost. Only the first encoder of a process may defer; a
