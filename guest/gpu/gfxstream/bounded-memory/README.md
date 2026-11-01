@@ -17,6 +17,7 @@ transfer and reply handling, so it can be tested without Mesa.
 | `static_query_cache.h` | Answers of physical-device format queries, which cannot change, by their exact parameters |
 | `query_results.h` | Query results without a round trip: a no-wait vkGetQueryPoolResults returns what its earlier identical request found, and resets drop stale results |
 | `completion_feed.h` | The completion feed's wire format and the tracker of every fence and timeline semaphore the process follows |
+| `handles.h` | Vulkan handles as 64-bit keys and back, without the cast through `uintptr_t` that drops the upper half of a non-dispatchable handle in 32-bit builds |
 | `flush_timing.h`, `rpc_timing.h` | Bounded opt-in timing records (`CABOOSE_PRIVATE_GPU_FLUSH_TIMING=1`, `CABOOSE_PRIVATE_GPU_RPC_TIMING=1`) |
 
 ## Mapped memory

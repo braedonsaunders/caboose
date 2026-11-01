@@ -10,7 +10,7 @@ flags="-std=c++17 -Wall -Wextra -Werror -pthread -UNDEBUG"
 config="-DCABOOSE_GFXSTREAM_PRIVATE_ICD -DCABOOSE_GFXSTREAM_PRIVATE_LIVE -DCABOOSE_GFXSTREAM_PRIVATE_INDEXED_WSI"
 run() {
     name=$1; shift
-    c++ $flags "$@" -o "$scratch/$name"
+    ${cxx:-c++} $flags "$@" -o "$scratch/$name"
     "$scratch/$name" >"$scratch/$name.log" 2>&1 || { cat "$scratch/$name.log" >&2; echo "FAIL $name" >&2; exit 1; }
     echo "pass $name"
 }
@@ -22,6 +22,15 @@ includes="-I$gfxstream/bounded-memory -I$scratch/include -I${CABOOSE_VULKAN_INCL
 for test in "$gfxstream"/bounded-memory/test_*.cpp; do
     run "$(basename "$test" .cpp)" $includes "$test"
 done
+# Again for the i386 driver, where the compiler is installed (the build image, which has
+# the i386 C library but not libstdc++).
+if command -v i686-linux-gnu-g++ >/dev/null; then
+    cxx=i686-linux-gnu-g++
+    for test in "$gfxstream"/bounded-memory/test_*.cpp; do
+        run "$(basename "$test" .cpp)-i386" -static-libstdc++ -static-libgcc $includes "$test"
+    done
+    cxx=
+fi
 run test_client "$gfxstream/virtual-wsi/test_client.cpp" "$gfxstream/virtual-wsi/client.cpp"
 run test_indexed "$gfxstream/virtual-wsi/test_indexed.cpp" "$gfxstream/virtual-wsi/client.cpp"
 run test_socket_stream $config -I"$gfxstream/fixtures/iostream" -I"$scratch/include" \

@@ -1,0 +1,813 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Caboose <caboose@invalid>
+Date: Sun, 1 Nov 2026 00:00:00 +0000
+Subject: [PATCH 42/42] Keep Vulkan handles whole in 32-bit builds
+
+A non-dispatchable handle is a uint64_t in a 32-bit build, so the series'
+casts through uintptr_t dropped its upper half: a guest-assigned handle lost
+its process tag, and the guest's caches keyed handles by their lower half.
+The casts become caboose::handle_key and caboose::to_handle
+(../bounded-memory/handles.h), which are the same casts in a 64-bit build.
+
+diff --git a/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp b/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp
+index 2bd39f2..6c3ce6e 100644
+--- a/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp
++++ b/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp
+@@ -1555,7 +1555,7 @@ VkResult ResourceTracker::cabooseFlushCoherentMappings(VkEncoder* enc) {
+         const auto& c = mapped[idx];
+         std::fprintf(stderr,
+             " mem[%zu]=0x%" PRIx64 "(map=%" PRIu64 "B,sent=%" PRIu64 "B,type=%u,usage=0x%x,gpuW=%u)",
+-            idx, uint64_t(uintptr_t(c.range.memory)), uint64_t(c.range.size),
++            idx, caboose::handle_key(c.range.memory), uint64_t(c.range.size),
+             perCandidateSent[idx], c.memoryTypeIndex, unsigned(c.usageMask),
+             c.gpuWrittenEver ? 1u : 0u);
+     }
+@@ -1634,7 +1634,7 @@ VkResult ResourceTracker::cabooseInvalidateCoherentMappings(VkEncoder* enc, VkDe
+             const auto& it = mapped[idx];
+             std::fprintf(stderr,
+                 " mem[%zu]=0x%" PRIx64 "(off=%" PRIu64 ",size=%" PRIu64 "B,alloc=%" PRIu64 "B,type=%u,usage=0x%x)",
+-                idx, uint64_t(uintptr_t(it.range.memory)), uint64_t(it.range.offset),
++                idx, caboose::handle_key(it.range.memory), uint64_t(it.range.offset),
+                 uint64_t(it.range.size), it.allocationSize, it.memoryTypeIndex, unsigned(it.usageMask));
+         }
+         std::fputc('\n', stderr);
+@@ -2859,8 +2859,8 @@ void ResourceTracker::on_vkDestroyDevice_pre(void* context, VkDevice device,
+ 
+     auto it = info_VkDevice.find(device);
+     if (it == info_VkDevice.end()) return;
+-    caboose::memory::asyncAllocationBudget.deviceDestroyed(uint64_t(uintptr_t(device)));
+-    caboose::memory::requirementsCache.deviceDestroyed(uint64_t(uintptr_t(device)));
++    caboose::memory::asyncAllocationBudget.deviceDestroyed(caboose::handle_key(device));
++    caboose::memory::requirementsCache.deviceDestroyed(caboose::handle_key(device));
+ 
+     for (auto itr = info_VkDeviceMemory.cbegin(); itr != info_VkDeviceMemory.cend();) {
+         auto& memInfo = itr->second;
+@@ -3914,7 +3914,7 @@ static VkResult cabooseEncodeAllocateMemory(VkEncoder* enc, VkDevice device,
+                                             VkDeviceMemory* pMemory, bool plain) {
+     bool async = false;
+     uint32_t heap = 0;
+-    const uint64_t dev = uint64_t(uintptr_t(device));
++    const uint64_t dev = caboose::handle_key(device);
+     if (info->memoryTypeIndex < props.memoryTypeCount) {
+         heap = props.memoryTypes[info->memoryTypeIndex].heapIndex;
+         for (auto* ext = static_cast<const VkBaseInStructure*>(info->pNext); plain && ext; ext = ext->pNext) {
+@@ -3938,7 +3938,7 @@ static VkResult cabooseEncodeAllocateMemory(VkEncoder* enc, VkDevice device,
+         return result;
+     }
+     if (!async) caboose::memory::asyncAllocationBudget.commit(dev, heap, info->allocationSize);
+-    caboose::memory::asyncAllocationBudget.track(uint64_t(uintptr_t(*pMemory)), dev, heap,
++    caboose::memory::asyncAllocationBudget.track(caboose::handle_key(*pMemory), dev, heap,
+                                                  info->allocationSize);
+     return VK_SUCCESS;
+ }
+@@ -4839,8 +4839,8 @@ VkResult ResourceTracker::on_vkAllocateMemory(void* context, VkResult input_resu
+ void ResourceTracker::on_vkFreeMemory(void* context, VkDevice device, VkDeviceMemory memory,
+                                       const VkAllocationCallbacks* pAllocateInfo) {
+     cabooseForgetMemory(memory);
+-    caboose::memory::flushShadow.forget(uint64_t(uintptr_t(memory)));
+-    caboose::memory::asyncAllocationBudget.freed(uint64_t(uintptr_t(memory)));
++    caboose::memory::flushShadow.forget(caboose::handle_key(memory));
++    caboose::memory::asyncAllocationBudget.freed(caboose::handle_key(memory));
+     std::unique_lock<std::recursive_mutex> lock(mLock);
+ 
+     auto it = info_VkDeviceMemory.find(memory);
+@@ -4930,7 +4930,7 @@ VkResult ResourceTracker::on_vkMapMemory(void* context, VkResult host_result, Vk
+         deviceMemoryInfo.socketMapped = true;
+         if (deviceMemoryInfo.socketGpuWritten) {
+             caboose::memory::flushShadow.noteRefreshed(
+-                uint64_t(uintptr_t(memory)), deviceMemoryInfo.ptr,
++                caboose::handle_key(memory), deviceMemoryInfo.ptr,
+                 deviceMemoryInfo.allocationSize, deviceMemoryInfo.socketMapOffset,
+                 deviceMemoryInfo.socketMapSize);
+         }
+@@ -5003,7 +5003,7 @@ VkResult ResourceTracker::on_vkMapMemory(void* context, VkResult host_result, Vk
+ }
+ 
+ void ResourceTracker::on_vkUnmapMemory(void*, VkDevice device, VkDeviceMemory memory) {
+-    caboose::memory::flushShadow.forget(uint64_t(uintptr_t(memory)));
++    caboose::memory::flushShadow.forget(caboose::handle_key(memory));
+     std::lock_guard<std::recursive_mutex> lock(mLock);
+     auto it = info_VkDeviceMemory.find(memory);
+     if (it != info_VkDeviceMemory.end() && it->second.socketShadow && it->second.device == device) {
+@@ -5358,8 +5358,8 @@ VkResult ResourceTracker::on_vkCreateImage(void* context, VkResult, VkDevice dev
+     if (res != VK_SUCCESS) return res;
+     {
+         std::string key;
+-        if (caboose::memory::RequirementsCache::imageKey(uint64_t(uintptr_t(device)), &localCreateInfo, &key))
+-            caboose::memory::requirementsCache.created(uint64_t(uintptr_t(*pImage)), std::move(key));
++        if (caboose::memory::RequirementsCache::imageKey(caboose::handle_key(device), &localCreateInfo, &key))
++            caboose::memory::requirementsCache.created(caboose::handle_key(*pImage), std::move(key));
+     }
+ 
+     uint32_t cabooseTypeBits = 0;
+@@ -5593,16 +5593,16 @@ VkResult ResourceTracker::on_vkCreateFence(void* context, VkResult input_result,
+         if (created != info_VkFence.end()) created->second.device = device;
+     }
+     if (pCreateInfo && (pCreateInfo->flags & VK_FENCE_CREATE_SIGNALED_BIT)) {
+-        caboose::memory::deferredReplies.markSignaled(uint64_t(uintptr_t(*pFence)));
++        caboose::memory::deferredReplies.markSignaled(caboose::handle_key(*pFence));
+     }
+     else {
+-        caboose::memory::deferredReplies.forgetFence(uint64_t(uintptr_t(*pFence)));
++        caboose::memory::deferredReplies.forgetFence(caboose::handle_key(*pFence));
+     }
+     // A fence whose payload can be exported is followed through its sync file, not here.
+     if (exportFenceInfoPtr)
+-        caboose::completion::tracker().fenceUntracked(uint64_t(uintptr_t(*pFence)));
++        caboose::completion::tracker().fenceUntracked(caboose::handle_key(*pFence));
+     else
+-        caboose::completion::tracker().fenceCreated(uint64_t(uintptr_t(*pFence)),
++        caboose::completion::tracker().fenceCreated(caboose::handle_key(*pFence),
+             pCreateInfo && (pCreateInfo->flags & VK_FENCE_CREATE_SIGNALED_BIT));
+ 
+ #if defined(VK_USE_PLATFORM_ANDROID_KHR) || DETECT_OS_LINUX
+@@ -5633,7 +5633,7 @@ VkResult ResourceTracker::on_vkCreateFence(void* context, VkResult input_result,
+ 
+ void ResourceTracker::on_vkDestroyFence(void* context, VkDevice device, VkFence fence,
+                                         const VkAllocationCallbacks* pAllocator) {
+-    caboose::completion::tracker().fenceDestroyed(uint64_t(uintptr_t(fence)));
++    caboose::completion::tracker().fenceDestroyed(caboose::handle_key(fence));
+     VkEncoder* enc = (VkEncoder*)context;
+     enc->vkDestroyFence(device, fence, pAllocator, true /* do lock */);
+ }
+@@ -5647,7 +5647,7 @@ VkResult ResourceTracker::on_vkResetFences(void* context, VkResult, VkDevice dev
+ 
+     if (!fenceCount) return res;
+     for (uint32_t i = 0; i < fenceCount; ++i)
+-        caboose::completion::tracker().fenceReset(uint64_t(uintptr_t(pFences[i])));
++        caboose::completion::tracker().fenceReset(caboose::handle_key(pFences[i]));
+ 
+     // Permanence: temporary
+     // on fence reset, close the fence fd
+@@ -5687,7 +5687,7 @@ VkResult ResourceTracker::on_vkImportFenceFdKHR(void* context, VkResult, VkDevic
+     bool hasFence = pImportFenceFdInfo->fence != VK_NULL_HANDLE;
+ 
+     if (!hasFence) return VK_ERROR_OUT_OF_HOST_MEMORY;
+-    caboose::completion::tracker().fenceUntracked(uint64_t(uintptr_t(pImportFenceFdInfo->fence)));
++    caboose::completion::tracker().fenceUntracked(caboose::handle_key(pImportFenceFdInfo->fence));
+ 
+ #if defined(VK_USE_PLATFORM_ANDROID_KHR) || DETECT_OS_LINUX
+ 
+@@ -5872,7 +5872,7 @@ VkResult ResourceTracker::on_vkGetFenceStatus(void* context, VkResult input_resu
+ 
+     // With the completion feed the fence's state is known here: no round trip.
+     if (caboose::completion::feedActive.load(std::memory_order_acquire)) {
+-        const uint64_t key = uint64_t(uintptr_t(fence));
++        const uint64_t key = caboose::handle_key(fence);
+         switch (caboose::completion::tracker().fencesSignaled(&key, 1, true)) {
+             case caboose::completion::Tracker::Answer::Satisfied:
+                 return cabooseInvalidateCoherentMappings(enc, device, 1 /* lock */);
+@@ -5940,7 +5940,7 @@ VkResult ResourceTracker::on_vkWaitForFences(void* context, VkResult, VkDevice d
+         // With the completion feed the wait happens here, without holding the encoder
+         // and without a round trip; only untracked fences are asked about.
+         std::vector<uint64_t> keys;
+-        for (VkFence fence : fencesNonExternal) keys.push_back(uint64_t(uintptr_t(fence)));
++        for (VkFence fence : fencesNonExternal) keys.push_back(caboose::handle_key(fence));
+         // Long timeouts are waited for a day at a time, keeping deadlines representable.
+         constexpr uint64_t kDay = 86400ull * 1000000000ull;
+         uint64_t remaining = timeout;
+@@ -6379,7 +6379,7 @@ void ResourceTracker::on_vkUpdateDescriptorSets(void* context, VkDevice device,
+ 
+ void ResourceTracker::on_vkDestroyImage(void* context, VkDevice device, VkImage image,
+                                         const VkAllocationCallbacks* pAllocator) {
+-    caboose::memory::requirementsCache.destroyed(uint64_t(uintptr_t(image)));
++    caboose::memory::requirementsCache.destroyed(caboose::handle_key(image));
+ #ifdef VK_USE_PLATFORM_ANDROID_KHR
+     {
+         std::lock_guard<std::recursive_mutex> lock(mLock);  // do not guard encoder may cause
+@@ -6473,13 +6473,13 @@ void ResourceTracker::on_vkGetImageMemoryRequirements(void* context, VkDevice de
+     VkEncoder* enc = (VkEncoder*)context;
+ 
+     caboose::memory::RequirementsCache::Value cached;
+-    if (caboose::memory::requirementsCache.lookup(uint64_t(uintptr_t(image)), &cached)) {
++    if (caboose::memory::requirementsCache.lookup(caboose::handle_key(image), &cached)) {
+         *pMemoryRequirements = cached.requirements;
+     } else {
+         VkImageMemoryRequirementsInfo2 queryInfo{VK_STRUCTURE_TYPE_IMAGE_MEMORY_REQUIREMENTS_INFO_2, nullptr, image};
+         VkMemoryRequirements2 queried{};
+         queried.sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2;
+-        cabooseCachedRequirements(uint64_t(uintptr_t(image)), nullptr, &queried, [&] {
++        cabooseCachedRequirements(caboose::handle_key(image), nullptr, &queried, [&] {
+             enc->vkGetImageMemoryRequirements2(device, &queryInfo, &queried, true /* do lock */);
+         });
+         *pMemoryRequirements = queried.memoryRequirements;
+@@ -6497,7 +6497,7 @@ void ResourceTracker::on_vkGetImageMemoryRequirements2(void* context, VkDevice d
+                                                        const VkImageMemoryRequirementsInfo2* pInfo,
+                                                        VkMemoryRequirements2* pMemoryRequirements) {
+     VkEncoder* enc = (VkEncoder*)context;
+-    cabooseCachedRequirements(uint64_t(uintptr_t(pInfo->image)), pInfo->pNext, pMemoryRequirements, [&] {
++    cabooseCachedRequirements(caboose::handle_key(pInfo->image), pInfo->pNext, pMemoryRequirements, [&] {
+         enc->vkGetImageMemoryRequirements2(device, pInfo, pMemoryRequirements, true /* do lock */);
+     });
+     transformImageMemoryRequirements2ForGuest(pInfo->image, pMemoryRequirements);
+@@ -6685,8 +6685,8 @@ VkResult ResourceTracker::on_vkCreateBuffer(void* context, VkResult, VkDevice de
+     if (res != VK_SUCCESS) return res;
+     {
+         std::string key;
+-        if (caboose::memory::RequirementsCache::bufferKey(uint64_t(uintptr_t(device)), &localCreateInfo, &key))
+-            caboose::memory::requirementsCache.created(uint64_t(uintptr_t(*pBuffer)), std::move(key));
++        if (caboose::memory::RequirementsCache::bufferKey(caboose::handle_key(device), &localCreateInfo, &key))
++            caboose::memory::requirementsCache.created(caboose::handle_key(*pBuffer), std::move(key));
+     }
+ 
+ #if defined(VK_USE_PLATFORM_ANDROID_KHR) || DETECT_OS_LINUX
+@@ -6732,7 +6732,7 @@ VkResult ResourceTracker::on_vkCreateBuffer(void* context, VkResult, VkDevice de
+ 
+ void ResourceTracker::on_vkDestroyBuffer(void* context, VkDevice device, VkBuffer buffer,
+                                          const VkAllocationCallbacks* pAllocator) {
+-    caboose::memory::requirementsCache.destroyed(uint64_t(uintptr_t(buffer)));
++    caboose::memory::requirementsCache.destroyed(caboose::handle_key(buffer));
+     VkEncoder* enc = (VkEncoder*)context;
+     enc->vkDestroyBuffer(device, buffer, pAllocator, true /* do lock */);
+ }
+@@ -6756,13 +6756,13 @@ void ResourceTracker::on_vkGetBufferMemoryRequirements(void* context, VkDevice d
+ 
+     VkEncoder* enc = (VkEncoder*)context;
+     caboose::memory::RequirementsCache::Value cached;
+-    if (caboose::memory::requirementsCache.lookup(uint64_t(uintptr_t(buffer)), &cached)) {
++    if (caboose::memory::requirementsCache.lookup(caboose::handle_key(buffer), &cached)) {
+         *pMemoryRequirements = cached.requirements;
+     } else {
+         VkBufferMemoryRequirementsInfo2 queryInfo{VK_STRUCTURE_TYPE_BUFFER_MEMORY_REQUIREMENTS_INFO_2, nullptr, buffer};
+         VkMemoryRequirements2 queried{};
+         queried.sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2;
+-        cabooseCachedRequirements(uint64_t(uintptr_t(buffer)), nullptr, &queried, [&] {
++        cabooseCachedRequirements(caboose::handle_key(buffer), nullptr, &queried, [&] {
+             enc->vkGetBufferMemoryRequirements2(device, &queryInfo, &queried, true /* do lock */);
+         });
+         *pMemoryRequirements = queried.memoryRequirements;
+@@ -6778,7 +6778,7 @@ void ResourceTracker::on_vkGetBufferMemoryRequirements2(
+     void* context, VkDevice device, const VkBufferMemoryRequirementsInfo2* pInfo,
+     VkMemoryRequirements2* pMemoryRequirements) {
+     VkEncoder* enc = (VkEncoder*)context;
+-    cabooseCachedRequirements(uint64_t(uintptr_t(pInfo->buffer)), pInfo->pNext, pMemoryRequirements, [&] {
++    cabooseCachedRequirements(caboose::handle_key(pInfo->buffer), pInfo->pNext, pMemoryRequirements, [&] {
+         enc->vkGetBufferMemoryRequirements2(device, pInfo, pMemoryRequirements, true /* do lock */);
+     });
+     transformBufferMemoryRequirements2ForGuest(pInfo->buffer, pMemoryRequirements);
+@@ -6824,8 +6824,8 @@ VkResult ResourceTracker::on_vkCreateSemaphore(void* context, VkResult input_res
+                                           true /* do lock */);
+     if (input_result == VK_SUCCESS && typeCi && typeCi->semaphoreType == VK_SEMAPHORE_TYPE_TIMELINE &&
+         !exportSemaphoreInfoPtr) {
+-        caboose::completion::tracker().timelineCreated(uint64_t(uintptr_t(*pSemaphore)),
+-                                                       typeCi->initialValue, uint64_t(uintptr_t(device)));
++        caboose::completion::tracker().timelineCreated(caboose::handle_key(*pSemaphore),
++                                                       typeCi->initialValue, caboose::handle_key(device));
+     }
+ 
+     zx_handle_t event_handle = ZX_HANDLE_INVALID;
+@@ -6885,7 +6885,7 @@ VkResult ResourceTracker::on_vkCreateSemaphore(void* context, VkResult input_res
+ 
+ void ResourceTracker::on_vkDestroySemaphore(void* context, VkDevice device, VkSemaphore semaphore,
+                                             const VkAllocationCallbacks* pAllocator) {
+-    caboose::completion::tracker().semaphoreDestroyed(uint64_t(uintptr_t(semaphore)));
++    caboose::completion::tracker().semaphoreDestroyed(caboose::handle_key(semaphore));
+     VkEncoder* enc = (VkEncoder*)context;
+     enc->vkDestroySemaphore(device, semaphore, pAllocator, true /* do lock */);
+ }
+@@ -6975,7 +6975,7 @@ VkResult ResourceTracker::on_vkImportSemaphoreFdKHR(
+     void* context, VkResult input_result, VkDevice device,
+     const VkImportSemaphoreFdInfoKHR* pImportSemaphoreFdInfo) {
+     if (pImportSemaphoreFdInfo)
+-        caboose::completion::tracker().semaphoreUntracked(uint64_t(uintptr_t(pImportSemaphoreFdInfo->semaphore)));
++        caboose::completion::tracker().semaphoreUntracked(caboose::handle_key(pImportSemaphoreFdInfo->semaphore));
+ #if defined(VK_USE_PLATFORM_ANDROID_KHR) || DETECT_OS_LINUX
+     VkEncoder* enc = (VkEncoder*)context;
+     if (input_result != VK_SUCCESS) {
+@@ -7495,7 +7495,7 @@ VkResult ResourceTracker::on_vkQueueSubmit(void* context, VkResult input_result,
+     // Query resets recorded in these command buffers make earlier fetched results stale.
+     for (uint32_t i = 0; i < submitCount; ++i)
+         for (uint32_t j = 0; pSubmits[i].pCommandBuffers && j < pSubmits[i].commandBufferCount; ++j)
+-            caboose::memory::queryResults.submitted(uint64_t(uintptr_t(pSubmits[i].pCommandBuffers[j])));
++            caboose::memory::queryResults.submitted(caboose::handle_key(pSubmits[i].pCommandBuffers[j]));
+     return on_vkQueueSubmitTemplate<VkSubmitInfo, VkSemaphore>(context, input_result, queue, submitCount,
+                                                   pSubmits, fence);
+ }
+@@ -7507,7 +7507,7 @@ VkResult ResourceTracker::on_vkQueueSubmit2(void* context, VkResult input_result
+     EmitGuestAndHostTraceMarker((VkEncoder*)context);
+     for (uint32_t i = 0; i < submitCount; ++i)
+         for (uint32_t j = 0; pSubmits[i].pCommandBufferInfos && j < pSubmits[i].commandBufferInfoCount; ++j)
+-            caboose::memory::queryResults.submitted(uint64_t(uintptr_t(pSubmits[i].pCommandBufferInfos[j].commandBuffer)));
++            caboose::memory::queryResults.submitted(caboose::handle_key(pSubmits[i].pCommandBufferInfos[j].commandBuffer));
+     return on_vkQueueSubmitTemplate<VkSubmitInfo2, VkSemaphoreSubmitInfo>(context, input_result, queue, submitCount,
+                                                    pSubmits, fence);
+ }
+diff --git a/src/gfxstream/guest/vulkan_enc/autogenerated/VkEncoder.cpp b/src/gfxstream/guest/vulkan_enc/autogenerated/VkEncoder.cpp
+index 149d204..592f4c2 100644
+--- a/src/gfxstream/guest/vulkan_enc/autogenerated/VkEncoder.cpp
++++ b/src/gfxstream/guest/vulkan_enc/autogenerated/VkEncoder.cpp
+@@ -263,7 +263,7 @@ inline bool keyOf(VkDevice device, const VkImageViewCreateInfo* info, Key* key)
+         usage = reinterpret_cast<const VkImageViewUsageCreateInfo*>(next)->usage;
+     }
+     const auto& r = info->subresourceRange;
+-    *key = {uint64_t(uintptr_t(device)), uint64_t(uintptr_t(info->image)), info->flags, uint64_t(info->viewType),
++    *key = {caboose::handle_key(device), caboose::handle_key(info->image), info->flags, uint64_t(info->viewType),
+             uint64_t(info->format), uint64_t(info->components.r), uint64_t(info->components.g),
+             uint64_t(info->components.b), uint64_t(info->components.a), r.aspectMask, r.baseMipLevel,
+             r.levelCount, r.baseArrayLayer, r.layerCount, usage};
+@@ -271,7 +271,7 @@ inline bool keyOf(VkDevice device, const VkImageViewCreateInfo* info, Key* key)
+ }
+ inline void imageCreated(VkImage image) {
+     std::lock_guard<std::mutex> lock(state.mutex);
+-    state.images.insert(uint64_t(uintptr_t(image)));
++    state.images.insert(caboose::handle_key(image));
+ }
+ inline bool acquire(VkDevice device, const VkImageViewCreateInfo* info, VkImageView* view) {
+     Key key;
+@@ -284,19 +284,19 @@ inline bool acquire(VkDevice device, const VkImageViewCreateInfo* info, VkImageV
+     if (it->second.empty()) state.parked.erase(it);
+     --state.parkedCount;
+     state.live[handle] = key;
+-    *view = reinterpret_cast<VkImageView>(uintptr_t(handle));
++    *view = caboose::to_handle<VkImageView>(handle);
+     return true;
+ }
+ inline void created(VkDevice device, const VkImageViewCreateInfo* info, VkImageView view) {
+     Key key;
+     if (!keyOf(device, info, &key)) return;
+     std::lock_guard<std::mutex> lock(state.mutex);
+-    if (state.images.count(key[1])) state.live[uint64_t(uintptr_t(view))] = key;
++    if (state.images.count(key[1])) state.live[caboose::handle_key(view)] = key;
+ }
+ inline bool park(VkImageView view) {
+     if (destroying || !view) return false;
+     std::lock_guard<std::mutex> lock(state.mutex);
+-    uint64_t handle = uint64_t(uintptr_t(view));
++    uint64_t handle = caboose::handle_key(view);
+     auto it = state.live.find(handle);
+     if (it == state.live.end()) return false;
+     Key key = it->second;
+@@ -315,7 +315,7 @@ inline std::vector<uint64_t> take(VkDevice device, VkImage image, bool forgetIma
+     std::vector<uint64_t> out;
+     std::lock_guard<std::mutex> lock(state.mutex);
+     for (auto it = state.parked.begin(); it != state.parked.end();) {
+-        if (it->first[0] == uint64_t(uintptr_t(device)) && (!image || it->first[1] == uint64_t(uintptr_t(image)))) {
++        if (it->first[0] == caboose::handle_key(device) && (!image || it->first[1] == caboose::handle_key(image))) {
+             out.insert(out.end(), it->second.begin(), it->second.end());
+             state.parkedCount -= it->second.size();
+             it = state.parked.erase(it);
+@@ -324,9 +324,9 @@ inline std::vector<uint64_t> take(VkDevice device, VkImage image, bool forgetIma
+         }
+     }
+     if (forgetImage && image) {
+-        state.images.erase(uint64_t(uintptr_t(image)));
++        state.images.erase(caboose::handle_key(image));
+         for (auto it = state.live.begin(); it != state.live.end();)
+-            it = it->second[1] == uint64_t(uintptr_t(image)) ? state.live.erase(it) : std::next(it);
++            it = it->second[1] == caboose::handle_key(image) ? state.live.erase(it) : std::next(it);
+     }
+     return out;
+ }
+@@ -355,13 +355,13 @@ static void cabooseAddTimelineSignals(const VkSubmitInfo& submit,
+             timeline = reinterpret_cast<const VkTimelineSemaphoreSubmitInfo*>(next);
+     if (!timeline || !timeline->pSignalSemaphoreValues || !submit.pSignalSemaphores) return;
+     for (uint32_t i = 0; i < submit.signalSemaphoreCount && i < timeline->signalSemaphoreValueCount; ++i)
+-        out->push_back({uint64_t(uintptr_t(submit.pSignalSemaphores[i])), timeline->pSignalSemaphoreValues[i]});
++        out->push_back({caboose::handle_key(submit.pSignalSemaphores[i]), timeline->pSignalSemaphoreValues[i]});
+ }
+ static void cabooseAddTimelineSignals(const VkSubmitInfo2& submit,
+                                       std::vector<std::pair<uint64_t, uint64_t>>* out) {
+     if (!submit.pSignalSemaphoreInfos) return;
+     for (uint32_t i = 0; i < submit.signalSemaphoreInfoCount; ++i)
+-        out->push_back({uint64_t(uintptr_t(submit.pSignalSemaphoreInfos[i].semaphore)),
++        out->push_back({caboose::handle_key(submit.pSignalSemaphoreInfos[i].semaphore),
+                         submit.pSignalSemaphoreInfos[i].value});
+ }
+ template <class Stream, class Submit>
+@@ -373,13 +373,13 @@ static void cabooseWatchSubmission(Stream* stream, VkQueue queue, uint32_t submi
+     if (!caboose::completion::feedActive.load(std::memory_order_acquire)) {
+         // Without a running feed nothing will report this submission: its objects are
+         // asked about on the device stream until they are reset.
+-        if (fence != VK_NULL_HANDLE) caboose::completion::tracker().fenceUntracked(uint64_t(uintptr_t(fence)));
++        if (fence != VK_NULL_HANDLE) caboose::completion::tracker().fenceUntracked(caboose::handle_key(fence));
+         for (const auto& signal : signals) caboose::completion::tracker().semaphoreUntracked(signal.first);
+         return;
+     }
+     const uint64_t serial = caboose::completion::tracker().submitted(
+-        uint64_t(uintptr_t(fence)), signals, uint64_t(uintptr_t(queue)),
+-        uint64_t(uintptr_t(ResourceTracker::get()->cabooseGetQueueDevice(queue))));
++        caboose::handle_key(fence), signals, caboose::handle_key(queue),
++        caboose::handle_key(ResourceTracker::get()->cabooseGetQueueDevice(queue)));
+     uint8_t* packet = stream->reserve(caboose::completion::kWatchPacketSize);
+     caboose::completion::encodeWatch(packet, get_host_u64_VkQueue(queue), serial);
+     stream->flush();
+@@ -754,7 +754,7 @@ void VkEncoder::vkGetPhysicalDeviceFormatProperties(VkPhysicalDevice physicalDev
+     if (caboose::completion::lostCall()) return;
+     // Format properties never change for a physical device: asked once.
+     const std::string cabooseKey = caboose::memory::StaticQueryCache::key(
+-        uint32_t(OP_vkGetPhysicalDeviceFormatProperties), uint64_t(uintptr_t(physicalDevice)), format);
++        uint32_t(OP_vkGetPhysicalDeviceFormatProperties), caboose::handle_key(physicalDevice), format);
+     if (pFormatProperties && caboose::memory::staticQueryCache.lookup(cabooseKey, pFormatProperties)) return;
+     bool queueSubmitWithCommandsEnabled =
+         sFeatureBits & VULKAN_STREAM_FEATURE_QUEUE_SUBMIT_WITH_COMMANDS_BIT;
+@@ -825,7 +825,7 @@ VkResult VkEncoder::vkGetPhysicalDeviceImageFormatProperties(
+     // Image format properties never change for a physical device: asked once.
+     struct CabooseAnswer { VkResult result; VkImageFormatProperties properties; };
+     const std::string cabooseKey = caboose::memory::StaticQueryCache::key(
+-        uint32_t(OP_vkGetPhysicalDeviceImageFormatProperties), uint64_t(uintptr_t(physicalDevice)), format, type,
++        uint32_t(OP_vkGetPhysicalDeviceImageFormatProperties), caboose::handle_key(physicalDevice), format, type,
+         tiling, usage, flags);
+     if (pImageFormatProperties) {
+         CabooseAnswer cached;
+@@ -1404,7 +1404,7 @@ void VkEncoder::vkDestroyDevice(VkDevice device, const VkAllocationCallbacks* pA
+     if (caboose::completion::lostCall()) return;
+     caboose_view_cache::destroying = true;
+     for (uint64_t view : caboose_view_cache::take(device, VK_NULL_HANDLE, false))
+-        this->vkDestroyImageView(device, reinterpret_cast<VkImageView>(uintptr_t(view)), nullptr, doLock);
++        this->vkDestroyImageView(device, caboose::to_handle<VkImageView>(view), nullptr, doLock);
+     caboose_view_cache::destroying = false;
+     bool queueSubmitWithCommandsEnabled =
+         sFeatureBits & VULKAN_STREAM_FEATURE_QUEUE_SUBMIT_WITH_COMMANDS_BIT;
+@@ -2254,7 +2254,7 @@ VkResult VkEncoder::vkQueueWaitIdle(VkQueue queue, uint32_t doLock) {
+     caboose_read_profile::read(stream, &vkQueueWaitIdle_VkResult_return, sizeof(VkResult));
+     // Only one encoder means every earlier submission went down this stream, ahead of the wait.
+     if (vkQueueWaitIdle_VkResult_return == VK_SUCCESS && caboose::memory::deferredReplies.singleEncoder(this))
+-        caboose::completion::tracker().idle(uint64_t(uintptr_t(queue)), 0, cabooseThrough);
++        caboose::completion::tracker().idle(caboose::handle_key(queue), 0, cabooseThrough);
+     if (vkQueueWaitIdle_VkResult_return == VK_SUCCESS) {
+         sResourceTracker->cabooseInvalidateCoherentMappings(this, VK_NULL_HANDLE, 0 /* already locked */);
+     }
+@@ -2313,7 +2313,7 @@ VkResult VkEncoder::vkDeviceWaitIdle(VkDevice device, uint32_t doLock) {
+     caboose_read_profile::read(stream, &vkDeviceWaitIdle_VkResult_return, sizeof(VkResult));
+     // Only one encoder means every earlier submission went down this stream, ahead of the wait.
+     if (vkDeviceWaitIdle_VkResult_return == VK_SUCCESS && caboose::memory::deferredReplies.singleEncoder(this))
+-        caboose::completion::tracker().idle(0, uint64_t(uintptr_t(device)), cabooseThrough);
++        caboose::completion::tracker().idle(0, caboose::handle_key(device), cabooseThrough);
+     if (vkDeviceWaitIdle_VkResult_return == VK_SUCCESS) {
+         sResourceTracker->cabooseInvalidateCoherentMappings(this, device, 0 /* already locked */);
+     }
+@@ -2413,7 +2413,7 @@ VkResult VkEncoder::vkAllocateMemory(VkDevice device, const VkMemoryAllocateInfo
+     /* is handle, possibly out */;
+     uint64_t cgen_var_2;
+     const bool cabooseGuestHandle = caboose_guest_handles::enabled() && caboose::memory::asyncAllocation && pMemory;
+-    if (cabooseGuestHandle) *pMemory = (VkDeviceMemory)(uintptr_t)caboose_guest_handles::next();
++    if (cabooseGuestHandle) *pMemory = caboose::to_handle<VkDeviceMemory>(caboose_guest_handles::next());
+     *&cgen_var_2 = (uint64_t)((*pMemory));
+     memcpy(*streamPtrPtr, (uint64_t*)&cgen_var_2, 8);
+     *streamPtrPtr += 8;
+@@ -2603,7 +2603,7 @@ VkResult VkEncoder::vkFlushMappedMemoryRanges(VkDevice device, uint32_t count,
+                 return !ranges[i].pNext && ranges[i].sType == VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
+             }, [&](uint32_t i, uint64_t offset, uint64_t size, uint8_t*) {
+                 return caboose::memory::flushShadow.emitChanged(
+-                    uint64_t(uintptr_t(ranges[i].memory)), mappings[i].base, mappings[i].allocation,
++                    caboose::handle_key(ranges[i].memory), mappings[i].base, mappings[i].allocation,
+                     offset, size, [&](uint64_t changedOffset, uint64_t changedSize) {
+                         return packet.push(i, changedOffset, changedSize);
+                     });
+@@ -2654,12 +2654,12 @@ VkResult VkEncoder::vkInvalidateMappedMemoryRanges(VkDevice device, uint32_t cou
+         if (result == caboose::memory::success) {
+             for (uint32_t i = 0; i < count; ++i) {
+                 caboose::memory::flushShadow.noteRefreshed(
+-                    uint64_t(uintptr_t(ranges[i].memory)), mappings[i].base,
++                    caboose::handle_key(ranges[i].memory), mappings[i].base,
+                     mappings[i].allocation, mappings[i].offset, mappings[i].size);
+             }
+         } else {
+             for (uint32_t i = 0; i < count; ++i)
+-                caboose::memory::flushShadow.forget(uint64_t(uintptr_t(ranges[i].memory)));
++                caboose::memory::flushShadow.forget(caboose::handle_key(ranges[i].memory));
+         }
+         return static_cast<VkResult>(result);
+     }
+@@ -3592,10 +3592,10 @@ VkResult VkEncoder::vkQueueBindSparse(VkQueue queue, uint32_t bindInfoCount,
+     // The executor is gone: report device loss, and never read garbage replies into outputs.
+     if (caboose::completion::lostCall()) return VK_ERROR_DEVICE_LOST;
+     // Sparse binding's signal operations are not watched: those objects are asked about.
+-    if (fence) caboose::completion::tracker().fenceUntracked(uint64_t(uintptr_t(fence)));
++    if (fence) caboose::completion::tracker().fenceUntracked(caboose::handle_key(fence));
+     for (uint32_t i = 0; pBindInfo && i < bindInfoCount; ++i)
+         for (uint32_t j = 0; pBindInfo[i].pSignalSemaphores && j < pBindInfo[i].signalSemaphoreCount; ++j)
+-            caboose::completion::tracker().semaphoreUntracked(uint64_t(uintptr_t(pBindInfo[i].pSignalSemaphores[j])));
++            caboose::completion::tracker().semaphoreUntracked(caboose::handle_key(pBindInfo[i].pSignalSemaphores[j]));
+     bool queueSubmitWithCommandsEnabled =
+         sFeatureBits & VULKAN_STREAM_FEATURE_QUEUE_SUBMIT_WITH_COMMANDS_BIT;
+     if (!queueSubmitWithCommandsEnabled && doLock) this->lock();
+@@ -3764,7 +3764,7 @@ VkResult VkEncoder::vkCreateFence(VkDevice device, const VkFenceCreateInfo* pCre
+     /* is handle, possibly out */;
+     uint64_t cgen_var_2;
+     const bool cabooseGuestHandle = caboose_guest_handles::enabled() && pFence;
+-    if (cabooseGuestHandle) *pFence = (VkFence)(uintptr_t)caboose_guest_handles::next();
++    if (cabooseGuestHandle) *pFence = caboose::to_handle<VkFence>(caboose_guest_handles::next());
+     *&cgen_var_2 = (uint64_t)((*pFence));
+     memcpy(*streamPtrPtr, (uint64_t*)&cgen_var_2, 8);
+     *streamPtrPtr += 8;
+@@ -3800,7 +3800,7 @@ VkResult VkEncoder::vkCreateFence(VkDevice device, const VkFenceCreateInfo* pCre
+ 
+ void VkEncoder::vkDestroyFence(VkDevice device, VkFence fence,
+                                const VkAllocationCallbacks* pAllocator, uint32_t doLock) {
+-    caboose::memory::deferredReplies.forgetFence(uint64_t(uintptr_t(fence)));
++    caboose::memory::deferredReplies.forgetFence(caboose::handle_key(fence));
+     (void)doLock;
+     bool queueSubmitWithCommandsEnabled =
+         sFeatureBits & VULKAN_STREAM_FEATURE_QUEUE_SUBMIT_WITH_COMMANDS_BIT;
+@@ -3878,7 +3878,7 @@ void VkEncoder::vkDestroyFence(VkDevice device, VkFence fence,
+ 
+ VkResult VkEncoder::vkResetFences(VkDevice device, uint32_t fenceCount, const VkFence* pFences,
+                                   uint32_t doLock) {
+-    for (uint32_t i = 0; i < fenceCount; ++i) caboose::memory::deferredReplies.forgetFence(uint64_t(uintptr_t(pFences[i])));
++    for (uint32_t i = 0; i < fenceCount; ++i) caboose::memory::deferredReplies.forgetFence(caboose::handle_key(pFences[i]));
+     (void)doLock;
+     static_assert(caboose::memory::timedRpcIndex(OP_vkResetFences) >= 0, "untimed RPC opcode");
+     caboose::memory::RpcCallScope caboose_rpc_timing{OP_vkResetFences};
+@@ -3972,7 +3972,7 @@ VkResult VkEncoder::vkGetFenceStatus(VkDevice device, VkFence fence, uint32_t do
+             return VK_ERROR_DEVICE_LOST;
+         }
+         if (!caboose::memory::deferredReplies.signaled(&fence, 1, true) &&
+-            caboose::memory::deferredReplies.prefetchPending(this, uint64_t(uintptr_t(fence)))) {
++            caboose::memory::deferredReplies.prefetchPending(this, caboose::handle_key(fence))) {
+             if (!queueSubmitWithCommandsEnabled && doLock) this->unlock();
+             return VK_NOT_READY;
+         }
+@@ -4023,7 +4023,7 @@ VkResult VkEncoder::vkGetFenceStatus(VkDevice device, VkFence fence, uint32_t do
+     caboose_read_profile::read(stream, &vkGetFenceStatus_VkResult_return, sizeof(VkResult));
+     if (vkGetFenceStatus_VkResult_return == VK_SUCCESS) {
+         sResourceTracker->cabooseInvalidateCoherentMappings(this, device, 0 /* already locked */);
+-        caboose::memory::deferredReplies.markSignaled(uint64_t(uintptr_t(fence)));
++        caboose::memory::deferredReplies.markSignaled(caboose::handle_key(fence));
+     }
+     ++encodeCount;
+     if (0 == encodeCount % POOL_CLEAR_INTERVAL) {
+@@ -4117,7 +4117,7 @@ VkResult VkEncoder::vkWaitForFences(VkDevice device, uint32_t fenceCount, const
+     if (caboose::memory::sendingPrefetchedFenceWait) {
+         stream->flush();
+         caboose::memory::deferredReplies.addFenceWait(
+-            this, uint64_t(uintptr_t(local_pFences[0])), packetSize_vkWaitForFences);
++            this, caboose::handle_key(local_pFences[0]), packetSize_vkWaitForFences);
+     } else {
+         caboose_read_profile::read(stream, &vkWaitForFences_VkResult_return, sizeof(VkResult));
+         if (vkWaitForFences_VkResult_return == VK_SUCCESS) {
+@@ -4220,7 +4220,7 @@ VkResult VkEncoder::vkCreateSemaphore(VkDevice device, const VkSemaphoreCreateIn
+     /* is handle, possibly out */;
+     uint64_t cgen_var_2;
+     const bool cabooseGuestHandle = caboose_guest_handles::enabled() && pSemaphore;
+-    if (cabooseGuestHandle) *pSemaphore = (VkSemaphore)(uintptr_t)caboose_guest_handles::next();
++    if (cabooseGuestHandle) *pSemaphore = caboose::to_handle<VkSemaphore>(caboose_guest_handles::next());
+     *&cgen_var_2 = (uint64_t)((*pSemaphore));
+     memcpy(*streamPtrPtr, (uint64_t*)&cgen_var_2, 8);
+     *streamPtrPtr += 8;
+@@ -4420,7 +4420,7 @@ VkResult VkEncoder::vkCreateQueryPool(VkDevice device, const VkQueryPoolCreateIn
+     }
+     /* is handle, possibly out */;
+     uint64_t cgen_var_2;
+-    if (cabooseGuestHandle) *pQueryPool = (VkQueryPool)(uintptr_t)caboose_guest_handles::next();
++    if (cabooseGuestHandle) *pQueryPool = caboose::to_handle<VkQueryPool>(caboose_guest_handles::next());
+     *&cgen_var_2 = (uint64_t)((*pQueryPool));
+     memcpy(*streamPtrPtr, (uint64_t*)&cgen_var_2, 8);
+     *streamPtrPtr += 8;
+@@ -4451,7 +4451,7 @@ VkResult VkEncoder::vkCreateQueryPool(VkDevice device, const VkQueryPoolCreateIn
+ void VkEncoder::vkDestroyQueryPool(VkDevice device, VkQueryPool queryPool,
+                                    const VkAllocationCallbacks* pAllocator, uint32_t doLock) {
+     (void)doLock;
+-    caboose::memory::queryResults.poolDestroyed(uint64_t(uintptr_t(queryPool)));
++    caboose::memory::queryResults.poolDestroyed(caboose::handle_key(queryPool));
+     // The executor is gone: report device loss, and never read garbage replies into outputs.
+     if (caboose::completion::lostCall()) return;
+     bool queueSubmitWithCommandsEnabled =
+@@ -4545,7 +4545,7 @@ VkResult VkEncoder::vkGetQueryPoolResults(VkDevice device, VkQueryPool queryPool
+     // the next identical call returns it (caboose-bounded-memory/query_results.h).
+     const bool cabooseAsync = !(flags & VK_QUERY_RESULT_WAIT_BIT) && caboose_guest_handles::enabled() &&
+                               caboose_gfxstream_device_fd >= 0 && caboose::memory::deferredReplies.singleEncoder(this);
+-    const caboose::memory::QueryResults::Key cabooseKey{uint64_t(uintptr_t(queryPool)), firstQuery, queryCount,
++    const caboose::memory::QueryResults::Key cabooseKey{caboose::handle_key(queryPool), firstQuery, queryCount,
+                                                         uint64_t(dataSize), uint64_t(stride), uint32_t(flags)};
+     std::shared_ptr<caboose::memory::QueryReply> cabooseEarlier;
+     if (cabooseAsync) {
+@@ -4755,7 +4755,7 @@ VkResult VkEncoder::vkCreateBuffer(VkDevice device, const VkBufferCreateInfo* pC
+     /* is handle, possibly out */;
+     uint64_t cgen_var_2;
+     const bool cabooseGuestHandle = caboose_guest_handles::enabled() && pBuffer;
+-    if (cabooseGuestHandle) *pBuffer = (VkBuffer)(uintptr_t)caboose_guest_handles::next();
++    if (cabooseGuestHandle) *pBuffer = caboose::to_handle<VkBuffer>(caboose_guest_handles::next());
+     *&cgen_var_2 = (uint64_t)((*pBuffer));
+     memcpy(*streamPtrPtr, (uint64_t*)&cgen_var_2, 8);
+     *streamPtrPtr += 8;
+@@ -4951,7 +4951,7 @@ VkResult VkEncoder::vkCreateImage(VkDevice device, const VkImageCreateInfo* pCre
+     /* is handle, possibly out */;
+     uint64_t cgen_var_2;
+     const bool cabooseGuestHandle = caboose_guest_handles::enabled() && pImage;
+-    if (cabooseGuestHandle) *pImage = (VkImage)(uintptr_t)caboose_guest_handles::next();
++    if (cabooseGuestHandle) *pImage = caboose::to_handle<VkImage>(caboose_guest_handles::next());
+     *&cgen_var_2 = (uint64_t)((*pImage));
+     memcpy(*streamPtrPtr, (uint64_t*)&cgen_var_2, 8);
+     *streamPtrPtr += 8;
+@@ -4991,7 +4991,7 @@ void VkEncoder::vkDestroyImage(VkDevice device, VkImage image,
+     if (image) {
+         caboose_view_cache::destroying = true;
+         for (uint64_t view : caboose_view_cache::take(device, image, true))
+-            this->vkDestroyImageView(device, reinterpret_cast<VkImageView>(uintptr_t(view)), nullptr, doLock);
++            this->vkDestroyImageView(device, caboose::to_handle<VkImageView>(view), nullptr, doLock);
+         caboose_view_cache::destroying = false;
+     }
+     bool queueSubmitWithCommandsEnabled =
+@@ -5244,7 +5244,7 @@ VkResult VkEncoder::vkCreateImageView(VkDevice device, const VkImageViewCreateIn
+     /* is handle, possibly out */;
+     uint64_t cgen_var_2;
+     const bool cabooseGuestHandle = caboose_guest_handles::enabled() && pView;
+-    if (cabooseGuestHandle) *pView = (VkImageView)(uintptr_t)caboose_guest_handles::next();
++    if (cabooseGuestHandle) *pView = caboose::to_handle<VkImageView>(caboose_guest_handles::next());
+     *&cgen_var_2 = (uint64_t)((*pView));
+     memcpy(*streamPtrPtr, (uint64_t*)&cgen_var_2, 8);
+     *streamPtrPtr += 8;
+@@ -5447,7 +5447,7 @@ VkResult VkEncoder::vkCreateCommandPool(VkDevice device, const VkCommandPoolCrea
+     /* is handle, possibly out */;
+     uint64_t cgen_var_2;
+     const bool cabooseGuestHandle = caboose_guest_handles::enabled() && pCommandPool;
+-    if (cabooseGuestHandle) *pCommandPool = (VkCommandPool)(uintptr_t)caboose_guest_handles::next();
++    if (cabooseGuestHandle) *pCommandPool = caboose::to_handle<VkCommandPool>(caboose_guest_handles::next());
+     *&cgen_var_2 = (uint64_t)((*pCommandPool));
+     memcpy(*streamPtrPtr, (uint64_t*)&cgen_var_2, 8);
+     *streamPtrPtr += 8;
+@@ -6258,7 +6258,7 @@ VkResult VkEncoder::vkBeginCommandBuffer(VkCommandBuffer commandBuffer,
+                                          const VkCommandBufferBeginInfo* pBeginInfo,
+                                          uint32_t doLock) {
+     (void)doLock;
+-    caboose::memory::queryResults.commandBufferBegun(uint64_t(uintptr_t(commandBuffer)));
++    caboose::memory::queryResults.commandBufferBegun(caboose::handle_key(commandBuffer));
+     // The executor is gone: report device loss, and never read garbage replies into outputs.
+     if (caboose::completion::lostCall()) return VK_ERROR_DEVICE_LOST;
+     static_assert(caboose::memory::timedRpcIndex(OP_vkBeginCommandBuffer) >= 0, "untimed RPC opcode");
+@@ -7293,7 +7293,7 @@ void VkEncoder::vkCmdEndQuery(VkCommandBuffer commandBuffer, VkQueryPool queryPo
+ void VkEncoder::vkCmdResetQueryPool(VkCommandBuffer commandBuffer, VkQueryPool queryPool,
+                                     uint32_t firstQuery, uint32_t queryCount, uint32_t doLock) {
+     (void)doLock;
+-    caboose::memory::queryResults.recordReset(uint64_t(uintptr_t(commandBuffer)), uint64_t(uintptr_t(queryPool)),
++    caboose::memory::queryResults.recordReset(caboose::handle_key(commandBuffer), caboose::handle_key(queryPool),
+                                               firstQuery, queryCount);
+     // The executor is gone: report device loss, and never read garbage replies into outputs.
+     if (caboose::completion::lostCall()) return;
+@@ -8227,7 +8227,7 @@ VkResult VkEncoder::vkCreateShaderModule(VkDevice device,
+     /* is handle, possibly out */;
+     uint64_t cgen_var_2;
+     const bool cabooseGuestHandle = caboose_guest_handles::enabled() && pShaderModule;
+-    if (cabooseGuestHandle) *pShaderModule = (VkShaderModule)(uintptr_t)caboose_guest_handles::next();
++    if (cabooseGuestHandle) *pShaderModule = caboose::to_handle<VkShaderModule>(caboose_guest_handles::next());
+     *&cgen_var_2 = (uint64_t)((*pShaderModule));
+     memcpy(*streamPtrPtr, (uint64_t*)&cgen_var_2, 8);
+     *streamPtrPtr += 8;
+@@ -8427,7 +8427,7 @@ VkResult VkEncoder::vkCreatePipelineCache(VkDevice device,
+     /* is handle, possibly out */;
+     uint64_t cgen_var_2;
+     const bool cabooseGuestHandle = caboose_guest_handles::enabled() && pPipelineCache;
+-    if (cabooseGuestHandle) *pPipelineCache = (VkPipelineCache)(uintptr_t)caboose_guest_handles::next();
++    if (cabooseGuestHandle) *pPipelineCache = caboose::to_handle<VkPipelineCache>(caboose_guest_handles::next());
+     *&cgen_var_2 = (uint64_t)((*pPipelineCache));
+     memcpy(*streamPtrPtr, (uint64_t*)&cgen_var_2, 8);
+     *streamPtrPtr += 8;
+@@ -9062,7 +9062,7 @@ VkResult VkEncoder::vkCreatePipelineLayout(VkDevice device,
+     /* is handle, possibly out */;
+     uint64_t cgen_var_2;
+     const bool cabooseGuestHandle = caboose_guest_handles::enabled() && pPipelineLayout;
+-    if (cabooseGuestHandle) *pPipelineLayout = (VkPipelineLayout)(uintptr_t)caboose_guest_handles::next();
++    if (cabooseGuestHandle) *pPipelineLayout = caboose::to_handle<VkPipelineLayout>(caboose_guest_handles::next());
+     *&cgen_var_2 = (uint64_t)((*pPipelineLayout));
+     memcpy(*streamPtrPtr, (uint64_t*)&cgen_var_2, 8);
+     *streamPtrPtr += 8;
+@@ -9259,7 +9259,7 @@ VkResult VkEncoder::vkCreateSampler(VkDevice device, const VkSamplerCreateInfo*
+     /* is handle, possibly out */;
+     uint64_t cgen_var_2;
+     const bool cabooseGuestHandle = caboose_guest_handles::enabled() && pSampler;
+-    if (cabooseGuestHandle) *pSampler = (VkSampler)(uintptr_t)caboose_guest_handles::next();
++    if (cabooseGuestHandle) *pSampler = caboose::to_handle<VkSampler>(caboose_guest_handles::next());
+     *&cgen_var_2 = (uint64_t)((*pSampler));
+     memcpy(*streamPtrPtr, (uint64_t*)&cgen_var_2, 8);
+     *streamPtrPtr += 8;
+@@ -9460,7 +9460,7 @@ VkResult VkEncoder::vkCreateDescriptorSetLayout(VkDevice device,
+     /* is handle, possibly out */;
+     uint64_t cgen_var_2;
+     const bool cabooseGuestHandle = caboose_guest_handles::enabled() && pSetLayout;
+-    if (cabooseGuestHandle) *pSetLayout = (VkDescriptorSetLayout)(uintptr_t)caboose_guest_handles::next();
++    if (cabooseGuestHandle) *pSetLayout = caboose::to_handle<VkDescriptorSetLayout>(caboose_guest_handles::next());
+     *&cgen_var_2 = (uint64_t)((*pSetLayout));
+     memcpy(*streamPtrPtr, (uint64_t*)&cgen_var_2, 8);
+     *streamPtrPtr += 8;
+@@ -9664,7 +9664,7 @@ VkResult VkEncoder::vkCreateDescriptorPool(VkDevice device,
+     /* is handle, possibly out */;
+     uint64_t cgen_var_2;
+     const bool cabooseGuestHandle = caboose_guest_handles::enabled() && pDescriptorPool;
+-    if (cabooseGuestHandle) *pDescriptorPool = (VkDescriptorPool)(uintptr_t)caboose_guest_handles::next();
++    if (cabooseGuestHandle) *pDescriptorPool = caboose::to_handle<VkDescriptorPool>(caboose_guest_handles::next());
+     *&cgen_var_2 = (uint64_t)((*pDescriptorPool));
+     memcpy(*streamPtrPtr, (uint64_t*)&cgen_var_2, 8);
+     *streamPtrPtr += 8;
+@@ -11220,7 +11220,7 @@ VkResult VkEncoder::vkCreateFramebuffer(VkDevice device, const VkFramebufferCrea
+     /* is handle, possibly out */;
+     uint64_t cgen_var_2;
+     const bool cabooseGuestHandle = caboose_guest_handles::enabled() && pFramebuffer;
+-    if (cabooseGuestHandle) *pFramebuffer = (VkFramebuffer)(uintptr_t)caboose_guest_handles::next();
++    if (cabooseGuestHandle) *pFramebuffer = caboose::to_handle<VkFramebuffer>(caboose_guest_handles::next());
+     *&cgen_var_2 = (uint64_t)((*pFramebuffer));
+     memcpy(*streamPtrPtr, (uint64_t*)&cgen_var_2, 8);
+     *streamPtrPtr += 8;
+@@ -11419,7 +11419,7 @@ VkResult VkEncoder::vkCreateRenderPass(VkDevice device, const VkRenderPassCreate
+     /* is handle, possibly out */;
+     uint64_t cgen_var_2;
+     const bool cabooseGuestHandle = caboose_guest_handles::enabled() && pRenderPass;
+-    if (cabooseGuestHandle) *pRenderPass = (VkRenderPass)(uintptr_t)caboose_guest_handles::next();
++    if (cabooseGuestHandle) *pRenderPass = caboose::to_handle<VkRenderPass>(caboose_guest_handles::next());
+     *&cgen_var_2 = (uint64_t)((*pRenderPass));
+     memcpy(*streamPtrPtr, (uint64_t*)&cgen_var_2, 8);
+     *streamPtrPtr += 8;
+@@ -14130,7 +14130,7 @@ void VkEncoder::vkGetPhysicalDeviceFormatProperties2(VkPhysicalDevice physicalDe
+     // Format properties never change for a physical device: asked once (without extensions).
+     const bool cabooseCacheable = pFormatProperties && !pFormatProperties->pNext;
+     const std::string cabooseKey = caboose::memory::StaticQueryCache::key(
+-        uint32_t(OP_vkGetPhysicalDeviceFormatProperties2), uint64_t(uintptr_t(physicalDevice)), format);
++        uint32_t(OP_vkGetPhysicalDeviceFormatProperties2), caboose::handle_key(physicalDevice), format);
+     if (cabooseCacheable && caboose::memory::staticQueryCache.lookup(cabooseKey, &pFormatProperties->formatProperties))
+         return;
+     bool queueSubmitWithCommandsEnabled =
+@@ -14205,7 +14205,7 @@ VkResult VkEncoder::vkGetPhysicalDeviceImageFormatProperties2(
+     std::string cabooseKey;
+     if (cabooseCacheable) {
+         cabooseKey = caboose::memory::StaticQueryCache::key(
+-            uint32_t(OP_vkGetPhysicalDeviceImageFormatProperties2), uint64_t(uintptr_t(physicalDevice)),
++            uint32_t(OP_vkGetPhysicalDeviceImageFormatProperties2), caboose::handle_key(physicalDevice),
+             pImageFormatInfo->format, pImageFormatInfo->type, pImageFormatInfo->tiling, pImageFormatInfo->usage,
+             pImageFormatInfo->flags);
+         CabooseAnswer cached;
+@@ -15648,7 +15648,7 @@ void VkEncoder::vkDestroySamplerYcbcrConversion(VkDevice device,
+ void VkEncoder::vkResetQueryPool(VkDevice device, VkQueryPool queryPool, uint32_t firstQuery,
+                                  uint32_t queryCount, uint32_t doLock) {
+     (void)doLock;
+-    caboose::memory::queryResults.reset(uint64_t(uintptr_t(queryPool)), firstQuery, queryCount);
++    caboose::memory::queryResults.reset(caboose::handle_key(queryPool), firstQuery, queryCount);
+     // The executor is gone: report device loss, and never read garbage replies into outputs.
+     if (caboose::completion::lostCall()) return;
+     bool queueSubmitWithCommandsEnabled =
+@@ -15720,11 +15720,11 @@ VkResult VkEncoder::vkGetSemaphoreCounterValue(VkDevice device, VkSemaphore sema
+     if (caboose::completion::lostCall()) return VK_ERROR_DEVICE_LOST;
+     // A tracked timeline's completed value is known here: no round trip.
+     if (caboose::completion::feedActive.load(std::memory_order_acquire) && pValue) {
+-        if (caboose::completion::tracker().deviceLost(uint64_t(uintptr_t(device)))) {
++        if (caboose::completion::tracker().deviceLost(caboose::handle_key(device))) {
+             caboose::completion::awaitExecutorReturn();
+             return VK_ERROR_DEVICE_LOST;
+         }
+-        if (caboose::completion::tracker().timelineValue(uint64_t(uintptr_t(semaphore)), pValue))
++        if (caboose::completion::tracker().timelineValue(caboose::handle_key(semaphore), pValue))
+             return VK_SUCCESS;
+     }
+     bool queueSubmitWithCommandsEnabled =
+@@ -15796,7 +15796,7 @@ VkResult VkEncoder::vkWaitSemaphores(VkDevice device, const VkSemaphoreWaitInfo*
+         pWaitInfo->semaphoreCount && pWaitInfo->pSemaphores && pWaitInfo->pValues) {
+         std::vector<uint64_t> semaphores;
+         for (uint32_t i = 0; i < pWaitInfo->semaphoreCount; ++i)
+-            semaphores.push_back(uint64_t(uintptr_t(pWaitInfo->pSemaphores[i])));
++            semaphores.push_back(caboose::handle_key(pWaitInfo->pSemaphores[i]));
+         const bool all = !(pWaitInfo->flags & VK_SEMAPHORE_WAIT_ANY_BIT);
+         constexpr uint64_t kDay = 86400ull * 1000000000ull;
+         uint64_t remaining = timeout;
+@@ -15946,7 +15946,7 @@ VkResult VkEncoder::vkSignalSemaphore(VkDevice device, const VkSemaphoreSignalIn
+     VkResult vkSignalSemaphore_VkResult_return = (VkResult)0;
+     caboose_read_profile::read(stream, &vkSignalSemaphore_VkResult_return, sizeof(VkResult));
+     if (vkSignalSemaphore_VkResult_return == VK_SUCCESS && pSignalInfo)
+-        caboose::completion::tracker().timelineSignaledByHost(uint64_t(uintptr_t(pSignalInfo->semaphore)),
++        caboose::completion::tracker().timelineSignaledByHost(caboose::handle_key(pSignalInfo->semaphore),
+                                                               pSignalInfo->value);
+     ++encodeCount;
+     if (0 == encodeCount % POOL_CLEAR_INTERVAL) {
+@@ -16430,7 +16430,7 @@ VkResult VkEncoder::vkCreateRenderPass2(VkDevice device, const VkRenderPassCreat
+     /* is handle, possibly out */;
+     uint64_t cgen_var_2;
+     const bool cabooseGuestHandle = caboose_guest_handles::enabled() && pRenderPass;
+-    if (cabooseGuestHandle) *pRenderPass = (VkRenderPass)(uintptr_t)caboose_guest_handles::next();
++    if (cabooseGuestHandle) *pRenderPass = caboose::to_handle<VkRenderPass>(caboose_guest_handles::next());
+     *&cgen_var_2 = (uint64_t)((*pRenderPass));
+     memcpy(*streamPtrPtr, (uint64_t*)&cgen_var_2, 8);
+     *streamPtrPtr += 8;
+@@ -21086,7 +21086,7 @@ void VkEncoder::vkGetPhysicalDeviceFormatProperties2KHR(VkPhysicalDevice physica
+     // Format properties never change for a physical device: asked once (without extensions).
+     const bool cabooseCacheable = pFormatProperties && !pFormatProperties->pNext;
+     const std::string cabooseKey = caboose::memory::StaticQueryCache::key(
+-        uint32_t(OP_vkGetPhysicalDeviceFormatProperties2), uint64_t(uintptr_t(physicalDevice)), format);
++        uint32_t(OP_vkGetPhysicalDeviceFormatProperties2), caboose::handle_key(physicalDevice), format);
+     if (cabooseCacheable && caboose::memory::staticQueryCache.lookup(cabooseKey, &pFormatProperties->formatProperties))
+         return;
+     bool queueSubmitWithCommandsEnabled =
+@@ -21161,7 +21161,7 @@ VkResult VkEncoder::vkGetPhysicalDeviceImageFormatProperties2KHR(
+     std::string cabooseKey;
+     if (cabooseCacheable) {
+         cabooseKey = caboose::memory::StaticQueryCache::key(
+-            uint32_t(OP_vkGetPhysicalDeviceImageFormatProperties2), uint64_t(uintptr_t(physicalDevice)),
++            uint32_t(OP_vkGetPhysicalDeviceImageFormatProperties2), caboose::handle_key(physicalDevice),
+             pImageFormatInfo->format, pImageFormatInfo->type, pImageFormatInfo->tiling, pImageFormatInfo->usage,
+             pImageFormatInfo->flags);
+         CabooseAnswer cached;
+@@ -22418,7 +22418,7 @@ VkResult VkEncoder::vkCreateRenderPass2KHR(VkDevice device,
+     /* is handle, possibly out */;
+     uint64_t cgen_var_2;
+     const bool cabooseGuestHandle = caboose_guest_handles::enabled() && pRenderPass;
+-    if (cabooseGuestHandle) *pRenderPass = (VkRenderPass)(uintptr_t)caboose_guest_handles::next();
++    if (cabooseGuestHandle) *pRenderPass = caboose::to_handle<VkRenderPass>(caboose_guest_handles::next());
+     *&cgen_var_2 = (uint64_t)((*pRenderPass));
+     memcpy(*streamPtrPtr, (uint64_t*)&cgen_var_2, 8);
+     *streamPtrPtr += 8;
+@@ -22765,7 +22765,7 @@ void VkEncoder::vkGetPhysicalDeviceExternalFencePropertiesKHR(
+ VkResult VkEncoder::vkImportFenceFdKHR(VkDevice device,
+                                        const VkImportFenceFdInfoKHR* pImportFenceFdInfo,
+                                        uint32_t doLock) {
+-    if (pImportFenceFdInfo) caboose::memory::deferredReplies.forgetFence(uint64_t(uintptr_t(pImportFenceFdInfo->fence)));
++    if (pImportFenceFdInfo) caboose::memory::deferredReplies.forgetFence(caboose::handle_key(pImportFenceFdInfo->fence));
+     (void)doLock;
+     bool queueSubmitWithCommandsEnabled =
+         sFeatureBits & VULKAN_STREAM_FEATURE_QUEUE_SUBMIT_WITH_COMMANDS_BIT;

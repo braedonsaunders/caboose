@@ -4,13 +4,18 @@
 FROM debian:trixie-slim@sha256:62bd423aeee912639ca8ee681c2b762cb3e25137e0a92b20be455898a9f034ad
 ARG SNAPSHOT=20261030T000000Z
 ENV DEBIAN_FRONTEND=noninteractive LC_ALL=C.UTF-8 TZ=UTC
+# The i386 cross compiler and libraries build the driver for 32-bit applications (compile.sh).
 RUN rm -f /etc/apt/sources.list.d/debian.sources && \
     printf 'deb [check-valid-until=no] http://snapshot.debian.org/archive/debian/%s trixie main\n' "$SNAPSHOT" \
       > /etc/apt/sources.list && \
+    dpkg --add-architecture i386 && \
     apt-get -o Acquire::Retries=5 update && \
     apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
       g++ gcc binutils make meson ninja-build pkg-config git ca-certificates \
       python3 python3-mako python3-yaml python3-packaging \
-      libdrm-dev libwayland-dev libxcb1-dev libx11-xcb-dev libexpat1-dev zlib1g-dev libzstd-dev && \
+      libdrm-dev libwayland-dev libxcb1-dev libx11-xcb-dev libexpat1-dev zlib1g-dev libzstd-dev \
+      g++-i686-linux-gnu gcc-i686-linux-gnu binutils-i686-linux-gnu \
+      libdrm-dev:i386 libwayland-dev:i386 libxcb1-dev:i386 libx11-xcb-dev:i386 libexpat1-dev:i386 \
+      zlib1g-dev:i386 libzstd-dev:i386 && \
     rm -rf /var/lib/apt/lists/* && \
     mkdir -m 1777 /work

@@ -91,7 +91,7 @@ static uint32_t presentFamily(const ProviderCaps& caps) {
 // Whether a slot's last hand-off ran, waiting up to `timeout`. The completion feed answers
 // locally; a fence it does not track is asked about on the device stream.
 static bool slotHandoffDone(DeviceSwapchain& swap, AcquireSlot& slot, uint64_t timeout) {
-    uint64_t key=uint64_t(uintptr_t(slot.fence));
+    uint64_t key=caboose::handle_key(slot.fence);
     auto answer=timeout ? caboose::completion::tracker().waitFences(&key,1,true,
                               std::chrono::steady_clock::now()+std::chrono::nanoseconds(timeout))
                         : caboose::completion::tracker().fencesSignaled(&key,1,true);
@@ -609,7 +609,7 @@ static VkResult VKAPI_CALL acquireImage(VkDevice device, VkSwapchainKHR handle, 
             return result;
         }
         // The presentation engine signals this fence: the guest asks the device about it.
-        if (internalFence) caboose::completion::tracker().fenceUntracked(uint64_t(uintptr_t(internalFence)));
+        if (internalFence) caboose::completion::tracker().fenceUntracked(caboose::handle_key(internalFence));
         if (surface.query==UINT64_MAX) return VK_ERROR_INITIALIZATION_FAILED;
         uint64_t request=++surface.query;
         // The phone signals a semaphore and fence the device stream created.

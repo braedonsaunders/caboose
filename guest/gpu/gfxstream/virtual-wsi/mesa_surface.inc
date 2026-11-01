@@ -8,6 +8,7 @@
 #error Private surface queries require the private ICD and v3 handshake
 #endif
 #include "caboose-wsi/client.h"
+#include "caboose-bounded-memory/handles.h"
 #include <wayland-client-core.h>
 #include <wayland-client-protocol.h>
 #include <map>

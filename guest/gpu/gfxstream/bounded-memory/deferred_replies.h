@@ -10,7 +10,9 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+
 #include "completion_feed.h"
+#include "handles.h"
 #include "query_results.h"
 
 namespace caboose::memory {
@@ -224,7 +226,7 @@ public:
         std::lock_guard<std::mutex> lock(mutex_);
         uint32_t known = 0;
         for (uint32_t i = 0; i < count; ++i)
-            known += signaled_.count(uint64_t(uintptr_t(fences[i]))) ? 1 : 0;
+            known += signaled_.count(caboose::handle_key(fences[i])) ? 1 : 0;
         return waitAll ? known == count : known > 0;
     }
 

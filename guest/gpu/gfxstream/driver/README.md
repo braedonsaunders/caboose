@@ -23,8 +23,9 @@ container without network. `CABOOSE_BUILD_JOBS` sets its parallelism and CPU lim
 | File | What |
 | --- | --- |
 | `libvulkan_gfxstream.so` | The driver |
+| `i386/libvulkan_gfxstream.so` | The driver for 32-bit applications, cross-compiled for i386 |
 | `caboose-driver.json` | The Mesa revision and the SHA-256 of every patch and owned source the build used |
-| `SHA256SUMS` | Both files' hashes |
+| `SHA256SUMS` | The other files' hashes |
 
 The build environment is [`Dockerfile`](Dockerfile): a digest-pinned Debian 13 image
 whose packages come from a fixed `snapshot.debian.org` date, so the compiler, headers and
@@ -110,6 +111,7 @@ Each patch is one feature. Several change Mesa's generated encoder
 | 0039 encoder-reentry | The encoder lock records its owner thread: a thread that takes the lock it already holds (an earlier call faulted while encoding, as Wine allows) prints `CABOOSE_GPU_ENCODER_REENTERED` and aborts instead of spinning forever |
 | 0040 kept-create-structures | `VkBufferUsageFlags2CreateInfoKHR`, `VkImageViewUsageCreateInfo`, `VkImageFormatListCreateInfo` and `VkImageStencilUsageCreateInfo` survive the chains buffer, image and image view creation rebuild, and a buffer's recorded usage is maintenance5's when given: ANGLE created usage-0 buffers once maintenance5 was offered |
 | 0041 shader-cache | With hello `0x2000`, a module the phone's shader store holds, or one this process already sent on its single device stream, is sent as a 48-byte token naming its BLAKE3 hash; the process asks for the store's keys once (`../shader-cache/shader_cache.h`, docs/gpu-live.md "Shader cache") |
+| 0042 32-bit-handles | Handle casts through `uintptr_t` become `caboose::handle_key` and `caboose::to_handle` (`../bounded-memory/handles.h`), which keep a non-dispatchable handle whole in the i386 build |
 
 The patch messages describe each change. To change the driver, prepare a tree, commit
 the prepared state, edit, and regenerate the affected patch with `git format-patch`
