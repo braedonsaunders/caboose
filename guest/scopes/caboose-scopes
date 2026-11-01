@@ -4,6 +4,7 @@
     caboose-scopes setup                  make the hierarchy (root; safe to repeat)
     caboose-scopes ensure [--restart]     start the daemon unless it runs (root)
     caboose-scopes daemon                 keep the hierarchy (root)
+    caboose-scopes observe                the daemon's reader, as the owner (internal)
     caboose-scopes list                   the snapshot, as JSON
     caboose-scopes quit|force-quit|kill SCOPE
     caboose-scopes run DESKTOP_ID -- COMMAND [ARG...]
@@ -23,7 +24,6 @@ import errno
 import json
 import os
 import pwd
-import re
 import shlex
 import signal
 import socket
@@ -199,66 +199,61 @@ def observe(request):
     return None
 
 
+def observer_main():
+    """`caboose-scopes observe`: answers the daemon's requests, one JSON line each, as the
+    owner (the daemon starts it with the owner's uid and no supplementary groups)."""
+    for line in sys.stdin.buffer:
+        try:
+            answer = observe(json.loads(line))
+        except Exception:  # noqa: BLE001 - one bad request must not end the observer
+            answer = None
+        sys.stdout.buffer.write(json.dumps(answer).encode() + b'\n')
+        sys.stdout.buffer.flush()
+
+
 class Observer:
-    """A child, dropped to the owner, that reads for the root daemon."""
+    """The daemon's eyes as the owner: `caboose-scopes observe`, started with the owner's
+    credentials (fork and exec, so nothing of the daemon's threads is inherited)."""
 
     def __init__(self):
         self.lock = threading.Lock()
-        self.pid = None
-        self.sock = None
-        self.reader = None
+        self.process = None
+
+    @property
+    def pid(self):
+        return self.process.pid if self.process else None
 
     def start(self):
+        import subprocess
         uid, gid, home = owner()
-        parent, child = socket.socketpair()
-        pid = os.fork()
-        if pid == 0:
-            parent.close()
-            try:
-                os.setgroups([])
-                os.setresgid(gid, gid, gid)
-                os.setresuid(uid, uid, uid)
-                os.environ['HOME'] = home
-                with child.makefile('rwb') as stream:
-                    for line in stream:
-                        try:
-                            answer = observe(json.loads(line))
-                        except Exception:  # noqa: BLE001 - one bad request must not end the observer
-                            answer = None
-                        stream.write(json.dumps(answer).encode() + b'\n')
-                        stream.flush()
-            finally:
-                os._exit(0)
-        child.close()
-        parent.settimeout(10)
-        self.pid, self.sock, self.reader = pid, parent, parent.makefile('rb')
+        self.process = subprocess.Popen(
+            [sys.executable, os.path.realpath(__file__), 'observe'], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL, user=uid, group=gid, extra_groups=[], close_fds=True,
+            env={'HOME': home, 'PATH': '/usr/bin:/bin', 'LANG': 'C.UTF-8'})
 
-    def ask(self, request):
+    def ask(self, request, timeout=10.0):
+        import select
         with self.lock:
-            for attempt in range(2):
+            for _ in range(2):
                 try:
-                    if self.sock is None:
+                    if self.process is None or self.process.poll() is not None:
                         self.start()
-                    self.sock.sendall(json.dumps(request).encode() + b'\n')
-                    line = self.reader.readline()
-                    if line:
-                        return json.loads(line)
+                    self.process.stdin.write(json.dumps(request).encode() + b'\n')
+                    self.process.stdin.flush()
+                    if select.select([self.process.stdout], [], [], timeout)[0]:
+                        line = self.process.stdout.readline()
+                        if line:
+                            return json.loads(line)
                 except (OSError, ValueError):
                     pass
                 self.stop()
             return None
 
     def stop(self):
-        if self.sock is not None:
-            self.sock.close()
-            self.sock = self.reader = None
-        if self.pid:
-            try:
-                os.kill(self.pid, signal.SIGKILL)
-                os.waitpid(self.pid, 0)
-            except OSError:
-                pass
-            self.pid = None
+        if self.process is not None:
+            self.process.kill()
+            self.process.wait()
+            self.process = None
 
 
 # -- Desktop entries -----------------------------------------------------------------------
@@ -380,6 +375,17 @@ class Daemon:
         self.scopes[name] = meta
         self.save()
         return name
+
+    def meta(self, name, now):
+        """A scope's metadata; one whose state was lost is described from its name."""
+        if name not in self.scopes:
+            key, _ = core.parse_scope_name(name)
+            desktop_id = f'{key}.desktop' if self.entries.name(f'{key}.desktop') else None
+            new = core.NewScope(key, 'window', desktop_id=desktop_id)
+            self.scopes[name] = {'origin': 'window', 'desktopId': desktop_id, 'appId': None, 'game': None, 'source': None,
+                                 'createdAt': now, 'name': self.name_for(new, desktop_id)}
+            self.save()
+        return self.scopes[name]
 
     def name_for(self, new, desktop_id):
         if new.game is not None:
@@ -550,7 +556,7 @@ class Daemon:
                 rss = int(statm[1]) * PAGE if len(statm) > 1 and statm[1].isdigit() else 0
                 processes.append(core.process_entry(pid, proc.ppid, proc.comm, proc.argv, proc.state, cpu_percent, rss))
                 windows.extend(windows_by_pid.get(pid, []))
-            meta = self.scopes.get(name) or ({'origin': 'session', 'name': 'System', 'createdAt': 0} if name == core.SESSION else {})
+            meta = {'origin': 'session', 'name': 'System', 'createdAt': 0} if name == core.SESSION else self.meta(name, now)
             gpu = core.gpu_usage(gpu_now.get(name, []), self.gpu, seconds) if name in gpu_now else None
             apps.append(core.app_entry(name, meta, counters, previous, seconds, processes, windows, gpu))
         self.ticks = ticks_now
@@ -742,6 +748,9 @@ def main(argv):
         except Unavailable as error:
             print(f'caboose-scopes: {error}', file=sys.stderr)
             return 3
+        return 0
+    if command == 'observe':
+        observer_main()
         return 0
     if command == 'ensure':
         return ensure(argv[1:] == ['--restart'])
