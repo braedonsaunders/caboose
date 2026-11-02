@@ -1,0 +1,57 @@
+From: Caboose <caboose@local>
+Subject: [PATCH 58/58] Keep memory requirements across processes by device identity
+
+A device's identity is its physical device's vendor, device, driver and API versions,
+pipeline cache UUID and its enabled extensions. Memory requirements answered for one
+device are keyed by that identity and appended to
+$XDG_CACHE_HOME/caboose-gpu/requirements-<identity>.bin (or ~/.cache), so a game's next
+start asks the phone only for image and buffer shapes it has never made: the
+vkGetImageMemoryRequirements2 round trips that dominated loading behind uploads
+(caboose-bounded-memory/requirements_cache.h).
+---
+diff --git a/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp b/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp
+index 4e08f8d..38d96f5 100644
+--- a/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp
++++ b/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp
+@@ -3038,6 +3038,39 @@ VkResult ResourceTracker::on_vkCreateDevice(void* context, VkResult input_result
+     setDeviceInfo(*pDevice, physicalDevice, props, memProps, pCreateInfo->enabledExtensionCount,
+                   pCreateInfo->ppEnabledExtensionNames, pCreateInfo->pNext);
+ 
++    // Memory requirements this device is told hold for any device made the same way, in any
++    // process: they are kept by its identity (caboose-bounded-memory/requirements_cache.h).
++    {
++        char text[160];
++        std::snprintf(text, sizeof(text), "caboose-requirements 1 vendor=%u device=%u driver=%u api=%u uuid=",
++                      props.vendorID, props.deviceID, props.driverVersion, props.apiVersion);
++        std::string identity = text;
++        for (uint8_t byte : props.pipelineCacheUUID) {
++            std::snprintf(text, sizeof(text), "%02x", byte);
++            identity += text;
++        }
++        std::vector<std::string> extensions;
++        for (uint32_t i = 0; i < pCreateInfo->enabledExtensionCount; ++i)
++            if (pCreateInfo->ppEnabledExtensionNames[i]) extensions.emplace_back(pCreateInfo->ppEnabledExtensionNames[i]);
++        std::sort(extensions.begin(), extensions.end());
++        for (const auto& extension : extensions) identity += " " + extension;
++        const uint64_t id = caboose::memory::RequirementsCache::identityOf(identity);
++        std::string path;
++        const char* cache = std::getenv("XDG_CACHE_HOME");
++        const char* home = std::getenv("HOME");
++        std::string directory = cache && *cache == '/' ? std::string(cache)
++                              : home && *home == '/' ? std::string(home) + "/.cache" : std::string();
++        if (!directory.empty()) {
++            mkdir(directory.c_str(), 0700);
++            directory += "/caboose-gpu";
++            if (mkdir(directory.c_str(), 0700) == 0 || errno == EEXIST) {
++                std::snprintf(text, sizeof(text), "/requirements-%016llx.bin", (unsigned long long)id);
++                path = directory + text;
++            }
++        }
++        caboose::memory::requirementsCache.deviceCreated(caboose::handle_key(*pDevice), id, path);
++    }
++
+     return input_result;
+ }
+ 
+-- 
+2.43.0

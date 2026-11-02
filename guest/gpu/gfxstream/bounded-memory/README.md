@@ -47,9 +47,9 @@ submit in one round trip. A command buffer that overflows fails its submit with
 Flushes, fence and command-pool resets, binds, queue submits, guest-assigned creates and
 plain allocations within the heap budget do not wait for their replies. `DeferredReplies` queues them per encoder; every later read drains them
 first, in stream order. Replies that have fully arrived are read without blocking as more
-deferred commands are sent, once 256 KiB of commands or 4 KiB of replies are owed. Only past
-64 MiB of commands (more than the broker takes ahead of the phone) or 64 KiB of owed
-replies does a send wait, for the oldest half. A failed
+deferred commands are sent, once 256 KiB of commands or 4 KiB of replies are owed. Past
+6 MiB of commands the phone has not answered, or 64 KiB of owed replies, a send waits for the
+oldest half: commands queued further ahead would only delay the next present. A failed
 reset or flush is reported on stderr. A failed bind, or a create whose handle the
 device refused or renamed, invalidates the stream: the application can no longer observe
 that failure, so the device is lost. Only the first encoder of a process may defer; a

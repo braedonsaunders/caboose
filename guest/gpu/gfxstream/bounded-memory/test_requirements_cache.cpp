@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: MIT
 #include "requirements_cache.h"
 #include <cassert>
+#include <cstdio>
+#include <cstdlib>
+#include <unistd.h>
 #include <string>
 using caboose::memory::RequirementsCache;
 
@@ -71,5 +74,67 @@ int main() {
     cache.store(0xE, value);
     cache.deviceDestroyed(device);
     assert(!cache.lookup(0xA, &found) && !cache.lookup(0xD, &found) && cache.lookup(0xE, &found));
+
+    // A device with an identity keys its objects by it and keeps its answers in a file, so a
+    // later device or process made the same way starts with them.
+    {
+        char directory[] = "/tmp/caboose-requirements-XXXXXX";
+        assert(mkdtemp(directory));
+        const std::string path = std::string(directory) + "/requirements.bin";
+        const uint64_t identity = RequirementsCache::identityOf("vendor 1 device 2 extensions a,b");
+        assert(identity == RequirementsCache::identityOf("vendor 1 device 2 extensions a,b") &&
+               identity != RequirementsCache::identityOf("vendor 1 device 3 extensions a,b"));
+        RequirementsCache first;
+        first.deviceCreated(0x2000, identity, path);
+        std::string key;
+        assert(RequirementsCache::imageKey(0x2000, &image, &key));
+        first.created(0x10, key);
+        first.store(0x10, value);
+        first.store(0x10, value);  // known: written once
+        RequirementsCache::Value other = value;
+        other.requirements.size = 131072;
+        buffer.pNext = nullptr;
+        assert(RequirementsCache::bufferKey(0x2000, &buffer, &key));
+        first.created(0x11, key);
+        first.store(0x11, other);
+        first.deviceDestroyed(0x2000);
+        assert(!first.lookup(0x10, &found));
+
+        // Another process: a new device handle with the same identity starts with both answers.
+        RequirementsCache second;
+        second.deviceCreated(0x3000, identity, path);
+        assert(RequirementsCache::imageKey(0x3000, &image, &key));
+        second.created(0x20, key);
+        assert(second.lookup(0x20, &found) && found.requirements.size == 65536 && found.prefersDedicated);
+        assert(RequirementsCache::bufferKey(0x3000, &buffer, &key));
+        second.created(0x21, key);
+        assert(second.lookup(0x21, &found) && found.requirements.size == 131072);
+        assert(second.size() == 2);
+
+        // Another identity reads nothing of it; a truncated tail is ignored.
+        RequirementsCache third;
+        third.deviceCreated(0x4000, RequirementsCache::identityOf("vendor 9"), path);
+        assert(third.size() == 0);
+        {
+            FILE* file = std::fopen(path.c_str(), "ab");
+            const char partial[3] = {7, 0, 0};
+            std::fwrite(partial, 1, sizeof(partial), file);
+            std::fclose(file);
+        }
+        RequirementsCache fourth;
+        fourth.deviceCreated(0x5000, identity, path);
+        assert(fourth.size() == 2);
+        // A file with another header is not read.
+        const std::string foreign = std::string(directory) + "/foreign.bin";
+        FILE* file = std::fopen(foreign.c_str(), "wb");
+        std::fputs("not a cache", file);
+        std::fclose(file);
+        RequirementsCache fifth;
+        fifth.deviceCreated(0x6000, identity, foreign);
+        assert(fifth.size() == 0);
+        std::remove(path.c_str());
+        std::remove(foreign.c_str());
+        rmdir(directory);
+    }
     return 0;
 }
