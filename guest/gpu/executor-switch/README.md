@@ -9,7 +9,7 @@ computer's own CPU implementation (lavapipe) instead, so applications keep rende
 When the phone returns, those applications would stay on lavapipe. This layer watches
 for the executor and makes a CPU device that was created while no executor existed
 report `VK_ERROR_DEVICE_LOST`. The application then recreates its device, as it does
-after any device loss, and finds the phone's GPU; Chromium restarts its GPU process.
+after any device loss, and finds the phone's GPU.
 
 The executor counts as available while the broker's socket, named by
 `CABOOSE_GFXSTREAM_SOCKET`, exists. The broker creates it once a phone executor is
@@ -21,13 +21,12 @@ which lavapipe keeps when the routing layer presents it as a GPU) created while 
 was absent are affected. A device on the phone's GPU, or a CPU device made while the
 executor existed, is left alone. Once lost, a device stays lost.
 
-Only processes that recover from device loss move, as `CABOOSE_GPU_ON_LOSS` says (the rule
-the phone's driver applies): `auto` moves Chromium-family GPU processes (by `--type=gpu-process`,
-or `--type=zygote` for one forked from a zygote, as Steam's web views are) and Qt, `pause`
-moves nothing, and any other value moves every such device. A process that stays keeps its
-CPU device and is recorded as running on the CPU until relaunched: once a phone executor is
-available, the layer writes `placement/<pid>` beside the broker's socket (directory 0700),
-one line `cpu-until-relaunch <start>` with the process's start time in clock ticks
+Every process moves, unless `CABOOSE_GPU_ON_LOSS=pause` (the rule the phone's driver applies)
+says it stays; the launch environment's `auto` moves, as does any other value: every
+process is treated alike. A process that stays keeps its CPU device and is recorded as
+running on the CPU until relaunched: once a phone executor is available, the layer writes
+`placement/<pid>` beside the broker's socket (directory 0700), one line
+`cpu-until-relaunch <start>` with the process's start time in clock ticks
 (`/proc/<pid>/stat` field 22, which also identifies it across a Flatpak sandbox's pid
 namespace), written to a temporary file and renamed. The running-apps list (`guest/scopes`)
 reports it as `gpuPlacement`. The record is removed when the process destroys its last such

@@ -13,29 +13,16 @@ turns it off.
   the phone whenever it is attached.
 - **CPU implementations without the phone.** While no phone is listed, a CPU implementation
   is presented as a virtual GPU named `Caboose GPU (no phone attached)`, with driver name
-  `Caboose` and gfxstream's driver ID: Steam turns its web views' GPU acceleration off for
-  lavapipe's ID, and Zink keys no workarounds on gfxstream's, so it treats lavapipe as an
-  ordinary GPU. Applications
-  that choose their rendering path once at launch (Chromium's and Steam's GPU acceleration,
-  Firefox's WebRender, Zink, which refuses CPU devices) take their GPU paths and keep them;
-  the executor switch moves those that recover from device loss to the phone when it attaches.
-  `fossilize_replay`, kept off the phone, sees the CPU implementation as it is; Steam's
-  update window, also kept off it, sees it presented.
+  `Caboose` and gfxstream's driver ID, on which applications and OpenGL on Vulkan key no
+  CPU-specific workarounds. Applications that choose their rendering path once at launch
+  take their GPU paths and keep them; the executor switch moves them to the phone when it
+  attaches. The CPU implementation is only the fallback while no phone is attached: every
+  process is treated alike, and none is kept off the phone.
 - **CPU implementations beside the phone.** While the phone's GPU is listed, CPU
   implementations such as lavapipe are not, so applications that pick a device by their
-  own rules, or judge the computer by every device they are offered (Steam turns its GPU
-  web views off on seeing llvmpipe), see only the phone. Without it they are listed again,
-  last; devices made on them before the phone attached are moved by the executor switch.
-- **Pipeline pre-compiling.** Steam's `fossilize_replay`, which compiles a game's recorded
-  pipelines for the driver's disk cache before the game starts, does not see the phone's
-  GPU: the phone's driver keeps no cache on the computer, so that work would only cross the
-  network and be discarded.
-- **Steam's update window.** Steam's bootstrap shows its progress window from a child
-  process (`-child-update-ui`) that holds the bootstrap's single-instance pipe until it
-  exits. On the phone its OpenGL context (Zink) takes seconds to tear down across the
-  network, and the Steam client the bootstrap starts next then finds the pipe held, takes it
-  for a running Steam and exits. The window draws on the computer's CPU instead, which is
-  presented as a GPU there as for a process with no phone.
+  own rules, or judge the computer by every device they are offered, see only the phone.
+  Without it they are listed again, last; devices made on them before the phone attached are
+  moved by the executor switch.
 
 ## Build and test
 

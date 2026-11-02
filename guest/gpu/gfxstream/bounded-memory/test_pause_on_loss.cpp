@@ -43,7 +43,7 @@ int main() {
     char directory[] = "/tmp/caboose-pause-XXXXXX";
     assert(mkdtemp(directory));
     socketPath = std::string(directory) + "/gpu.sock";
-    setenv("CABOOSE_GPU_ON_LOSS", "auto", 1);  // a game: neither Chromium nor Qt
+    setenv("CABOOSE_GPU_ON_LOSS", "pause", 1);
     setenv("CABOOSE_GFXSTREAM_SOCKET", socketPath.c_str(), 1);
     assert(pauseOnLoss());
     departureGraceMs = 300;

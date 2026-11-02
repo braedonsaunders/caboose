@@ -19,41 +19,11 @@ inline bool cpuImplementation(uint32_t vendor, int deviceType) {
     return deviceType == 4 /* VK_PHYSICAL_DEVICE_TYPE_CPU */ || vendor == kMesaVendor;
 }
 
-// Processes that render on the computer by design (the routing layer keeps the phone from
-// them): Steam's client and web views (steamwebhelper, every one of its processes), its
-// update window and fossilize_replay. Their CPU devices are neither lost nor recorded as waiting to move.
-inline bool keptOnComputer(const std::string& commandLine) {
-    std::string program = commandLine.substr(0, commandLine.find(' '));
-    const auto slash = program.rfind('/');
-    if (slash != std::string::npos) program = program.substr(slash + 1);
-    const std::string path = commandLine.substr(0, commandLine.find(' '));
-    const bool steamClient = program == "steam" &&
-        (path.find("/steamrt64/steam") != std::string::npos || path.find("/steamrt32/steam") != std::string::npos);
-    return program == "steamwebhelper" || program == "fossilize_replay" || steamClient ||
-           commandLine.find(" -child-update-ui") != std::string::npos;
-}
-
 // Whether a process moves to the phone when one attaches: its CPU devices report loss and it
-// recreates them on the phone. That suits processes that recover from device loss, which is
-// what CABOOSE_GPU_ON_LOSS says, as the phone's driver reads it: `pause` stays where it is;
-// `auto` moves Chromium-family GPU processes and Qt and leaves everything else; anything else,
-// including no value, moves. A GPU process forked from a Chromium zygote (Steam's web views,
-// started with --no-zygote-sandbox) keeps the zygote's command line, `--type=zygote`; of a
-// zygote's children only the GPU process creates Vulkan devices.
-inline bool movesToPhone(const char* mode, const std::string& commandLine,
-                         const std::vector<std::string>& libraries) {
-    if (!mode) return true;
-    if (std::strcmp(mode, "pause") == 0) return false;
-    if (std::strcmp(mode, "auto") != 0) return true;
-    if (commandLine.find("--type=gpu-process") != std::string::npos) return true;
-    if (commandLine.find("--type=zygote") != std::string::npos) return true;
-    for (const auto& library : libraries) {
-        const auto slash = library.rfind('/');
-        const std::string name = slash == std::string::npos ? library : library.substr(slash + 1);
-        if (name.rfind("libQt5Gui.so", 0) == 0 || name.rfind("libQt6Gui.so", 0) == 0) return true;
-    }
-    return false;
-}
+// recreates them on the phone. CABOOSE_GPU_ON_LOSS says, as the phone's driver reads it:
+// `pause` stays where it is; anything else, the launch environment's `auto` and no value
+// included, moves. Every process is treated alike.
+inline bool movesToPhone(const char* mode) { return !mode || std::strcmp(mode, "pause") != 0; }
 
 // The placement record of a process left on the computer's CPU after a phone attached, for
 // the running-apps list (guest/scopes): its start time in clock ticks identifies it across

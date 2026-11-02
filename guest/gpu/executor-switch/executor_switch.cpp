@@ -8,7 +8,6 @@
 #include <vulkan/vk_layer.h>
 #include <vulkan/vulkan.h>
 
-#include <link.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -71,27 +70,8 @@ std::string readFile(const char* path) {
 
 // Whether this process moves to the phone when one attaches (policy.h), decided once.
 bool processMoves() {
-    static const bool moves = [] {
-        std::string commandLine = readFile("/proc/self/cmdline");
-        for (char& c : commandLine) if (c == '\0') c = ' ';
-        std::vector<std::string> libraries;
-        dl_iterate_phdr([](dl_phdr_info* info, size_t, void* out) {
-            if (info->dlpi_name && *info->dlpi_name)
-                static_cast<std::vector<std::string>*>(out)->emplace_back(info->dlpi_name);
-            return 0;
-        }, &libraries);
-        return movesToPhone(std::getenv("CABOOSE_GPU_ON_LOSS"), commandLine, libraries);
-    }();
+    static const bool moves = movesToPhone(std::getenv("CABOOSE_GPU_ON_LOSS"));
     return moves;
-}
-
-bool processKept() {
-    static const bool kept = [] {
-        std::string commandLine = readFile("/proc/self/cmdline");
-        for (char& c : commandLine) if (c == '\0') c = ' ';
-        return keptOnComputer(commandLine);
-    }();
-    return kept;
 }
 
 // The process's placement record, beside the broker's socket where the running-apps list
@@ -316,7 +296,7 @@ VKAPI_ATTR VkResult VKAPI_CALL CreateDevice(VkPhysicalDevice physical, const VkD
     VkPhysicalDeviceProperties properties{};
     if (owner->properties) owner->properties(physical, &properties);
     // Decided before creation: a device made while the executor existed stays where it is.
-    const bool switchable = executor().configured() && !processKept() &&
+    const bool switchable = executor().configured() &&
                             cpuImplementation(properties.vendorID, properties.deviceType) && !executor().available();
     VkResult result = create(physical, info, allocator, device);
     if (result != VK_SUCCESS) return result;

@@ -1054,20 +1054,19 @@ paths on it, so a computer started or relaunched without the phone draws the sam
 will on the phone.
 Those applications draw on the computer and reach the phone as pictures, like every
 application that draws on the CPU. With `CABOOSE_GPU_EXECUTOR_SWITCH=1` in the launch
-environment, the executor-switch layer (`install-live.py --executor-switch`) makes the
-lavapipe devices of processes that recover from device loss (Chromium-family GPU processes,
-including Steam's web views, and Qt) lose themselves once a phone's executor is ready, and
-they move to the phone. Every other process keeps its lavapipe device until it is relaunched
-and is listed in the running-apps API with `gpuPlacement: "cpu-until-relaunch"`, so the
-phone can offer to relaunch it on its GPU.
+environment, the executor-switch layer (`install-live.py --executor-switch`) makes every
+process's lavapipe devices lose themselves once a phone's executor is ready, and the
+processes move to the phone. A process launched with `CABOOSE_GPU_ON_LOSS=pause` keeps its
+lavapipe device until it is relaunched and is listed in the running-apps API with
+`gpuPlacement: "cpu-until-relaunch"`, so the phone can offer to relaunch it on its GPU.
+No application is treated differently from another: the CPU implementation is only the
+fallback while no phone is attached.
 
 When the phone goes away, the driver follows the process's `CABOOSE_GPU_ON_LOSS`:
-`restart` reports device loss, `pause` holds the application until the phone returns.
-The launch environment sets `auto`, which the driver resolves per process:
-`restart` for Chromium-family GPU processes (Chromium, Electron, Steam's web views, whose GPU
-process is forked from a zygote and keeps its `--type=zygote` command line), which restart, and for
-Qt, whose scene graph recreates its renderer; `pause` for everything else, which does not
-recover from device loss (GTK 4, Vulkan applications and games).
+`pause` holds the application until the phone returns; any other value, the launch
+environment's `auto` included, reports device loss at once, and an application that recovers
+keeps running on the computer. An executor that suspends while the phone app is in the
+background (hello feature `0x4000`) is not lost, so neither applies then.
 
 OpenGL reaches the phone through Zink, Mesa's OpenGL on Vulkan: `LIBGL_KOPPER_DRI2=1` for
 GLX, which tries Zink before any software renderer, and `GALLIUM_DRIVER=zink` for EGL's

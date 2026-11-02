@@ -22,31 +22,10 @@ int main() {
     std::vector<int> withoutPhone = {rank(0x10005, kCpu), rank(0x10de, kDiscrete)};
     hideCpuBesidePhone(withoutPhone);
     assert((withoutPhone == std::vector<int>{rank(0x10005, kCpu), rank(0x10de, kDiscrete)}));
-    std::vector<int> phoneHidden = {rank(0x10005, kCpu), kHidden};  // fossilize_replay
-    hideCpuBesidePhone(phoneHidden);
-    assert(phoneHidden[0] == rank(0x10005, kCpu));
 
-    assert(hidesPhone("/home/u/.local/share/Steam/ubuntu12_64/fossilize_replay a.foz --device-index 0"));
-    assert(hidesPhone("fossilize_replay"));
-    assert(!hidesPhone("/usr/bin/vkcube"));
-    assert(!hidesPhone("/opt/fossilize_replay_wrapper --x"));
-    assert(!hidesPhone(""));
-    // Steam's update window stays on the computer, its CPU device presented as a GPU.
-    const std::string updateUi = "/home/u/.local/share/Steam/steamrt64/steam -child-update-ui -child-update-ui-socket 9";
-    assert(hidesPhone(updateUi) && keptOnComputer(updateUi));
-    assert(keptOnComputer("/home/u/.local/share/Steam/steamrt64/steam -srt-logger-opened"));
-    assert(!keptOnComputer("/usr/games/steam"));
-    assert(!keptOnComputer("fossilize_replay a.foz"));
-    assert(keptOnComputer("/home/u/.local/share/Steam/steamrt64/steamwebhelper --type=zygote --no-zygote-sandbox"));
-    assert(hidesPhone("./steamwebhelper -nocrashdialog -lang=en_US"));
-    assert(!keptOnComputer("Z:\\MCC\\Binaries\\Win64\\MCC-Win64-Shipping.exe -no-eac"));
-
-    // Without the phone, lavapipe is presented as a GPU; not with it, nor where the phone is
-    // hidden by policy (fossilize_replay compiles for the device it really runs on).
-    assert(presentsCpuAsGpu({rank(0x10005, kCpu)}, false));
-    assert(!presentsCpuAsGpu({rank(0x10005, kCpu), rank(kPhoneVendor, kIntegrated)}, false));
-    assert(!presentsCpuAsGpu({rank(0x10005, kCpu)}, true));
-    assert(presentsCpuAsGpu({rank(0x10005, kCpu), kHidden}, true, true));
+    // Without the phone, lavapipe is presented as a GPU; not with it.
+    assert(presentsCpuAsGpu({rank(0x10005, kCpu)}));
+    assert(!presentsCpuAsGpu({rank(0x10005, kCpu), rank(kPhoneVendor, kIntegrated)}));
 
     std::puts("routing tests passed");
 }

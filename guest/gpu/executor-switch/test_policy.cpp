@@ -14,26 +14,10 @@ int main() {
     assert(!cpuImplementation(0x106b, 1));
     assert(!cpuImplementation(0x10de, 2));
 
-    const std::vector<std::string> none, qt{"/usr/lib/x86_64-linux-gnu/libQt6Gui.so.6"};
-    assert(movesToPhone(nullptr, "vkcube", none));
-    assert(movesToPhone("restart", "vkcube", none));
-    assert(!movesToPhone("pause", "chromium --type=gpu-process", none));
-    assert(movesToPhone("auto", "steamwebhelper --type=gpu-process --x", none));
-    // Steam's GPU process, forked from its zygote, carries the zygote's command line.
-    assert(movesToPhone("auto", "steamwebhelper --type=zygote --no-zygote-sandbox --no-sandbox", none));
-    assert(!movesToPhone("pause", "steamwebhelper --type=zygote", none));
-    assert(movesToPhone("auto", "qml6 a.qml", qt));
-    assert(!movesToPhone("auto", "glxgears", none));
-    assert(!movesToPhone("auto", "chromium --type=renderer", none));
-
-    // Steam's web views, its update window and fossilize_replay stay on the computer.
-    assert(keptOnComputer("/home/u/.local/share/Steam/steamrt64/steamwebhelper --type=zygote --no-zygote-sandbox"));
-    assert(keptOnComputer("./steamwebhelper -nocrashdialog -lang=en_US"));
-    assert(keptOnComputer("/s/steamrt64/steam -child-update-ui -child-update-ui-socket 9"));
-    assert(keptOnComputer("fossilize_replay a.foz"));
-    assert(keptOnComputer("/s/steamrt64/steam -srt-logger-opened"));
-    assert(!keptOnComputer("/usr/games/steam"));
-    assert(!keptOnComputer("Z:\\MCC\\Binaries\\Win64\\MCC-Win64-Shipping.exe -no-eac"));
+    // Only an explicit pause stays; every process alike.
+    assert(movesToPhone(nullptr));
+    assert(movesToPhone("restart") && movesToPhone("auto") && movesToPhone("bogus"));
+    assert(!movesToPhone("pause"));
 
     assert(placementLine(123456) == "cpu-until-relaunch 123456\n");
     // A command name with spaces and ')' does not shift the fields.

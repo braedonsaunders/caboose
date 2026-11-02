@@ -10,9 +10,6 @@
 #include <sys/stat.h>
 #include <thread>
 #include <cstring>
-#include <fstream>
-#include <iterator>
-#include <link.h>
 #include <string>
 #include <mutex>
 #include <unordered_map>
@@ -688,44 +685,15 @@ inline void executorConnected() {
         tracker().revive();
     }
 }
-// CABOOSE_GPU_ON_LOSS=pause: an application that must not restart while the phone is away.
-// Its devices cannot survive the executor (their objects lived there), so every call that
-// would report the loss first waits until a new executor is available, then reports it;
-// the application recreates its device on the returned phone. Otherwise loss is reported
-// at once (restart, the default).
-// "auto", the launch environment's value, is resolved for the process here, where only the
-// driver reads it (the environment is never changed: some applications trap setenv):
-// restart for a Chromium-family GPU process and for Qt, which recover from device loss,
-// pause for everything else. A GPU process forked from a Chromium zygote (Steam's web views)
-// keeps the zygote's command line, `--type=zygote`; of a zygote's children only the GPU
-// process creates Vulkan devices.
-inline bool lossPolicyPauses(const char* mode, const std::string& commandLine,
-                             const std::vector<std::string>& libraries) {
-    if (!mode) return false;
-    if (std::strcmp(mode, "pause") == 0) return true;
-    if (std::strcmp(mode, "auto") != 0) return false;
-    if (commandLine.find("--type=gpu-process") != std::string::npos) return false;
-    if (commandLine.find("--type=zygote") != std::string::npos) return false;
-    for (const auto& library : libraries) {
-        const auto slash = library.rfind('/');
-        const std::string name = slash == std::string::npos ? library : library.substr(slash + 1);
-        if (name.rfind("libQt5Gui.so", 0) == 0 || name.rfind("libQt6Gui.so", 0) == 0) return false;
-    }
-    return true;
-}
+// CABOOSE_GPU_ON_LOSS=pause: the process must not restart while the phone is away. Its
+// devices cannot survive the executor (their objects lived there), so every call that would
+// report the loss first waits until a new executor is available, then reports it; the
+// application recreates its device on the returned phone. Any other value, the launch
+// environment's `auto` included, reports loss at once (restart): every process is treated
+// alike, and one that recovers from device loss keeps running on the computer meanwhile.
+inline bool lossPolicyPauses(const char* mode) { return mode && std::strcmp(mode, "pause") == 0; }
 inline bool pauseOnLoss() {
-    static const bool pause = [] {
-        std::ifstream file("/proc/self/cmdline", std::ios::binary);
-        std::string commandLine((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
-        for (char& c : commandLine) if (c == '\0') c = ' ';
-        std::vector<std::string> libraries;
-        dl_iterate_phdr([](dl_phdr_info* info, size_t, void* out) {
-            if (info->dlpi_name && *info->dlpi_name)
-                static_cast<std::vector<std::string>*>(out)->emplace_back(info->dlpi_name);
-            return 0;
-        }, &libraries);
-        return lossPolicyPauses(std::getenv("CABOOSE_GPU_ON_LOSS"), commandLine, libraries);
-    }();
+    static const bool pause = lossPolicyPauses(std::getenv("CABOOSE_GPU_ON_LOSS"));
     return pause;
 }
 // The socket the lost executor was reached through, if it is still there (a broker that

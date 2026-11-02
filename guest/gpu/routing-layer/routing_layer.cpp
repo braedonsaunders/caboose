@@ -1,16 +1,13 @@
 // Copyright 2026 Caboose contributors. SPDX-License-Identifier: Apache-2.0
 //
 // VK_LAYER_CABOOSE_gpu_routing (README.md): lists the phone's GPU first among physical
-// devices, so applications that take the first device render on it, and hides it from
-// Steam's pipeline pre-compiler.
+// devices, so applications that take the first device render on it.
 #include <vulkan/vk_layer.h>
 #include <vulkan/vulkan.h>
 
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <fstream>
-#include <iterator>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -59,14 +56,6 @@ DeviceData* deviceData(const void* handle) {
     std::lock_guard<std::mutex> lock(mutex);
     auto found = devices.find(key(handle));
     return found == devices.end() ? nullptr : found->second.get();
-}
-
-std::string commandLine() {
-    std::ifstream file("/proc/self/cmdline", std::ios::binary);
-    std::string text((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
-    for (char& c : text)
-        if (c == '\0') c = ' ';
-    return text;
 }
 
 template <class Info>
@@ -124,23 +113,16 @@ VKAPI_ATTR void VKAPI_CALL DestroyInstance(VkInstance instance, const VkAllocati
     destroy(instance, allocator);
 }
 
-bool processHidesPhone() {
-    static const bool hides = hidesPhone(commandLine());
-    return hides;
-}
-
 int deviceRank(InstanceData& data, VkPhysicalDevice device) {
     VkPhysicalDeviceProperties properties{};
     data.properties(device, &properties);
-    if (properties.vendorID == kPhoneVendor && processHidesPhone()) return kHidden;
     return rank(properties.vendorID, properties.deviceType);
 }
 
 // Records the CPU implementations among `devices` to present as GPUs, judged against every
 // device listed (`listed`, default `ranks`).
 void present(const VkPhysicalDevice* devices, const std::vector<int>& ranks, const std::vector<int>& listed) {
-    static const bool presentedWhenHidden = keptOnComputer(commandLine());
-    if (!presentsCpuAsGpu(listed, processHidesPhone(), presentedWhenHidden)) return;
+    if (!presentsCpuAsGpu(listed)) return;
     std::lock_guard<std::mutex> lock(mutex);
     for (size_t i = 0; i < ranks.size(); ++i)
         if (ranks[i] == rank(0, kCpu)) presented.insert(devices[i]);
@@ -166,11 +148,9 @@ VKAPI_ATTR void VKAPI_CALL GetPhysicalDeviceProperties(VkPhysicalDevice device, 
     data->properties(device, out);
     if (out && isPresented(device)) presentAsGpu(*out);
 }
-// The driver's name and ID too: renderer strings carry the name (ANGLE's, so Chromium's), and
-// Steam judges its web views' GPU acceleration by the ID (lavapipe's turns it off for good).
-// The ID is gfxstream's, which Zink keys no workarounds on; it then treats lavapipe as an
-// ordinary GPU (no lavapipe-specific optimisations, and signed vertex-buffer offsets offered
-// where device-address commands are).
+// The driver's name and ID too: renderer strings carry the name, and applications judge GPU
+// acceleration by the ID (lavapipe's turns it off). The ID is gfxstream's, on which OpenGL on
+// Vulkan keys no workarounds; it then treats lavapipe as an ordinary GPU.
 void properties2(PFN_vkGetPhysicalDeviceProperties2 next, VkPhysicalDevice device, VkPhysicalDeviceProperties2* out) {
     if (!next) return;
     next(device, out);
