@@ -188,6 +188,28 @@ final class LiveGPUTransportTests: XCTestCase {
         Thread.sleep(forTimeInterval: 0.1)
     }
 
+    func testBehindDecoderHoldsReceivingBackInsteadOfOverflowing() throws {
+        let transport = GPUFlowTransportProbe()
+        let consumer = GPUGatedConsumer()
+        let session = try LiveGPUSession(transport: transport, nativeBinding: consumer)
+        let ready = expectation(description: "opened")
+        session.start { if case .transportOpened = $0 { ready.fulfill() } }
+        wait(for: [ready], timeout: 2)
+        // A socket that honours the pause delivers nothing more once it is asked to wait.
+        var sent = 0
+        while !transport.paused && sent < LiveGPUBudget.countLimit {
+            transport.emit(.bytes(Data(repeating: 1, count: 64))); sent += 1
+        }
+        XCTAssertTrue(transport.paused)
+        XCTAssertEqual(sent, LiveGPUBudget.pauseCount)
+        consumer.open()
+        let resumed = expectation(description: "resumed")
+        transport.onChange = { if !$0 { resumed.fulfill() } }
+        wait(for: [resumed], timeout: 5)
+        XCTAssertEqual(transport.changes, [true, false])
+        session.abort()
+    }
+
     func testIngressOverflowCancelsBlockedConsumerAndReportsCleanupFailure() throws {
         let transport = GPUTransportProbe()
         let consumer = GPUConsumerProbe()
@@ -254,4 +276,35 @@ private final class GPUConsumerProbe: LiveGPUByteConsumer, LiveGPURetirementRepo
         record("finish"); finishGate?.wait()
         if let finishError { throw finishError }
     }
+}
+
+private final class GPUFlowTransportProbe: LiveGPUTransport, LiveGPUReceiveFlow, @unchecked Sendable {
+    private let lock = NSLock()
+    private var event: (@Sendable (LiveGPUTransportEvent) -> Void)?
+    private var history: [Bool] = []
+    var onChange: ((Bool) -> Void)?
+    var paused: Bool { lock.withLock { history.last ?? false } }
+    var changes: [Bool] { lock.withLock { history } }
+    func open(_ event: @escaping @Sendable (LiveGPUTransportEvent) -> Void) {
+        lock.withLock { self.event = event }; event(.opened)
+    }
+    func send(_ bytes: Data) -> Bool { true }
+    func close() {}
+    func emit(_ event: LiveGPUTransportEvent) { lock.withLock { self.event }?(event) }
+    func setReceivingPaused(_ paused: Bool) {
+        let change = lock.withLock { () -> ((Bool) -> Void)? in history.append(paused); return onChange }
+        change?(paused)
+    }
+}
+
+/// Holds every consume until opened.
+private final class GPUGatedConsumer: LiveGPUByteConsumer, @unchecked Sendable {
+    private let gate = DispatchGroup()
+    init() { gate.enter() }
+    func open() { gate.leave() }
+    func start(output: @escaping @Sendable (Data) -> Bool, failed: @escaping @Sendable (Error) -> Void) throws {}
+    func consume(_ bytes: Data) throws { _ = gate.wait(timeout: .now() + 5) }
+    func requestDrain() throws {}
+    func revoke() throws {}
+    func finish() throws {}
 }
