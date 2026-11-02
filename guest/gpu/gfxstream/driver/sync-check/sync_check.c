@@ -23,7 +23,8 @@ static VkCommandBuffer cb;
 static VkSemaphore timeline;
 static uint64_t timelineValue;
 static int failures;
-static int surfaces;  // the instance has VK_KHR_xcb_surface and VK_KHR_get_surface_capabilities2
+static int surfaces2;  // VK_KHR_get_surface_capabilities2 is enabled
+static int surfaces;  // the instance has VK_KHR_xcb_surface (and VK_KHR_get_surface_capabilities2 when offered)
 
 static uint64_t nowUs(void) {
     struct timespec ts;
@@ -344,7 +345,7 @@ static void surfaceCase(void) {
     const xcb_setup_t* setup = xcb_get_setup(connection);
     xcb_screen_t* screen = xcb_setup_roots_iterator(setup).data;
     PFN_vkGetPhysicalDeviceSurfaceFormats2KHR formats2 =
-        (PFN_vkGetPhysicalDeviceSurfaceFormats2KHR)vkGetInstanceProcAddr(instance, "vkGetPhysicalDeviceSurfaceFormats2KHR");
+        surfaces2 ? (PFN_vkGetPhysicalDeviceSurfaceFormats2KHR)vkGetInstanceProcAddr(instance, "vkGetPhysicalDeviceSurfaceFormats2KHR") : NULL;
     int bad = 0, enumerations = 0;
     char first[96] = "";
     for (int round = 0; round < 5; ++round) {
@@ -553,14 +554,16 @@ int main(int argc, char** argv) {
         VkExtensionProperties properties[256];
         if (available > 256) available = 256;
         vkEnumerateInstanceExtensionProperties(NULL, &available, properties);
-        int found = 0;
+        int found[3] = {0, 0, 0};
         for (uint32_t i = 0; i < available; ++i)
             for (int k = 0; k < 3; ++k)
-                if (!strcmp(properties[i].extensionName, surfaceExtensions[k])) ++found;
-        if (found == 3) {
-            instanceInfo.enabledExtensionCount = 3;
+                if (!strcmp(properties[i].extensionName, surfaceExtensions[k])) found[k] = 1;
+        // Surfaces and XCB are required; the Formats2 query runs when it is offered.
+        if (found[0] && found[1]) {
+            instanceInfo.enabledExtensionCount = found[2] ? 3 : 2;
             instanceInfo.ppEnabledExtensionNames = surfaceExtensions;
             surfaces = 1;
+            surfaces2 = found[2];
         }
     }
     CHECK(vkCreateInstance(&instanceInfo, NULL, &instance));
