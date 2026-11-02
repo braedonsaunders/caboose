@@ -9,13 +9,6 @@ install -Dm644 "$here/flathub.flatpakrepo" /usr/share/caboose/flathub.flatpakrep
 flatpak remote-add --system --if-not-exists flathub /usr/share/caboose/flathub.flatpakrepo
 install -d -m 0755 /var/lib/caboose/depot
 install -Dm644 "$here/caboose-depot.conf" /etc/flatpak/installations.d/caboose-depot.conf
-# Steam's games write their Proton logs (PROTON_LOG=1) to PROTON_LOG_DIR. Steam's sandbox
-# has no ~/.local/state of its own, so this directory is shared into it: a log written there
-# outlives the game and is readable from the computer.
-flatpak override --system --filesystem='~/.local/state/caboose/game-diagnostics:create' \
-  com.valvesoftware.Steam
-install -Dm755 "$here/caboose-steam-defaults" /usr/local/libexec/caboose-steam-defaults
-install -Dm755 "$here/caboose-steam-adopt" /usr/local/bin/caboose-steam-adopt
 if [ -d /etc/systemd/system ]; then
   install -m 0644 "$here/var-lib-caboose-depot.mount" /etc/systemd/system/var-lib-caboose-depot.mount
 fi

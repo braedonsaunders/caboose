@@ -12,9 +12,6 @@ install -Dm644 "$here/caboose.portal" /usr/share/xdg-desktop-portal/portals/cabo
 install -Dm644 "$here/org.freedesktop.impl.portal.desktop.caboose.service" /usr/share/dbus-1/services/org.freedesktop.impl.portal.desktop.caboose.service
 install -Dm644 "$here/portals.conf" /etc/xdg/xdg-desktop-portal/portals.conf
 install -Dm644 "$here/geoclue.conf" /etc/geoclue/conf.d/90-caboose.conf
-if [ -d /usr/lib/firefox-esr ]; then
-  install -Dm644 "$here/firefox-portal.js" /usr/lib/firefox-esr/defaults/pref/caboose-portal.js
-fi
 # Applications that read GSettings rather than the portal draw no window buttons either:
 # Caboose draws every window's controls (bridgecore.BUTTON_LAYOUT).
 if [ -f /usr/share/glib-2.0/schemas/org.gnome.desktop.wm.preferences.gschema.xml ]; then

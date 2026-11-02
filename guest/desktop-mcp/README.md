@@ -229,10 +229,6 @@ Apps build an accessibility tree only when asked. The computer asks them through
 - `toolkit-accessibility=true` as the default of `org.gnome.desktop.interface` (a GSettings
   override), which at-spi-bus-launcher reports as `org.a11y.Status.IsEnabled`, so apps
   started without that environment still expose a tree;
-- `/etc/chromium.d/caboose-accessibility` (from `chromium-accessibility`):
-  `ACCESSIBILITY_ENABLED=1` and `--force-renderer-accessibility`, without which Chromium
-  shows its frame but not the page;
-- `~/.vscode/argv.json` `"force-renderer-accessibility": true` for VS Code.
 
 `press` on an element without an action that is not on screen, and `set-text` on a field
 that cannot take focus, say so instead of pretending.
@@ -243,8 +239,7 @@ that cannot take focus, say so instead of pretending.
 
 - copies `caboose-desktop-mcp.mjs` to `/opt/caboose/desktop-mcp.mjs`, and `a11y.py` and
   `seat.py` to `/opt/caboose/`;
-- installs the Chromium flags file, the GSettings override and VS Code's `argv.json` (merged
-  into an existing one, owned by `caboose`);
+- installs the GSettings override;
 - registers nothing per agent: caboose-agentd hands the server to each ACP agent.
 
 **Runtime:** Node (no packages), python3 with `python3-pyatspi` and `python3-gi`,
@@ -273,9 +268,8 @@ display (default `:101`) and `CABOOSE_DISPLAY_CONTROL` the seat.
   Node, and Caboose Display built from this checkout), runs `check/run.sh` in a throwaway
   container with this directory mounted read-only, and removes the container (`--rmi`
   removes the image too). It prints PASS or FAIL per assertion and exits 1 if any failed:
-  - **install.sh**, run twice: the helper and server are installed, the Chromium flags file
-    and the GSettings default are in place, no agent configuration is written, VS Code's
-    `argv.json` has the switch, and everything under the home is owned by uid 1000.
+  - **install.sh**, run twice: the helper and server are installed, the GSettings default is
+    in place and no agent configuration is written.
   - **Two Xvfb displays, `:100` and `:101`, sharing one session bus and registry**, with
     Mousepad and a GTK window on `:100` and a GTK dialog (`check/fixture.py`) on `:101`. The
     helper runs as `caboose` with nothing in its environment but `DISPLAY`

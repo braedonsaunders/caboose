@@ -41,8 +41,7 @@ into `/opt/caboose/bridge`:
 - `/etc/xdg/xdg-desktop-portal/portals.conf` choosing `caboose` for FileChooser and Settings
   and `gtk` for the rest.
 - What makes applications use the portal: `GTK_USE_PORTAL=1` in each seat's launch
-  environment (caboose-display), and Firefox's portal preferences for its file picker,
-  appearance and location. Qt applications keep the GTK platform theme and its dialogs.
+  environment (caboose-display). Qt applications keep the GTK platform theme and its dialogs.
 
 State lives in `/home/caboose/.cache/caboose/bridge/` (mode 0700, owned by `caboose`). It is
 the owner seat's only. The agent seat has its own session bus: there the portal backend
@@ -235,8 +234,8 @@ Location is shared only while the owner turns it on in the app. `PUT /v1/bridge/
 accepts `latitude` −90…90, `longitude` −180…180, `accuracy` 0…100000 metres and
 `altitude` −1000…100000 metres, at most once every 5 seconds (429 otherwise). The host
 writes `/etc/geolocation` as root (latitude, longitude, altitude, accuracy, one per line),
-which GeoClue's static source serves to every application that asks, through the Location
-portal or GeoClue directly. `DELETE` and 30 minutes without an update remove the file.
+which GeoClue's static source serves through the Location portal to every application that
+asks. `DELETE` and 30 minutes without an update remove the file.
 
 ### Now playing relay
 

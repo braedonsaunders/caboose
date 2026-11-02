@@ -24,11 +24,8 @@ echo '== install.sh: helper and accessibility switches, no per-agent registratio
 home=/home/caboose
 sh /src/install.sh && sh /src/install.sh  # twice: it must be idempotent
 check 'helper installed' test -x /opt/caboose/a11y.py -a -x /opt/caboose/desktop-mcp.mjs
-check 'chromium flags installed' grep -q force-renderer-accessibility /etc/chromium.d/caboose-accessibility
 check 'toolkit-accessibility defaults on' bash -c '[[ $(runuser -u caboose -- env HOME=/home/caboose gsettings get org.gnome.desktop.interface toolkit-accessibility) == true ]]'
 check 'no agent config written' bash -c "[[ ! -e $home/.claude.json && ! -e $home/.codex ]]"
-check 'vscode argv.json' grep -q '"force-renderer-accessibility": true' "$home/.vscode/argv.json"
-check 'configs owned by caboose' bash -c "[[ -z \$(find $home/.vscode ! -uid 1000) ]]"
 
 echo '== Xvfb :100 and :101 sharing one session bus and one accessibility registry'
 for d in 100 101; do Xvfb ":$d" -screen 0 1280x800x24 -nolisten tcp >"$logs/xvfb$d.log" 2>&1 & done

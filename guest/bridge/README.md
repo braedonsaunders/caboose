@@ -13,8 +13,7 @@ shares it; `caboose-scan` scans a document with the phone.
 | `bridgecore.py` | Validation and the logic both share, without D-Bus. |
 | `caboose.portal`, `org.freedesktop.impl.portal.desktop.caboose.service` | The backend's portal registration and D-Bus activation. |
 | `portals.conf` | `/etc/xdg/xdg-desktop-portal/portals.conf`: Caboose for FileChooser and Settings, GTK for the rest. |
-| `firefox-portal.js` | Firefox ESR uses the portal for its file picker, appearance and location. |
-| `geoclue.conf` | `/etc/geoclue/conf.d/90-caboose.conf`: GeoClue's static source, and the portal and Firefox allowed without a GeoClue agent. |
+| `geoclue.conf` | `/etc/geoclue/conf.d/90-caboose.conf`: GeoClue's static source, and the portal, through which every application asks, allowed without a GeoClue agent. |
 | `caboose-bridge.service` | The daemon on the owner's seat, wanted by and part of `caboose-display.service`. |
 | `install.sh` | Installs the above into `/opt/caboose/bridge`, `/usr/local/bin/caboose-bridge`, `/usr/local/bin/caboose-scan` and the system locations. |
 | `selftest.py`, `check.py`, `check.sh` | Tests (below). |

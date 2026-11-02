@@ -224,10 +224,6 @@ start_owner() {
     [ "$(basename "$(readlink -f "/sys/class/drm/${node##*/}/device")")" = vgem ] || continue
     chgrp caboose "$node" && chmod 0660 "$node"
   done
-  # Steam's defaults (guest/flatpak), set before Steam can run in the owner's session.
-  if [ -x /usr/local/libexec/caboose-steam-defaults ]; then
-    runuser -u caboose -- env HOME="$CABOOSE_HOME" /usr/local/libexec/caboose-steam-defaults || true
-  fi
   start_display caboose-display 14600 "$bus" /run/caboose/display.env $(phone_gpu_args)
   bridge_daemon "$bus"
 }
