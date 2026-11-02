@@ -481,8 +481,8 @@ inline Tracker& tracker() {
     return *instance;
 }
 // Set once the phone executor this process's Vulkan objects live on is gone (its
-// streams ended). Never cleared: every device is lost and the application recreates
-// its instance, which then finds whichever executor exists.
+// streams ended). Cleared when a later instance reconnects the process's stream to a
+// new executor (executorConnected).
 inline std::atomic<bool> executorLost{false};
 }  // namespace caboose::completion
 extern "C" void caboose_read_profile_wait(uint64_t us, uint32_t what);
@@ -497,9 +497,25 @@ struct WaitTimer {
                                       std::chrono::steady_clock::now() - start).count()), what);
     }
 };
+inline std::atomic<uint64_t> lostSocketInode{0};
+inline std::mutex& lostCallsMutex() {
+    static std::mutex* instance = new std::mutex;
+    return *instance;
+}
+inline std::unordered_set<std::string>& lostCallsTold() {
+    static auto* instance = new std::unordered_set<std::string>;
+    return *instance;
+}
 // A device stream connected to a (new) executor.
 inline void executorConnected() {
-    if (executorLost.exchange(false, std::memory_order_acq_rel)) tracker().revive();
+    lostSocketInode.store(0, std::memory_order_release);
+    if (executorLost.exchange(false, std::memory_order_acq_rel)) {
+        {
+            std::lock_guard<std::mutex> lock(lostCallsMutex());
+            lostCallsTold().clear();
+        }
+        tracker().revive();
+    }
 }
 // CABOOSE_GPU_ON_LOSS=pause: an application that must not restart while the phone is away.
 // Its devices cannot survive the executor (their objects lived there), so every call that
@@ -544,7 +560,6 @@ inline bool pauseOnLoss() {
 // The socket the lost executor was reached through, if it is still there (a broker that
 // did not remove it): a returned executor is a socket made since.
 // Inode numbers are reused, so a socket is identified by its inode and change time.
-inline std::atomic<uint64_t> lostSocketInode{0};
 inline uint64_t socketInode() {
     const char* path = std::getenv("CABOOSE_GFXSTREAM_SOCKET");
     struct stat info;
@@ -602,14 +617,13 @@ inline void executorEndedIfGone() {
 // application's wait for a new executor.
 // A call that returns without the device once its executor is gone: its outputs are left
 // as the caller had them (a query reads as all zeros). Each kind of call says so once per
-// process, so an answer of zeros can be told from the device's.
+// connection generation, so an answer of zeros can be told from the device's.
 inline bool lostCall(const char* caller = __builtin_FUNCTION()) {
     if (!executorLost.load(std::memory_order_acquire)) return false;
     awaitExecutorReturn();
-    static std::mutex mutex;
-    static std::unordered_set<std::string> told;
     {
-        std::lock_guard<std::mutex> lock(mutex);
+        std::lock_guard<std::mutex> lock(lostCallsMutex());
+        auto& told = lostCallsTold();
         if (told.size() < 512 && told.insert(caller).second)
             std::fprintf(stderr, "CABOOSE_GPU_LOST_CALL %s returned without the device (executor lost)\n", caller);
     }
