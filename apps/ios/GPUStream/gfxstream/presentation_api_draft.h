@@ -117,6 +117,15 @@ caboose_gpu_submit_result caboose_gpu_surface_present(caboose_gpu_surface* surfa
 // captures are stopped and no slot is written or lent, the next present frees the images.
 typedef void (*caboose_gpu_capture_callback)(void* context, uint64_t present_serial, uint32_t token,
                                              void* metal_texture);
+#if !defined(__APPLE__)
+// The Linux executor's captures: the callback's last argument is a caboose_gpu_capture_pixels*,
+// the captured picture in a linear image mapped for reading, valid until release_capture.
+typedef struct caboose_gpu_capture_pixels {
+    const void* data;   // the first row
+    uint64_t row_pitch; // bytes from one row to the next
+    uint32_t width, height, vk_format;
+} caboose_gpu_capture_pixels;
+#endif
 // Any thread. EBUSY after revocation.
 int caboose_gpu_surface_set_capture(caboose_gpu_surface* surface, caboose_gpu_capture_callback callback,
                                     void* context);

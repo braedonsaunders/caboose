@@ -1,12 +1,14 @@
 // Copyright 2026 Caboose contributors. SPDX-License-Identifier: Apache-2.0
 #pragma once
 #include <vulkan/vulkan.h>
+#include "presentation_api_draft.h"
 #include <memory>
 #include <vector>
 namespace gfxstream::host::vk { struct VulkanDispatch; }
 namespace caboose::gpuv2 {
 // Images on the presenting device that receive a copy of each presented picture, each also
-// a Metal texture frame lab reads (VK_EXT_metal_objects). The images are
+// a Metal texture frame lab reads (VK_EXT_metal_objects), or elsewhere a linear image mapped
+// for the CPU (caboose_gpu_capture_pixels). The images are
 // never presented, sampled by Vulkan, or shared with the guest.
 struct PresentationCaptureRing {
     gfxstream::host::vk::VulkanDispatch* vk = nullptr;
@@ -15,8 +17,11 @@ struct PresentationCaptureRing {
     VkExtent3D extent{};
     std::vector<VkImage> images;
     std::vector<VkDeviceMemory> memory;
-    // MTLTexture_id per image, owned by its VkImage.
+    // MTLTexture_id per image, owned by its VkImage; elsewhere each slot's pixels.
     std::vector<void*> textures;
+#if !defined(__APPLE__)
+    std::vector<caboose_gpu_capture_pixels> pixels;
+#endif
 };
 // Creates `count` device-local images of `format` and `extent` and exports their Metal
 // textures. VK_ERROR_EXTENSION_NOT_PRESENT when the device cannot export Metal objects;

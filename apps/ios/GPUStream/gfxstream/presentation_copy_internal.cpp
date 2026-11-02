@@ -116,6 +116,15 @@ VkResult submitPresentationCopy(gfxstream::host::vk::CaboosePresentationObjects&
         barriers[2].dstAccessMask = VK_ACCESS_MEMORY_READ_BIT;
         vk->vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
             VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nullptr, 0, nullptr, count, barriers);
+#if !defined(__APPLE__)
+        if (capture) {
+            // The Linux executor reads its captures on the CPU once the copy fence signals.
+            VkMemoryBarrier host{VK_STRUCTURE_TYPE_MEMORY_BARRIER, nullptr, VK_ACCESS_TRANSFER_WRITE_BIT,
+                                 VK_ACCESS_HOST_READ_BIT};
+            vk->vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT,
+                0, 1, &host, 0, nullptr, 0, nullptr);
+        }
+#endif
         result = vk->vkEndCommandBuffer(commandBuffer);
         if (result != VK_SUCCESS) return provider ? provider->record(result) : result;
         VkSubmitInfo submit{};

@@ -218,7 +218,12 @@ it as Objective-C++ and attach each surface to its owner view's `CAMetalLayer`
 (`metal_surface_internal.mm`); elsewhere it attaches a `VK_EXT_headless_surface`
 (`headless_surface_internal.cpp`) and presents offscreen, which is how the
 [Linux executor](linux-executor/README.md) runs the same runtime without a phone.
-`presentation_platform_surface.h` is the boundary between the two.
+`presentation_platform_surface.h` is the boundary between the two. A headless surface takes
+the extent of the swapchain created on it, so its `configure_extent` changes no layer. Mesa
+before 26 offers `VK_EXT_swapchain_maintenance1` on headless swapchains without implementing
+`vkReleaseSwapchainImagesEXT`; off Apple platforms retiring a swapchain with acquired, unused
+images therefore leaves their release to the swapchain's destruction, which follows the same
+idle proof.
 
 ## Presented-picture captures
 
@@ -227,7 +232,10 @@ presenting device while a callback is set, and lends each copy's Metal texture t
 callback until it is released (`presentation_capture_state.h`). CabooseKit sets it only
 for the presents a window snapshot or frame lab takes, and clears it once the copy
 arrives; with no callback set and no slot written or lent, the next present frees the
-images, so a window does not hold them between copies.
+images, so a window does not hold them between copies. Off Apple platforms the capture
+images are linear and in coherent host memory, and the callback receives a
+`caboose_gpu_capture_pixels` (the mapped rows) instead of a texture; the Linux executor
+checksums every presented picture that way.
 
 ## Display times for frame lab
 

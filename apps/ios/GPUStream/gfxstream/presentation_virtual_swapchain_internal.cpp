@@ -164,6 +164,14 @@ VkResult releaseUnusedVirtualImages(gfxstream::host::vk::CabooseSwapchainDevice&
         for (uint32_t j = 0; j < i; ++j)
             if (indices[j] == indices[i]) return VK_ERROR_INITIALIZATION_FAILED;
     }
+#if !defined(__APPLE__)
+    // The Linux executor's headless swapchains: Mesa before 26 advertises
+    // VK_EXT_swapchain_maintenance1 there without implementing the release (its
+    // vkReleaseSwapchainImagesEXT calls a null entry point). Retirement destroys the
+    // swapchain next, after the same idle proof, which releases every image.
+    (void)device; (void)provider;
+    return VK_SUCCESS;
+#endif
     auto get = runtimeInstanceProcAddr();
     if (!get) return VK_ERROR_INITIALIZATION_FAILED;
     auto getDevice = reinterpret_cast<PFN_vkGetDeviceProcAddr>(get(device.instance, "vkGetDeviceProcAddr"));
