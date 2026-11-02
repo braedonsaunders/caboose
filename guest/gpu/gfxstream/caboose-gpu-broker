@@ -381,7 +381,8 @@ class SurfaceStats:
     """Always on: every 5 s while a surface presents, one CABOOSE_GPU_SURFACE_STATS line with
     its presents per second, present results and source releases from the phone, the longest
     gap between presents, and the bytes its process sent to and received from the phone in
-    that window. Counters only; no payloads, handles or identities."""
+    that window (message payloads, before compression). Counters only; no payloads, handles
+    or identities."""
     INTERVAL_NS = 5_000_000_000
 
     def __init__(self, ordinal, owner):
