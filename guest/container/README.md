@@ -96,6 +96,10 @@ owner's session and printing begin on interactive promotion.
 | `ready` | Waits up to 120 s for the owner's display to answer a hello with the host's token, publishes its display variables to its session bus, then starts its accessibility bus. |
 | `start-agent` | Starts the agent seat: its own session bus (`/run/user/1000/agent-bus`) and notification endpoint, and a Caboose Display on port 14601 with Wayland socket `wayland-caboose-agent`, Xwayland `:101`, `--no-audio`, launch environment in `/run/caboose/agent-display.env`. Waits until it is ready, then starts its accessibility bus. |
 
+Each display is supervised: if it exits with a failure (a crash), `caboose-session` starts it
+again at once, or after a back-off of up to 30 s when it fails within its first minute, and
+notes the exit in its log. A display stopped with SIGTERM exits cleanly and stays stopped.
+
 Both displays check the token the host writes to `/run/caboose/display-token` before
 `start`; the host keeps it while the container is paused and writes a new one when the
 container is created or restarted.

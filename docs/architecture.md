@@ -238,10 +238,11 @@ the nonempty password travels in a private owner-bus Secret Service session, clo
 creation. Only an empty credential store is initialized; existing keyrings and browser
 profiles are preserved. An existing locked keyring that does not accept the managed password
 requires its original password and an explicit operator migration. No reset, empty password
-or plaintext browser password store is selected. The host waits for this bounded preparation
-before owner app, file and URL launches. `GET /v1/computer` and `computer.settings` expose
-`keyring: null | { state: preparing | ready | failed, message? }`; a failure remains visible while ordinary launches and interactive keyring recovery stay
-available.
+or plaintext browser password store is selected. Owner app, file and URL launches start only
+on a prepared keyring, so no application can make GNOME prompt to create or unlock one: a
+launch waits up to 60 s for preparation, tries a failed preparation once more, and otherwise
+answers 409 with the preparation's error. `GET /v1/computer` and `computer.settings` expose
+`keyring: null | { state: preparing | ready | failed, message? }`.
 Memory park retains the daemon and its unlocked state; cold boots use the saved credential.
 
 The agent bus activates a Secret Service forwarder to this canonical daemon. Each agent
