@@ -1,5 +1,5 @@
 #!/bin/sh
-# Wine at the display's density (README.md). Container computers run the service under
+# Wine prefixes for the phone's display (README.md). Container computers run the service under
 # caboose-scopes (guest/scopes), microVMs under systemd.
 set -eu
 here=$(dirname "$0")

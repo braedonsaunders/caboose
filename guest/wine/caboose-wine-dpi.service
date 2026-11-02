@@ -1,5 +1,5 @@
 [Unit]
-Description=Wine at the display's density
+Description=Wine prefixes for the phone's display
 
 [Service]
 User=caboose
