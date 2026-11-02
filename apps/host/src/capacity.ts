@@ -2,6 +2,7 @@ import { lstat, opendir, readFile, statfs } from 'node:fs/promises'
 import { cpus, freemem, loadavg, platform, totalmem } from 'node:os'
 import { join } from 'node:path'
 import type { Capacity, Measurement, ResourceTotals, StorageCategory } from '../../../packages/capacity/types.js'
+import { DEFAULT_KSM_ROOT, readKsmSnapshot } from './ksm.js'
 import type { ComputerState } from './lifecycle.js'
 import { vmPaths } from './vm-paths.js'
 import { administers, isOperator, type TenancyPrincipal } from './identity/routes.js'
@@ -85,6 +86,10 @@ export function linuxAvailableMemory(text: string): Measurement {
   const match = /^MemAvailable:\s+(\d+) kB$/m.exec(text)
   return match ? measured(Number(match[1]) * 1024) : unavailable('Kernel does not report MemAvailable')
 }
+export async function linuxKsmSavedMemory(ksmRoot = DEFAULT_KSM_ROOT): Promise<Measurement> {
+  const snapshot = await readKsmSnapshot(ksmRoot)
+  return snapshot ? measured(snapshot.savedBytes) : unavailable('Kernel does not expose KSM telemetry')
+}
 export function cpuDelta(before: { idle: number; total: number }, after: { idle: number; total: number }): Measurement {
   const total = after.total - before.total, idle = after.idle - before.idle
   return total > 0 && idle >= 0 && idle <= total ? measured(100 * (total - idle) / total) : unavailable('CPU counters reset or did not advance')
@@ -137,11 +142,15 @@ export class CapacitySampler {
     const at = Date.now(), cpu = cpuCounters(), previous = this.previousCpu
     this.previousCpu = { ...cpu, at }
     let memoryAvailableBytes = unavailable('Available memory is not measured on this OS; free memory excludes reclaimable caches')
-    if (platform() === 'linux') try { memoryAvailableBytes = linuxAvailableMemory(await readFile('/proc/meminfo', 'utf8')) } catch { memoryAvailableBytes = unavailable('Cannot read kernel memory counters') }
+    let ksmSavedBytes = unavailable('KSM is not available on this OS')
+    if (platform() === 'linux') {
+      try { memoryAvailableBytes = linuxAvailableMemory(await readFile('/proc/meminfo', 'utf8')) } catch { memoryAvailableBytes = unavailable('Cannot read kernel memory counters') }
+      ksmSavedBytes = await linuxKsmSavedMemory()
+    }
     let diskTotalBytes = unavailable('Image filesystem is unavailable'), diskAvailableBytes = diskTotalBytes
     if (this.root) try { const fs = await statfs(this.root); diskTotalBytes = measured(fs.blocks * fs.bsize); diskAvailableBytes = measured(fs.bavail * fs.bsize) } catch {}
     return {
-      memoryTotalBytes: measured(totalmem()), memoryFreeBytes: measured(freemem()), memoryAvailableBytes,
+      memoryTotalBytes: measured(totalmem()), memoryFreeBytes: measured(freemem()), memoryAvailableBytes, ksmSavedBytes,
       cpuBusyPercent: previous && previous.count === cpu.count ? cpuDelta(previous, cpu) : unavailable('Requires two samples with the same CPU count'),
       cpuSampleMs: previous ? measured(at - previous.at) : unavailable('Requires two samples'), logicalCpus: measured(cpu.count),
       loadAverage1m: platform() === 'win32' ? unavailable('OS does not provide load average') : measured(loadavg()[0]!), diskTotalBytes, diskAvailableBytes,

@@ -3,6 +3,7 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import type { UsageCounters, ComputerStorage } from '../../../packages/capacity/types.js'
 import { measured, unavailable } from './capacity.js'
+import { readCgroupSmapsRollup } from './ksm.js'
 
 /** Docker Engine local socket only. Absolute deadline and response-size cap include a stalled daemon. */
 export function engineJson(socketPath: string, path: string): Promise<any> {
@@ -49,7 +50,10 @@ export function containerUsage(name: string, home: string, socket: () => Promise
       const stats = await engineJson(await socket(), `/containers/${encodeURIComponent(container.Id)}/stats?stream=false&one-shot=true`)
       const at = Date.parse(stats.read)
       if (!Number.isFinite(at) || Math.abs(Date.now() - at) > 15_000) throw new Error('Stale runtime sample')
-      return dockerCounters(container, stats, at)
+      const base = dockerCounters(container, stats, at)
+      const pid = container.State?.Pid
+      const smaps = await readCgroupSmapsRollup(container.Id, typeof pid === 'number' && pid > 0 ? pid : undefined)
+      return smaps ? { ...base, pssBytes: smaps.pssBytes, sharedBytes: smaps.sharedBytes } : base
     },
     storage(): Promise<ComputerStorage> {
       if (storage && Date.now() - storageAt < 15 * 60_000) return storage

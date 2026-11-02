@@ -5,6 +5,7 @@ import os
 import pathlib
 import re
 import select
+import shutil
 import socket
 import subprocess
 import sys
@@ -12,7 +13,34 @@ import time
 
 READY = pathlib.Path('/run/caboose-template-ready')
 INITIALIZED = pathlib.Path('/run/caboose-template-initialized')
+MEMORY_HELPER = pathlib.Path('/usr/local/libexec/caboose-memory')
 RNDRESEEDCRNG = 0x5207
+WARM_MAX_FILE_BYTES = 16 * 1024 * 1024
+SCRATCH_GLOBS = (
+    'var/log/journal/*',
+    'tmp/*',
+    'var/tmp/*',
+    'var/cache/apt/archives/*.deb',
+    'var/cache/apt/archives/partial/*',
+    'root/.cache/*',
+)
+WARM_SHARED_PATTERNS = (
+    'lib/*/libc.so*',
+    'lib/*/libstdc++.so*',
+    'lib/*/libglib-2.0.so*',
+    'lib/*/libgtk-3.so*',
+    'lib/*/libwayland-*.so*',
+    'lib/*/libX11.so*',
+    'usr/lib/*/libc.so*',
+    'usr/lib/*/libstdc++.so*',
+    'usr/lib/*/libglib-2.0.so*',
+    'usr/lib/*/libgtk-3.so*',
+    'usr/lib/*/libwayland-*.so*',
+    'usr/lib/*/libX11.so*',
+    'usr/bin/python3',
+    'usr/bin/node',
+    'etc/ld.so.cache',
+)
 
 
 def run(*args):
@@ -27,6 +55,14 @@ def template_boot():
         raise RuntimeError('Not a disposable template guest booted directly into isolation')
 
 
+def _is_real_template_guest():
+    try:
+        cmdline = pathlib.Path('/proc/cmdline').read_text().split()
+        return 'caboose.template=1' in cmdline and 'systemd.unit=caboose-template.target' in cmdline
+    except OSError:
+        return False
+
+
 def user_processes():
     result = []
     for status in pathlib.Path('/proc').glob('[0-9]*/status'):
@@ -39,6 +75,65 @@ def user_processes():
     return result
 
 
+def warm_shared_pages(root=pathlib.Path('/'), max_file_bytes=WARM_MAX_FILE_BYTES):
+    root = pathlib.Path(root)
+    seen = set()
+    total_bytes = 0
+    chunk_size = 256 * 1024
+    for pattern in WARM_SHARED_PATTERNS:
+        for match in sorted(root.glob(pattern)):
+            try:
+                resolved = match.resolve()
+                if resolved in seen or not match.is_file():
+                    continue
+                seen.add(resolved)
+                with open(match, 'rb') as handle:
+                    remaining = max_file_bytes
+                    while remaining > 0:
+                        chunk = handle.read(min(chunk_size, remaining))
+                        if not chunk:
+                            break
+                        total_bytes += len(chunk)
+                        remaining -= len(chunk)
+            except OSError:
+                continue
+    return total_bytes
+
+
+def compact_and_warm_template_memory(root=pathlib.Path('/')):
+    root = pathlib.Path(root)
+    if root != pathlib.Path('/') or _is_real_template_guest():
+        for pattern in SCRATCH_GLOBS:
+            for entry in root.glob(pattern):
+                try:
+                    if entry.is_dir() and not entry.is_symlink():
+                        shutil.rmtree(entry, ignore_errors=True)
+                    else:
+                        entry.unlink(missing_ok=True)
+                except OSError:
+                    pass
+    os.sync()
+    try:
+        subprocess.run(['fstrim', str(root)], check=False, timeout=30, capture_output=True)
+    except (OSError, subprocess.SubprocessError):
+        pass
+    memory_helper = MEMORY_HELPER if root == pathlib.Path('/') else root / 'usr/local/libexec/caboose-memory'
+    if memory_helper.exists():
+        try:
+            subprocess.run([str(memory_helper), 'setup'], check=False, timeout=30, capture_output=True)
+        except (OSError, subprocess.SubprocessError):
+            pass
+    os.sync()
+    for sysctl, value in (('drop_caches', '3\n'), ('compact_memory', '1\n')):
+        try:
+            (root / 'proc/sys/vm' / sysctl).write_text(value)
+        except OSError:
+            pass
+    warmed_bytes = warm_shared_pages(root=root)
+    os.sync()
+    return warmed_bytes
+
+
 def prepare():
     template_boot()
     # Isolate a target that retains only the private host agent and its bridge.
@@ -47,6 +142,7 @@ def prepare():
     processes = user_processes()
     if processes:
         raise RuntimeError('User processes remain after template isolation')
+    compact_and_warm_template_memory()
     READY.write_text('prepared\n')
     os.sync()
 

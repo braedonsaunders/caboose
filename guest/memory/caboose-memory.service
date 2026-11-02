@@ -1,0 +1,11 @@
+[Unit]
+Description=Caboose guest memory compression (zram), MGLRU, and VM tuning
+ConditionVirtualization=vm
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/libexec/caboose-memory setup
+
+[Install]
+WantedBy=multi-user.target

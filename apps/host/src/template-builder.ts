@@ -1,6 +1,6 @@
 import { randomInt, randomUUID } from 'node:crypto'
 import { execFile } from 'node:child_process'
-import { chmod, mkdir, mkdtemp, open, rm } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, open, rm, stat } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { dirname, join, isAbsolute } from 'node:path'
 import { promisify } from 'node:util'
@@ -29,9 +29,22 @@ export interface TemplateBuildOptions {
   freePageReporting?: boolean
   attachments?: readonly DeskReadOnlyAttachment[]
 }
+export interface SnapshotSparsity {
+  logicalBytes: number
+  allocatedBytes: number
+  savedBytes: number
+}
 async function privileged(command: string, args: string[]): Promise<void> {
   const root = process.getuid?.() === 0
   await exec(root ? command : 'sudo', root ? args : ['-n', command, ...args], { timeout: 15_000 })
+}
+
+/** Measure sparse hole savings in a Cloud Hypervisor memory-ranges file. */
+export async function measureSnapshotSparsity(snapshotDir: string): Promise<SnapshotSparsity> {
+  const info = await stat(join(snapshotDir, 'memory-ranges'))
+  const logicalBytes = info.size
+  const allocatedBytes = info.blocks * 512
+  return { logicalBytes, allocatedBytes, savedBytes: Math.max(0, logicalBytes - allocatedBytes) }
 }
 
 /** Only the tested official and incremental builds have template support. */
@@ -64,7 +77,7 @@ async function buildTemplateSourceOnce(options: TemplateBuildOptions): Promise<v
   for (const path of [options.directory, options.baseImage, options.kernel, options.initramfs, options.vmmPath]) {
     if (!isAbsolute(path)) throw new Error('Template builder requires absolute paths')
   }
-  if (options.attachments?.some(item => item.kind !== 'block')) throw new Error('Templates support read-only block attachments only')
+  if (options.attachments?.some(item => item.kind !== 'block' && item.kind !== 'pmem')) throw new Error('Templates support read-only block and pmem attachments only')
   const api = desk as unknown as Partial<TemplateApi>
   if (api.DESK_TEMPLATE_VERSION !== 3 || typeof api.hostCpuSignature !== 'function' || typeof api.registerDeskTemplate !== 'function') throw new Error('Template building requires an AppKit desk release with template registration')
   const version = (await exec(options.vmmPath, ['--version'], { timeout: 15_000 })).stdout.trim()
@@ -113,7 +126,7 @@ async function buildTemplateSourceOnce(options: TemplateBuildOptions): Promise<v
     await privileged('ip', ['link', 'set', 'dev', tap, 'up'])
     stopped = false
     const source = await host.start({ deskId: 'source', baseImage: options.baseImage, overlayPath: disk,
-      kernelPath: options.kernel, initramfsPath: options.initramfs, memoryMb: options.memoryMb, vcpus: options.vcpus, freePageReporting: options.freePageReporting,
+      kernelPath: options.kernel, initramfsPath: options.initramfs, memoryMb: options.memoryMb, vcpus: options.vcpus, freePageReporting: options.freePageReporting ?? true,
       network: { tapDevice: tap }, readOnlyAttachments: options.attachments })
     await verifyTemplateGuestComponents(source, expectedComponents)
     const result = await source.exec({ command: '/usr/bin/python3', args: ['/usr/local/libexec/caboose-template', 'prepare'], timeoutMs: 90_000 })

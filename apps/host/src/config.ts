@@ -79,7 +79,10 @@ export function config(env: NodeJS.ProcessEnv): Config {
   const vmRestoreMode = (requestedMode ?? (cowAlias ? 'copyonwrite' : 'copy')) as 'copy' | 'copyonwrite' | 'ondemand'
   const vmCow = vmRestoreMode === 'copyonwrite'
   const vmTemplate = toggle(env.CABOOSE_VM_TEMPLATE, 'CABOOSE_VM_TEMPLATE')
-  const vmFreePageReporting = toggle(env.CABOOSE_VM_FREE_PAGE_REPORTING, 'CABOOSE_VM_FREE_PAGE_REPORTING')
+  const parsedFreePageReporting = parseVmFreePageReporting(env.CABOOSE_VM_FREE_PAGE_REPORTING)
+  const vmFreePageReporting = selectedRuntime === 'container'
+    ? (env.CABOOSE_VM_FREE_PAGE_REPORTING === 'on' ? true : false)
+    : parsedFreePageReporting
   const parkedFiles = toggle(env.CABOOSE_PARKED_FILES, 'CABOOSE_PARKED_FILES')
   if (vmTemplate && vmRestoreMode === 'ondemand') throw new Error('CABOOSE_VM_TEMPLATE cannot be combined with ondemand restore')
   if ((vmRestoreMode !== 'copy' || vmTemplate) && env.CABOOSE_VM_DEPOT?.trim()) throw new Error('CABOOSE_VM_COW and CABOOSE_VM_TEMPLATE cannot be combined with the microVM depot')
@@ -116,6 +119,13 @@ export function config(env: NodeJS.ProcessEnv): Config {
     tailnet: selectedRuntime === 'container' ? tailnetConfig(env) : { mode: 'off' },
     lan: selectedRuntime === 'container' ? lanConfig(env) : { mode: 'off' },
   }
+}
+
+export function parseVmFreePageReporting(value: string | undefined): boolean {
+  if (value === undefined || value.trim() === '') return true
+  if (value === 'on') return true
+  if (value === 'off') return false
+  throw new Error('CABOOSE_VM_FREE_PAGE_REPORTING must be on or off')
 }
 
 function toggle(value: string | undefined, name: string): boolean {

@@ -76,7 +76,7 @@ chroot "$work/root" /sbin/ldconfig
 chroot "$work/root" /usr/lib/systemd/systemd-update-done
 if [[ ${CABOOSE_SPLIT_SYSTEM:-0} == 1 ]]; then
   install -m 0755 /builder/caboose-system "$work/root/etc/initramfs-tools/scripts/local-bottom/caboose-system"
-  printf 'erofs\noverlay\n' >> "$work/root/etc/initramfs-tools/modules"
+  printf 'erofs\noverlay\nvirtio_pmem\nnd_pmem\ndax_pmem\n' >> "$work/root/etc/initramfs-tools/modules"
   chroot "$work/root" update-initramfs -u
   touch "$work/root/etc/caboose-split-system"
   /builder/make-system-image.sh "$work/root" "$work/system.erofs"

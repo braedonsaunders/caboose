@@ -26,6 +26,7 @@ import { TailnetNode, dockerInputCli, tailnetHostname, type DockerInput, type Ta
 import { TERMINAL_PORT } from './terminal.js'
 import { AI_PORT } from './ai.js'
 import { AGENT_DISPLAY_PORT, DISPLAY_ENV_PATH, OWNER_DISPLAY_PORT, WRITE_TOKEN_SCRIPT, parseEnvFile } from './display.js'
+import { pulseKsmMergeBoost, reclaimCgroupMemory } from './ksm.js'
 
 /** The owner computer's own Docker network, so its bridge interface has a known name to fence. */
 export const CONTAINER_NETWORK = 'caboose'
@@ -509,6 +510,7 @@ export function createContainerController(config: Config, dependencies: { docker
         await ensureWritableCgroups()
         if (mode === 'interactive') await ownerDisplay()
         void networkTask(() => Promise.all([tailnet?.ensure(), lan?.ensure()]))
+        void pulseKsmMergeBoost().catch(() => {})
         return session()
       } catch (error) {
         running = false
@@ -516,10 +518,27 @@ export function createContainerController(config: Config, dependencies: { docker
       }
     },
     async promote() { await ownerDisplay(); return session() },
+    async reclaimMemory() {
+      if (!running) return
+      try {
+        await exec('root', '/usr/local/libexec/caboose-memory', ['reclaim', '--mode=park', '--json'], 10_000)
+      } catch {
+        // Containers without caboose-memory installed skip reclamation cleanly.
+      }
+      try {
+        const id = (await docker(['inspect', '-f', '{{.Id}}', name], 5_000)).trim()
+        await reclaimCgroupMemory(id, 'park')
+      } catch {
+        // Host-side cgroup reclaim is best-effort.
+      }
+    },
     async park() {
       // Pad nodes leave before the computer is frozen with them.
       await pads.stop()
-      if ((await state()) === 'running') await docker(['pause', name], 60_000)
+      if ((await state()) === 'running') {
+        await docker(['pause', name], 60_000)
+        void pulseKsmMergeBoost().catch(() => {})
+      }
       running = false
       launchEnv = []
     },

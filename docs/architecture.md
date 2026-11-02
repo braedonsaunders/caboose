@@ -99,8 +99,7 @@ tool retains the original disk and kernel, uses a crash-recovery journal, refuse
 memory, and holds host and Cloud Hypervisor-compatible disk locks. Guest filesystems and
 initramfs hooks run only in isolated appliances, using separate clones. Rollback requires
 explicit acknowledgement that writes since migration will be lost.
-The system image uses LZ4HC level 12 compression with 64 KiB physical clusters.
-The device uses read-only virtio-block; this does not establish DAX or a RAM saving.
+The system image builder (`guest/image/make-system-image.sh`) defaults to `CABOOSE_SYSTEM_IMAGE_FORMAT=dax`, producing an uncompressed, 4 KiB block-aligned EROFS image without inline tail packing (`-E noinline_data`) padded to a 2 MiB boundary for PMD DAX alignment; setting `CABOOSE_SYSTEM_IMAGE_FORMAT=lz4hc` builds an LZ4HC level 12 image with 64 KiB physical clusters. Standard Cloud Hypervisor microVMs attach `system.erofs` over `virtio-pmem` (`--pmem file=...,discard_writes=on`, overridable via `CABOOSE_SYSTEM_IMAGE_KIND=block`), and the initramfs `caboose-system` hook loads `virtio_pmem`, `nd_pmem` and `dax_pmem` and mounts `/dev/pmem0` with `-o ro,dax` (falling back to `-o ro` or `/dev/vdb` when DAX is unavailable) so multiple VMs share the host's physical page cache frames directly.
 
 The image contains:
 
@@ -260,8 +259,7 @@ The computer runs as a **microVM** by default: Cloud Hypervisor on Linux or
 Virtualization.framework on Apple Silicon macOS 14+, through appkit-desk, with
 the image files `base.raw`, `vmlinux` and `initrd` in `CABOOSE_IMAGE_ROOT`, its overlay at
 `overlays/owner.raw` and its memory snapshot at `overlays/owner.snapshot`.
-On Linux, operators can opt into Cloud Hypervisor copy-on-write restore and
-virtio-balloon free-page reporting. Copy-on-write restore retires the old
+On Linux, `virtio-balloon` free-page reporting (`CABOOSE_VM_FREE_PAGE_REPORTING=on` by default on microVM hosts) is enabled alongside the guest memory subsystem (`guest/memory/caboose-memory.py`, `caboose-memory.service`), and operators can opt into Cloud Hypervisor copy-on-write restore. At boot in microVMs, `caboose-memory setup` configures a `zstd`-backed (or `lz4`) `zram` swap device sized to 50% of guest RAM, enables Multi-Gen LRU (`MGLRU`, `/sys/kernel/mm/lru_gen/enabled=0x0007`), and tunes VM watermarks and cache pressure. Before the host pauses a running microVM into `frozen` or suspends it into `parked`, `reclaimMemory()` invokes `caboose-memory reclaim`, flushing buffers, dropping clean page cache and reclaimable slab (`drop_caches=3`), aging cold anonymous pages into `zram`, and compacting guest memory (`compact_memory=1`) so contiguous free pages are returned to the host via `free-page-reporting`. On wake and freeze transitions, the host KSM controller (`apps/host/src/ksm.ts`) pulses a bounded `/sys/kernel/mm/ksm` scan boost before throttling back to steady state, and `CapacitySampler` reports host KSM savings (`ksmSavedBytes`) alongside `/proc/<pid>/smaps_rollup` proportional (`pssBytes`) and shared (`sharedBytes`) memory metrics. Copy-on-write restore retires the old
 snapshot before the VM can write and keeps its source unchanged until the VMM
 exits; an interrupted VM can leave a source file requiring verified cleanup. Native Linux bundles and the host image pin AppKit’s incremental.1 Cloud Hypervisor v54 build with archive and binary checksums. On a reflink-capable filesystem, it can reuse the unchanged CoW source extents and write private pages into a new self-contained snapshot; unavailable incremental paths write a full snapshot.
 Operators may instead select on-demand restore, which requires Linux userfaultfd
@@ -276,7 +274,7 @@ memory inode shared by descendants, gives each computer its own writable disk
 and device identities, and retains the source inode while descendants exist.
 The host administrator and source owner keep that read-only inode unchanged;
 writing or truncating it while a descendant runs corrupts the guest.
-The source registration binds the VMM, CPU, golden image, kernel, initramfs and
+During `caboose-template prepare`, the template guest purges temporary boot and package caches, initializes `caboose-memory setup`, drops clean caches, compacts memory, and pre-faults shared libraries (`libc`, `libstdc++`, `libglib`, `libgtk`, `libwayland`, `libX11`, `python3`, `node`, `ld.so.cache`) into the template's page cache with `free-page-reporting` enabled so `source.snapshot/memory-ranges` stays sparse on disk and CoW descendants inherit warm shared pages. The source registration binds the VMM, CPU, golden image, kernel, initramfs and
 read-only attachments. Before resuming, the host verifies that the VMM privately
 maps the complete memory file; a fallback to eager copying is rejected. Before
 exposing a fork, the host blocks its TAP, the

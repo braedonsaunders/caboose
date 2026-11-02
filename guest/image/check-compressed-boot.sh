@@ -27,8 +27,12 @@ cat > "$work/extra/scripts/local-bottom/00-caboose-device-check" <<'CHECK'
 case "${1:-}" in prereqs) exit 0 ;; esac
 fail() { echo "CABOOSE_COMPRESSED_BOOT_FAILED: $*" > /dev/console; poweroff -f; exit 1; }
 test "$(cat /sys/block/vda/serial)" = caboose-ci-root || fail 'vda is not root'
-test "$(cat /sys/block/vdb/serial)" = caboose-ci-system || fail 'vdb is not system'
-test "$(cat /sys/block/vdb/ro)" = 1 || fail 'System attachment is writable'
+if [ -b /dev/pmem0 ]; then
+  test "$(cat /sys/block/pmem0/ro)" = 1 || fail 'PMEM system attachment is writable'
+else
+  test "$(cat /sys/block/vdb/serial)" = caboose-ci-system || fail 'vdb is not system'
+  test "$(cat /sys/block/vdb/ro)" = 1 || fail 'System attachment is writable'
+fi
 echo CABOOSE_COMPRESSED_DEVICE_MAPPING_PASSED > /dev/console
 CHECK
 cat > "$work/extra/scripts/local-bottom/zz-caboose-boot-check" <<'CHECK'
@@ -39,12 +43,13 @@ case "${1:-}" in prereqs) echo "$PREREQ"; exit 0 ;; esac
 fail() { echo "CABOOSE_COMPRESSED_BOOT_FAILED: $*" > /dev/console; poweroff -f; exit 1; }
 root_options=
 lower=no
+lower_options=
 usr_overlay=no
 opt_overlay=no
 while read -r _device target filesystem options _rest; do
   case "$target:$filesystem" in
     "$rootmnt:btrfs") root_options=$options ;;
-    "$rootmnt/.caboose-system:erofs") lower=yes ;;
+    "$rootmnt/.caboose-system:erofs") lower=yes; lower_options=$options ;;
     "$rootmnt/usr:overlay") usr_overlay=yes ;;
     "$rootmnt/opt:overlay") opt_overlay=yes ;;
   esac
@@ -54,8 +59,11 @@ for option in compress-force=zstd:1 discard=async noatime; do
   case ",$root_options," in *,"$option",*) ;; *) fail "Root lacks $option" ;; esac
 done
 [ "$lower" = yes ] || fail 'EROFS lower not mounted'
+case ",$lower_options," in *,ro,*) ;; *) fail 'EROFS lower is not read-only' ;; esac
 [ "$usr_overlay" = yes ] && [ "$opt_overlay" = yes ] || fail 'System overlays not mounted'
-# Executing the real guest Python reads the compressed /usr lower. Exercise
+grep -q '/dev/pmem0' /scripts/local-bottom/caboose-system || fail 'caboose-system lacks /dev/pmem0 discovery'
+grep -q 'ro,dax' /scripts/local-bottom/caboose-system || fail 'caboose-system lacks ro,dax mount support'
+# Executing the real guest Python reads the EROFS /usr lower. Exercise
 # copy-up, new-file writes, whiteouts and an immutable lower in this snapshot.
 chroot "$rootmnt" /usr/bin/python3 - <<'PY' || fail 'Guest compressed I/O checks failed'
 import errno, pathlib, subprocess

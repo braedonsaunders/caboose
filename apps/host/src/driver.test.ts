@@ -204,7 +204,7 @@ it('runs another computer on its own disk and network, and deletes both with it'
   } finally { await rm(root, { recursive: true, force: true }) }
 })
 
-it('boots a new computer with the selected immutable system and keeps existing disks on the legacy image', async () => {
+it('boots a new computer with the selected immutable system via virtio-pmem (or block override) and keeps existing disks on the legacy image', async () => {
   const root = await mkdtemp(join(tmpdir(), 'caboose-split-driver-'))
   try {
     const split = join(root, 'version-one')
@@ -212,17 +212,33 @@ it('boots a new computer with the selected immutable system and keeps existing d
     for (const name of ['base.raw', 'vmlinux', 'initrd', 'system.erofs']) await writeFile(join(split, name), name)
     for (const name of ['base.raw', 'vmlinux', 'initrd']) await writeFile(join(root, name), name)
     const plans: any[] = []
+    const commands: string[] = []
     const backend: DeskBackend = { async boot(plan) {
       plans.push(plan)
-      return { deskId: plan.deskId, async request(command) { return { exitCode: 0, signal: null, stdout: command.op === 'exec' && command.command === '/bin/cat' ? DISPLAY_ENV : '', stderr: '', truncated: false } }, subscribe: () => () => {}, shutdown: async () => {} }
+      return {
+        deskId: plan.deskId,
+        async request(command) {
+          if (command.op === 'exec') commands.push([command.command, ...(command.args ?? [])].join(' '))
+          return { exitCode: 0, signal: null, stdout: command.op === 'exec' && command.command === '/bin/cat' ? DISPLAY_ENV : '', stderr: '', truncated: false }
+        },
+        subscribe: () => () => {},
+        shutdown: async () => {},
+      }
     } }
     const config = { token: 'owner', host: '127.0.0.1', port: 7310, idleMs: 1000, imageRoot: root, memoryMb: 512, vcpus: 1, vmmPath: process.execPath, runtime: 'microvm' as const, containerImage: '', baseImage: null, databaseUrl: null, containerName: '', containerHome: '', containerArgs: [], gpu: 'auto' as const, agentRegistryUrl: '', agentIdleMs: 1000, maxRunning: 4, publicUrl: null, mdns: false, trustedProxies: [] }
     const dep = { backend, deviceExists: () => true, network: async () => {}, splitImage: split }
     const controller = createController(config, dep)
     await controller.wake()
     expect(plans[0].kernelPath).toBe(join(split, 'vmlinux'))
-    expect(plans[0].vmm.args).toContain(`path=${join(split, 'system.erofs')},readonly=on,image_type=raw`)
+    expect(plans[0].vmm.args).toContain(`file=${join(split, 'system.erofs')},discard_writes=on`)
+    await controller.reclaimMemory!()
+    expect(commands).toContain('/usr/local/libexec/caboose-memory reclaim --mode=freeze --json')
     await controller.restart!()
+    // Explicit block override attaches via readonly virtio-blk
+    const blockController = createController(config, { ...dep, systemImageKind: 'block', identity: { id: 'blk', slot: 2 } })
+    await blockController.wake()
+    expect(plans.at(-1).vmm.args).toContain(`path=${join(split, 'system.erofs')},readonly=on,image_type=raw`)
+    await blockController.destroy!()
     await mkdir(join(root, 'overlays'), { recursive: true })
     await writeFile(join(root, 'overlays', 'old.raw'), 'old disk')
     const old = createController(config, { ...dep, identity: { id: 'old', slot: 1 } })
