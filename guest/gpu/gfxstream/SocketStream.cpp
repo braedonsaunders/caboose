@@ -164,22 +164,29 @@ bool recvAll(int fd, void* data, size_t size) {
 }
 
 #if defined(CABOOSE_GFXSTREAM_PRIVATE_INDEXED_WSI)
-// Opens this process's completion feed stream once, in the background with the hello the
-// device stream was granted, and reads its records until the stream ends. Until it is
-// running, submissions do not rely on it, so a slow or absent feed never delays a connect.
-std::atomic<bool> feedStarted{false};
+// Opens this process's completion feed stream once per connection generation, in the
+// background with the hello the device stream was granted, and reads its records until
+// the stream ends. Until it is running, submissions do not rely on it, so a slow or
+// absent feed never delays a connect.
+std::atomic<uint64_t> feedGeneration{0};
+std::atomic<uint64_t> activeFeedGeneration{0};
 void startCompletionFeed(const char* path, const unsigned char* granted) {
-    if (feedStarted.exchange(true)) return;
+    const uint64_t generation = feedGeneration.fetch_add(1, std::memory_order_acq_rel) + 1;
+    uint64_t expected = generation - 1;
+    if (!activeFeedGeneration.compare_exchange_strong(expected, generation, std::memory_order_acq_rel)) return;
     // A child created by fork shares no feed with its parent.
     static const bool atfork = [] {
-        pthread_atfork(nullptr, nullptr, [] { caboose::completion::feedActive.store(false); });
+        pthread_atfork(nullptr, nullptr, [] {
+            caboose::completion::feedActive.store(false);
+            activeFeedGeneration.store(0);
+        });
         return true;
     }();
     (void)atfork;
     std::string socketPath(path);
     std::array<unsigned char, sizeof(kHello)> offer{};
     std::memcpy(offer.data(), granted, sizeof(kHello));
-    std::thread([socketPath, offer] {
+    std::thread([socketPath, offer, generation] {
         int fd = connectSocket(socketPath.c_str());
         unsigned char reply[sizeof(kHello)];
         uint32_t features = 0;
@@ -191,23 +198,32 @@ void startCompletionFeed(const char* path, const unsigned char* granted) {
             !sendAll(fd, &clientFlags, sizeof(clientFlags)) || !sendAll(fd, command, sizeof(command))) {
             std::fprintf(stderr, "CABOOSE_COMPLETION_FEED unavailable errno=%d\n", errno);
             if (fd >= 0) close(fd);
+            uint64_t own = generation;
+            activeFeedGeneration.compare_exchange_strong(own, 0, std::memory_order_acq_rel);
             return;
         }
-        caboose::completion::feedActive.store(true, std::memory_order_release);
+        if (feedGeneration.load(std::memory_order_acquire) == generation)
+            caboose::completion::feedActive.store(true, std::memory_order_release);
         unsigned char record[caboose::completion::kRecordSize];
         while (recvAll(fd, record, sizeof(record))) {
+            if (feedGeneration.load(std::memory_order_acquire) != generation) break;
             uint64_t serial;
             int32_t status;
             std::memcpy(&serial, record, sizeof(serial));
             std::memcpy(&status, record + 8, sizeof(status));
             caboose::completion::tracker().complete(serial, status);
         }
-        // A feed ends with its executor, or alone (its waits then ask the device).
-        caboose::completion::executorEndedIfGone();
-        caboose::completion::feedActive.store(false, std::memory_order_release);
-        caboose::completion::tracker().feedClosed();
+        // A feed ends with its executor, or alone (its waits then ask the device). An
+        // older generation's feed that finishes after a reconnect must not touch the
+        // new generation's state.
+        if (feedGeneration.load(std::memory_order_acquire) == generation) {
+            caboose::completion::executorEndedIfGone();
+            caboose::completion::feedActive.store(false, std::memory_order_release);
+            caboose::completion::tracker().feedClosed();
+        }
         close(fd);
-        feedStarted.store(false);  // a later executor connection runs its own feed
+        uint64_t own = generation;
+        activeFeedGeneration.compare_exchange_strong(own, 0, std::memory_order_acq_rel);
     }).detach();
 }
 #endif
@@ -235,6 +251,8 @@ static const unsigned char* lostReply(unsigned char* data, size_t len) {
 CabooseSocketStream::CabooseSocketStream(size_t size) : IOStream(size) {}
 CabooseSocketStream::~CabooseSocketStream() {
     // Do not flush during teardown: an interrupted session must not send stale work.
+    CabooseSocketStream* self = this;
+    firstStream.compare_exchange_strong(self, nullptr);
     if (fd_ >= 0 && caboose_gfxstream_device_fd == fd_) caboose_gfxstream_device_fd = -2;
     if (fd_ >= 0) close(fd_);
 }
@@ -336,7 +354,10 @@ int CabooseSocketStream::connectWith(const char* path, const unsigned char* offe
     caboose::completion::executorConnected();
     caboose::completion::noteExecutorSocket();
 #if defined(CABOOSE_GFXSTREAM_PRIVATE_INDEXED_WSI)
-    if (features & kCompletionFeed) startCompletionFeed(path, reply);
+    if (features & kCompletionFeed) {
+        activeFeedGeneration.store(feedGeneration.load(std::memory_order_acquire), std::memory_order_release);
+        startCompletionFeed(path, reply);
+    }
 #endif
     return 0;
 }
@@ -347,7 +368,13 @@ extern "C" int caboose_gfxstream_reconnect_ended(void) { return CabooseSocketStr
 int CabooseSocketStream::reconnectEnded() {
     CabooseSocketStream* stream = firstStream.load();
     if (!stream) { errno = ENOTCONN; return -1; }
-    if (stream->indexedHandshakeReady()) return 0;
+    // When the completion feed or a surface socket detected the executor's departure first,
+    // every encoder call returned early via lostCall() without touching `stream`, so
+    // `stream->indexedReady_` stayed true on the dead socket.
+    if (stream->indexedHandshakeReady() &&
+        !caboose::completion::executorLost.load(std::memory_order_acquire))
+        return 0;
+    stream->indexedReady_.store(false, std::memory_order_release);
     // The encoder and its handles stay; the bytes it buffered for the old connection and the
     // replies that connection owed are dropped.
     if (stream->fd_ >= 0) {
