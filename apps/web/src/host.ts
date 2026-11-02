@@ -1,5 +1,7 @@
 /** How the host was started (`GET /v1/host`) and how it is doing (`GET /v1/health`). */
 
+import type { HostSettings } from './api.js'
+
 export type GpuKind = 'wsl' | 'nvidia' | 'dri' | 'none'
 
 export interface HostSetting {
@@ -153,4 +155,14 @@ export function fleetTotals(computers: Array<{ state: string; settings: { memory
     memoryMb: totals.memoryMb + computer.settings.memoryMb,
     vcpus: totals.vcpus + computer.settings.vcpus,
   }), { running: 0, memoryMb: 0, vcpus: 0 })
+}
+
+/** What a save sends: only what changed, with an empty name clearing it. */
+export function hostSettingsPatch(current: Pick<HostSettings, 'name' | 'defaultComputer'>, draft: { name: string; defaultComputer: string }): { name?: string | null; defaultComputer?: string | null } {
+  const patch: { name?: string | null; defaultComputer?: string | null } = {}
+  const name = draft.name.trim() || null
+  if (name !== current.name) patch.name = name
+  const defaultComputer = draft.defaultComputer || null
+  if (defaultComputer !== current.defaultComputer) patch.defaultComputer = defaultComputer
+  return patch
 }

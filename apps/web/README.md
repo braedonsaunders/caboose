@@ -9,9 +9,11 @@ tasks and choosing a default agent live in the app, and the console does not rep
 
 - **Setup** (`/setup`) — on a new host, from the link it prints: your name, email, password
   and first household or team. That account is the operator's. The next screen pairs the
-  iPhone with a single-use, ten-minute QR code, detects a newly connected phone, shows
-  computer image download status, and offers Tailscale HTTPS when Tailscale is signed in.
-  Continue to console leaves pairing optional; Phones can create another code later.
+  iPhone to the host itself (`POST /v1/host/pairing`) with a single-use, ten-minute QR code,
+  detects the newly signed-in host phone (`GET /v1/host/phones`), shows computer image
+  download status, and offers Tailscale HTTPS when Tailscale is signed in. The phone then
+  guides its owner through creating their first computer. Continue to console leaves pairing
+  optional; Host can create another code later.
 - **Sign in** — email and password. The owner token works too, kept for the tab only.
 - **Invitation** (`/invite?token=…`) — a new administrator chooses a name and password; one
   with an account signs in, completing their authenticator challenge if enabled.
@@ -23,8 +25,9 @@ tasks and choosing a default agent live in the app, and the console does not rep
   their computers against their tenant's quotas.
 - **Computers** — the computers the administrator manages, with whose each is and (with more
   than one) its household or team, and **New computer**: a name, the person who uses it, the
-  household or team, memory, vCPUs and auto-park. A new computer is parked until it is first
-  opened, and must fit its tenant's quotas.
+  household or team, a size from the host's `sizes` or custom memory and vCPUs, and auto-park.
+  A new computer is parked until it is first opened, and must fit its tenant's quotas. A host
+  may have no computer at all; Computers and Overview then invite creating the first one.
 - **People** — a tenant's administrators, and **Invite administrator**: an email, then a
   single-use link to copy and send, valid for seven days. Waiting invitations can be
   withdrawn; a tenant keeps at least one administrator.
@@ -63,17 +66,24 @@ tasks and choosing a default agent live in the app, and the console does not rep
   - **Settings** — name, memory, vCPUs and auto-park, validated against the host's
     `limits`. Edits made from another device are followed unless there are unsaved edits
     here; "Save and restart" applies new resources in one step. **Who uses it** names the
-    person whose computer it is, and lets the operator move it to another tenant. Any
-    computer but the owner's
-    can be deleted here once its name is typed: its disk, files, phones and notifications go
-    with it.
-- **Host** (the operator's) — the host version, runtime, GPU, the machine's memory, CPUs and disk, image,
-  health from `/v1/health`, push and Live Activities configuration, and the non-secret
-  `CABOOSE_*` variables the host started with (`GET /v1/host`). These are read-only: they
-  change by editing the host's environment and restarting it, which the page explains.
+    person whose computer it is, and lets the operator move it to another tenant. Every
+    computer, including one with the legacy id `owner`, can be deleted here once its name is
+    typed: its disk, files, phones and notifications go with it.
+- **Host** (the operator's) — **Host settings**: the host's name (empty for "Caboose on" its
+  machine's name, which is what mDNS advertises) and its default computer, chosen from the
+  computers or none (`GET`/`PATCH /v1/host/settings`). **Phones signed in to this host**:
+  each with when it was signed in and last used, and **Sign out**; **Pair a phone with this
+  host** shows the same pairing code, QR code and link as a computer's Phones tab, for a
+  phone that reaches every computer as the operator does. Then where phones reach the host,
+  the host version, runtime, GPU, the machine's memory, CPUs and disk, image, health from
+  `/v1/health` (how many computers are running of how many), push and Live Activities
+  configuration, and the non-secret `CABOOSE_*` variables the host started with
+  (`GET /v1/host`). The variables are read-only: they change by editing the host's
+  environment and restarting it, which the page explains.
 
-Addresses from earlier consoles (`/computer/…`, `/files`, `/apps`, `/devices`, `/settings`,
-`/system`) are rewritten to the owner's computer, or the page that took them over.
+Addresses from earlier consoles (`/computer/…`, `/files`, `/apps`, `/devices`, `/settings`)
+open that tab of the host's default computer (`defaultComputer` from `GET /v1/computers`), or
+Computers when there is none or the administrator does not manage it; `/system` opens Host.
 
 The console is React on Vite, built on AppKit: `appkit-ui` for the shell, settings layout,
 forms, tables, dialogs, progress, confirm and prompt dialogs and toasts, and
@@ -84,7 +94,7 @@ over HTTP, which holds no lease, so an open console never keeps a computer awake
 
 Limitations: invitations are links to copy. Password recovery requires configured email
 delivery; phones signed in with the owner token
-rather than a pairing code are not listed, and only changing the token signs them out; a single large upload shows which file
+rather than a pairing code are not listed on Host, and only changing the token signs them out; a single large upload shows which file
 is uploading but not its progress (the browser's `fetch` reports none); push registrations
 are listed by fingerprint only; Live Activity registrations are not shown.
 A download is held in the browser's memory before it is saved, because the token goes in a
@@ -125,7 +135,7 @@ pnpm --filter caboose-web build      # apps/web/dist, which caboose-host serves 
 
 The unit tests cover settings validation, the session token and API client, navigation
 (including the old addresses), the catalog and file helpers, host descriptions and the brand output. To try the built console against a real host, start `caboose-host` on any
-machine and open it: sign-in, `GET /v1/computer` and every page work while the computer is
+machine and open it: sign-in and every page work with no computer, or while computers are
 parked; Wake, Park and Restart need a host that can run the computer (KVM and a guest image,
 or the container runtime).
 

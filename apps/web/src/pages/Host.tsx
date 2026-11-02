@@ -8,22 +8,45 @@ import { formatBytes } from '../files.js'
 import { gpuLabel, healthFacts, runtimeLabel } from '../host.js'
 import type { HostHandle } from '../useHost.js'
 import type { CabooseClient } from '../api.js'
+import type { ComputersHandle } from '../useComputer.js'
+import { PhoneSignInsPanel } from '../components/PhoneSignIns.js'
+import { HostSettings } from './host/HostSettings.js'
 import { RemoteAccess } from './host/RemoteAccess.js'
 
 /** Only the first value of a persisted setting: the computer's Settings override them once saved. */
 const INITIAL_ONLY = new Set(['CABOOSE_MEMORY_MB', 'CABOOSE_VCPUS', 'CABOOSE_IDLE_MS'])
 
-/** The host itself: what it runs on, how it was started and how it is doing. Read-only. */
-export function Host({ host, client, onUnauthorized }: { host: HostHandle; client: CabooseClient; onUnauthorized: () => void }) {
+/**
+ * The host itself: its name and default computer, the phones signed in to it, where phones
+ * reach it, and what it runs on, how it was started and how it is doing.
+ */
+export function Host({ host, client, computers, onUnauthorized }: { host: HostHandle; client: CabooseClient; computers: ComputersHandle; onUnauthorized: () => void }) {
   const { info: hostInfo, infoError: hostError, health, healthError } = host
   const machine = health?.machine
+  const hostPhones = React.useMemo(() => ({
+    list: async () => (await client.hostPhones()).phones,
+    pair: () => client.startHostPairing(),
+    remove: (phoneId: string) => client.removeHostPhone(phoneId),
+  }), [client])
 
   return (
     <PageContainer>
       <div className="space-y-6">
         <PageHeader
           title="Host"
-          description="Runtime, health and connection settings for this server."
+          description="Settings, phones, runtime, health and connection settings for this server."
+        />
+
+        <HostSettings client={client} computers={computers} onUnauthorized={onUnauthorized} />
+
+        <PhoneSignInsPanel
+          client={client}
+          name="this host"
+          title="Phones signed in to this host"
+          source={hostPhones}
+          pairLabel="Pair a phone with this host"
+          note={<>A phone signed in to the host reaches every computer on it, as you do. Phones signed in with the host's owner token are not listed here; changing <code>CABOOSE_OWNER_TOKEN</code> signs them out.</>}
+          onUnauthorized={onUnauthorized}
         />
 
         {hostError ? (
@@ -88,7 +111,7 @@ export function Host({ host, client, onUnauthorized }: { host: HostHandle; clien
           <DashboardPanel title="Configuration" icon={<SlidersHorizontal className="size-4" aria-hidden />}>
             <details className="mb-4 text-sm text-fg-muted"><summary className="cursor-pointer">How to change host configuration</summary><p className="mt-3 max-w-3xl leading-relaxed">
               The host reads these when it starts. To change one, set it in the host's environment (<code>deploy/.env</code> for
-              Docker Compose, or the service's environment file) and restart caboose-host; it parks the computer before it stops.
+              Docker Compose, or the service's environment file) and restart caboose-host; it parks its computers before it stops.
               A computer's name, memory, vCPUs and auto-park are edited in its Settings instead.
             </p></details>
             <Table containerClassName="border-0 shadow-none">
@@ -105,7 +128,7 @@ export function Host({ host, client, onUnauthorized }: { host: HostHandle; clien
                     <TableCell>
                       <span className="break-all font-mono text-xs">{setting.value}</span>
                       {setting.default ? <Badge variant="outline" className="ml-2">default</Badge> : null}
-                      {INITIAL_ONLY.has(setting.name) ? <span className="ml-2 text-xs text-fg-muted">initial value; the computer's Settings override it</span> : null}
+                      {INITIAL_ONLY.has(setting.name) ? <span className="ml-2 text-xs text-fg-muted">initial value; a computer's Settings override it</span> : null}
                     </TableCell>
                   </TableRow>
                 ))}

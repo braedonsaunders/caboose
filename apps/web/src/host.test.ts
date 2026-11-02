@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { fleetTotals, gpuLabel, healthFacts, healthProblems, imageLabel, runtimeLabel, sharePercent, upgradeLabel } from './host.js'
+import { fleetTotals, gpuLabel, healthFacts, healthProblems, hostSettingsPatch, imageLabel, runtimeLabel, sharePercent, upgradeLabel } from './host.js'
 
 describe('host', () => {
   it('names the runtime and GPU', () => {
@@ -54,5 +54,13 @@ describe('host', () => {
       { state: 'parked', settings: { memoryMb: 8192, vcpus: 4 } },
     ])).toEqual({ running: 1, memoryMb: 12288, vcpus: 6 })
     expect(sharePercent(1, 0)).toBe(0)
+  })
+
+  it('saves only changed host settings, an empty name or no default computer as null', () => {
+    const current = { name: null, defaultComputer: 'owner' }
+    expect(hostSettingsPatch(current, { name: '  ', defaultComputer: 'owner' })).toEqual({})
+    expect(hostSettingsPatch(current, { name: ' Den ', defaultComputer: 'owner' })).toEqual({ name: 'Den' })
+    expect(hostSettingsPatch(current, { name: '', defaultComputer: '' })).toEqual({ defaultComputer: null })
+    expect(hostSettingsPatch({ name: 'Den', defaultComputer: null }, { name: '', defaultComputer: 'c-0123456789' })).toEqual({ name: null, defaultComputer: 'c-0123456789' })
   })
 })
