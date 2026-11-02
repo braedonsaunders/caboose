@@ -9,8 +9,7 @@ queue owner-initiated handoffs in `~/.cache/caboose/phone`; caboose-host reads t
 | --- | --- | --- |
 | `caboose-phone` | `/usr/local/bin/caboose-phone`, with `caboose-open` and `caboose-share` linked to it | Queues `phone.open` (http, https, mailto, tel, sms, facetime, facetime-audio, maps and geo URLs), `phone.share` and `phone.print` events. |
 | `caboose-phone.desktop` | `/usr/local/share/applications/` | **Open on iPhone**, the default handler for the mailto, tel, sms, facetime, facetime-audio, maps and geo schemes (ordinary web links keep the browser). |
-| `caboose-share.desktop` | `/usr/local/share/applications/` | **Share to iPhone** for files. |
-| `uca.xml` | merged into `~/.config/Thunar/uca.xml` | Thunar's **Share to iPhone** custom action; the owner's other actions are kept. |
+| `caboose-share.desktop` | `/usr/local/share/applications/` | **Share to iPhone** for files, offered by every file manager's Open With. |
 | `cups-backend` | `/usr/lib/cups/backend/caboose-phone` | The `iPhone` printer's backend: stages the PDF as `caboose` and queues `phone.print`. |
 | `printer-setup`, `caboose-phone-printer.service` | `/usr/local/libexec/caboose-phone-printer-setup` and a systemd unit | Creates the `iPhone` CUPS queue. |
 
@@ -32,9 +31,7 @@ and the files above, sets the scheme defaults in `/etc/xdg/mimeapps.list`, and e
 `cups.service` and `caboose-phone-printer.service`. It is part of the guest components
 bundle (`guest/components`): both guest images run it, and the host runs it in existing
 computers when the bundle changes. In the
-container, `caboose-session start` starts CUPS and configures the queue. Log in again or
-restart Thunar to load the custom action; a user's own MIME defaults override the system
-defaults.
+container, `caboose-session start` starts CUPS and configures the queue. A user's own MIME defaults override the system defaults.
 
 ## Test
 
