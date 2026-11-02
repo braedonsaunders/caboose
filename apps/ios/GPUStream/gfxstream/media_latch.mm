@@ -4,6 +4,7 @@
 #include "media_copy.h"
 #include "media_stats.h"
 #include "vk_decoder_global_state.h"
+#include "vulkan_dispatch.h"
 #include <atomic>
 #include <cstdio>
 
@@ -37,6 +38,13 @@ int executeLatch(uint32_t contextId, const uint8_t* data, size_t size) {
         if (r != VK_SUCCESS) { skipped("objects", r); continue; }
         media::CopyTarget target;
         target.vk = media::functionsFrom(*objects->vk);
+        // The device dispatch table is filled with vkGetDeviceProcAddr, which does not
+        // resolve instance-level vkGetPhysicalDeviceMemoryProperties; take it from the
+        // global provider dispatch if the device table left it empty.
+        if (!target.vk.getPhysicalDeviceMemoryProperties) {
+            if (auto* globalVk = gfxstream::host::vk::vkDispatch())
+                target.vk.getPhysicalDeviceMemoryProperties = globalVk->vkGetPhysicalDeviceMemoryProperties;
+        }
         target.vk.exportMetalObjects = objects->vk->vkExportMetalObjectsEXT;
         target.physicalDevice = objects->physicalDevice;
         target.device = objects->device;
@@ -48,6 +56,11 @@ int executeLatch(uint32_t contextId, const uint8_t* data, size_t size) {
         target.extent = {objects->extent.width, objects->extent.height};
         target.planes = entry.planes;
         target.metalObjects = objects->metalObjects;
+        if (!target.vk.complete()) { skipped("vk-incomplete", VK_ERROR_EXTENSION_NOT_PRESENT); continue; }
+        if (entry.kind == media::kPicture && !target.metalObjects) {
+            skipped("no-metal-objects", VK_ERROR_EXTENSION_NOT_PRESENT);
+            continue;
+        }
         media::Pending pending;
         if (entry.kind == media::kPicture) {
             std::shared_ptr<media::Picture> picture;
