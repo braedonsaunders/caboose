@@ -424,8 +424,9 @@ must stop older hosts and verify their VMMs have exited before relying on this l
 
 Each Linux microVM computer has its own persistent TAP device and /30. Slots 0–63 use
 `192.0.2.0/24`, with the host at `192.0.2.(4n+1)` and guest at `192.0.2.(4n+2)`.
-Slots 64–32831 use consecutive /30s in `198.18.0.0/15`. TAP names remain `caboose<n>`. The owner's computer is slot 0: `caboose0`,
-`192.0.2.1/30` and `192.0.2.2/30`. Each guest gets NAT to the host's other interfaces and
+Slots 64–32831 use consecutive /30s in `198.18.0.0/15`. TAP names remain `caboose<n>`. Slot 0
+(`caboose0`, `192.0.2.1/30` and `192.0.2.2/30`) belongs only to a migrated legacy computer
+(see Computers); a new computer never gets it. Each guest gets NAT to the host's other interfaces and
 DNS `1.1.1.1`. At each wake the host also sets the guest's clock over the guest agent.
 
 The guest is fenced in chains the host owns, each jumped to first from its built-in chain:
@@ -447,8 +448,8 @@ network; it never removes the two computer ranges, so one computer can never rea
 opens the relay connections to the guest itself.
 
 A container computer gets the same fence on its own Docker bridge network: `caboose`
-(interface `caboose-br0`) for the owner's computer, `caboose-<n>` (`caboose-br<n>`) for
-the others, which Docker isolates from each other. `CABOOSE-CIN` hooks `INPUT` and
+(interface `caboose-br0`) for a legacy computer in slot 0, `caboose-<n>` (`caboose-br<n>`) for
+every other computer, which Docker isolates from each other. `CABOOSE-CIN` hooks `INPUT` and
 `CABOOSE-CFWD` hooks `DOCKER-USER`, which Docker never rewrites.
 
 A container computer's tailnet companion ([network](network.md)) shares its bridge. One rule
@@ -934,7 +935,7 @@ display logic: display streams are relayed, not parsed.
 | `CABOOSE_IMAGE_ROOT` | `/var/lib/caboose` | Golden image, overlays, snapshots and host state |
 | `CABOOSE_SPLIT_IMAGE` | unset | Retained split image version for new Linux microVM computers |
 | `CABOOSE_VM_DEPOT` | unset | Host directory for a read-only virtio-fs runtime depot on Linux microVMs |
-| `CABOOSE_MEMORY_MB` | `6144` | Initial memory setting of the owner's computer and of new computers |
+| `CABOOSE_MEMORY_MB` | `6144` | Initial memory setting of a new computer |
 | `CABOOSE_VCPUS` | `4` | Initial vCPU setting, likewise |
 | `CABOOSE_IDLE_MS` | `600000` | Initial idle time before parking, likewise |
 | `CABOOSE_FREEZE_PARK_MS` | `60000` | Maximum frozen time before a microVM parks |
@@ -943,8 +944,8 @@ display logic: display streams are relayed, not parsed.
 | `CABOOSE_GPU` | `auto` | Container GPU: `auto`, `wsl`, `nvidia`, `dri` or `none` |
 | `CABOOSE_BASE_IMAGE` | unset (release: pinned) | OCI reference of the microVM image, fetched when the disk root lacks it ([Published images](#published-images)) |
 | `CABOOSE_CONTAINER_IMAGE` | `caboose-computer:latest` (release: pinned) | Container image for every computer; pulled when missing if it names a registry |
-| `CABOOSE_CONTAINER_NAME` | `caboose-owner` | The owner's computer's container name; others are `caboose-<id>` |
-| `CABOOSE_CONTAINER_HOME` | `caboose-home` | Volume or absolute host path for `/home/caboose`; other computers use it with `-<id>` appended |
+| `CABOOSE_CONTAINER_NAME` | `caboose-owner` | The container name of a legacy computer in slot 0; every other computer's is `caboose-<id>` |
+| `CABOOSE_CONTAINER_HOME` | `caboose-home` | Volume or absolute host path for `/home/caboose`, with `-<id>` appended for each computer (a legacy computer in slot 0 uses it as is) |
 | `CABOOSE_CONTAINER_ARGS` | empty | Extra `docker run` arguments, whitespace-separated |
 | `CABOOSE_GUEST_LAN` | `deny` | `allow` lets the guest reach private ranges |
 | `CABOOSE_AGENT_REGISTRY_URL` | the public ACP registry | `http(s)` URL of `registry.json` |
@@ -970,14 +971,12 @@ Host state lives in `CABOOSE_IMAGE_ROOT`, each file replaced atomically with mod
 
 - `owner-token` and `auth-secret` when generated, `setup-code` until the host is set up,
   `identity/` (the embedded accounts database, mode 0700),
-  `phones.json` (phone sign-ins, by SHA-256 of their tokens) and `agent-registry.json`.
-- The owner's computer's `caboose.json` (settings), `push-devices.json`,
-  `activities.json` and `commands/` (one `<id>.json` per command, directory mode 0700) at the
-  root, where a host from before several computers kept them.
-- A container computer's `container.json` (its container settings, under Computers), beside
-  its `caboose.json`.
-- Every other computer's own `caboose.json`, `push-devices.json`, `activities.json` and
-  `commands/` in `computers/<id>/`.
+  `phones.json` (phone sign-ins, by SHA-256 of their tokens), `agent-registry.json` and
+  `host.json` (the host's name and default computer, below).
+- Each computer's own `caboose.json` (settings), `push-devices.json`, `activities.json`,
+  `agent-profiles.json`, `mcp-library.json`, `keyring-secret` and `commands/` (one
+  `<id>.json` per command, directory mode 0700) in `computers/<id>/`; a container computer's
+  `container.json` (its container settings, under Computers) beside its `caboose.json`.
 - For microVMs, `overlays/<id>.raw` (the disk), `overlays/<id>.snapshot` (parked memory)
   and `overlays/<id>.resources.json` (the resources it was booted with).
 - Phone backups, beside each computer's disk: `<id>.backup/` (captures, download packs and a
@@ -989,9 +988,10 @@ Computer slots and ownership live in `caboose_computers` and `caboose_people` in
 
 ### Computers
 
-A host runs several computers. The owner's computer always exists, with id `owner` and
-slot 0, and cannot be deleted. Every other computer has an id `c-` followed by 10 hex
-digits, and the lowest free slot from 1 to 32831. The slot names its network (see Network
+A host runs any number of computers, from none, and all are alike: any can be deleted. The
+owner is a person, signed in with the owner token, an account or a host phone, not a computer.
+A computer has an id `c-` followed by 10 hex digits, and the lowest free slot from 1 to
+32831. The slot names its network (see Network
 fencing). Containers in slots 1–63 retain their fixed loopback ports; later containers use
 loopback ports allocated outside the legacy range after inspecting Docker bindings, including
 stopped containers, and probing the host before binding. A bind race is retried after
@@ -1002,10 +1002,10 @@ of one is reachable from another. microVM computers share one appkit-desk host, 
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `GET` | `/v1/computers` | `{ computers: [{ id, createdAt, …management status }], canCreate, limits: { computers, running } }`. `createdAt` is null for an owner's computer made before the host recorded it; `running` is null for the container runtime |
-| `POST` | `/v1/computers` | `{ name, memoryMb?, vcpus?, idleMs? }` → 201 with the new computer, parked. Unset values come from `CABOOSE_MEMORY_MB`, `CABOOSE_VCPUS` and `CABOOSE_IDLE_MS`. 409 when all computer slots are taken |
+| `GET` | `/v1/computers` | `{ computers: [{ id, createdAt, …management status }], canCreate, limits: { computers, running }, defaultComputer, sizes }`. `computers` may be empty. `createdAt` is null for a legacy computer made before the host recorded it; `running` is null for the container runtime; `defaultComputer` is the host's default computer or null; `sizes` are the presets `size` accepts, each `{ id, name, memoryMb, vcpus, available }` |
+| `POST` | `/v1/computers` | `{ name, size? \| memoryMb? vcpus?, idleMs?, start? }` → 201 with the new computer, parked. Unset values come from `CABOOSE_MEMORY_MB`, `CABOOSE_VCPUS` and `CABOOSE_IDLE_MS`. `start: true` begins starting it at once, as `POST /v1/computers/:id/boot` does. The host's first computer, or the first made while it has no default, becomes its default computer. 409 when all computer slots are taken |
 | `GET` | `/v1/computers/:id` | One computer, as listed |
-| `DELETE` | `/v1/computers/:id` | `{ "confirm": true }` (required) → `{ deleted: true }`. Waits for queued work and for a components upgrade the host started, then closes the computer's sockets, ends its tasks and deletes its disk, snapshot, files, network, phones and pairing codes. 409 for the owner's computer, or while a catalog operation, Craft job or command someone started runs on it (the message says which; retry when it finishes) |
+| `DELETE` | `/v1/computers/:id` | `{ "confirm": true }` (required) → `{ deleted: true }`. Waits for queued work and for a components upgrade the host started, then closes the computer's sockets, ends its tasks and deletes its disk, snapshot, files, network, phones and pairing codes. 409 while a catalog operation, Craft job or command someone started runs on it (the message says which; retry when it finishes) |
 | any | `/v1/computers/:id/<route>` | Any computer route (§ Session and display through § Live Activities, and the agent routes of § 5), served by that computer (`/v1/computers/:id/session`, `/v1/computers/:id/fs/list`, `/v1/computers/:id/display`, …) |
 | `GET` | `/v1/computers/:id/container` | Operator only. `{ spec, applied }`: a container computer's container settings (below), and whether its existing container has them (null without a container). 409 for a microVM computer |
 | `PUT` | `/v1/computers/:id/container` | Operator only. A whole `ContainerSpec` → `{ spec, applied }`. Used the next time the host creates the container; an existing container is not changed. 400 for an invalid spec |
@@ -1013,15 +1013,84 @@ of one is reachable from another. microVM computers share one appkit-desk host, 
 | `POST` | `/v1/computers/:id/pairing` | → 201 `{ code, expiresAt }`: a pairing code for one phone (below) |
 | `GET` | `/v1/computers/:id/phones` | `{ phones: [{ id, name, createdAt, lastUsedAt }] }`: the phones signed in to the computer. `lastUsedAt` is written at most once a minute |
 | `DELETE` | `/v1/computers/:id/phones/:phone` | → `{ revoked: true }`. Signs the phone out: its token stops working, its open sockets close, and its push and Live Activity registrations are removed |
-| `POST` | `/v1/pair` | **No token.** `{ code, deviceName }` → 201 `{ token, computer: { id, name } }`. Trades a pairing code for the phone's own token. `deviceName` is 1–60 characters without control characters. 404 for an unknown, used or expired code; 429 for 60 s after 20 wrong codes |
+| `POST` | `/v1/pair` | **No token.** `{ code, deviceName }` → 201 `{ token, scope, computer }`. Trades a pairing code for the phone's own token: `scope` is `computer` with `computer: { id, name }` for a computer's code, or `host` with `computer: null` for a host code. `deviceName` is 1–60 characters without control characters. 404 for an unknown, used or expired code; 429 for 60 s after 20 wrong codes |
 
-The routes without a computer in the path serve the caller's own computer: the owner's
-computer for the owner token and the operator, and the phone's computer for a phone token.
-They answer another administrator 403.
+The routes without a computer in the path serve the caller's own computer: the host's default
+computer for the owner token, the operator and host phones, and the phone's computer for a
+phone token. Without a default computer they answer 404
+`{ "error": "This host has no computer yet; create one", "code": "no-computer" }`. They
+answer another administrator 403.
+
+**The host's own settings and phones.** `host.json` keeps what belongs to the host rather
+than to any computer: its `name` (null until set) and its `defaultComputer`. Deleting the
+default computer makes the remaining computer with the lowest slot the default, or none.
+A host phone is signed in to the host rather than to one computer: it pairs with a host
+code, reaches every route the owner token does (every computer through
+`/v1/computers/:id/…`, including its sockets), and remembers the person of the account that
+issued its code, whose computers it makes. These routes are the operator's (owner token,
+operator account or host phone):
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/v1/host/settings` | `{ name, displayName, defaultComputer }`. `displayName` is `name`, or `Caboose on <machine name>` while it is null; phones and mDNS list the host by it |
+| `PATCH` | `/v1/host/settings` | `{ name?: string \| null, defaultComputer?: string \| null }` → as `GET`. `name` is 1–80 characters without control characters. 400 for an unknown field or computer |
+| `POST` | `/v1/host/pairing` | → 201 `{ code, expiresAt }`: a host code, for the owner's phone |
+| `GET` | `/v1/host/phones` | `{ phones: [{ id, name, createdAt, lastUsedAt }] }`: the host phones |
+| `DELETE` | `/v1/host/phones/:phone` | → `{ revoked: true }`. Signs a host phone out: its token stops working, its open sockets on every computer close, and its push and Live Activity registrations are removed |
+
+**Starting a computer.** Starting a computer for someone who is waiting for it is followed
+step by step, as the host does the work; nothing is estimated. A boot begins when the
+computer starts waking, by any route, or when the boot route starts it; it ends when the
+computer runs or fails.
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `POST` | `/v1/boot` | → 202 `{ boot }`. Starts the computer with its display, first waiting for the computers' image while it downloads, unless it is already starting. Retrying a failed boot is the same request |
+| `GET` | `/v1/boot` | `{ boot }`, null before the computer's first start since the host started. With `Accept: text/event-stream`, Server-Sent Events: `event: boot` with `data: { boot }` at once and at every change, ending after a boot that `succeeded` or `failed`; a `: keepalive` comment every 15 s |
+
+```ts
+type Boot = {
+  id: string, state: 'running' | 'succeeded' | 'failed',
+  startedAt: string, finishedAt: string | null,
+  error: string | null,                 // why it failed, for the owner
+  steps: Array<{
+    id: 'image' | 'network' | 'disk' | 'start' | 'display',
+    label: string,                      // "Downloading the system image", "Setting up its network", …
+    state: 'pending' | 'active' | 'done' | 'skipped' | 'failed',
+    detail: string | null,              // "1.2 GB of 3.4 GB"
+    progress: { completed: number, total: number | null } | null,  // bytes, when counted
+  }>,
+}
+```
+
+The steps are the runtime's, in the order it takes them: a container computer's are
+`image`, `network`, `disk` (creating its container and home), `start` and `display`; a
+microVM's are `image`, `network`, `start` (appkit-desk makes the overlay disk as it starts
+the machine) and `display`. A step the boot did not need, such as an image already present,
+is `skipped`. A failed boot marks the step under way `failed`. `boot` is also part of the
+management status (`GET /v1/computer`, and each computer in `GET /v1/computers`), and the
+control socket sends `{ type: 'computer.boot', boot }` at every change.
+
+**Computers from before computers were equal.** An older host always had a built-in
+computer, with id `owner` and slot 0. It stays an ordinary computer under that legacy id and
+slot, deletable like any other; slot 0 is never given to another computer. At startup the
+host settles it, without deleting anything: it moves the computer's files from the image root
+into `computers/owner/` (one rename each, so a move a crash interrupted finishes at the next
+start, and a file already moved is never overwritten), writes `computers/owner/caboose.json`
+with the name `Caboose` if the computer never had settings, and writes `host.json` once,
+taking the computer's name as the host's (unless it was still `Caboose`) and making it the
+default computer. Its disk (`overlays/owner.*`), container (`CABOOSE_CONTAINER_NAME`), home,
+network and phones keep their names. A host whose registry predates the database lists the
+legacy computer when `computers.json` lacks `version: 2` and the host left any of its files
+(`computers.json`, `host-id`, `phones.json`, the root files above or `overlays/owner.*`); a
+new host starts with none.
 
 On a host with accounts, `GET /v1/computers` lists only the computers the caller manages,
 and each carries `tenantId`, `personId` and the display label `person`. `POST /v1/computers`
-requires a `tenantId` the caller administers and a `personId` belonging to it. Older callers
+requires a `tenantId` the caller administers and a `personId` belonging to it; without
+either, and without `person`, the computer is the caller's own: the person of an
+administrator's account, or of the account that paired a host phone (400 for the owner
+token, which is no one). Older callers
 may supply a nonempty `person` name, which creates a distinct person in the same transaction.
 `PATCH /v1/computers/:id` changes `personId`; moving to another `tenantId` also requires a
 person in that destination and operator access. People are renamed through their own route. Quotas
@@ -1100,7 +1169,7 @@ service `_caboose._tcp` over mDNS, IPv4 only, on the same LAN interfaces:
 | --- | --- |
 | `v` | `1`, the record's version |
 | `id` | 16 hex characters, random and kept in `${CABOOSE_IMAGE_ROOT}/host-id`, so a phone recognises a host whose address or name changed |
-| `name` | The owner computer's name, or `Caboose on <machine name>` while it is still `Caboose`; also the instance name |
+| `name` | The host's `displayName` (its name, or `Caboose on <machine name>`); also the instance name |
 | `path` | `/`, the API's base path |
 
 The record's host name is `caboose-<first 8 characters of id>.local`. A client must treat
@@ -1183,7 +1252,7 @@ one-time code to `${CABOOSE_IMAGE_ROOT}/setup-code` (mode 0600) and logs
 only with that code, including on loopback: a local reverse proxy can relay remote visitors
 without forwarding headers. The setup API requires the same code. Once claimed the page
 redirects to `/`. Claiming atomically creates the operator’s account, first tenant and
-person and assigns the existing owner computer to that person. Other unassigned legacy
+person and assigns a legacy `owner` computer, if the host has one, to that person. Other unassigned legacy
 computers join that tenant and remain marked Assignment required until a person is selected.
 It deletes the code file and signs the browser in. An owner-token console shows a persistent
 setup banner while unclaimed; its authenticated setup-link endpoint returns the existing
@@ -1193,8 +1262,10 @@ phone tokens keep working during setup.
 On first database-backed startup, the host imports `computers.json` in one transaction,
 retaining computer ids, slots, creation times and existing tenant assignments. Each known
 legacy person name creates its own person record, never merging people merely by name.
-Unknown assignments remain explicitly pending. The JSON file stays intact as a migration
-backup and is not subsequently read as authority; the database supplies the registry.
+Unknown assignments remain explicitly pending. `caboose_registry_state` records that the
+import happened, so a host whose computers were all deleted stays empty. The JSON file stays
+intact as a migration backup and is not subsequently read as authority; the database
+supplies the registry.
 Back up the identity database alongside computer disks. Unassigned legacy computers are
 visible to the operator and their existing tenant administrators, not to other tenants.
 
@@ -1273,8 +1344,10 @@ A request is from one of three kinds of caller:
   A request that is not a `GET`, `HEAD` or `OPTIONS`, and every
   WebSocket upgrade, is accepted on a cookie only from the console's own origin
   ([Security model](#7-security-model)); otherwise it answers 403 `cross-site request refused`.
-- **A phone token**, which reaches only its own computer's routes, without a computer in the
-  path; `/v1/health`, `/v1/host`, `/v1/host/*`, `/v1/me`, `/v1/tenants…` and `/v1/computers…` answer it 403.
+- **A phone token**. A computer phone's reaches only its own computer's routes, without a
+  computer in the path; `/v1/health`, `/v1/host`, `/v1/host/*`, `/v1/me`, `/v1/tenants…` and
+  `/v1/computers…` answer it 403. A host phone's reaches every route the owner token does
+  (see The host's own settings and phones).
 
 `POST /v1/pair`, setup, invitations and `/v1/auth/*` need none of these. Any other `/v1`
 route, and every WebSocket upgrade, answers 401 without one.
@@ -1317,7 +1390,7 @@ guest answer 409 while it is not running.
 | `GET` | `/v1/apps` | Launchable applications from the guest's desktop entries: `[{ id, name, icon (PNG data URL), categories, exec, actions, startupWMClass }]`. `startupWMClass` is the entry’s declared window class (at most 256 characters), or null; older hosts may omit it. The phone matches this class as well as desktop IDs. `actions` is the entry's desktop actions (`Actions=` with a `[Desktop Action …]` group, a Name, and an Exec unless the entry is D-Bus activated): at most 16 `{ id, name }`, ids `[A-Za-z0-9-]{1,64}`, names at most 100 characters |
 | `POST` | `/v1/apps/:id/launch` | Start a desktop entry on the owner's display with its launch environment → `{ launched: true }`. An optional `{ action }` runs one of its `actions` instead (GLib runs its Exec or activates it over D-Bus); 400 for an invalid id, 404 for an entry or action the computer does not have |
 | `POST` | `/v1/open` | `{ url }` → `{ opened: true }`. Open an `http(s)` URL (at most 8192 characters, no spaces or control characters) with the default handler on the owner's display |
-| `GET` | `/v1/health` | microVM: `{ host, hypervisor: "cloud-hypervisor" \| "virtualization", kvm, desk, machine }` with appkit-desk's stats (`kvm` applies only to Cloud Hypervisor); container: `{ host, runtime: "container", gpu, container, running, machine }`; both add `image`. `machine` is `{ memoryMb, availableMemoryMb, cpus, disk: { totalBytes, freeBytes } \| null }`: the machine the computers share, with `disk` the volume holding `CABOOSE_IMAGE_ROOT` (null when it cannot be read). `image` is `{ state: "ready" \| "fetching" \| "failed" \| "missing", reference: string \| null, receivedBytes?, totalBytes?, message? }`: the computer's image ([Published images](#published-images)); `missing` means no reference to fetch from. With shared storage on, `sharedStorage` is `{ sharedBytes, punchedBytes, passes, lastPassAt, lastError, running }`, `running` the id of the computer a pass is reading now or null ([Shared storage](#shared-storage)) |
+| `GET` | `/v1/health` | microVM: `{ host, hypervisor: "cloud-hypervisor" \| "virtualization", kvm, desk, machine }` with appkit-desk's stats (`kvm` applies only to Cloud Hypervisor); container: `{ host, runtime: "container", gpu, machine }`; both add `image` and `computers: { running, total }`, how many of the host's computers run. `machine` is `{ memoryMb, availableMemoryMb, cpus, disk: { totalBytes, freeBytes } \| null }`: the machine the computers share, with `disk` the volume holding `CABOOSE_IMAGE_ROOT` (null when it cannot be read). `image` is `{ state: "ready" \| "fetching" \| "failed" \| "missing", reference: string \| null, receivedBytes?, totalBytes?, message? }`: the computer's image ([Published images](#published-images)); `missing` means no reference to fetch from. With shared storage on, `sharedStorage` is `{ sharedBytes, punchedBytes, passes, lastPassAt, lastError, running }`, `running` the id of the computer a pass is reading now or null ([Shared storage](#shared-storage)) |
 | `GET` | `/v1/host` | How the host was started (below) |
 
 A WebSocket upgrade answers 401 without the owner token, 404 for another path, 409 unless
@@ -1340,6 +1413,7 @@ On connect the host sends `computer.state`, then `computer.settings`, then
 | Event | Payload | When |
 | --- | --- | --- |
 | `computer.state` | `{ state }` | Every lifecycle transition |
+| `computer.boot` | `{ boot }` | Every change to the computer's boot (see Starting a computer) |
 | `computer.settings` | `{ computer: <management status> }` | Settings or their applied state change |
 | `computer.upgrade` | `{ upgrade: { state, version?, message? } }` | A guest component update starts, finishes or fails (see [Guest components](#guest-components)) |
 | `notification` | `{ id, app, summary, body, created, desktopEntry, actions, defaultAction, reply }` | A desktop notification on the owner's display (see [Desktop notifications](#desktop-notifications)) |
@@ -3725,8 +3799,8 @@ phone codes. Closing the window cancels its status polling. The login menu runs 
 the installed version; a first GUI installation starts that menu at the next login.
 
 After initial web setup creates the operator account and household, the console shows
-phone pairing before opening the dashboard. Pairing uses the owner's computer and its
-single-use ten-minute code, with reachable addresses from the host and console origin.
+phone pairing before opening the dashboard. Pairing signs the owner's phone in to the host
+(a host code, single-use for ten minutes), with reachable addresses from the host and console origin.
 The page observes new phone sign-ins and image download status without waking the computer;
 it can enable Tailscale HTTPS and can continue to the console without pairing.
 

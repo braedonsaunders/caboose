@@ -85,7 +85,7 @@ extension into Debian's directory instead of adding its own switch.
   checks the state file, pause, play-at-position, and clearing on browser exit:
 
   ```sh
-  docker exec -u root caboose-owner bash -s < guest/media-handoff/check.sh
+  docker exec -u root caboose-<id> bash -s < guest/media-handoff/check.sh
   ```
 
   Inside a microVM computer, run `sudo bash guest/media-handoff/check.sh` from a checkout.

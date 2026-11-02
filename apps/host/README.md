@@ -1,8 +1,8 @@
 # caboose-host
 
 The server half of Caboose. `caboose-host` is a TypeScript service on Node 22 that runs on
-Linux or Apple Silicon macOS, runs computers (Debian 13 guests, the owner's and any others made in the
-console), and gives the iOS app and the web console one authenticated API for them. It wakes
+Linux or Apple Silicon macOS, runs computers (Debian 13 guests, as many as the owner makes,
+from none), and gives the iOS app and the web console one authenticated API for them. It wakes
 a computer on demand, parks it when idle, relays its two Caboose Display instances over
 WebSocket, and runs apps, agent tasks, file operations and catalog installs inside it. The HTTP contract is in
 [`docs/architecture.md`](../../docs/architecture.md); the display protocol it relays is in
@@ -14,6 +14,7 @@ WebSocket, and runs apps, agent tasks, file operations and catalog installs insi
 | --- | --- |
 | `src/index.ts`, `src/config.ts` | Startup and the environment it reads. |
 | `src/server.ts`, `src/lifecycle.ts` | The HTTP and WebSocket API, the owner and phone token checks, routing to each computer, and the wake/lease/park state machine. |
+| `src/computers.ts`, `src/host-settings.ts`, `src/boot.ts` | The computer registry, phone sign-ins and pairing codes; the host's name and default computer, and settling an older host's built-in computer; each computer's boot steps. |
 | `src/computers.ts` | The computers a host runs, phone sign-ins and pairing codes. |
 | `src/driver.ts` | The microVM runtime: Cloud Hypervisor or Virtualization.framework through `@braedonsaunders/appkit-desk`, parked with a memory snapshot. |
 | `src/container-driver.ts` | The container runtime: the computer as a Docker container, parked by freezing it. |
@@ -211,7 +212,7 @@ each image pulls anonymously before it attaches the bundles.
 | `CABOOSE_IMAGE_ROOT` | `/var/lib/caboose` | Guest image, overlays, snapshots and the host's state files. |
 | `CABOOSE_SPLIT_IMAGE` | unset | Directory containing a separately built split microVM image. New Linux computers bind to its immutable version; existing disks remain unchanged. Keep all four version files for those computers. |
 | `CABOOSE_VM_DEPOT` | unset | Linux host directory for a shared Flatpak runtime depot, mounted read-only in microVMs using virtio-fs. Requires Docker, the computer container image, and virtiofsd 1.13 or later; cannot be combined with template cloning or a non-copy restore mode. |
-| `CABOOSE_MEMORY_MB`, `CABOOSE_VCPUS` | `6144`, `4` | The owner's computer's size until saved settings exist, and a new computer's unless chosen. |
+| `CABOOSE_MEMORY_MB`, `CABOOSE_VCPUS` | `6144`, `4` | A new computer's size unless chosen, and a computer's until its saved settings exist. |
 | `CABOOSE_IDLE_MS` | `600000` | Idle time before parking, likewise. |
 | `CABOOSE_FREEZE_PARK_MS` | `60000` | Maximum frozen time before a microVM parks. |
 | `CABOOSE_VM_TEMPLATE` | `off` | `on` opts new Linux microVM computers into a sterile shared memory template. Existing computers keep their disks and snapshots. Requires Cloud Hypervisor v54.0 and a golden image with the current complete guest component bundle; cannot be combined with the microVM depot. |
@@ -239,8 +240,8 @@ each image pulls anonymously before it attaches the bundles.
 | `CABOOSE_RUNTIME` | `microvm` | `microvm` or `container`. |
 | `CABOOSE_BASE_IMAGE` | empty (release: pinned) | OCI reference fetched when the disk root lacks the image (microVM). |
 | `CABOOSE_CONTAINER_IMAGE` | `caboose-computer:latest` (release: pinned) | The computers' image (container); pulled when missing if it names a registry. |
-| `CABOOSE_CONTAINER_NAME` | `caboose-owner` | The owner's computer's container name; others are `caboose-<id>` (container). |
-| `CABOOSE_CONTAINER_HOME` | `caboose-home` | Volume name or absolute host path for the owner's `/home/caboose`; others append `-<id>` (container). Explicit storage measurement requires the matching inspected home mount and a locally accessible directory; bind paths must be absolute, without root-only, traversal or noncanonical slash spellings. |
+| `CABOOSE_CONTAINER_NAME` | `caboose-owner` | The container name of a legacy computer in slot 0; every other computer's is `caboose-<id>` (container). |
+| `CABOOSE_CONTAINER_HOME` | `caboose-home` | Volume name or absolute host path for `/home/caboose`; each computer appends `-<id>`, except a legacy computer in slot 0, which uses it as is (container). Explicit storage measurement requires the matching inspected home mount and a locally accessible directory; bind paths must be absolute, without root-only, traversal or noncanonical slash spellings. |
 | `CABOOSE_CONTAINER_ARGS` | empty | Extra `docker run` arguments, whitespace-separated (container). |
 | `CABOOSE_GPU` | `auto` | `wsl`, `nvidia`, `dri` or `none`; `auto` detects `/dev/dxg`, then NVIDIA, then `/dev/dri/renderD128` (container). |
 | `CABOOSE_GUEST_LAN` | `deny` | `allow` lets the computer reach private networks. |
@@ -270,14 +271,15 @@ space for the restored snapshot. Failed object deletion is retried using local
 cleanup receipts, including receipts for deleted computers. An image root is local to one host; receipts from a different hostname are retained for operator review. A source file left by a crashed copy-on-write VM must be kept
 until an operator has confirmed no VMM maps it.
 
-The owner's computer's name, memory, CPUs, idle timeout and default agent are saved in
-`caboose.json` under `CABOOSE_IMAGE_ROOT` (atomic rename, mode 0600); saved values override
-the environment. Invalid or unreadable settings stop startup rather than reverting. Back the
-file up with the disks and do not edit it while the host runs. Its push devices
-(`push-devices.json`) and Live Activities (`activities.json`) live beside it, with the agent
-registry cache (`agent-registry.json`), the computer registry and people in the identity database, and phone
-sign-ins (`phones.json`, SHA-256 digests only). Every other computer keeps its own
-`caboose.json`, `push-devices.json` and `activities.json` in `computers/<id>/`.
+Each computer's name, memory, CPUs, idle timeout and default agent are saved in its
+`computers/<id>/caboose.json` under `CABOOSE_IMAGE_ROOT` (atomic rename, mode 0600); saved
+values override the environment. Invalid or unreadable settings stop startup rather than
+reverting. Back the files up with the disks and do not edit them while the host runs. Its
+push devices (`push-devices.json`), Live Activities (`activities.json`) and the rest of its
+state live beside it. The host's own state is at the root: `host.json` (the host's name and
+default computer), the agent registry cache (`agent-registry.json`), phone sign-ins
+(`phones.json`, SHA-256 digests only), and the computer registry and people in the identity
+database.
 
 ## Accounts and tenants
 
@@ -294,8 +296,9 @@ A new host is unclaimed: it writes a one-time code to `${CABOOSE_IMAGE_ROOT}/set
 logs `Set up Caboose: http://<address>:<port>/setup?code=<code>`. `/setup` opens with that
 code, including on the host itself: a local proxy may relay outside traffic without
 forwarding headers. It makes the operator's account and the first tenant, gives it the
-host’s computers, and deletes the file. The owner computer is assigned to the operator’s
-person record in the same database transaction. The owner-token console offers Complete
+host’s computers, and deletes the file. A legacy `owner` computer, on a host from before
+computers were equal, is assigned to the operator’s person record in the same database
+transaction. The owner-token console offers Complete
 setup until this is done; existing computers and paired phones continue to work. Other administrators join by invitation links
 from **People**. Accounts and sessions are AppKit's (`appkit-auth`, `appkit-db`) in the
 embedded database, or Postgres with `CABOOSE_DATABASE_URL`. Back up `identity/` (or the
@@ -320,29 +323,47 @@ network slots or phone tokens; the original file remains a backup. Unknown legac
 remain marked Assignment required. Back up the database with the disks.
 
 
-The owner token manages every computer through `/v1/computers` (list, make, delete) and
-reaches any one under `/v1/computers/<id>/…`; the routes without an id serve the owner's
-computer, as they always have. Each computer has its own disk, settings, lifecycle, agents,
+A host runs any number of computers, from none, and all are alike: any can be deleted, and
+the owner is a person, not a computer. The owner token manages every computer through
+`/v1/computers` (list, make, delete) and reaches any one under `/v1/computers/<id>/…`; the
+routes without an id serve the host's default computer (`host.json`, set with
+`PATCH /v1/host/settings`), and answer 404 with `code: "no-computer"` when it has none. The
+first computer made becomes the default; deleting the default hands it to the computer with
+the lowest slot. Each computer has its own disk, settings, lifecycle, agents,
 catalog, notifications and phones, and its own network slot: a microVM on slot *n* gets TAP
 `caboose<n>` and a persistent /30: slots 0–63 use `192.0.2.0/24`, later slots use
 `198.18.0.0/15`. A container has its own home and bridge; slots 1–63 retain loopback ports
-from 20000 + 10 × *n*, and later slots use available loopback ports outside that range; stopped containers retain their allocations. The owner's computer is slot 0 with the names and
-addresses below, and cannot be deleted. Deleting another computer removes its disk, files,
+from 20000 + 10 × *n*, and later slots use available loopback ports outside that range; stopped containers retain their allocations. A new computer never gets slot 0, which keeps
+a legacy computer's names and addresses below. Deleting a computer removes its disk, files,
 network and phones.
 
-Phones sign in to one computer each. The console's **Sign in a phone** asks for a pairing
-code (`POST /v1/computers/<id>/pairing`), shown as a QR code; the app trades it once, within
-ten minutes, for its own token through `POST /v1/pair`. A phone token reaches only its own
-computer's routes and is signed out from the console. The owner token still works on a
-phone, as it did before.
+An older host's built-in computer stays an ordinary computer under the legacy id `owner` and
+slot 0. At startup the host moves its files from the image root into `computers/owner/`
+(renames only: nothing is deleted, an interrupted move finishes at the next start, and a
+file already moved is never overwritten), and writes `host.json` once with that computer as
+the default and its name, unless it was still `Caboose`, as the host's. Its disk, container,
+home, network and phone sign-ins keep their names.
+
+Starting a computer is followed step by step: `POST /v1/computers/<id>/boot` starts it (after
+the image download, if one is under way), and `GET /v1/computers/<id>/boot` returns its boot
+or, with `Accept: text/event-stream`, streams every change until it runs or fails
+(docs/architecture.md, "Starting a computer"). `POST /v1/computers` with `start: true` makes
+a computer and starts it at once.
+
+Phones sign in to one computer, or to the host. The console's **Sign in a phone** asks for a
+pairing code (`POST /v1/computers/<id>/pairing`), shown as a QR code; the app trades it once,
+within ten minutes, for its own token through `POST /v1/pair`. That phone token reaches only
+its own computer's routes. The owner's phone pairs with the host instead
+(`POST /v1/host/pairing`, offered after setup and on the Host page): its token reaches every
+computer, as the owner token does, so the app can make the first computer on a host with
+none. Both kinds are signed out from the console. The owner token still works on a phone.
 
 ## Runtimes
 
 **microVM** (default). The computer is a Cloud Hypervisor microVM managed by appkit-desk.
-Its disk is a reflink copy-on-write overlay of `base.raw` (`overlays/<id>.raw`, `owner.raw`
-for the owner's); parking writes a memory snapshot (`overlays/<id>.snapshot`), so a parked
+Its disk is a reflink copy-on-write overlay of `base.raw` (`overlays/<id>.raw`); parking writes a memory snapshot (`overlays/<id>.snapshot`), so a parked
 computer survives a host restart. Commands run in the guest over vsock through the guest
-agent. The owner's guest has address `192.0.2.2` on the TAP device `caboose0`.
+agent. A guest has the address of its slot (see above) on its TAP device.
 
 **Container** (`CABOOSE_RUNTIME=container`). For a GPU a container can use but a VM cannot:
 WSL2's `/dev/dxg`, an NVIDIA GPU through the NVIDIA container toolkit, or Linux render nodes.
@@ -610,7 +631,7 @@ environment, not in shell history. `check-fs.mjs`, `check-terminal.mjs`, `check-
 | `node apps/host/scripts/check-management.mjs [--write \| --restart]` | The management API: read-only by default; `--write` saves the existing name unchanged; `--restart` performs a cold restart (discarding open applications) and checks the applied resources. |
 | `apps/host/node_modules/.bin/tsx apps/host/scripts/check-network.mts [--vite] [--postgres] [--keep]`, then `node apps/host/scripts/check-network-client.mjs <name> <ports>` from another tailnet device | A throwaway container computer as a network machine: its own tailnet device through the production companion, loopback and wildcard servers (and Vite and PostgreSQL) on its own address, the fence still closed from the inside; the client reaches each server by MagicDNS name and finds Caboose's ports closed. Needs Docker, `/dev/net/tun`, `CABOOSE_CHECK_IMAGE`, and root or `sudo -n`. See [docs/network.md](../../docs/network.md#checks). |
 | `apps/host/node_modules/.bin/tsx apps/host/scripts/check-container-ports.mts` | Real Docker port allocation, including legacy and stopped container bindings; requires an existing `node:22-bookworm-slim` image (override with `CABOOSE_CHECK_IMAGE`). |
-| `node apps/host/scripts/check-computers.mjs [--fence]` | Several computers: makes a throwaway computer, wakes it, pairs a phone with it through a pairing code and checks the phone reaches only that computer, signs it out, then deletes the computer and its disk. Hosts with accounts also get a throwaway tenant, removed after the computer even when the check fails. Older hosts without tenants remain supported. It creates no accounts; the owner's computer is only read. `--fence` also checks the rule that rejects traffic between computers (root or `sudo -n`). |
+| `node apps/host/scripts/check-computers.mjs [--fence]` | Several computers: makes a throwaway computer, wakes it, pairs a phone with it through a pairing code and checks the phone reaches only that computer, signs it out, then deletes the computer and its disk. Hosts with accounts also get a throwaway tenant, removed after the computer even when the check fails. Older hosts without tenants remain supported. It creates no accounts; the host's other computers are only read. `--fence` also checks the rule that rejects traffic between computers (root or `sudo -n`). |
 | `node apps/host/scripts/check-accounts.mjs` | Accounts and tenants: the setup state and the owner token's view, then a throwaway tenant with a memory quota, a computer within it made and one beyond it refused, a resize past it refused, and both deleted. It makes no accounts and verifies that setup requires its code even on loopback. |
 | `node apps/host/scripts/check-upgrade.mjs` | Wakes the computer, waits for the guest component update to finish, and exercises Files. |
 | `node apps/host/scripts/check-terminal.mjs` | Opens a terminal through `/v1/terminal` (waking the computer), checks the login shell's environment, resizes, lists the session, detaches, reattaches from its offset and receives what was written meanwhile, then exits the shell with a code. A failed check hangs the session up. |
@@ -719,7 +740,7 @@ for nonstandard `erofs-utils` paths. The appliance kernel must be installed and 
 process visibility; other backends and noncooperating writers are unsupported.
 
 From the checkout or the native bundle's `app` directory, use the computer ID
-(`owner` or `c-` followed by ten hexadecimal digits):
+(`c-` followed by ten hexadecimal digits, or `owner` for a legacy computer):
 
 ```sh
 sudo python3 apps/host/scripts/migrate-disk.py --image-root /var/lib/caboose --computer owner inspect

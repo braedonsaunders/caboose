@@ -220,6 +220,6 @@ outside any app, checks it gets a scope of its own with that window, and quits i
 It cleans up what it started.
 
 ```
-guest/scopes/check.sh caboose-owner            # or caboose-c-<id>
-guest/scopes/check.sh caboose-owner --window   # a window appears on the owner's display briefly
+guest/scopes/check.sh caboose-c-<id>           # the computer's container
+guest/scopes/check.sh caboose-c-<id> --window  # a window appears on the owner's display briefly
 ```

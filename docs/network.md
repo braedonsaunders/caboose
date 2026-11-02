@@ -20,7 +20,7 @@ app it already has, and Caboose adds no VPN to it.
 ## Its own tailnet device
 
 Each container computer gets a **companion**: a container the host owns, named after the
-computer with `-net` appended (`caboose-owner-net`, `caboose-c-…-net`), from the official
+computer with `-net` appended (`caboose-c-…-net`; `caboose-owner-net` for a legacy computer in slot 0), from the official
 Tailscale image (`CABOOSE_TAILSCALE_IMAGE`, pinned by the host). The companion runs
 `tailscaled` with the kernel's TUN in a network namespace of its own. Its device on the
 tailnet is named after the computer (`Dev Box` becomes `dev-box`), so its MagicDNS name is

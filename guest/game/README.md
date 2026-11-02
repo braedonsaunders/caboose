@@ -140,7 +140,7 @@ On a computer, as root, after the guest components are installed:
 
 ```sh
 sudo bash guest/game/check.sh --here                                          # microVM
-docker exec -i -u root caboose-owner bash -s -- --here < guest/game/check.sh  # container
+docker exec -i -u root caboose-<id> bash -s -- --here < guest/game/check.sh  # container
 ```
 
 `CABOOSE_CHECK_PORT` picks the private display's port (default 14690). Installing The

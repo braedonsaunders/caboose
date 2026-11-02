@@ -48,11 +48,13 @@ environment switches on apps' accessibility trees (`ACCESSIBILITY_ENABLED`,
 
 Run `caboose-host` on the Docker host with `CABOOSE_RUNTIME=container`. The host needs the
 `docker` CLI and the privileges described in its README for the network fence. At the first
-wake it creates the Docker network `caboose` (bridge `caboose-br0`) and fences it, then runs
-the image as `caboose-owner` (`CABOOSE_CONTAINER_NAME`) with:
+wake of a computer on slot *n* it creates the Docker network `caboose-<n>` (bridge
+`caboose-br<n>`) and fences it, then runs the image as `caboose-<id>` (a legacy computer in
+slot 0 keeps the network `caboose`, bridge `caboose-br0` and container name
+`CABOOSE_CONTAINER_NAME`, default `caboose-owner`) with:
 
-- `/home/caboose` on the volume or absolute host path in `CABOOSE_CONTAINER_HOME` (default
-  volume `caboose-home`);
+- `/home/caboose` on the volume or absolute host path in `CABOOSE_CONTAINER_HOME` with
+  `-<id>` appended (default volume `caboose-home-<id>`; a legacy computer uses it as is);
 - memory and CPU limits from the computer's settings, and a 2 GiB `/dev/shm`;
 - the owner's display (14600), the agent seat (14601), the file service (14700) and the
   terminal service (14701) published on `127.0.0.1` only;
@@ -171,7 +173,7 @@ image, remove the container and wake the computer again; the home volume is kept
 With the computer running, from the repository root:
 
 ```sh
-docker exec -u root caboose-owner bash -s < guest/container/check.sh
+docker exec -u root caboose-<id> bash -s < guest/container/check.sh
 ```
 
 It waits for the owner's display and checks that the owner display's PulseAudio answers
@@ -184,11 +186,11 @@ Other checks for this image:
   (see [`apps/host`](../../apps/host/README.md#real-host-checks)).
 - `apps/host/scripts/check-agent-shell.sh` runs the agent runner and the host's guest scripts
   in a Debian container.
-- `docker exec -u root caboose-owner bash -s < guest/media-handoff/check.sh` checks media
+- `docker exec -u root caboose-<id> bash -s < guest/media-handoff/check.sh` checks media
   handoff.
-- `docker exec -u root caboose-owner bash -s < guest/phone/check.sh` checks the phone
+- `docker exec -u root caboose-<id> bash -s < guest/phone/check.sh` checks the phone
   commands and printer; it consumes pending handoffs.
-- `docker exec -i -u root caboose-owner bash -s -- --here < guest/game/check.sh` checks game
+- `docker exec -i -u root caboose-<id> bash -s -- --here < guest/game/check.sh` checks game
   handoff against a private display instance.
 - `guest/notifications/check-container.sh` checks the owner's notification endpoint, its
   actions and replies, and the separate session buses in a disposable container.

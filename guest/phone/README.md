@@ -44,7 +44,7 @@ the printer, checks the scheme handlers, queues a URL and a file, prints a PDF t
 
 ```sh
 sudo bash guest/phone/check.sh                               # inside a microVM computer
-docker exec -u root caboose-owner bash -s < guest/phone/check.sh   # in the container runtime
+docker exec -u root caboose-<id> bash -s < guest/phone/check.sh   # in the container runtime
 ```
 
 It creates a real CUPS job and consumes pending handoffs, so disconnect the phone first and
