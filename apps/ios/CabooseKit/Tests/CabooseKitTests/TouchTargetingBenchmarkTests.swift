@@ -176,7 +176,7 @@ import Testing
         return Double(kept) / Double(tried)
     }
 
-    @Test func aimingHitsMoreSmallControlsThanTheBareFinger() throws {
+    @Test func aimingHitsMoreSmallControlsThanTheBareFinger() async throws {
         let fixtures = Self.fixtures()
         try #require(!fixtures.isEmpty)
         var lines = ["app               pt/px finger  " + Method.allCases.map { $0.rawValue.padding(toLength: 17, withPad: " ", startingAt: 0) }.joined()]
@@ -184,7 +184,13 @@ import Testing
             for scale in [0.5, 0.75, 1.0] {
                 for finger in [1.0, 1.5, 2.0] {
                     let picture = Self.picture(fixture.app)
-                    let scores = Method.allCases.map { Self.run(fixture, method: $0, pointsPerPixel: scale, fingerMM: finger, picture: picture) }
+                    // The pixel benchmark is CPU-bound. Keep it off Swift's cooperative executor so
+                    // async tests and their timeout tasks can make progress even on a single worker.
+                    let scores = await withCheckedContinuation { continuation in
+                        DispatchQueue.global(qos: .utility).async {
+                            continuation.resume(returning: Method.allCases.map { Self.run(fixture, method: $0, pointsPerPixel: scale, fingerMM: finger, picture: picture) })
+                        }
+                    }
                     let cells = scores.map { String(format: "%5.1f%% %4.2fmm   ", $0.rate * 100, $0.error / Double($0.taps)) }
                         + [String(format: "(%.0f%% twice)", Double(scores[3].second) / Double(scores[3].taps) * 100)]
                     lines.append(fixture.app.padding(toLength: 18, withPad: " ", startingAt: 0)
