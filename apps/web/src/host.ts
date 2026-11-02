@@ -53,10 +53,13 @@ export interface ImageStatus {
   message?: string
 }
 
+/** How many of the host's computers are running, out of all it has (`GET /v1/health` `computers`). */
+export interface ComputerCounts { running: number; total: number }
+
 export type HealthStatus = (
   | { host: string; hypervisor?: 'virtualization' | 'cloud-hypervisor'; kvm: boolean; desk: DeskStats }
-  | { host: string; runtime: 'container'; gpu: GpuKind; container: string; running: boolean }
-) & { machine?: MachineResources; image?: ImageStatus }
+  | { host: string; runtime: 'container'; gpu: GpuKind }
+) & { computers: ComputerCounts; machine?: MachineResources; image?: ImageStatus }
 
 /** One line about the computers' image, for an owner. */
 export function imageLabel(image: ImageStatus): string {
@@ -94,6 +97,7 @@ export function healthFacts(health: HealthStatus): Array<{ label: string; value:
   const image = health.image
     ? [{ label: 'Computer image', value: imageLabel(health.image), ...(health.image.state === 'missing' || health.image.state === 'failed' ? { problem: true } : {}) }]
     : []
+  const computers = { label: 'Computers running', value: `${health.computers.running} of ${health.computers.total}` }
   if ('desk' in health) {
     const desk = health.desk
     const when = (value: string | null) => value ? new Date(value).toLocaleString() : 'Never'
@@ -101,6 +105,7 @@ export function healthFacts(health: HealthStatus): Array<{ label: string; value:
       ...(health.hypervisor === 'virtualization'
         ? [{ label: 'Hypervisor', value: 'Apple Virtualization.framework' }]
         : [{ label: 'KVM', value: health.kvm ? 'Available' : 'Missing: /dev/kvm is not present', problem: !health.kvm }]),
+      computers,
       { label: 'Running machines', value: `${desk.resident} of ${desk.capacity}${desk.queued ? `, ${desk.queued} waiting` : ''}` },
       { label: 'Last started', value: when(desk.lastStartedAt) },
       { label: 'Last parked', value: when(desk.lastSuspendedAt) },
@@ -110,11 +115,7 @@ export function healthFacts(health: HealthStatus): Array<{ label: string; value:
       ...image,
     ]
   }
-  return [
-    { label: 'Container', value: health.container },
-    { label: 'Container state', value: health.running ? 'Running' : 'Not running' },
-    ...image,
-  ]
+  return [computers, ...image]
 }
 
 export function upgradeLabel(upgrade: ComponentsUpgrade): string {

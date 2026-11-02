@@ -11,36 +11,41 @@ describe('host', () => {
   })
 
   it('reads either runtime’s health and flags problems', () => {
-    const vm = healthFacts({ host: 'caboose-host', kvm: false, desk: {
+    const vm = healthFacts({ host: 'caboose-host', kvm: false, computers: { running: 1, total: 3 }, desk: {
       resident: 1, queued: 0, capacity: 4, suspended: 0, lastStartedAt: null, lastSuspendedAt: null, reconnects: 5,
       lastReconnectAt: '2026-10-28T10:00:00.000Z', lastError: 'boom', snapshotCpuFallbacks: 0,
     } })
     expect(vm.find(fact => fact.label === 'KVM')).toMatchObject({ problem: true })
+    expect(vm.find(fact => fact.label === 'Computers running')?.value).toBe('1 of 3')
     expect(vm.find(fact => fact.label === 'Running machines')?.value).toBe('1 of 4')
     expect(vm.find(fact => fact.label === 'Guest reconnects')).toMatchObject({ problem: true })
     expect(vm.find(fact => fact.label === 'Desk error')?.value).toBe('boom')
-    expect(healthFacts({ host: 'caboose-host', runtime: 'container', gpu: 'none', container: 'caboose-owner', running: true }))
-      .toEqual([{ label: 'Container', value: 'caboose-owner' }, { label: 'Container state', value: 'Running' }])
+    expect(healthFacts({ host: 'caboose-host', runtime: 'container', gpu: 'none', computers: { running: 2, total: 5 } }))
+      .toEqual([{ label: 'Computers running', value: '2 of 5' }])
+    // A host with no computer yet is healthy.
+    expect(healthFacts({ host: 'caboose-host', runtime: 'container', gpu: 'none', computers: { running: 0, total: 0 } }))
+      .toEqual([{ label: 'Computers running', value: '0 of 0' }])
   })
 
   it('lifts host problems out of health, and shares a machine in whole percent', () => {
+    const computers = { running: 0, total: 1 }
     const desk = { resident: 0, queued: 0, capacity: 1, suspended: 0, lastStartedAt: null, lastSuspendedAt: null, reconnects: 0, lastReconnectAt: null, lastError: null, snapshotCpuFallbacks: 0 }
-    expect(healthProblems({ host: 'caboose-host', kvm: true, desk })).toEqual([])
-    const mac = { host: 'caboose-host', hypervisor: 'virtualization' as const, kvm: false, desk }
+    expect(healthProblems({ host: 'caboose-host', kvm: true, computers, desk })).toEqual([])
+    const mac = { host: 'caboose-host', hypervisor: 'virtualization' as const, kvm: false, computers, desk }
     expect(healthProblems(mac)).toEqual([])
     expect(healthFacts(mac)).toContainEqual({ label: 'Hypervisor', value: 'Apple Virtualization.framework' })
     expect(healthFacts(mac).some(fact => fact.label === 'KVM')).toBe(false)
-    expect(healthProblems({ host: 'caboose-host', kvm: false, desk: { ...desk, lastError: 'boot failed' } })).toEqual([
+    expect(healthProblems({ host: 'caboose-host', kvm: false, computers, desk: { ...desk, lastError: 'boot failed' } })).toEqual([
       '/dev/kvm is not present, so the host cannot start a microVM.', 'boot failed',
     ])
-    // A parked container is not running, and that is not a problem.
-    expect(healthProblems({ host: 'caboose-host', runtime: 'container', gpu: 'none', container: 'caboose-owner', running: false })).toEqual([])
+    // Parked computers are not running, and that is not a problem.
+    expect(healthProblems({ host: 'caboose-host', runtime: 'container', gpu: 'none', computers })).toEqual([])
     // A host with no image and nothing to download says so, on either runtime.
-    expect(healthProblems({ host: 'caboose-host', kvm: true, desk, image: { state: 'missing', reference: null } })[0]).toMatch(/image is not installed/)
-    expect(healthProblems({ host: 'caboose-host', runtime: 'container', gpu: 'none', container: 'caboose-owner', running: false, image: { state: 'failed', reference: 'r', message: 'offline' } }))
+    expect(healthProblems({ host: 'caboose-host', kvm: true, computers, desk, image: { state: 'missing', reference: null } })[0]).toMatch(/image is not installed/)
+    expect(healthProblems({ host: 'caboose-host', runtime: 'container', gpu: 'none', computers, image: { state: 'failed', reference: 'r', message: 'offline' } }))
       .toEqual(["Downloading the computer's image failed: offline"])
-    expect(healthProblems({ host: 'caboose-host', kvm: true, desk, image: { state: 'fetching', reference: 'r' } })).toEqual([])
-    expect(healthFacts({ host: 'caboose-host', kvm: true, desk, image: { state: 'missing', reference: null } })).toContainEqual(expect.objectContaining({ label: 'Computer image', problem: true }))
+    expect(healthProblems({ host: 'caboose-host', kvm: true, computers, desk, image: { state: 'fetching', reference: 'r' } })).toEqual([])
+    expect(healthFacts({ host: 'caboose-host', kvm: true, computers, desk, image: { state: 'missing', reference: null } })).toContainEqual(expect.objectContaining({ label: 'Computer image', problem: true }))
     expect(imageLabel({ state: 'fetching', reference: 'r', receivedBytes: 42, totalBytes: 100 })).toBe('Downloading (42%)')
     expect(imageLabel({ state: 'ready', reference: null })).toBe('Installed')
     expect(sharePercent(6144, 32768)).toBe(19)
