@@ -16,6 +16,9 @@ RESTARTS = ('no', 'on-failure', 'always')
 TYPES = ('simple', 'forking', 'oneshot')
 # A service that starts this many times within the window stops being restarted.
 BURST, BURST_SECONDS = 5, 60.0
+# After a burst the service waits COOLDOWN seconds, doubling per burst up to COOLDOWN_MAX, and
+# the doubling resets once it has stayed up COOLDOWN_RESET seconds.
+COOLDOWN, COOLDOWN_MAX, COOLDOWN_RESET = 30.0, 300.0, 300.0
 MAX_UNIT = 64 * 1024
 MAX_ARGS = 256
 MAX_ENV = 128
@@ -274,8 +277,8 @@ def dependents(units, name):
 
 def restart_decision(unit, exit_code, stopping, starts, now):
     """After a service's process ended: 'stop' (an asked stop, or nothing to restart),
-    'restart', or 'fail' (a failure not restarted, or too many starts). `starts` are the
-    times it was started."""
+    'restart', 'fail' (a failure not restarted) or 'cooldown' (too many starts: retried after
+    `cooldown_seconds`). `starts` are the times it was started."""
     if stopping:
         return 'stop'
     success = exit_code == 0
@@ -285,8 +288,13 @@ def restart_decision(unit, exit_code, stopping, starts, now):
     if not again:
         return 'stop' if success else 'fail'
     if len([t for t in starts if now - t <= BURST_SECONDS]) >= BURST:
-        return 'fail'
+        return 'cooldown'
     return 'restart'
+
+
+def cooldown_seconds(bursts):
+    """The wait after the `bursts`-th burst in a row (1 for the first)."""
+    return min(COOLDOWN * 2 ** max(bursts - 1, 0), COOLDOWN_MAX)
 
 
 # -- Listening sockets ----------------------------------------------------------------------

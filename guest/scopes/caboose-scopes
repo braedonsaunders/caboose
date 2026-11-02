@@ -407,6 +407,7 @@ class Service:
         self.restarts = 0
         self.stopping = False
         self.restart_at = None
+        self.bursts = 0           # bursts in a row, for the cooldown back-off
         self.last_exit = None
 
     @property
@@ -529,6 +530,7 @@ class Supervisor:
                         service.set('failed', f'{dep} failed to start')
                         return
             service.starts = [t for t in service.starts if time.time() - t <= units.BURST_SECONDS]
+            service.bursts = 0
             self.spawn(service)
 
     def spawn(self, service):
@@ -602,15 +604,22 @@ class Supervisor:
         service.process = None
         if service.populated() and not (service.unit and service.unit['type'] == 'forking' and code == 0 and not service.stopping):
             write(CGROUP / service.group / 'cgroup.kill', '1')
+        if service.starts and now - service.starts[-1] >= units.COOLDOWN_RESET:
+            service.bursts = 0
         decision = units.restart_decision(service.unit or {'restart': 'no', 'type': 'simple'}, code, service.stopping, service.starts, now)
         service.stopping = False
         if decision == 'restart':
             service.restarts += 1
             service.restart_at = now + service.unit['restartSec']
             service.set('activating', exit_message(code))
+        elif decision == 'cooldown':
+            service.bursts += 1
+            wait = units.cooldown_seconds(service.bursts)
+            service.restart_at = now + wait
+            service.set('failed', f'{exit_message(code)}; it started {units.BURST} times in a minute; '
+                                  f'trying again in {int(wait)} s')
         elif decision == 'fail':
-            many = len(service.starts) >= units.BURST and service.unit and service.unit['restart'] != 'no'
-            service.set('failed', f'{exit_message(code)}; it started {units.BURST} times in a minute' if many else exit_message(code))
+            service.set('failed', exit_message(code))
         else:
             service.set('inactive')
 
@@ -738,7 +747,8 @@ class Supervisor:
                     'source': service.source, 'state': service.state, 'error': service.error,
                     'autostart': bool(unit.get('autostart')), 'restart': unit.get('restart', 'no'),
                     'requires': list(unit.get('requires', [])), 'since': int(service.since * 1000),
-                    'restarts': service.restarts, 'lastExit': service.last_exit}
+                    'restarts': service.restarts, 'retryAt': int(service.restart_at * 1000) if service.restart_at else None,
+                    'lastExit': service.last_exit}
 
     def run(self):
         while True:

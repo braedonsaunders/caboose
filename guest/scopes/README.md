@@ -150,6 +150,11 @@ can escape its cgroup. A command that is not found exits 127 and the log says so
 is appended to `/var/log/caboose/services/<name>.log` with a line at each start. A supervisor
 thread looks twice a second for ended main processes (and, for `forking` services and those
 adopted after a daemon restart, for an empty cgroup) and applies `servicecore.restart_decision`.
+A service that starts `BURST` (5) times within a minute is `failed` with a cooldown: it is
+started again after 30 s, doubling per burst in a row up to 5 min, and the doubling resets
+once it has stayed up 5 min. Its state shows the failure and `retryAt` (milliseconds) says
+when it retries. `Restart=no` failures are final; stopping a service cancels any retry and a
+stopped service is never restarted by the daemon.
 Unit files are reread when their directories change. The owner's unit files are read and
 written by the observer, as the owner, so root never follows a link out of the owner's
 directory.

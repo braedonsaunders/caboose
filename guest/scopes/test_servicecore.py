@@ -129,10 +129,16 @@ class Restarts(unittest.TestCase):
         self.assertEqual(units.restart_decision(unit(restart='always'), -9, True, [0], 100), 'stop')
         self.assertEqual(units.restart_decision(unit(restart='always', kind='oneshot'), 0, False, [0], 100), 'stop')
 
-    def test_a_crash_loop_stops_restarting(self):
+    def test_a_crash_loop_cools_down(self):
         starts = [100, 110, 120, 130, 140]
-        self.assertEqual(units.restart_decision(unit(), 1, False, starts, 150), 'fail')
+        self.assertEqual(units.restart_decision(unit(), 1, False, starts, 150), 'cooldown')
+        self.assertEqual(units.restart_decision(unit(restart='always'), 0, False, starts, 150), 'cooldown')
         self.assertEqual(units.restart_decision(unit(), 1, False, starts, 165), 'restart')
+        self.assertEqual(units.restart_decision(unit(), 1, True, starts, 150), 'stop')
+        self.assertEqual(units.restart_decision(unit(restart='no'), 1, False, starts, 150), 'fail')
+
+    def test_the_cooldown_doubles_to_a_cap(self):
+        self.assertEqual([units.cooldown_seconds(n) for n in range(1, 7)], [30, 60, 120, 240, 300, 300])
 
 
 class Sockets(unittest.TestCase):
