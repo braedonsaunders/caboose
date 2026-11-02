@@ -128,6 +128,7 @@ Each patch is one feature. Several change Mesa's generated encoder
 | 0056 query-reset-event2khr-loss-handles | Beginning a command buffer clears the query resets and event operations it recorded before; `vkCmdSetEvent2KHR` and `vkCmdResetEvent2KHR` reach the completion tracker; creates after executor loss return handles |
 | 0057 held-frees-events-queries-and-drains | With the completion feed, frees and buffer, image and view destroys are held until every queue submission before them has completed (`../bounded-memory/deferred_destroys.h`); events and queries are followed through watched batches, so `vkGetEventStatus` and a no-wait `vkGetQueryPoolResults` answer without a round trip (`../bounded-memory/event_status.h`); buffer and image binds through `*2` no longer drain; with hello `0x10000` buffer views use guest-assigned handles |
 | 0058 requirements-across-processes | Memory requirements are kept by device identity in `$XDG_CACHE_HOME/caboose-gpu` (or `~/.cache`), so a later process made the same way asks the phone only for shapes no earlier one made (`../bounded-memory/requirements_cache.h`) |
+| 0059 render-node-drm-properties | The device offers `VK_EXT_physical_device_drm` with vgem's nodes, so Mesa's OpenGL picks the phone's GPU behind the render node (`../dmabuf/dmabuf.h`) |
 
 The patch messages describe each change. To change the driver, prepare a tree, commit
 the prepared state, edit, and regenerate the affected patch with `git format-patch`

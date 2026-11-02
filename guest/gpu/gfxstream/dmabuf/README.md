@@ -5,7 +5,7 @@ computer's render node; the contract is [docs/gpu-buffers.md](../../../../docs/g
 
 | File | What |
 | --- | --- |
-| `dmabuf.h` | A buffer's identity (its dma-buf's device and inode, after checking the descriptor is a dma-buf), creation of a remote buffer as a vgem object, and the per-process table of host allocations shared through dma-bufs |
+| `dmabuf.h` | A buffer's identity (its dma-buf's device and inode, after checking the descriptor is a dma-buf), creation of a remote buffer as a vgem object, the per-process table of host allocations shared through dma-bufs, and vgem's primary and render nodes, which the phone's device reports as its DRM nodes (`VK_EXT_physical_device_drm`) |
 | `remote_images.h` | `CABOOSE_FORMAT_MOD_REMOTE`, the Vulkan formats a remote buffer can have, and their nominal plane layout |
 | `registration.h` | Registration of a buffer's image with the GPU broker (CGLS kinds 40 and 41) |
 | `sync_file.h` | Sync files that signal on observed phone completion, each carrying a vgem fence |

@@ -20,6 +20,7 @@
 #include <optional>
 #include <sys/ioctl.h>
 #include <sys/stat.h>
+#include <sys/sysmacros.h>
 #include <sys/vfs.h>
 #include <unistd.h>
 
@@ -82,7 +83,55 @@ inline int vgemCard() {
     }
     return -1;
 }
+// The vgem node among `prefix`N (card or renderD), by its driver name, or -1.
+inline int vgemNodeMinor(const char* prefix, int first) {
+    for (int minor = first; minor < first + 64; ++minor) {
+        char path[40];
+        std::snprintf(path, sizeof(path), "/dev/dri/%s%d", prefix, minor);
+        const int fd = open(path, O_RDWR | O_CLOEXEC);
+        if (fd < 0) continue;
+        char name[16] = {};
+        drm_version version{};
+        version.name = name;
+        version.name_len = sizeof(name) - 1;
+        const bool vgem = ioctlRetry(fd, DRM_IOCTL_VERSION, &version) == 0 && std::strcmp(name, "vgem") == 0;
+        close(fd);
+        if (vgem) return minor;
+    }
+    return -1;
+}
 }  // namespace detail
+
+// vgem's primary and render nodes, as device numbers: the phone's device reports them as its
+// DRM nodes (VK_EXT_physical_device_drm), so a renderer that opens the computer's render node
+// (Mesa's loader, for EGL and GBM) finds the phone's GPU behind it.
+struct Nodes {
+    bool hasPrimary = false, hasRender = false;
+    uint32_t primaryMajor = 0, primaryMinor = 0, renderMajor = 0, renderMinor = 0;
+};
+inline const Nodes& vgemNodes() {
+    static const Nodes nodes = [] {
+        Nodes found;
+        struct stat info;
+        char path[40];
+        const int card = detail::vgemNodeMinor("card", 0);
+        std::snprintf(path, sizeof(path), "/dev/dri/card%d", card);
+        if (card >= 0 && stat(path, &info) == 0 && S_ISCHR(info.st_mode)) {
+            found.hasPrimary = true;
+            found.primaryMajor = major(info.st_rdev);
+            found.primaryMinor = minor(info.st_rdev);
+        }
+        const int render = detail::vgemNodeMinor("renderD", 128);
+        std::snprintf(path, sizeof(path), "/dev/dri/renderD%d", render);
+        if (render >= 0 && stat(path, &info) == 0 && S_ISCHR(info.st_mode)) {
+            found.hasRender = true;
+            found.renderMajor = major(info.st_rdev);
+            found.renderMinor = minor(info.st_rdev);
+        }
+        return found;
+    }();
+    return nodes;
+}
 
 // A new remote dma-buf of at least `bytes` (a vgem object whose pages are never touched),
 // or -1 with errno set.

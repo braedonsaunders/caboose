@@ -1,0 +1,66 @@
+From: Caboose <caboose@local>
+Subject: [PATCH 59/59] Report the computer's render node as the phone device's DRM nodes
+
+On the socket transport the device offers VK_EXT_physical_device_drm, kept in the guest,
+and reports vgem's primary and render nodes (caboose-dmabuf/dmabuf.h, vgemNodes). Mesa's
+OpenGL opens the render node for EGL and GBM and picks the Vulkan device behind it: Zink
+now finds the phone's GPU there instead of failing to choose a device and falling back to
+a software screen whose frames reach the compositor through shared memory.
+---
+diff --git a/src/gfxstream/guest/vulkan/gfxstream_vk_device.cpp b/src/gfxstream/guest/vulkan/gfxstream_vk_device.cpp
+index a1349f1..75003bd 100644
+--- a/src/gfxstream/guest/vulkan/gfxstream_vk_device.cpp
++++ b/src/gfxstream/guest/vulkan/gfxstream_vk_device.cpp
+@@ -198,6 +198,7 @@ static const char* const kGuestEmulatedDeviceExtensions[] = {
+     VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME,
+     VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME,
+     VK_EXT_PROVOKING_VERTEX_EXTENSION_NAME,
++    VK_EXT_PHYSICAL_DEVICE_DRM_EXTENSION_NAME,
+ };
+ 
+ static bool isGuestEmulatedDeviceExtension(const char* name) {
+diff --git a/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp b/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp
+index 38d96f5..def6e40 100644
+--- a/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp
++++ b/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp
+@@ -2532,6 +2532,14 @@ VkResult ResourceTracker::on_vkEnumerateDeviceExtensionProperties(
+     if (!cabooseHostHasRobustness2()) {
+         filteredExts.push_back(VkExtensionProperties{"VK_EXT_robustness2", 1});
+     }
++#ifdef LINUX_GUEST_BUILD
++    // The computer's render node (vgem) is this device's: OpenGL's loader opens the render
++    // node and finds the phone's GPU behind it (caboose-dmabuf/dmabuf.h, vgemNodes).
++    if (!usingDirectMapping() && caboose::dmabuf::vgemNodes().hasRender &&
++        getHostDeviceExtensionIndex("VK_EXT_physical_device_drm") == -1) {
++        filteredExts.push_back(VkExtensionProperties{"VK_EXT_physical_device_drm", 1});
++    }
++#endif
+ 
+ #if defined(VK_USE_PLATFORM_ANDROID_KHR) || DETECT_OS_LINUX
+     bool hostSupportsExternalFenceFd =
+@@ -2920,7 +2928,22 @@ void ResourceTracker::on_vkGetPhysicalDeviceProperties2(void* context,
+                  "Mesa " PACKAGE_VERSION MESA_GIT_SHA1);
+     };
+ 
+-    auto overwrite_drm_props = [](VirtGpuDevice* instance, auto* props) {
++    auto overwrite_drm_props = [this](VirtGpuDevice* instance, auto* props) {
++#ifdef LINUX_GUEST_BUILD
++        // On the socket transport the device's nodes are vgem's.
++        if (!usingDirectMapping()) {
++            const auto& nodes = caboose::dmabuf::vgemNodes();
++            VkPhysicalDeviceDrmPropertiesEXT* drmProps =
++                reinterpret_cast<VkPhysicalDeviceDrmPropertiesEXT*>(props);
++            drmProps->hasPrimary = nodes.hasPrimary;
++            drmProps->hasRender = nodes.hasRender;
++            drmProps->primaryMajor = nodes.primaryMajor;
++            drmProps->primaryMinor = nodes.primaryMinor;
++            drmProps->renderMajor = nodes.renderMajor;
++            drmProps->renderMinor = nodes.renderMinor;
++            return;
++        }
++#endif
+         if (instance) {
+             VkPhysicalDeviceDrmPropertiesEXT* drmProps =
+                 reinterpret_cast<VkPhysicalDeviceDrmPropertiesEXT*>(props);
+-- 
+2.43.0

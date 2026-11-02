@@ -19,6 +19,11 @@ int main() {
     if (fd < 0 && errno == ENODEV) { std::puts("no vgem device"); return 77; }
     CHECK(fd >= 0);
     if (fd < 0) return 1;
+    // vgem's nodes are found by name and reported by device number.
+    const Nodes& nodes = vgemNodes();
+    CHECK(nodes.hasPrimary && nodes.primaryMajor == 226);
+    if (nodes.hasRender) CHECK(nodes.renderMajor == 226 && nodes.renderMinor >= 128);
+    CHECK(&vgemNodes() == &nodes);
     CHECK(size(fd) >= 1920u * 1080 * 4);
     // Every descriptor of one buffer has its identity; another buffer does not.
     const auto identity = identify(fd);
