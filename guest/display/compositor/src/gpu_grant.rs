@@ -65,6 +65,13 @@ impl Grants {
         self.phase == Phase::Ready && self.windows.get(&window).is_some_and(|(_, phase)| *phase == GrantPhase::Active)
     }
 
+    /// Whether the window's active grant is a buffer window: the compositor's own images
+    /// (or a client's remote buffers) are presented in it.
+    pub fn buffer_window(&self, window: u64) -> bool {
+        self.phase == Phase::Ready && self.windows.get(&window).is_some_and(|(grant, phase)|
+            *phase == GrantPhase::Active && grant.space == crate::gpu_control::BUFFER_WINDOW)
+    }
+
     /// Whether an application draws the window straight into its phone surface (a Vulkan
     /// swapchain bound to its Wayland surface or X11 window), so the compositor presents
     /// nothing in it.
@@ -360,7 +367,16 @@ mod tests {
         assert!(grants.active_window(7) && grants.active_window(8));
         // The compositor presents in its buffer windows; a swapchain draws its own.
         assert!(!grants.client_surface(7) && !grants.client_surface(8));
+        assert!(grants.buffer_window(7) && grants.buffer_window(8));
         grants.bind(1, X11_WINDOW, (1000, 42, 6, 0x400001), &[9]).unwrap();
-        assert!(grants.client_surface(9));
+        assert!(grants.client_surface(9) && !grants.buffer_window(9));
+        // A swapchain on a window the compositor presents in waits for that grant to go.
+        assert!(grants.bind(1, X11_WINDOW, (1000, 43, 6, 0x400002), &[7]).is_err());
+        let own_grant = grants.begin_revoke(7).unwrap();
+        assert!(!grants.buffer_window(7));
+        grants.revoke_sent(own_grant).unwrap();
+        grants.surface_retired(own_grant).unwrap();
+        grants.bind(1, X11_WINDOW, (1000, 43, 6, 0x400002), &[7]).unwrap();
+        assert!(grants.client_surface(7));
     }
 }

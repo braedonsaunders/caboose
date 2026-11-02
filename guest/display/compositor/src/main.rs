@@ -587,6 +587,7 @@ fn run(config: Config) -> Result<(), String> {
         gpu_generation: 1,
         gpu_recovered_at: None,
         gpu_recovery_pending: false,
+        yielded: Default::default(),
         next_canvas: 0,
         render_node: render_node.map(|(_, path)| path),
         net,

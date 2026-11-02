@@ -46,6 +46,9 @@ use smithay::xwayland::{X11Surface, X11Wm};
 use std::borrow::Cow;
 use std::time::Duration;
 
+/// How long the compositor stands aside in a window for an application's bind.
+const YIELD_LIMIT: Duration = Duration::from_secs(5);
+
 /// Keyboard focus: a Wayland surface, or an X11 window (which also needs X input focus).
 #[derive(Debug, Clone, PartialEq)]
 pub enum KeyboardFocus {
@@ -199,6 +202,9 @@ pub struct State {
     /// so again is already scheduled (present.rs `renderer_failed`).
     pub gpu_recovered_at: Option<std::time::Instant>,
     pub gpu_recovery_pending: bool,
+    /// Windows the compositor stands aside in while an application binds its own surface
+    /// to them, and since when (`yield_window`).
+    pub yielded: std::collections::HashMap<u64, std::time::Instant>,
     /// The last canvas serial given out (render.rs `Canvas`).
     pub next_canvas: u64,
     /// The computer's vgem render node, when it has one.
@@ -527,6 +533,33 @@ impl State {
         }
     }
 
+    /// The compositor stops presenting in window `id` and revokes its grant there, for an
+    /// application that binds its own surface to it. It presents again if none has bound
+    /// within `YIELD_LIMIT`.
+    fn yield_window(&mut self, id: u64) {
+        self.yielded.insert(id, std::time::Instant::now());
+        let grant = self.gpu_grants.as_mut().and_then(|grants| grants.begin_revoke(id));
+        if let Some(grant) = grant {
+            tracing::info!("window {id}: an application binds its own surface; the compositor's images stand aside");
+            if self.queue_gpu_revoke(grant).is_err() {
+                self.gpu_control_failed();
+            }
+        }
+    }
+
+    /// Whether the compositor presents nothing in window `id` while an application binds it.
+    pub(crate) fn yielding(&mut self, id: u64) -> bool {
+        match self.yielded.get(&id) {
+            Some(at) if at.elapsed() < YIELD_LIMIT => true,
+            Some(_) => {
+                self.yielded.remove(&id);
+                if let Some(w) = self.windows.get_mut(id) { w.picture.repaint(); }
+                false
+            }
+            None => false,
+        }
+    }
+
     pub(crate) fn queue_gpu_revoke(&mut self, grant: crate::gpu_grant::Grant) -> std::io::Result<()> {
         let bytes = crate::gpu_control::revoke(grant)?;
         self.net.queue_gpu_control(bytes, Some(grant))
@@ -572,6 +605,19 @@ impl State {
                     self.displays.get(window.display).is_some_and(|display| {
                         let size = display.logical_size(); size.w > 0 && size.h > 0
                     })) { matches.clear(); }
+                // An application binding a window the compositor presents its own images in
+                // (a game's swapchain on its X11 window) gets it once that grant is retired:
+                // the compositor stops presenting there and revokes it, and the application's
+                // next attempt is granted.
+                // Nor does a present of the compositor's own take a window back meanwhile.
+                if bind.space == gpu_control::BUFFER_WINDOW && bind.pid == std::process::id() &&
+                    matches.len() == 1 && self.yielding(matches[0]) {
+                    matches.clear();
+                }
+                if bind.space != gpu_control::BUFFER_WINDOW && matches.len() == 1 &&
+                    self.gpu_grants.as_ref().is_some_and(|grants| grants.buffer_window(matches[0])) {
+                    self.yield_window(matches[0]);
+                }
                 let grant = self.gpu_grants.as_mut().and_then(|grants|
                     grants.bind(bind.process, bind.space, (bind.uid, bind.pid, bind.start_ticks, bind.object), &matches).ok());
                 if let Some(grant) = grant {

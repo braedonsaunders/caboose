@@ -1585,6 +1585,10 @@ class Broker:
         except (OSError, ValueError, RuntimeError, BufferError, asyncio.TimeoutError, PermissionError) as error:
             # Retire only this surface/process when a local client disconnects or fails,
             # while still waiting for real native retirement before releasing the grant.
+            if key is None:
+                # Refused before any grant (the compositor denied the bind, or the process
+                # was not ready): the client sees only its connection end, so say why here.
+                print(f'CABOOSE_GPU_SURFACE_REFUSED {type(error).__name__}: {error}', file=sys.stderr, flush=True)
             if key is not None and key in session.surfaces:
                 surface = session.surfaces[key]
                 abort_client(f'{type(error).__name__}: {error}')

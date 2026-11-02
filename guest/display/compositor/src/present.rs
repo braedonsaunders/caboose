@@ -129,7 +129,13 @@ impl State {
         let owner_displays = self.session.as_ref().map(|s| s.owner_displays.clone()).unwrap_or_default();
         let mut failed = false;
         for id in self.windows.ids() {
-            if self.game_shown(id) || self.gpu_grants.as_ref().is_some_and(|g| g.client_surface(id)) {
+            if self.gpu_grants.as_ref().is_some_and(|g| g.client_surface(id)) {
+                // The application presents here: the compositor keeps standing aside for
+                // a while after its surface goes, through a swapchain's recreation.
+                self.yielded.insert(id, Instant::now());
+                continue;
+            }
+            if self.game_shown(id) || self.yielding(id) {
                 continue;
             }
             let Some(w) = self.windows.get(id) else { continue };
