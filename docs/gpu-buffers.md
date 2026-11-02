@@ -100,11 +100,20 @@ window's grant first. A client must have finished rendering a buffer before comm
 it: Chromium's GBM presentation waits for its rendering fence first, and the image is
 copied on the registering process's queue.
 
+## OpenGL on the render node
+
+Mesa has no DRI driver of its own for `vgem`. `/usr/share/drirc.d/caboose-vgem.conf`
+([guest/container](../guest/container/caboose-vgem.conf)) names Zink as the loader's driver for
+any device whose kernel driver is `vgem`, for every application. Zink then opens the Vulkan
+device whose `VK_EXT_physical_device_drm` names the node: the phone's GPU, through the
+driver. Without one (no phone attached) Zink finds no device for the node, and EGL and GLX
+fall back to Mesa's software platform, where Zink renders on the CPU device and frames reach
+the display as shared memory.
+
 ## Requirements
 
 The `vgem` module ships with the WSL2 kernel and with distribution kernels and is loaded
 with `modprobe vgem`; it creates buffers only on its primary node, so a process that
 allocates needs both nodes. Chromium skips render nodes whose driver is `vgem` when it
-looks for one, so it is started with `--render-node-override` naming the computer's
-render node. X11 clients open the node through Xwayland's DRI3, which caboose-display enables
+looks for one, so it does not use the computer's render node. X11 clients open the node through Xwayland's DRI3, which caboose-display enables
 on the seat that renders on the phone's GPU ([guest/xwayland](../guest/xwayland/README.md)).
