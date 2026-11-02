@@ -52,13 +52,18 @@ static constexpr unsigned char kHello[48] = {
 // hash (caboose-shader-cache/shader_cache.h); 0x4000 the executor resumes across a lost
 // socket and suspends in the background, so waits for the phone have no deadline of their own
 // (the broker ends the streams when it is lost for good); 0x8000 it names 4096-byte pieces of
-// flushed memory the phone keeps by hash (caboose-bounded-memory/upload_cache.h). The broker replies with the features both
+// flushed memory the phone keeps by hash (caboose-bounded-memory/upload_cache.h); 0x10000 it
+// assigns buffer view handles too (requires 0x80). The broker replies with the features both
 // the process and the connected phone support. A broker that predates a feature closes
 // the connection instead, so the offer falls back to fewer features.
 static constexpr uint32_t kGuestHandles = 0x80, kGuestHandleArrays = 0x100, kCompletionFeed = 0x200,
                           kOrderedPresent = 0x400, kGuestImages = 0x800, kGuestQueryPools = 0x1000,
-                          kShaderCache = 0x2000, kExecutorResume = 0x4000, kUploadCache = 0x8000;
+                          kShaderCache = 0x2000, kExecutorResume = 0x4000, kUploadCache = 0x8000,
+                          kGuestBufferViews = 0x10000;
 static const uint32_t kOffers[] = {kGuestHandles | kGuestHandleArrays | kCompletionFeed | kOrderedPresent | kGuestImages |
+                                       kGuestQueryPools | kShaderCache | kExecutorResume | kUploadCache |
+                                       kGuestBufferViews,
+                                   kGuestHandles | kGuestHandleArrays | kCompletionFeed | kOrderedPresent | kGuestImages |
                                        kGuestQueryPools | kShaderCache | kExecutorResume | kUploadCache,
                                    kGuestHandles | kGuestHandleArrays | kCompletionFeed | kOrderedPresent | kGuestImages |
                                        kGuestQueryPools | kShaderCache | kExecutorResume,
@@ -99,6 +104,9 @@ int caboose_gfxstream_guest_images = 0;
 // 1 when the guest also assigns query pool handles (hello feature 0x1000).
 extern "C" int caboose_gfxstream_guest_query_pools;
 int caboose_gfxstream_guest_query_pools = 0;
+// 1 when the guest also assigns buffer view handles (hello feature 0x10000).
+extern "C" int caboose_gfxstream_guest_buffer_views;
+int caboose_gfxstream_guest_buffer_views = 0;
 // 1 when the phone keeps the shader modules this process sends and takes tokens for the
 // ones it holds (hello feature 0x2000; caboose-shader-cache/shader_cache.h).
 extern "C" int caboose_gfxstream_shader_cache;
@@ -336,6 +344,7 @@ int CabooseSocketStream::connectWith(const char* path, const unsigned char* offe
     caboose_gfxstream_ordered_present = (features & kOrderedPresent) ? 1 : 0;
     caboose_gfxstream_guest_images = (features & kGuestImages) ? 1 : 0;
     caboose_gfxstream_guest_query_pools = (features & kGuestHandles) && (features & kGuestQueryPools) ? 1 : 0;
+    caboose_gfxstream_guest_buffer_views = (features & kGuestHandles) && (features & kGuestBufferViews) ? 1 : 0;
     caboose_gfxstream_shader_cache = (features & kShaderCache) ? 1 : 0;
     caboose_gfxstream_executor_resume = (features & kExecutorResume) ? 1 : 0;
     caboose_gfxstream_upload_cache = (features & kUploadCache) ? 1 : 0;
@@ -345,6 +354,9 @@ int CabooseSocketStream::connectWith(const char* path, const unsigned char* offe
 #if defined(CABOOSE_GFXSTREAM_PRIVATE_INDEXED_WSI)
     indexedReady_.store(true, std::memory_order_release);
 #endif
+    // What this process runs with, once per executor connection: a game's log shows whether
+    // it has the completion feed (0x200), ordered presents (0x400) and guest images (0x800).
+    std::fprintf(stderr, "CABOOSE_GPU_HELLO features=0x%x\n", features);
     caboose_gfxstream_device_fd = caboose_gfxstream_device_fd == -1 ? fd_ : -2;
     CabooseSocketStream* none = nullptr;
     if (firstStream.compare_exchange_strong(none, this)) firstPath = path;
