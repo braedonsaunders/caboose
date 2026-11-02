@@ -76,9 +76,9 @@ int main() {
         Stream results;
         const uint32_t many = uint32_t(deferredReplyByteLimit / sizeof(int32_t));
         results.replies.assign(many + 2, 0);
-        big.addCheckedResults(&a, 1, 40 * 1024 * 1024);  // one 40 MiB flush, one result
-        assert(big.reserve(&a, &results, 16 * 1024 * 1024) && results.next == 0);
-        assert(big.reserve(&a, &results, 30 * 1024 * 1024) && results.next == 1 && big.pending() == 0);  // past 64 MiB
+        big.addCheckedResults(&a, 1, 4 * 1024 * 1024);  // one 4 MiB flush, one result
+        assert(big.reserve(&a, &results, 1024 * 1024) && results.next == 0);
+        assert(big.reserve(&a, &results, 3 * 1024 * 1024) && results.next == 1 && big.pending() == 0);  // past 6 MiB
         big.addCheckedResults(&a, many, 1024);                 // exactly 64 KiB of results owed
         assert(big.reserve(&a, &results, 64) && results.next == 1);
         big.addCheckedResult(&a, 64);                          // one more: past the reply bound

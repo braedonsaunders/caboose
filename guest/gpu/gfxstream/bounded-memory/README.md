@@ -14,11 +14,11 @@ transfer and reply handling, so it can be tested without Mesa.
 | `write_watch.h` | The blocks an application wrote to coherent memory since they were last sent, recorded with userfaultfd write protection (`/dev/userfaultfd`), so the flush before a submit sends only those; without the device, whole mappings |
 | `upload_cache.h` | The phone's upload cache (docs/gpu-live.md, "Upload cache"): the inventory and allowance per executor, the pieces each device stream stored, what a whole 4096-byte piece of a range of at least 16 KiB is sent as, and its wire form; BLAKE3 and the bytes are checked against `../upload-cache/vectors.json` by `../upload-cache/test_upload_cache_vectors.cpp` |
 | `cb_staging.h` | A command buffer's local, budgeted recording stream, sent with its queue submit |
-| `deferred_replies.h` | Replies the caller does not wait for, read as they arrive and drained in order once 64 MiB of commands or 64 KiB of their replies are owed; prefetched fence waits; guest-assigned handle checks |
+| `deferred_replies.h` | Replies the caller does not wait for, read as they arrive and drained in order once 6 MiB of commands or 64 KiB of their replies are owed; prefetched fence waits; guest-assigned handle checks |
 | `deferred_destroys.h` | Frees and destroys held until every queue submission sent before them has completed (Deferred frees, below) |
 | `event_status.h` | Event status asked for without waiting when the completion tracker does not follow the event |
 | `async_allocation.h` | Which device-memory allocations may skip the round trip: plain ones that keep their heap at most half committed |
-| `requirements_cache.h` | Image and buffer memory requirements by exact creation parameters, so an identical object needs no query |
+| `requirements_cache.h` | Image and buffer memory requirements by exact creation parameters, so an identical object needs no query; kept by device identity in a file shared by every process made the same way |
 | `static_query_cache.h` | Answers of physical-device format queries, which cannot change, by their exact parameters |
 | `query_results.h` | Query results without a round trip: a no-wait vkGetQueryPoolResults returns what its earlier identical request found, and resets drop stale results |
 | `completion_feed.h` | The completion feed's wire format and the tracker of every fence, timeline semaphore, event and query the process follows; the pause-on-loss waits: a paused process holds a loss until a new executor's socket appears, including a loss the phone replies with and a device stream that ends before the broker removes the old socket (`test_pause_on_loss.cpp`) |

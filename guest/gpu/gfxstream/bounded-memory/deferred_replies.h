@@ -41,14 +41,14 @@ bool drainDeferredReplies(uint32_t& pending, Stream* stream) {
     return true;
 }
 
-// Deferred commands in flight before their replies must be read. The broker reads a
-// process's stream under flow control (it waits, it never closes), and the commands it
-// retains for a resume are bounded by its 8 MiB window, so commands may run well ahead: the
-// command bound sits past what the broker takes, and its flow control paces the process.
-// What must stay small is the replies left unread: they wait in the socket back to the
-// process, and a full socket would stall the broker's writer and with it the phone. Replies
-// that have arrived are read without blocking once a little is owed.
-inline constexpr uint64_t deferredByteLimit = 64 * 1024 * 1024;
+// Deferred commands in flight before their replies must be read. Past 6 MiB of commands
+// the phone has not answered, a send waits for the oldest half: the broker would take more
+// (its flow control paces only the transport), but every byte queued ahead of a present or a
+// synchronous call delays it by the time the phone takes to decode it. What must also stay
+// small is the replies left unread: they wait in the socket back to the process, and a full
+// socket would stall the broker's writer and with it the phone. Replies that have arrived
+// are read without blocking once a little is owed.
+inline constexpr uint64_t deferredByteLimit = 6 * 1024 * 1024;
 inline constexpr uint64_t deferredReplyByteLimit = 64 * 1024;
 inline constexpr uint64_t deferredReapBytes = 256 * 1024, deferredReapReplyBytes = 4096;
 
