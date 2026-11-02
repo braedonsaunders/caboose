@@ -124,6 +124,9 @@ Each patch is one feature. Several change Mesa's generated encoder
 | 0052 format-cache-and-async-events | `vkGetPhysicalDeviceFormatProperties2` with exactly a `VkFormatProperties3` chain (DXVK's, per view) is cached like one without; `vkSetEvent` and `vkResetEvent` are sent without waiting, their results checked with the deferred replies |
 | 0053 query-reserve-coherent-memprops-backoff | `DeferredReplies::reserve()` drains socket-ready replies (`FIONREAD`) and only the oldest half-budget prefix when full; coherent GPU writes recorded in command buffers invalidate only after their submission serial completes; physical-device memory and budget properties are served from cache; `QueryResults` holds 8192 entries and evicts completed entries first; `PollStall` backs off tight not-ready spin loops |
 | 0054 consume-imported-sync-files | In socket mode a wait takes an imported `SYNC_FD` payload off its semaphore and closes it once waited, and a signal drops an unwaited one, so a recycled semaphore is signalled on the phone before a sync file export waits it |
+| 0055 park-buffer-views | A destroyed buffer view whose parameters may recur is kept for reuse until its buffer or device is destroyed, like image views in 0011 |
+| 0056 query-reset-event2khr-loss-handles | Beginning a command buffer clears the query resets and event operations it recorded before; `vkCmdSetEvent2KHR` and `vkCmdResetEvent2KHR` reach the completion tracker; creates after executor loss return handles |
+| 0057 held-frees-events-queries-and-drains | With the completion feed, frees and buffer, image and view destroys are held until every queue submission before them has completed (`../bounded-memory/deferred_destroys.h`); events and queries are followed through watched batches, so `vkGetEventStatus` and a no-wait `vkGetQueryPoolResults` answer without a round trip (`../bounded-memory/event_status.h`); buffer and image binds through `*2` no longer drain; with hello `0x10000` buffer views use guest-assigned handles |
 
 The patch messages describe each change. To change the driver, prepare a tree, commit
 the prepared state, edit, and regenerate the affected patch with `git format-patch`
@@ -133,10 +136,11 @@ against the commit before it; then rebuild and run the tests below.
 
 Before Mesa's first command, `SocketStream.cpp` sends a 48-byte hello: `CBGLREF1`, a
 little-endian version (4) and feature mask, and the source fingerprint documented in
-[docs/gpu-live.md](../../../../docs/gpu-live.md). The driver offers mask `0x3FF0`; the
+[docs/gpu-live.md](../../../../docs/gpu-live.md). The driver offers mask `0x1FFF0`; the
 broker answers with the required `0x70` plus the offered bits the connected phone
-supports. A broker that predates a bit closes the connection, and the driver reconnects
-offering fewer: `0x1FF0`, `0xFF0`, `0x7F0`, `0xF0`, then `0x70`. An answer with bits the driver did not offer, or
+supports, and the driver prints `CABOOSE_GPU_HELLO features=0x…` with what it was granted. A
+broker that predates a bit closes the connection, and the driver reconnects offering fewer:
+`0xFFF0`, `0x7FF0`, `0x3FF0`, `0x1FF0`, `0xFF0`, `0x7F0`, `0xF0`, then `0x70`. An answer with bits the driver did not offer, or
 any other difference, fails the connection, and with it Vulkan instance creation.
 `CABOOSE_GFXSTREAM_GUEST_HANDLES=0` offers `0x70` only. Patches 0013 and 0014, the
 creates and allocations of 0016 and the fence, semaphore and pipeline handles of 0018
@@ -157,6 +161,8 @@ hello for the completion feed. The rest of the series requires the `0x70` contra
 | 12 (`0x1000`) | Query pools use guest-assigned handles (requires bit 7) |
 | 13 (`0x2000`) | Shader modules the phone keeps are named by hash (patch 0041) |
 | 14 (`0x4000`) | The executor resumes across a lost socket and suspends in the background: surface waits have no 10 s deadline (`../virtual-wsi/mesa_surface.inc`) |
+| 15 (`0x8000`) | Flushed memory goes as pieces the phone's upload store holds (patch 0047) |
+| 16 (`0x10000`) | Buffer views use guest-assigned handles (requires bit 7; patch 0057) |
 
 ## Runtime switches
 
@@ -165,7 +171,7 @@ hello for the completion feed. The rest of the series requires the `0x70` contra
 | `CABOOSE_GFXSTREAM_SOCKET` | Socket path of the broker; selects the Caboose transport |
 | `CABOOSE_GFXSTREAM_SURFACE_SOCKET` | Socket path of the broker's surface service |
 | `CABOOSE_GFXSTREAM_GUEST_HANDLES=0` | Do not offer guest-assigned handles |
-| `CABOOSE_READ_PROFILE=1` | Every two seconds, the eight opcodes with the most blocking read time (`opN` waiting for its own reply, `drainN` for earlier deferred replies), on stderr |
+| `CABOOSE_READ_PROFILE=1` | Every two seconds, the eight opcodes with the most blocking read time (`opN` waiting for its own reply, `drainN` for earlier deferred replies, `waitN` for local waits), on stderr; calls above opcode 21009 are named (`wait_WaitSemaphores`) |
 | `CABOOSE_PRIVATE_GPU_COHERENT_LOG=1` | The first coherent-memory flushes and invalidates, per allocation, on stderr |
 | `CABOOSE_PRIVATE_GPU_FLUSH_TIMING=1` | Bounded flush timing records on stderr |
 | `CABOOSE_PRIVATE_GPU_RPC_TIMING=1` | Bounded timing of ten synchronous calls on stderr |
@@ -175,3 +181,6 @@ hello for the completion feed. The rest of the series requires the `0x70` contra
 `python3 -m unittest discover -s guest/gpu/gfxstream -p 'test_*.py'` checks the series
 (contiguous numbering, upstream-only changes, descriptions, pinned revision) along with
 the broker. The owned headers' C++ tests are described in their READMEs.
+
+[`sync-check/`](sync-check/README.md) runs the event, query, free and reply-wait paths
+against a real phone executor and times them, for a driver build before it is installed.

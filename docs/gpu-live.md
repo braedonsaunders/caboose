@@ -197,8 +197,8 @@ The phone app names the capabilities of its native decoder in the
 `X-Caboose-GPU-Features` request header, a comma-separated list. The host forwards
 only known names, lowercased and sorted: `guest-handles`, `guest-handle-arrays`,
 `completion-feed`, `ordered-present`, `guest-images`, `guest-query-pools`,
-`shader-cache`, `executor-resume`, `zstd-stream` ([Compressed commands](#compressed-commands)) and
-`upload-cache` ([Upload cache](#upload-cache)).
+`shader-cache`, `executor-resume`, `zstd-stream` ([Compressed commands](#compressed-commands)),
+`upload-cache` ([Upload cache](#upload-cache)) and `guest-buffer-views`.
 The broker reads them from the authenticated upgrade request.
 
 A local process on the indexed v4 path may offer optional features in its 48-byte
@@ -206,11 +206,12 @@ hello by setting bits above the required mask `0x70`: `0x80` (guest-assigned han
 `0x100` (guest-assigned descriptor sets and command buffers; requires `0x80`) and
 `0x200` (completion feed), `0x400` (ordered presents), `0x800` (guest-owned swapchain
 images), `0x1000` (guest-assigned query pools; requires `0x80`) and `0x2000` (shader
-cache) and `0x8000` (upload cache). The broker replies with the required mask plus the offered bits whose capability
+cache), `0x8000` (upload cache) and `0x10000` (guest-assigned buffer views; requires `0x80`).
+The broker replies with the required mask plus the offered bits whose capability
 the phone declared (`guest-handles`, `guest-handle-arrays`, `completion-feed`,
-`ordered-present`, `guest-images`, `guest-query-pools`, `shader-cache`, `upload-cache` respectively); it
-drops `0x100` and `0x1000` when it does not grant `0x80`. An
-offer with unknown bits, `0x100` without `0x80`, or any other difference from the v4
+`ordered-present`, `guest-images`, `guest-query-pools`, `shader-cache`, `upload-cache`,
+`guest-buffer-views` respectively); it drops `0x100`, `0x1000` and `0x10000` when it does not
+grant `0x80`. An offer with unknown bits, one of those without `0x80`, or any other difference from the v4
 hello closes the local connection. A process falls back to offering fewer features.
 
 ### Guest-assigned handles
@@ -226,7 +227,8 @@ discarded (or an empty kernel), so that pipeline's draws and dispatches do nothi
 phone prints `CABOOSE_GPU_STANDIN kind=… handle=… index=… error=…` beside the provider's
 compile error. Pipeline libraries are refused as before. This covers device memory, fences, semaphores, buffers, images and
 views, samplers, shader modules, pipeline caches and layouts, descriptor set layouts
-and pools, command pools, render passes, framebuffers and pipelines. With `0x100` it
+and pools, command pools, render passes, framebuffers and pipelines; with `0x10000`, buffer
+views too. With `0x100` it
 also covers descriptor sets and command buffers: the decoder registers the i-th created
 object under the i-th guest handle. A descriptor set allocation whose handles the guest
 assigned never fails for lack of pool space: when the application's pool reports
@@ -246,9 +248,11 @@ completion commands use the ordinary 8-byte packet header, little-endian:
 | COMPLETION_WATCH | `0x4342FE02` | 24 | boxed queue u64, serial u64 (both nonzero) |
 | COMPLETION_ORDER | `0x4342FE03` | 16 | order serial u64 (nonzero) |
 
-After each queue submission that signals a fence or timeline semaphore, the process
-sends `COMPLETION_WATCH` with a new serial on the same device stream; neither command
-has a reply on its own stream. The decoder serves both commands itself. For a watch it
+After each queue submission that signals a fence or timeline semaphore, sets or resets an
+event, ends or resets a query or writes coherent memory, the process sends
+`COMPLETION_WATCH` with a new serial on the same device stream; neither command has a reply
+on its own stream. A process that holds a free until the work before it has completed also
+sends one for a queue whose latest submissions no watch follows. The decoder serves both commands itself. For a watch it
 submits, under the queue's lock, an empty batch whose new fence signals once all work
 submitted to that queue before it has completed, holding the queue's instance and
 device alive until a watcher thread has waited for and destroyed that fence. Queues of
@@ -261,9 +265,13 @@ protocol error; its end, or process stop, ends the feed. Watches still outstandi
 waited for, and their records discarded.
 
 The process then knows the state of every fence and timeline semaphore whose signal
-operations it has seen. `vkGetFenceStatus`, `vkWaitForFences`,
-`vkGetSemaphoreCounterValue` and `vkWaitSemaphores` resolve locally, waiting for feed
-records without holding the device stream. A fence or semaphore whose payload is
+operations it has seen, of its events, and whether each query's result is available.
+`vkGetFenceStatus`, `vkWaitForFences`, `vkGetSemaphoreCounterValue`, `vkWaitSemaphores` and
+`vkGetEventStatus` resolve locally, waiting for feed records without holding the device
+stream; `vkGetQueryPoolResults` without `WAIT` asks the device only once the result is
+available. Frees and destroys of memory, buffers, images and their views are held until
+every submission sent before them has completed, so work still running on any queue never
+loses an object it keeps resident. A fence or semaphore whose payload is
 imported or exportable, a fence signaled by the presentation engine's acquire, sparse
 binding signals and unwatched queues are asked about on the device stream as before.
 A reported timeline value can trail the device's actual value, as a status query on any
