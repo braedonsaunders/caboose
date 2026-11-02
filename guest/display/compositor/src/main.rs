@@ -85,7 +85,6 @@ const TOOLKIT_ENV: &[(&str, &str)] = &[
     ("GTK_USE_PORTAL", "1"),
     ("GTK_CSD", "0"),
     ("QT_QPA_PLATFORM", "wayland;xcb"),
-    ("MOZ_ENABLE_WAYLAND", "1"),
     ("SDL_VIDEODRIVER", "wayland,x11"),
 ];
 
@@ -198,8 +197,8 @@ const GPU_LIVE_ICD: &str = "/usr/local/lib/caboose-gpu-live/icd.json";
 /// "Applications"). GTK 4 and Qt 6 Quick draw with Vulkan. OpenGL reaches the phone
 /// through Zink, which Mesa tries before llvmpipe when no other driver serves the display
 /// (`LIBGL_KOPPER_DRI2`); it presents through the driver's X11 windows (Kopper) but, without a DRM
-/// render node, not through Wayland: toolkits that draw with OpenGL (Qt 5 Quick, SDL games,
-/// Firefox) run as X11 clients. The phone has no geometry shaders or transform feedback, so
+/// render node, not through Wayland: toolkits that draw with OpenGL (Qt 5 Quick, SDL games)
+/// run as X11 clients. The phone has no geometry shaders or transform feedback, so
 /// Zink would offer only OpenGL 2.1; the version override offers what the computer's own
 /// renderer offers when no phone is attached, and only those two features are missing.
 const GPU_LIVE_TOOLKIT_ENV: &[(&str, &str)] = &[
@@ -207,7 +206,6 @@ const GPU_LIVE_TOOLKIT_ENV: &[(&str, &str)] = &[
     ("QSG_RHI_BACKEND", "vulkan"),
     ("QT_QPA_PLATFORM", "xcb;wayland"),
     ("SDL_VIDEODRIVER", "x11,wayland"),
-    ("MOZ_ENABLE_WAYLAND", "0"),
     ("LIBGL_KOPPER_DRI2", "1"),
     // EGL's software path takes no Zink unless named, and prefers Mesa D3D12 (WSL's
     // /dev/dxg) to it: named here, OpenGL always reaches the phone, or the routing layer's
@@ -839,7 +837,6 @@ mod tests {
         assert_eq!(get(&env, "MESA_GL_VERSION_OVERRIDE"), Some("4.5COMPAT"));
         assert_eq!(get(&env, "QT_QPA_PLATFORM"), Some("xcb;wayland"));
         assert_eq!(get(&env, "SDL_VIDEODRIVER"), Some("x11,wayland"));
-        assert_eq!(get(&env, "MOZ_ENABLE_WAYLAND"), Some("0"));
         assert_eq!(get(&env, "GSK_RENDERER"), Some("vulkan"));
         assert_eq!(get(&env, "QSG_RHI_BACKEND"), Some("vulkan"));
         assert_eq!(get(&env, "CABOOSE_GPU_EXECUTOR_SWITCH"), Some("1"));

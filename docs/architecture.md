@@ -504,7 +504,7 @@ within the existing shared Unix user, not an arbitrary-command security boundary
 
 Each instance writes its launch environment once it is ready: `WAYLAND_DISPLAY`,
 `DISPLAY`, `XAUTHORITY`, toolkit backends (`GDK_BACKEND`, `QT_QPA_PLATFORM`,
-`MOZ_ENABLE_WAYLAND`, `SDL_VIDEODRIVER`),
+`SDL_VIDEODRIVER`),
 `CABOOSE_DISPLAY_CONTROL` (its control socket, below),
 `CABOOSE_GAME_SOCKET` on the owner's display ([game-handoff.md](game-handoff.md)),
 plus `LIBVA_DRIVER_NAME=caboose` when the VA-API driver is installed, and on the owner's display started with the private GPU
