@@ -320,6 +320,7 @@ fn action_messages(id: u64, action: &str) -> Result<Vec<Message>, String> {
                 mime: proto::clipboard::URI_LIST.into(),
                 data: proto::clipboard::uri_list(&paths),
                 alternatives: Vec::new(),
+                secret: false,
             })]
         }
         // edit:N:STRING deletes N grapheme clusters before the cursor and commits STRING,
@@ -391,6 +392,7 @@ fn action_messages(id: u64, action: &str) -> Result<Vec<Message>, String> {
                 mime: proto::clipboard::URI_LIST.into(),
                 data: proto::clipboard::uri_list(&paths),
                 alternatives: Vec::new(),
+                secret: false,
             })]
         }
         "drag-take" => vec![Message::DragTake],

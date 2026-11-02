@@ -234,7 +234,11 @@ struct TrackpadGesturesTests {
         _ = gestures.began(touches: 2, centroid: here, at: 1, spread: 50, angle: 0)
         _ = gestures.moved(touches: 2, centroid: here, at: 1.04, spread: 60, angle: 0)
         let actions = gestures.moved(touches: 2, centroid: here, at: 1.05, spread: 66, angle: .pi / 6)
-        #expect(actions == [.pinch(TrackpadGestures.PinchEvent(phase: .update, scale: 66.0 / 50.0, rotation: 30, fingers: 2))])
+        guard case let .pinch(event) = actions.first, actions.count == 1 else { Issue.record("Expected a pinch update"); return }
+        #expect(event.phase == .update)
+        #expect(abs(event.scale - 1.32) < 0.000001)
+        #expect(abs(event.rotation - 30) < 0.000001)
+        #expect(event.fingers == 2)
         #expect(gestures.cancelled() == [.pinch(TrackpadGestures.PinchEvent(phase: .cancel, scale: 66.0 / 50.0, rotation: 0, fingers: 2))])
     }
 

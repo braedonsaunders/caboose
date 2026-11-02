@@ -281,7 +281,7 @@ impl State {
     pub fn pinch(&mut self, m: &proto::Pinch) {
         use proto::GesturePhase::*;
         use smithay::input::pointer::{GesturePinchBeginEvent, GesturePinchEndEvent, GesturePinchUpdateEvent};
-        self.input_trace.push(crate::frame_trace::Input { at_us: self.now_us(), kind: "pinch" });
+        self.input_trace.push(crate::frame_trace::Input { at_us: self.now_us(), kind: "pinch", id: m.id });
         let Some(pointer) = self.seat.get_pointer() else { return };
         let time = self.now_ms();
         match m.phase {
@@ -318,7 +318,7 @@ impl State {
     pub fn swipe(&mut self, m: &proto::Swipe) {
         use proto::GesturePhase::*;
         use smithay::input::pointer::{GestureSwipeBeginEvent, GestureSwipeEndEvent, GestureSwipeUpdateEvent};
-        self.input_trace.push(crate::frame_trace::Input { at_us: self.now_us(), kind: "swipe" });
+        self.input_trace.push(crate::frame_trace::Input { at_us: self.now_us(), kind: "swipe", id: m.id });
         let Some(pointer) = self.seat.get_pointer() else { return };
         let time = self.now_ms();
         match m.phase {
@@ -358,7 +358,7 @@ impl State {
     pub fn hold(&mut self, m: &proto::Hold) {
         use proto::GesturePhase::*;
         use smithay::input::pointer::{GestureHoldBeginEvent, GestureHoldEndEvent};
-        self.input_trace.push(crate::frame_trace::Input { at_us: self.now_us(), kind: "hold" });
+        self.input_trace.push(crate::frame_trace::Input { at_us: self.now_us(), kind: "hold", id: m.id });
         let Some(pointer) = self.seat.get_pointer() else { return };
         let time = self.now_ms();
         match m.phase {
