@@ -7,10 +7,13 @@
 // later with the deferred replies. The next identical call returns what that request
 // found, and sends a fresh one. A fetched result is dropped when a reset of an
 // overlapping range is recorded, or submitted, or done on the host, so a result from
-// before a reset is never reported after it.
+// before a reset is never reported after it. With the completion feed no request goes out
+// while the result cannot be there yet; such a polled range is "wanted", and asked for as
+// soon as the batch that ends it completes, so the next poll finds the answer.
 #include <atomic>
 #include <cstdint>
 #include <cstring>
+#include <iterator>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -29,7 +32,7 @@ struct QueryReply {
 
 class QueryResults {
 public:
-    static constexpr size_t kMaxEntries = 8192, kMaxRecorded = 1024;
+    static constexpr size_t kMaxEntries = 8192, kMaxRecorded = 1024, kMaxWanted = 1024;
     struct Key {
         uint64_t pool; uint32_t first, count; uint64_t size, stride; uint32_t flags;
         bool operator<(const Key& o) const {
@@ -68,7 +71,34 @@ public:
         std::lock_guard<std::mutex> lock(mutex_);
         resetLocked(pool, first, count);
     }
-    void poolDestroyed(uint64_t pool) { reset(pool, 0, UINT32_MAX); }
+    void poolDestroyed(uint64_t pool) {
+        reset(pool, 0, UINT32_MAX);
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (auto it = wanted_.begin(); it != wanted_.end();)
+            it = it->first.pool == pool ? wanted_.erase(it) : std::next(it);
+    }
+    // The application polled `key` (on `device`) before its result could be there.
+    void want(const Key& key, uint64_t device) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!wanted_.count(key) && wanted_.size() >= kMaxWanted) wanted_.erase(wanted_.begin());
+        wanted_[key] = device;
+    }
+    // The wanted keys `available(key)` says can be asked for now, with their devices; they
+    // are no longer wanted.
+    template <class Available>
+    std::vector<std::pair<Key, uint64_t>> takeWanted(Available available) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        std::vector<std::pair<Key, uint64_t>> out;
+        for (auto it = wanted_.begin(); it != wanted_.end();) {
+            if (available(it->first)) {
+                out.push_back(*it);
+                it = wanted_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        return out;
+    }
     // A command buffer records a reset; it applies again whenever the buffer is submitted.
     void recordReset(uint64_t commandBuffer, uint64_t pool, uint32_t first, uint32_t count) {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -113,6 +143,7 @@ private:
     }
     std::mutex mutex_;
     std::map<Key, std::shared_ptr<QueryReply>> entries_;
+    std::map<Key, uint64_t> wanted_;
     std::unordered_map<uint64_t, std::vector<Reset>> recorded_;
 };
 

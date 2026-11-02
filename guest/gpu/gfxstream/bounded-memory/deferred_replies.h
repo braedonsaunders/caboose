@@ -43,11 +43,14 @@ bool drainDeferredReplies(uint32_t& pending, Stream* stream) {
 
 // Deferred commands in flight before their replies must be read. The broker reads a
 // process's stream under flow control (it waits, it never closes), and the commands it
-// retains for a resume are bounded by its 8 MiB window, so commands may run well ahead.
+// retains for a resume are bounded by its 8 MiB window, so commands may run well ahead: the
+// command bound sits past what the broker takes, and its flow control paces the process.
 // What must stay small is the replies left unread: they wait in the socket back to the
-// process, and a full socket would stall the broker's writer and with it the phone.
-inline constexpr uint64_t deferredByteLimit = 6 * 1024 * 1024;
+// process, and a full socket would stall the broker's writer and with it the phone. Replies
+// that have arrived are read without blocking once a little is owed.
+inline constexpr uint64_t deferredByteLimit = 64 * 1024 * 1024;
 inline constexpr uint64_t deferredReplyByteLimit = 64 * 1024;
+inline constexpr uint64_t deferredReapBytes = 256 * 1024, deferredReapReplyBytes = 4096;
 
 // A fence wait sent right after the submit that signals the fence, so its
 // result arrives while the caller presents. Bounded so a fence that depends on
@@ -70,10 +73,10 @@ inline size_t (*availableObserver)(const void* encoder) = nullptr;
 // fence's generation discards prefetches that complete after such a change.
 class DeferredReplies {
 public:
-    // Before sending a deferred command of `bytes`, first consume any replies that have
-    // already arrived on the socket without blocking; if still past the bound, drain only
-    // the oldest prefix needed to bring the remaining queue within half the bound, rather
-    // than blocking on the newest just-sent command.
+    // Before sending a deferred command of `bytes`: once some commands or replies are owed,
+    // consume the replies that have already arrived on the socket without blocking; if still
+    // past the bound, drain only the oldest prefix needed to bring the remaining queue within
+    // half the bound, rather than blocking on the newest just-sent command.
     template<class Stream, class Available>
     bool reserve(const void* encoder, Stream* stream, uint64_t bytes,
                  uint64_t limit, Available available) {
@@ -81,12 +84,19 @@ public:
         auto fits = [&](const Entry& entry) {
             return entry.bytes + bytes <= limit && entry.replyBytes <= deferredReplyByteLimit;
         };
+        bool reapAvailable = false;
         {
             std::lock_guard<std::mutex> lock(mutex_);
             auto found = pending_.find(encoder);
-            if (found == pending_.end() || fits(found->second)) return true;
+            if (found == pending_.end()) return true;
+            if (fits(found->second)) {
+                reapAvailable = found->second.bytes >= deferredReapBytes ||
+                                found->second.replyBytes >= deferredReapReplyBytes;
+                if (!reapAvailable) return true;
+            }
         }
         if (!drainAvailable(encoder, stream, available)) return false;
+        if (reapAvailable) return true;
         std::vector<Reply> replies;
         {
             std::lock_guard<std::mutex> lock(mutex_);

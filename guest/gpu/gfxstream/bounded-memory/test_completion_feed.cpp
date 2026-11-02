@@ -183,6 +183,30 @@ int main() {
         assert(described.describeFence(0xbad).rfind("fence=unknown", 0) == 0);
         assert(described.describeSemaphore(0x5e).rfind("timeline=unknown", 0) == 0);
     }
+    // completedThrough: every watch up to a serial, on every queue, has completed.
+    {
+        Tracker ct;
+        assert(ct.completedThrough(0) && ct.outstandingFrom() == 1);
+        const uint64_t s1 = ct.submitted(0, {}, 0x10, 0xD1);
+        const uint64_t s2 = ct.submitted(0, {}, 0x20, 0xD1);
+        assert(!ct.completedThrough(s1) && !ct.completedThrough(s2) && ct.outstandingFrom() == s1);
+        // s2 on queue 0x20 completes before s1 on queue 0x10: s2 alone is not enough.
+        ct.complete(s2, kCompleted);
+        assert(ct.serialCompleted(s2) && !ct.completedThrough(s2) && !ct.completedThrough(s1));
+        assert(!ct.waitCompletedThrough(s1, soon()));
+        std::thread feed([&] { std::this_thread::sleep_for(std::chrono::milliseconds(5)); ct.complete(s1, kCompleted); });
+        assert(ct.waitCompletedThrough(s2, Tracker::Clock::now() + std::chrono::seconds(5)));
+        feed.join();
+        assert(ct.completedThrough(s1) && ct.completedThrough(s2) && ct.outstandingFrom() == s2 + 1);
+        // A queue reported idle completes its watches; an ended feed reports nothing more.
+        const uint64_t s3 = ct.submitted(0, {}, 0x10, 0xD1);
+        ct.idle(0x10, 0, s3);
+        assert(ct.completedThrough(s3));
+        const uint64_t s4 = ct.submitted(0, {}, 0x10, 0xD1);
+        assert(!ct.completedThrough(s4));
+        ct.feedClosed();
+        assert(ct.completedThrough(s4) && ct.outstandingFrom() == UINT64_MAX);
+    }
     // Events: known from host sets and resets and from completed batches that set them.
     {
         Tracker e;
@@ -197,10 +221,14 @@ int main() {
         e.commandBufferBegun(0xc1);
         e.commandBufferEvent(0xc1, 0xe1, true);
         assert(e.setsEvents({0xc1}) && !e.setsEvents({0xc2}));
+        assert(e.eventsOf({0xc1, 0xc2}) == std::vector<uint64_t>{0xe1});
         const uint64_t serial = e.submitted(0, {}, 0x9, 0x1, {0xc1});
         assert(e.eventSet(0xe1, &set) && !set);
+        assert(e.describeEvent(0xe1).rfind("event=reset pending_batches=1", 0) == 0);
         e.complete(serial, kCompleted);
         assert(e.eventSet(0xe1, &set) && set);
+        assert(e.describeEvent(0xe1).rfind("event=set pending_batches=0", 0) == 0);
+        assert(e.describeEvent(0xe9).rfind("event=unknown", 0) == 0);
         // A secondary's operations run where it is executed; a reset in the batch resets it.
         e.commandBufferBegun(0xc2);
         e.commandBufferEvent(0xc2, 0xe1, false);
@@ -225,6 +253,62 @@ int main() {
         e.revive();
         assert(!e.eventSet(0xe3, &set));
         e.eventDestroyed(0xe3);
+    }
+    // Queries: available once the batch that ends them completes; reset makes them unavailable.
+    {
+        using Q = Tracker::Queries;
+        Tracker q;
+        const uint64_t pool = 0x9001;
+        assert(q.queries(pool, 0, 1) == Q::AskDevice);  // never reset here: asked on the device
+        q.queriesReset(pool, 0, 4);
+        assert(q.queries(pool, 0, 1) == Q::NotReady);
+        q.commandBufferBegun(0xc1);
+        q.commandBufferQueries(0xc1, pool, 1, 1, true);
+        assert(q.touchesQueries({0xc1}) && !q.touchesQueries({0xc2}));
+        assert(q.queries(pool, 1, 1) == Q::NotReady);  // recorded, not submitted
+        const uint64_t s1 = q.submitted(0, {}, 0x9, 0x1, {0xc1});
+        assert(q.queries(pool, 1, 1) == Q::NotReady);
+        assert(q.describeQuery(pool, 1).rfind("query=pending serial=", 0) == 0);
+        q.complete(s1, kCompleted);
+        assert(q.queries(pool, 1, 1) == Q::Available && q.queries(pool, 0, 2) == Q::NotReady);
+        assert(q.describeQuery(pool, 1).rfind("query=available", 0) == 0);
+        assert(q.queries(pool, 0, 8) == Q::AskDevice);  // queries 4..7 never seen
+        // A host reset, or one in a later batch, makes it unavailable again; an end after
+        // the reset in the same command buffer wins.
+        q.queriesReset(pool, 1, 1);
+        assert(q.queries(pool, 1, 1) == Q::NotReady);
+        q.complete(q.submitted(0, {}, 0x9, 0x1, {0xc1}), kCompleted);
+        assert(q.queries(pool, 1, 1) == Q::Available);
+        q.commandBufferBegun(0xc1);
+        q.commandBufferQueries(0xc1, pool, 0, 4, false);
+        q.commandBufferQueries(0xc1, pool, 2, 1, true);
+        const uint64_t s2 = q.submitted(0, {}, 0x9, 0x1, {0xc1});
+        assert(q.queries(pool, 1, 1) == Q::NotReady && q.queries(pool, 2, 1) == Q::NotReady);
+        q.complete(s2, kCompleted);
+        assert(q.queries(pool, 1, 1) == Q::NotReady && q.queries(pool, 2, 1) == Q::Available);
+        // A secondary's ends count where it is executed.
+        q.commandBufferBegun(0xc2);
+        q.commandBufferQueries(0xc2, pool, 3, 1, true);
+        q.commandBufferBegun(0xc3);
+        q.commandBufferExecutes(0xc3, std::vector<uint64_t>{0xc2}.data(), 1);
+        q.complete(q.submitted(0, {}, 0x9, 0x1, {0xc3}), kCompleted);
+        assert(q.queries(pool, 3, 1) == Q::Available);
+        // A batch reported unwatchable leaves its queries to the device; so does a new executor.
+        q.commandBufferBegun(0xc1);
+        q.commandBufferQueries(0xc1, pool, 0, 1, true);
+        q.complete(q.submitted(0, {}, 0x9, 0x1, {0xc1}), kUnwatched);
+        assert(q.queries(pool, 0, 1) == Q::AskDevice);
+        q.revive();
+        assert(q.queries(pool, 2, 1) == Q::AskDevice);
+        q.queriesReset(pool, 0, 1);
+        q.queryPoolDestroyed(pool);
+        assert(q.queries(pool, 0, 1) == Q::AskDevice);
+        // Too many operations in one command buffer leave the pool to the device.
+        q.queriesReset(pool, 0, 2);
+        q.commandBufferBegun(0xc4);
+        for (int i = 0; i < 5000; ++i) q.commandBufferQueries(0xc4, pool, 0, 1, true);
+        q.complete(q.submitted(0, {}, 0x9, 0x1, {0xc4}), kCompleted);
+        assert(q.queries(pool, 1, 1) == Q::AskDevice);
     }
     return 0;
 }

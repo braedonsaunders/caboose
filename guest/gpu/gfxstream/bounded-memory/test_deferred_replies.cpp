@@ -76,9 +76,9 @@ int main() {
         Stream results;
         const uint32_t many = uint32_t(deferredReplyByteLimit / sizeof(int32_t));
         results.replies.assign(many + 2, 0);
-        big.addCheckedResults(&a, 1, 4 * 1024 * 1024);  // one 4 MiB flush, one result
-        assert(big.reserve(&a, &results, 1024 * 1024) && results.next == 0);
-        assert(big.reserve(&a, &results, 3 * 1024 * 1024) && results.next == 1 && big.pending() == 0);  // past 6 MiB
+        big.addCheckedResults(&a, 1, 40 * 1024 * 1024);  // one 40 MiB flush, one result
+        assert(big.reserve(&a, &results, 16 * 1024 * 1024) && results.next == 0);
+        assert(big.reserve(&a, &results, 30 * 1024 * 1024) && results.next == 1 && big.pending() == 0);  // past 64 MiB
         big.addCheckedResults(&a, many, 1024);                 // exactly 64 KiB of results owed
         assert(big.reserve(&a, &results, 64) && results.next == 1);
         big.addCheckedResult(&a, 64);                          // one more: past the reply bound
@@ -95,6 +95,23 @@ int main() {
         nonblock.addCheckedResult(&a, 400);
         assert(nonblock.reserve(&a, &results, 300, 1200, [] { return size_t(8); }));
         assert(results.next == 2 && nonblock.pending() == 1);
+    }
+    // Within the bounds, arrived replies are read without blocking once 256 KiB of commands
+    // or 4 KiB of replies are owed, and never while less is.
+    {
+        DeferredReplies reap;
+        Stream results;
+        results.replies.assign(2048, 0);
+        reap.addCheckedResults(&a, 1023, 1024);  // 4092 bytes of replies owed: below the mark
+        assert(reap.reserve(&a, &results, 64, deferredByteLimit, [] { return size_t(4096); }));
+        assert(results.next == 0 && reap.pending() == 1023);
+        reap.addCheckedResult(&a, 64);           // 4096 bytes: the arrived ones are read
+        assert(reap.reserve(&a, &results, 64, deferredByteLimit, [] { return size_t(400); }));
+        assert(results.next == 100 && reap.pending() == 924);
+        reap.addCheckedResult(&a, deferredReapBytes);  // past 256 KiB of commands
+        assert(reap.reserve(&a, &results, 64, deferredByteLimit, [] { return size_t(40); }));
+        assert(results.next == 110 && reap.pending() == 915);
+        assert(reap.drain(&a, &results) && results.next == 1025 && reap.pending() == 0);
     }
     table.add(&a, 1, 10);
     assert(table.drain(&a, &first) && first.next == 4);
@@ -195,6 +212,25 @@ int main() {
         qr.requested({0x100, uint32_t(QueryResults::kMaxEntries), 1, 8, 8, 0}, extra);
         bool pending = false;
         assert(qr.take({0x100, 0, 1, 8, 8, 0}, &pending) == nullptr && pending);
+    }
+
+    // Ranges polled before their results could be there are handed out once available, once;
+    // a destroyed pool forgets its own, and past the bound one is dropped.
+    {
+        QueryResults qr;
+        const QueryResults::Key a{0x300, 0, 1, 8, 8, 1}, b{0x300, 1, 1, 8, 8, 1}, c{0x301, 0, 1, 8, 8, 1};
+        qr.want(a, 0xD1);
+        qr.want(b, 0xD1);
+        qr.want(c, 0xD2);
+        auto ready = qr.takeWanted([&](const QueryResults::Key& key) { return key.first == 0; });
+        assert(ready.size() == 2 && ready[0].first.pool == 0x300 && ready[0].second == 0xD1 &&
+               ready[1].first.pool == 0x301 && ready[1].second == 0xD2);
+        assert(qr.takeWanted([](const QueryResults::Key& key) { return key.first == 0; }).empty());
+        qr.poolDestroyed(0x300);
+        assert(qr.takeWanted([](const QueryResults::Key&) { return true; }).empty());
+        for (uint32_t i = 0; i <= QueryResults::kMaxWanted; ++i) qr.want({0x302, i, 1, 8, 8, 1}, 0xD1);
+        auto all = qr.takeWanted([](const QueryResults::Key&) { return true; });
+        assert(all.size() == QueryResults::kMaxWanted && all.front().first.first == 1);
     }
 
     // Reusing a command buffer across >kMaxRecorded frames with commandBufferBegun clears old

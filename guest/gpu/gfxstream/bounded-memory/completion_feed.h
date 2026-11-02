@@ -128,6 +128,28 @@ public:
                 watch.events.push_back(op);
             }
         }
+        for (uint64_t cb : commandBuffers) {
+            auto found = commandQueries_.find(cb);
+            if (found == commandQueries_.end()) continue;
+            for (const auto& op : found->second) {
+                auto& pool = queryPools_[op.pool];
+                if (op.kind == QueryOp::Untrack) {
+                    for (auto& entry : pool) entry.second.state = QueryState::Untracked;
+                    continue;
+                }
+                const uint32_t count = std::min(op.count, kMaxQueryRange);
+                for (uint32_t i = 0; i < count; ++i) {
+                    QueryState& query = pool[op.first + i];
+                    if (op.kind == QueryOp::End) {
+                        query.state = QueryState::Pending;
+                        query.serial = serial;
+                        watch.queries.push_back({op.pool, op.first + i});
+                    } else {
+                        query = QueryState{};
+                    }
+                }
+            }
+        }
         if (fence) {
             auto& state = fences_[fence];
             state.state = Fence::Pending;
@@ -156,6 +178,20 @@ public:
         if (!serial) return true;
         std::lock_guard<std::mutex> lock(mutex_);
         return closed_ || (serial <= lastSerial_ && !watches_.count(serial));
+    }
+    // The oldest serial whose watch is outstanding, on any queue: every watch below it has
+    // completed. One past the last serial when none is outstanding, and UINT64_MAX once the
+    // feed has ended (nothing outstanding will be reported).
+    uint64_t outstandingFrom() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return outstandingFromLocked();
+    }
+    // True once every watch up to and including `serial`, on every queue, has completed.
+    bool completedThrough(uint64_t serial) { return serial < outstandingFrom(); }
+    // Waits until completedThrough(serial) or `deadline`; whether it holds.
+    bool waitCompletedThrough(uint64_t serial, Clock::time_point deadline) {
+        std::unique_lock<std::mutex> lock(mutex_);
+        return changed_.wait_until(lock, deadline, [&] { return serial < outstandingFromLocked(); });
     }
     // The device reported `queue` idle (vkQueueWaitIdle), or every queue of `device`
     // (vkDeviceWaitIdle, queue 0), for a wait sent after serial `through`: every watched
@@ -218,6 +254,7 @@ public:
     void commandBufferBegun(uint64_t commandBuffer) {
         std::lock_guard<std::mutex> lock(mutex_);
         commandEvents_.erase(commandBuffer);
+        commandQueries_.erase(commandBuffer);
     }
     void commandBufferEvent(uint64_t commandBuffer, uint64_t event, bool set) {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -237,10 +274,17 @@ public:
                 else untrackLocked(op.first);
             }
         }
+        for (uint32_t i = 0; i < count; ++i) {
+            auto found = commandQueries_.find(secondaries[i]);
+            if (found == commandQueries_.end()) continue;
+            const auto ops = found->second;
+            for (const auto& op : ops) addQueryOpLocked(primary, op);
+        }
     }
     void commandBufferFreed(uint64_t commandBuffer) {
         std::lock_guard<std::mutex> lock(mutex_);
         commandEvents_.erase(commandBuffer);
+        commandQueries_.erase(commandBuffer);
     }
     // Whether any of these command buffers sets or resets an event: its batch needs a watch.
     bool setsEvents(const std::vector<uint64_t>& commandBuffers) {
@@ -248,6 +292,18 @@ public:
         for (uint64_t cb : commandBuffers)
             if (commandEvents_.count(cb)) return true;
         return false;
+    }
+    // The events these command buffers set or reset.
+    std::vector<uint64_t> eventsOf(const std::vector<uint64_t>& commandBuffers) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        std::vector<uint64_t> out;
+        for (uint64_t cb : commandBuffers) {
+            auto found = commandEvents_.find(cb);
+            if (found == commandEvents_.end()) continue;
+            for (const auto& op : found->second)
+                if (std::find(out.begin(), out.end(), op.first) == out.end()) out.push_back(op.first);
+        }
+        return out;
     }
     // A batch whose completion nobody will report: the events it touches are asked on the device.
     void eventsUntracked(const std::vector<uint64_t>& commandBuffers) {
@@ -268,6 +324,68 @@ public:
         return true;
     }
 
+    // --- Queries --------------------------------------------------------------------------
+    // A query's result is available once the batch whose command buffer ended it (a query
+    // end or a timestamp write) has completed, and unavailable from a reset (on the host, or
+    // in a submitted batch) until then, so a poll without WAIT needs no request while the
+    // result cannot be there yet.
+    void commandBufferQueries(uint64_t commandBuffer, uint64_t pool, uint32_t first, uint32_t count, bool end) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        addQueryOpLocked(commandBuffer, QueryOp{pool, first, count, end ? QueryOp::End : QueryOp::Reset});
+    }
+    // Whether these command buffers end or reset queries: their batch needs a watch.
+    bool touchesQueries(const std::vector<uint64_t>& commandBuffers) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (uint64_t cb : commandBuffers)
+            if (commandQueries_.count(cb)) return true;
+        return false;
+    }
+    void queriesReset(uint64_t pool, uint32_t first, uint32_t count) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto& queries = queryPools_[pool];
+        const uint32_t n = std::min(count, kMaxQueryRange);
+        for (uint32_t i = 0; i < n; ++i) queries[first + i] = QueryState{};
+    }
+    void queryPoolDestroyed(uint64_t pool) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        queryPools_.erase(pool);
+    }
+    enum class Queries { Available, NotReady, AskDevice };
+    // Whether every query of the range is available; AskDevice when any is not followed.
+    Queries queries(uint64_t pool, uint32_t first, uint32_t count) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (lost_ || !count || count > kMaxQueryRange) return Queries::AskDevice;
+        auto found = queryPools_.find(pool);
+        if (found == queryPools_.end()) return Queries::AskDevice;
+        bool ready = true;
+        for (uint32_t i = 0; i < count; ++i) {
+            auto query = found->second.find(first + i);
+            if (query == found->second.end() || query->second.state == QueryState::Untracked) return Queries::AskDevice;
+            if (query->second.state != QueryState::Available) ready = false;
+        }
+        return ready ? Queries::Available : Queries::NotReady;
+    }
+    std::string describeQuery(uint64_t pool, uint32_t index) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        static const char* const names[] = {"reset", "pending", "available", "untracked"};
+        std::string out = "query=";
+        const QueryState* query = nullptr;
+        auto found = queryPools_.find(pool);
+        if (found != queryPools_.end()) {
+            auto entry = found->second.find(index);
+            if (entry != found->second.end()) query = &entry->second;
+        }
+        if (!query) {
+            out += "unknown";
+        } else {
+            out += names[int(query->state)];
+            if (query->serial)
+                out += " serial=" + std::to_string(query->serial) +
+                       (watches_.count(query->serial) ? " (watch outstanding)" : " (watch answered)");
+        }
+        return out + describeLocked();
+    }
+
     // What the tracker knows of a fence or timeline, for a stalled poll's log line.
     std::string describeFence(uint64_t fence) {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -278,6 +396,15 @@ public:
         if (it != fences_.end() && it->second.serial)
             out += " serial=" + std::to_string(it->second.serial) +
                    (watches_.count(it->second.serial) ? " (watch outstanding)" : " (watch answered)");
+        return out + describeLocked();
+    }
+    std::string describeEvent(uint64_t event) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        static const char* const names[] = {"reset", "set", "untracked"};
+        auto it = events_.find(event);
+        std::string out = "event=";
+        if (it == events_.end()) out += "unknown";
+        else out += std::string(names[int(it->second.state)]) + " pending_batches=" + std::to_string(it->second.pending);
         return out + describeLocked();
     }
     std::string describeSemaphore(uint64_t semaphore) {
@@ -315,6 +442,15 @@ public:
             else if (found->second.state != EventState::Untracked)
                 found->second.state = set ? EventState::Set : EventState::Reset;
         }
+        for (const auto& [poolHandle, index] : watch.queries) {
+            auto pool = queryPools_.find(poolHandle);
+            if (pool == queryPools_.end()) continue;
+            auto query = pool->second.find(index);
+            if (query == pool->second.end() || query->second.state != QueryState::Pending ||
+                query->second.serial != serial) continue;
+            query->second.state = status == kCompleted ? QueryState::Available : QueryState::Untracked;
+            query->second.serial = 0;
+        }
         if (status == kDeviceLost) {
             if (watch.device) lostDevices_.insert(watch.device);
             else lost_ = true;
@@ -349,6 +485,8 @@ public:
             if (state.state == Fence::Pending) { state.state = Fence::Untracked; state.serial = 0; }
         for (auto& [handle, state] : semaphores_) state.tracked = false;
         for (auto& [handle, state] : events_) state.state = EventState::Untracked;
+        queryPools_.clear();
+        commandQueries_.clear();
         watches_.clear();
         lost_ = false;
         lostDevices_.clear();
@@ -406,6 +544,12 @@ public:
     }
 
 private:
+    uint64_t outstandingFromLocked() const {
+        if (closed_) return UINT64_MAX;
+        uint64_t oldest = lastSerial_ + 1;
+        for (const auto& entry : watches_) oldest = std::min(oldest, entry.first);
+        return oldest;
+    }
     std::string describeLocked() const {
         std::string out = " last_serial=" + std::to_string(lastSerial_) + " watches=" + std::to_string(watches_.size());
         if (!watches_.empty()) {
@@ -423,7 +567,31 @@ private:
         uint64_t fence = 0, queue = 0, device = 0;
         std::vector<std::pair<uint64_t, uint64_t>> signals;
         std::vector<std::pair<uint64_t, bool>> events;  // set (true) or reset, in order
+        std::vector<std::pair<uint64_t, uint32_t>> queries;  // (pool, index) ended in the batch
     };
+    // A query as the process knows it. Reset: reset and not ended since (never available).
+    struct QueryState {
+        enum State { Reset, Pending, Available, Untracked } state = Reset;
+        uint64_t serial = 0;  // the watch of the batch that ends it, while Pending
+    };
+    struct QueryOp {
+        uint64_t pool;
+        uint32_t first, count;
+        enum Kind { End, Reset, Untrack } kind;
+    };
+    static constexpr uint32_t kMaxQueryRange = 65536;
+    static constexpr size_t kMaxCommandQueries = 4096;
+    void addQueryOpLocked(uint64_t commandBuffer, const QueryOp& op) {
+        auto& ops = commandQueries_[commandBuffer];
+        if (ops.size() < kMaxCommandQueries) {
+            ops.push_back(op);
+        } else {
+            // Too many to follow: the batch leaves the pool's queries to the device.
+            ops.back() = QueryOp{op.pool, 0, 0, QueryOp::Untrack};
+        }
+    }
+    std::unordered_map<uint64_t, std::unordered_map<uint32_t, QueryState>> queryPools_;
+    std::unordered_map<uint64_t, std::vector<QueryOp>> commandQueries_;
     // An event's state as the process knows it: from the host's own sets and resets, and
     // from the completed batches whose command buffers set or reset it.
     enum class EventState { Reset, Set, Untracked };
@@ -484,6 +652,9 @@ inline Tracker& tracker() {
 // streams ended). Cleared when a later instance reconnects the process's stream to a
 // new executor (executorConnected).
 inline std::atomic<bool> executorLost{false};
+// Counts executor losses: work asked for under one executor connection is never sent on a
+// later one.
+inline std::atomic<uint64_t> executorGeneration{0};
 }  // namespace caboose::completion
 extern "C" void caboose_read_profile_wait(uint64_t us, uint32_t what);
 namespace caboose::completion {
@@ -631,6 +802,7 @@ inline bool lostCall(const char* caller = __builtin_FUNCTION()) {
 }
 inline void markExecutorLost() {
     if (executorLost.exchange(true, std::memory_order_acq_rel)) return;
+    executorGeneration.fetch_add(1, std::memory_order_acq_rel);
     lostSocketInode.store(socketInode());
     std::fprintf(stderr, "CABOOSE_GPU_EXECUTOR_LOST\n");
     tracker().loseAll();
