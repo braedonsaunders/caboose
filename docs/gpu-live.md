@@ -1,7 +1,6 @@
 # Live GPU transport
 
-The live GPU source is separate from the GFXReconstruct capture protocol in
-[gpu-stream.md](gpu-stream.md). Its bounded codec is implemented in
+Its bounded codec is implemented in
 `guest/gpu/broker/live_protocol.py` and CabooseKit’s `LiveGPUEnvelope`, with byte-exact
 vectors in `live-vectors.json` and `live-surface-vectors.json`.
 Applications reach it through their launch environment, as [Applications](#applications)
@@ -730,7 +729,7 @@ failure reject trailing bytes.
 
 PRESENT requires nonzero serial/object handles/format/extents, actual `GENERAL`
 layout (1), and at most 64 distinct nonzero binary waits. An image whose extent
-differs from the bound surface's is placed in it: an overscan (the surface's extent
+differs from the bound surface's is placed in it: a lengthened image (the surface's extent
 lengthened along one axis) shows its top-left part, and any other size is scaled to fit
 the surface with its aspect ratio, centred; surface pixels it does not cover are black. Decoder ownership and
 synchronization checks remain necessary after structural parsing. Disposition is
