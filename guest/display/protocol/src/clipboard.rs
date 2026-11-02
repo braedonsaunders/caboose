@@ -156,6 +156,7 @@ mod tests {
             mime: first.0.into(),
             data: first.1.to_vec(),
             alternatives: rest.iter().map(|(m, d)| ClipboardEntry { mime: (*m).into(), data: d.to_vec() }).collect(),
+            secret: false,
         }
     }
 

@@ -76,6 +76,10 @@ string_enum!(
         Invalid => "invalid",
     }
 );
+string_enum!(
+    /// A pointer gesture's phase. `cancel` ends it without completing it.
+    GesturePhase { Begin => "begin", Update => "update", End => "end", Cancel => "cancel" }
+);
 string_enum!(ByeReason {
     Auth => "auth",
     Version => "version",
@@ -245,6 +249,10 @@ pub struct Clipboard {
     pub mime: String,
     pub data: Vec<u8>,
     pub alternatives: Vec<ClipboardEntry>,
+    /// Marked secret by its source (`x-kde-passwordManagerHint: secret`): it may be
+    /// pasted, but is never kept in history and reaches the phone local-only and
+    /// expiring. Absent on the wire when false.
+    pub secret: bool,
 }
 
 impl Clipboard {
@@ -443,6 +451,44 @@ pub struct Targets {
     pub targets: Vec<Target>,
 }
 
+/// `pinch` (0x95): a pinch on window `id`, centred at window-local `x`, `y`.
+/// `scale` is the magnification since `begin` (1 at `begin`); `rotation` is degrees
+/// clockwise since the previous sample (0 at `begin`); `fingers` is the finger count.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Pinch {
+    pub id: u64,
+    pub phase: GesturePhase,
+    pub x: f64,
+    pub y: f64,
+    pub scale: f64,
+    pub rotation: f64,
+    pub fingers: u32,
+}
+
+/// `swipe` (0x96): a multi-finger swipe on window `id`, centred at `x`, `y`;
+/// `dx`, `dy` are the centre's movement since the previous sample, in display pixels.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Swipe {
+    pub id: u64,
+    pub phase: GesturePhase,
+    pub x: f64,
+    pub y: f64,
+    pub dx: f64,
+    pub dy: f64,
+    pub fingers: u32,
+}
+
+/// `hold` (0x99): fingers resting on window `id` at `x`, `y` without moving.
+/// Only `begin`, `end` and `cancel` occur.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Hold {
+    pub id: u64,
+    pub phase: GesturePhase,
+    pub x: f64,
+    pub y: f64,
+    pub fingers: u32,
+}
+
 /// `key` (0x93).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Key {
@@ -557,6 +603,9 @@ pub enum Message {
     },
     Touch(Touch),
     Pencil(Pencil),
+    Pinch(Pinch),
+    Swipe(Swipe),
+    Hold(Hold),
     Pointer(Pointer),
     Key(Key),
     Text(Text),
@@ -647,8 +696,11 @@ pub mod type_id {
     pub const POINTER: u8 = 0x92;
     pub const KEY: u8 = 0x93;
     pub const TEXT: u8 = 0x94;
+    pub const PINCH: u8 = 0x95;
+    pub const SWIPE: u8 = 0x96;
     pub const GAME_DECLINE: u8 = 0x97;
     pub const WEBVIEW_DECLINE: u8 = 0x98;
+    pub const HOLD: u8 = 0x99;
     pub const CLIENT_CLIPBOARD: u8 = 0xA0;
     pub const DEVICES: u8 = 0xB0;
     pub const DEVICE_CAMERA: u8 = 0xB1;
@@ -688,6 +740,7 @@ fn clipboard_value(c: &Clipboard) -> Value {
     MapBuilder::new()
         .put("mime", c.mime.as_str())
         .put("data", c.data.clone())
+        .opt("secret", c.secret.then_some(true))
         .opt(
             "alternatives",
             (!c.alternatives.is_empty()).then(|| Value::Array(c.alternatives.iter().map(entry).collect())),
@@ -706,7 +759,12 @@ fn clipboard_from(f: &Fields<'_>) -> Result<Clipboard, ProtocolError> {
             })
             .collect::<Result<_, ProtocolError>>()?,
     };
-    Ok(Clipboard { mime: f.string("mime")?, data: f.bytes("data")?, alternatives })
+    Ok(Clipboard {
+        mime: f.string("mime")?,
+        data: f.bytes("data")?,
+        alternatives,
+        secret: f.opt_bool("secret")?.unwrap_or(false),
+    })
 }
 
 impl Message {
@@ -761,6 +819,9 @@ impl Message {
             Message::Pointer(_) => POINTER,
             Message::Key(_) => KEY,
             Message::Text(_) => TEXT,
+            Message::Pinch(_) => PINCH,
+            Message::Swipe(_) => SWIPE,
+            Message::Hold(_) => HOLD,
             Message::ClientClipboard(_) => CLIENT_CLIPBOARD,
             Message::DropEnter(_) => DROP_ENTER,
             Message::DropMotion { .. } => DROP_MOTION,
@@ -978,6 +1039,31 @@ impl Message {
                 .put("tilt", Value::Array(vec![m.tilt[0].into(), m.tilt[1].into()]))
                 .put("azimuth_deg", m.azimuth_deg)
                 .build(),
+            Message::Pinch(m) => MapBuilder::new()
+                .put("id", m.id)
+                .put("phase", m.phase)
+                .put("x", m.x)
+                .put("y", m.y)
+                .put("scale", m.scale)
+                .put("rotation", m.rotation)
+                .put("fingers", m.fingers)
+                .build(),
+            Message::Swipe(m) => MapBuilder::new()
+                .put("id", m.id)
+                .put("phase", m.phase)
+                .put("x", m.x)
+                .put("y", m.y)
+                .put("dx", m.dx)
+                .put("dy", m.dy)
+                .put("fingers", m.fingers)
+                .build(),
+            Message::Hold(m) => MapBuilder::new()
+                .put("id", m.id)
+                .put("phase", m.phase)
+                .put("x", m.x)
+                .put("y", m.y)
+                .put("fingers", m.fingers)
+                .build(),
             Message::Pointer(m) => MapBuilder::new()
                 .put("id", m.id)
                 .put("x", m.x)
@@ -985,18 +1071,16 @@ impl Message {
                 .put("buttons", m.buttons)
                 .opt(
                     "scroll",
-                    m.scroll
-                        .as_ref()
-                        .map(|s| {
-                            MapBuilder::new()
-                                .put("dx", s.dx)
-                                .put("dy", s.dy)
-                                .put("precise", s.precise)
-                                .opt("seq", s.seq)
-                                .opt("lift", s.lift.map(|[vx, vy]| Value::Array(vec![vx.into(), vy.into()])))
-                                .opt("hold", s.hold.then_some(true))
-                                .build()
-                        }),
+                    m.scroll.as_ref().map(|s| {
+                        MapBuilder::new()
+                            .put("dx", s.dx)
+                            .put("dy", s.dy)
+                            .put("precise", s.precise)
+                            .opt("seq", s.seq)
+                            .opt("lift", s.lift.map(|[vx, vy]| Value::Array(vec![vx.into(), vy.into()])))
+                            .opt("hold", s.hold.then_some(true))
+                            .build()
+                    }),
                 )
                 .opt("relative", m.relative.map(|[dx, dy]| Value::Array(vec![dx.into(), dy.into()])))
                 .build(),
@@ -1025,7 +1109,10 @@ impl Message {
                 displays: f.req("displays", |v| fields::as_array(v)?.iter().map(fields::as_u32).collect())?,
                 features: f.strings("features")?,
                 epoch: f.opt_string("epoch")?,
-                gpu_live_epoch: f.opt_bytes("gpu_live_epoch").ok().flatten()
+                gpu_live_epoch: f
+                    .opt_bytes("gpu_live_epoch")
+                    .ok()
+                    .flatten()
                     .and_then(|v| <[u8; 16]>::try_from(v).ok())
                     .filter(|v| v.iter().any(|b| *b != 0)),
             }),
@@ -1204,6 +1291,31 @@ impl Message {
                 tilt: f.req("tilt", fields::as_f64_pair)?,
                 azimuth_deg: f.f64("azimuth_deg")?,
             }),
+            PINCH => Message::Pinch(Pinch {
+                id: f.u64("id")?,
+                phase: enum_field(&f, "phase", GesturePhase::parse)?,
+                x: f.f64("x")?,
+                y: f.f64("y")?,
+                scale: f.f64("scale")?,
+                rotation: f.f64("rotation")?,
+                fingers: f.u32("fingers")?,
+            }),
+            SWIPE => Message::Swipe(Swipe {
+                id: f.u64("id")?,
+                phase: enum_field(&f, "phase", GesturePhase::parse)?,
+                x: f.f64("x")?,
+                y: f.f64("y")?,
+                dx: f.f64("dx")?,
+                dy: f.f64("dy")?,
+                fingers: f.u32("fingers")?,
+            }),
+            HOLD => Message::Hold(Hold {
+                id: f.u64("id")?,
+                phase: enum_field(&f, "phase", GesturePhase::parse)?,
+                x: f.f64("x")?,
+                y: f.f64("y")?,
+                fingers: f.u32("fingers")?,
+            }),
             POINTER => Message::Pointer(Pointer {
                 id: f.u64("id")?,
                 x: f.f64("x")?,
@@ -1311,6 +1423,9 @@ pub fn type_name(type_id: u8) -> Option<&'static str> {
         TOUCH => "touch",
         PENCIL => "pencil",
         POINTER => "pointer",
+        PINCH => "pinch",
+        SWIPE => "swipe",
+        HOLD => "hold",
         KEY => "key",
         TEXT => "text",
         PING => "ping",

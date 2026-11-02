@@ -109,6 +109,12 @@ public protocol DisplaySession: AnyObject {
     func touch(_ points: [TouchPoint], in window: RemoteWindow)
     /// Apple Pencil on a window that takes a tablet (`RemoteWindow.acceptsPencil`).
     func pencil(_ sample: PencilSample, in window: RemoteWindow)
+    /// A real pinch on a window, at a window-local point (docs/input.md, Gestures).
+    func pinch(phase: GesturePhase, scale: Double, rotation: Double, fingers: Int, in window: RemoteWindow, at point: CGPoint)
+    /// A multi-finger swipe on a window.
+    func swipe(phase: GesturePhase, dx: Double, dy: Double, fingers: Int, in window: RemoteWindow, at point: CGPoint)
+    /// Fingers resting on a window.
+    func hold(phase: GesturePhase, fingers: Int, in window: RemoteWindow, at point: CGPoint)
 
     /// The display a window is shown on is about to refresh, at `targetTimestamp` (the
     /// CADisplayLink's). Nil selects the announced primary (or retained hello primary
@@ -186,6 +192,9 @@ public extension DisplaySession {
     func compose(_ preedit: String, selection: NSRange, in window: RemoteWindow?) {}
     func touch(_ points: [TouchPoint], in window: RemoteWindow) {}
     func pencil(_ sample: PencilSample, in window: RemoteWindow) {}
+    func pinch(phase: GesturePhase, scale: Double, rotation: Double, fingers: Int, in window: RemoteWindow, at point: CGPoint) {}
+    func swipe(phase: GesturePhase, dx: Double, dy: Double, fingers: Int, in window: RemoteWindow, at point: CGPoint) {}
+    func hold(phase: GesturePhase, fingers: Int, in window: RemoteWindow, at point: CGPoint) {}
     func displayWillRefresh(_ display: Int?, targetTimestamp: CFTimeInterval) {}
     var textPurpose: String? { nil }
     var surroundingText: (window: Int, serial: Int, text: SurroundingText)? { nil }

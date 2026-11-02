@@ -3321,8 +3321,10 @@ and restores its dock.
   one-finger pointing/tapping, two-finger scrolling and secondary tap, three-finger drag,
   and four-finger swipes (left/right switch windows, up opens the window chooser, down
   closes it). From a standalone card, up returns to Desktop. Pinch recognition and scroll
-  recognition are mutually exclusive; pinch produces bounded Control–Plus/Minus shortcuts
-  for the focused app. Multi-finger lift or system cancellation releases a drag immediately
+  recognition are mutually exclusive; pinch is sent as a real `pinch` gesture
+  (begin/update/end with scale, rotation and finger count) for the focused window, and
+  the computer delivers it through `zwp_pointer_gestures_v1` (XInput 2.4 in Xwayland),
+  so the application zooms itself. No zoom shortcut is substituted. Multi-finger lift or system cancellation releases a drag immediately
   and suppresses leftover touches. A gesture guide is available in both control surfaces.
   Every trackpad (Laptop's, the touch-driven desktop and a window's held pointer) is felt
   through `TrackpadFeedback`: a click is the keyboard keys' light press, a right-click a

@@ -7,6 +7,17 @@ import Foundation
 /// Finger-count changes rebase coordinates so staggered arrivals never move the cursor.
 /// After a multi-finger lift, remaining fingers are ignored until all fingers lift.
 public struct TrackpadGestures {
+    /// One sample of a pinch (docs/input.md, Gestures).
+    public struct PinchEvent: Equatable, Sendable {
+        public var phase: GesturePhase
+        public var scale: CGFloat
+        public var rotation: CGFloat
+        public var fingers: Int
+        public init(phase: GesturePhase, scale: CGFloat, rotation: CGFloat, fingers: Int) {
+            self.phase = phase; self.scale = scale; self.rotation = rotation; self.fingers = fingers
+        }
+    }
+
     public enum Direction: Equatable, Sendable { case left, right, up, down }
 
     public enum Action: Equatable, Sendable {
@@ -18,10 +29,9 @@ public struct TrackpadGestures {
         /// The second tap of a double-click.
         case doubleClick
         case workspace(Direction)
-        /// Incremental natural-log scale: positive expands, negative contracts.
-        /// Apply a scale factor of `exp(delta)`. The first event includes the change
-        /// accumulated before recognition; subsequent events are relative to the last sample.
-        case zoom(CGFloat)
+        /// A real pinch: its phase, the scale since it began (1 at `begin`), the
+        /// rotation in degrees clockwise since the previous sample, and its fingers.
+        case pinch(PinchEvent)
     }
 
     /// What a trackpad's finger feels for an action (`TrackpadFeedback` plays it).
@@ -41,7 +51,7 @@ public struct TrackpadGestures {
         case .doubleClick: return .click
         case .beginDrag: return .dragBegan
         case .endDrag: return .dragEnded
-        case .move, .scroll, .workspace, .zoom: return nil
+        case .move, .scroll, .workspace, .pinch: return nil
         }
     }
 
@@ -80,6 +90,9 @@ public struct TrackpadGestures {
     private var phaseOrigin: CGPoint?
     private var initialSpread: CGFloat?
     private var lastSpread: CGFloat?
+    private var lastAngle: CGFloat?
+    private var pinchScale: CGFloat = 1
+    private var pinchActive = false
     private var lastTapEnded: TimeInterval = -.infinity
     private var dragArmed = false
     private var suppressed = false
@@ -93,7 +106,7 @@ public struct TrackpadGestures {
     /// distance from the centroid, in points (for two fingers, half their separation).
     /// Omit spread to preserve immediate two-finger scrolling without pinch recognition.
     public mutating func began(touches: Int, centroid: CGPoint?, at time: TimeInterval,
-                               spread: CGFloat? = nil) -> [Action] {
+                               spread: CGFloat? = nil, angle: CGFloat? = nil) -> [Action] {
         guard touches > 0 else { return [] }
         if maxTouches == 0 {
             start = time
@@ -116,13 +129,15 @@ public struct TrackpadGestures {
         phaseTravel = 0
         initialSpread = valid(spread)
         lastSpread = initialSpread
+        lastAngle = angle
+        pinchScale = 1
         twoFingerMode = .undecided
         if touches > 4 { suppressed = true }
         return actions
     }
 
     public mutating func moved(touches: Int, centroid: CGPoint, at time: TimeInterval,
-                               spread: CGFloat? = nil) -> [Action] {
+                               spread: CGFloat? = nil, angle: CGFloat? = nil) -> [Action] {
         guard maxTouches > 0, !suppressed, touches == activeTouches,
               let last = lastCentroid else { return [] }
         let delta = CGPoint(x: centroid.x - last.x, y: centroid.y - last.y)
@@ -147,7 +162,7 @@ public struct TrackpadGestures {
             return [.workspace(direction)]
         }
         if touches == 2 {
-            return twoFingerMovement(delta: delta, displacement: displacement, spread: valid(spread))
+            return twoFingerMovement(delta: delta, displacement: displacement, spread: valid(spread), angle: angle, touches: touches)
         }
         var actions: [Action] = []
         if !dragging, ((touches == 3 && !tuning.threeFingerSwipe) || dragArmed), phaseTravel >= tuning.dragSlop {
@@ -164,7 +179,7 @@ public struct TrackpadGestures {
     }
 
     private mutating func twoFingerMovement(delta: CGPoint, displacement: CGPoint,
-                                            spread: CGFloat?) -> [Action] {
+                                            spread: CGFloat?, angle: CGFloat?, touches: Int) -> [Action] {
         let translation = hypot(displacement.x, displacement.y)
         if translation >= tuning.scrollSlop { consumed = true }
         if twoFingerMode == .undecided {
@@ -175,8 +190,14 @@ public struct TrackpadGestures {
                    radial >= translation * tuning.pinchDominance {
                     twoFingerMode = .pinch
                     consumed = true
+                    pinchActive = true
                     lastSpread = spread
-                    return [.zoom(logScale)]
+                    pinchScale = spread / initialSpread
+                    let rotation = rotationSince(angle)
+                    return [
+                        .pinch(PinchEvent(phase: .begin, scale: 1, rotation: 0, fingers: touches)),
+                        .pinch(PinchEvent(phase: .update, scale: pinchScale, rotation: rotation, fingers: touches)),
+                    ]
                 }
                 if translation >= tuning.scrollSlop, translation >= radial * tuning.pinchDominance {
                     twoFingerMode = .scroll
@@ -187,12 +208,23 @@ public struct TrackpadGestures {
             twoFingerMode = .scroll
         }
         if twoFingerMode == .pinch {
-            guard let spread, let previous = lastSpread else { return [] }
+            guard let spread, let initialSpread else { return [] }
             lastSpread = spread
-            let change = log(spread / previous)
-            return change == 0 ? [] : [.zoom(change)]
+            pinchScale = spread / initialSpread
+            return [.pinch(PinchEvent(phase: .update, scale: pinchScale, rotation: rotationSince(angle), fingers: touches))]
         }
         return [.scroll(CGPoint(x: -delta.x * 2, y: -delta.y * 2))]
+    }
+
+    /// Degrees clockwise since the previous sample, wrapped to ±180.
+    private mutating func rotationSince(_ angle: CGFloat?) -> CGFloat {
+        guard let angle else { return 0 }
+        defer { lastAngle = angle }
+        guard let lastAngle else { return 0 }
+        var degrees = (angle - lastAngle) * 180 / .pi
+        while degrees > 180 { degrees -= 360 }
+        while degrees < -180 { degrees += 360 }
+        return degrees
     }
 
     public mutating func ended(remaining: Int, centroid: CGPoint?, at time: TimeInterval,
@@ -202,6 +234,10 @@ public struct TrackpadGestures {
         activeTouches = remaining
         if remaining > 0 {
             suppressed = true
+            if pinchActive {
+                pinchActive = false
+                return [.pinch(PinchEvent(phase: .end, scale: pinchScale, rotation: 0, fingers: maxTouches))]
+            }
             if dragging {
                 dragging = false
                 lastTapEnded = -.infinity
@@ -209,6 +245,8 @@ public struct TrackpadGestures {
             }
             return []
         }
+        let wasPinching = pinchActive
+        let finalScale = pinchScale
         defer { reset() }
         let duration = time - start
         let still = travel < tuning.tapSlop && duration < tuning.tapDuration
@@ -222,6 +260,9 @@ public struct TrackpadGestures {
         }
         if maxTouches == 2 {
             lastTapEnded = -.infinity
+            if wasPinching {
+                return [.pinch(PinchEvent(phase: .end, scale: finalScale, rotation: 0, fingers: 2))]
+            }
             let tapped = !consumed && twoFingerMode != .pinch && travel < tuning.twoFingerTapSlop
                 && duration < tuning.twoFingerTapDuration
             return tapped ? [.click(button: 3)] : []
@@ -237,7 +278,10 @@ public struct TrackpadGestures {
 
     /// System cancellation clears tap history and releases any held button exactly once.
     public mutating func cancelled() -> [Action] {
-        let actions: [Action] = dragging ? [.endDrag] : []
+        var actions: [Action] = dragging ? [.endDrag] : []
+        if pinchActive {
+            actions.append(.pinch(PinchEvent(phase: .cancel, scale: pinchScale, rotation: 0, fingers: 2)))
+        }
         reset()
         lastTapEnded = -.infinity
         return actions
@@ -252,6 +296,9 @@ public struct TrackpadGestures {
         phaseOrigin = nil
         initialSpread = nil
         lastSpread = nil
+        lastAngle = nil
+        pinchScale = 1
+        pinchActive = false
         twoFingerMode = .undecided
         suppressed = false
         workspaceSent = false
@@ -263,17 +310,3 @@ public struct TrackpadGestures {
     }
 }
 
-/// Converts continuous pinch changes into bounded common desktop zoom shortcuts.
-public struct TrackpadZoom {
-    private var remainder: CGFloat = 0
-    public init() {}
-    public mutating func reset() { remainder = 0 }
-    public mutating func consume(_ delta: CGFloat) -> Int {
-        guard delta.isFinite else { return 0 }
-        let threshold: CGFloat = 0.12
-        remainder += min(0.96, max(-0.96, delta))
-        let steps = min(8, max(-8, Int(remainder / threshold)))
-        remainder -= CGFloat(steps) * threshold
-        return steps
-    }
-}

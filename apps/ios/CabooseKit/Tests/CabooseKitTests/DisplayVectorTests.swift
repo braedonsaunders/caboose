@@ -280,6 +280,8 @@ import Testing
         #expect(copy.entries.map(\.mime) == ["text/plain;charset=utf-8", "image/png", "text/uri-list"])
         #expect(copy.filePaths == ["/home/caboose/Pictures/a b.png"])
         #expect(ClipboardPolicy.validate(copy) == nil)
+        guard case .clipboard(let secret) = try server("clipboard-server-secret").first else { Issue.record("secret clipboard"); return }
+        #expect(secret.secret && secret.text == "hunter2")
         guard case .dropStatus(true) = try server("drop-status").first,
               case .dropStatus(nil) = try server("drop-status-unknown").first,
               case .dropResult(false, "rejected") = try server("drop-result-rejected").first,
@@ -363,6 +365,15 @@ import Testing
         "liberal-vsync-wide-int": .vsync(display: 1, micros: 1000),
         "pencil-hover": .pencil(window: 7, PencilSample(phase: .hover, x: 300.5, y: 410, pressure: 0, tilt: (12.5, -30), azimuth: 271.25)),
         "ping": .ping(micros: 98_765_432_100),
+        "pinch-begin": .pinch(PinchGesture(window: 7, phase: .begin, x: 400.5, y: 812, scale: 1, rotation: 0, fingers: 2)),
+        "pinch-update": .pinch(PinchGesture(window: 7, phase: .update, x: 402, y: 810.5, scale: 1.5, rotation: 15, fingers: 2)),
+        "pinch-end": .pinch(PinchGesture(window: 7, phase: .end, x: 402, y: 810.5, scale: 1.75, rotation: 0, fingers: 2)),
+        "pinch-cancel": .pinch(PinchGesture(window: 7, phase: .cancel, x: 402, y: 810.5, scale: 1.75, rotation: 0, fingers: 2)),
+        "swipe-begin": .swipe(SwipeGesture(window: 7, phase: .begin, x: 400.5, y: 812, dx: 0, dy: 0, fingers: 3)),
+        "swipe-update": .swipe(SwipeGesture(window: 7, phase: .update, x: 390.5, y: 800, dx: -10, dy: -12, fingers: 3)),
+        "swipe-end": .swipe(SwipeGesture(window: 7, phase: .end, x: 390.5, y: 800, dx: 0, dy: 0, fingers: 3)),
+        "hold-begin": .hold(HoldGesture(window: 7, phase: .begin, x: 400.5, y: 812, fingers: 2)),
+        "hold-end": .hold(HoldGesture(window: 7, phase: .end, x: 400.5, y: 812, fingers: 2)),
         "pointer-left-drag": .pointer(window: 7, x: 10.5, y: 20, buttons: 1, scroll: nil),
         "pointer-scroll-precise": .pointer(window: 7, x: 640, y: 480, buttons: 0, scroll: (0, -42.5, true)),
         "pointer-scroll-seq": .pointer(window: 7, x: 640, y: 480, buttons: 0, scroll: (0, -42.5, true), scrollSeq: 42),

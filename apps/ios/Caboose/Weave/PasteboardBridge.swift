@@ -125,7 +125,12 @@ final class PasteboardBridge {
     private func write(_ content: ClipboardContent, files: [URL]) {
         let providers = Self.providers(content, files: files)
         guard !providers.isEmpty else { return }
-        UIPasteboard.general.setItemProviders(providers, localOnly: false, expirationDate: nil)
+        // A secret copy is local-only and expires in about a minute, so it is
+        // neither synced to other devices nor kept in pasteboard history.
+        UIPasteboard.general.setItemProviders(
+            providers,
+            localOnly: content.secret,
+            expirationDate: content.secret ? Date().addingTimeInterval(ClipboardPolicy.secretLifetime) : nil)
     }
 
     // MARK: Phone → computer

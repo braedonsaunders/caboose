@@ -1,0 +1,8 @@
+{
+  "name": "swipe-update",
+  "description": "The swipe centre moved left and up.",
+  "messages": [
+    {"direction": "client", "type": "swipe", "type_id": 150, "fields": {"x": {"$float": 390.5}, "y": {"$float": 800.0}, "dx": {"$float": -10.0}, "dy": {"$float": -12.0}, "id": 7, "phase": "update", "fingers": 3}}
+  ],
+  "hex": "9649000000a76178fb40786800000000006179fb4089000000000000626478fbc024000000000000626479fbc02800000000000062696407657068617365667570646174656766696e6765727303"
+}

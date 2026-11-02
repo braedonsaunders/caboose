@@ -1,0 +1,8 @@
+{
+  "name": "hold-begin",
+  "description": "Two fingers rest on window 7 without moving.",
+  "messages": [
+    {"direction": "client", "type": "hold", "type_id": 153, "fields": {"x": {"$float": 400.5}, "y": {"$float": 812.0}, "id": 7, "phase": "begin", "fingers": 2}}
+  ],
+  "hex": "9930000000a56178fb40790800000000006179fb40896000000000006269640765706861736565626567696e6766696e6765727302"
+}

@@ -170,7 +170,7 @@ final class TrackpadSurface: RemoteTextInputView {
     private var inputTime: TimeInterval = 0
     private var scrollOriginTime: TimeInterval = 0
     private var gestures = TrackpadGestures()
-    private var zoomGesture = TrackpadZoom()
+    private var pinchAnchor: (window: Int, point: CGPoint)?
     private let haptics = UIImpactFeedbackGenerator(style: .light)
 
     override init(frame: CGRect) {
@@ -205,6 +205,13 @@ final class TrackpadSurface: RemoteTextInputView {
         }.reduce(0, +) / CGFloat(touches.count)
     }
 
+    /// The angle of the line through two fingers, for a pinch's rotation.
+    private func angle(_ event: UIEvent?) -> CGFloat? {
+        guard let touches = event?.touches(for: self)?.filter({ $0.phase != .ended && $0.phase != .cancelled }), touches.count == 2 else { return nil }
+        let points = touches.map { $0.location(in: self) }
+        return atan2(points[1].y - points[0].y, points[1].x - points[0].x)
+    }
+
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
         scrollDriver.cancel()
         // A finger down stops content the computer is coasting, as on a touchpad.
@@ -212,13 +219,13 @@ final class TrackpadSurface: RemoteTextInputView {
         scrolling = false
         inputTime = event?.timestamp ?? ProcessInfo.processInfo.systemUptime
         scrollOriginTime = inputTime
-        perform(gestures.began(touches: max(1, liveTouches(event)), centroid: centroid(event), at: event?.timestamp ?? 0, spread: spread(event)))
+        perform(gestures.began(touches: max(1, liveTouches(event)), centroid: centroid(event), at: event?.timestamp ?? 0, spread: spread(event), angle: angle(event)))
     }
 
     override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
         inputTime = event?.timestamp ?? ProcessInfo.processInfo.systemUptime
         guard let point = centroid(event) else { return }
-        perform(gestures.moved(touches: liveTouches(event), centroid: point, at: event?.timestamp ?? 0, spread: spread(event)))
+        perform(gestures.moved(touches: liveTouches(event), centroid: point, at: event?.timestamp ?? 0, spread: spread(event), angle: angle(event)))
     }
 
     override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
@@ -226,14 +233,12 @@ final class TrackpadSurface: RemoteTextInputView {
             scrollDriver.end(at: event?.timestamp ?? ProcessInfo.processInfo.systemUptime)
             scrolling = false
         }
-        zoomGesture.reset()
         perform(gestures.ended(remaining: liveTouches(event), centroid: centroid(event), at: event?.timestamp ?? 0, spread: spread(event)))
     }
 
     override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
         scrollDriver.cancel()
         scrolling = false
-        zoomGesture.reset()
         perform(gestures.cancelled())
     }
 
@@ -252,13 +257,13 @@ final class TrackpadSurface: RemoteTextInputView {
             scrolling = false
             switch action {
             case .workspace(let direction): performWorkspace(direction); continue
-            case .zoom(let delta): performZoom(delta); continue
+            case .pinch(let event): performPinch(event); continue
             default: break
             }
             if let target { perform(action, in: target); continue }
             TrackpadFeedback.play(for: action)
             switch action {
-            case .workspace, .zoom: break // handled before window routing
+            case .workspace, .pinch: break // handled before window routing
             case .move(let delta):
                 desktop?.pointerHovering = true
                 desktop?.move(by: delta, session: session)
@@ -334,7 +339,7 @@ final class TrackpadSurface: RemoteTextInputView {
             session.pointerButton(in: target, button: button, pressed: down, at: pixel())
         }
         switch action {
-        case .workspace, .zoom: break // handled before window routing
+        case .workspace, .pinch: break // handled before window routing
         case .move(let delta):
             let scale = model?.pixelsPerPoint ?? 1
             point.x = min(0.999, max(0, point.x + delta.x * scale / max(1, target.frame.width)))
@@ -355,16 +360,22 @@ final class TrackpadSurface: RemoteTextInputView {
         LaptopPointer.shared.show(in: target, session: session, at: point, owner: self)
     }
 
-    private func performZoom(_ delta: CGFloat) {
-        guard let session, session.state == .ready, let window = focusedWindow else { return }
-        let steps = zoomGesture.consume(delta)
-        guard steps != 0, let stroke = Keysyms.stroke(for: steps > 0 ? "+" : "-") else { return }
-        // Use the app's standard zoom shortcut: no ignored pointer modifier field,
-        // held Control key, or app-specific DOM/browser behavior.
-        for _ in 0..<abs(steps) {
-            session.key(stroke, pressed: true, in: window, extraModifiers: ["control"])
-            session.key(stroke, pressed: false, in: window, extraModifiers: ["control"])
+    /// Sends a pinch as a real gesture to the window under the cursor, so the
+    /// application zooms itself; no zoom shortcut is substituted.
+    private func performPinch(_ event: TrackpadGestures.PinchEvent) {
+        guard let session, session.state == .ready else { return }
+        if event.phase == .begin {
+            pinchAnchor = nil
+            if let target {
+                pinchAnchor = (target.id, CGPoint(x: point.x * target.frame.width, y: point.y * target.frame.height))
+            } else if let desktop, case .content(let id, let local) = desktop.hitTest(desktop.cursor, windows: session.windows) {
+                pinchAnchor = (id, local)
+            }
         }
+        guard let anchor = pinchAnchor, let window = session.windows[anchor.window] else { return }
+        if event.phase == .end || event.phase == .cancel { pinchAnchor = nil }
+        session.pinch(phase: event.phase, scale: Double(event.scale), rotation: Double(event.rotation),
+                      fingers: event.fingers, in: window, at: anchor.point)
     }
 
     private func performWorkspace(_ direction: TrackpadGestures.Direction) {
@@ -427,7 +438,6 @@ final class TrackpadSurface: RemoteTextInputView {
         pointerClicks.cancel()
         scrollDriver.cancel()
         scrolling = false
-        zoomGesture.reset()
         focusTask?.cancel()
         focusTask = nil
         perform(gestures.cancelled())
@@ -494,7 +504,7 @@ struct TrackpadGestureGuide: View {
                 }
                 Section("Scroll and zoom") {
                     Label("Move two fingers together to scroll in either direction.", systemImage: "arrow.up.and.down.and.arrow.left.and.right")
-                    Label("Pinch two fingers to zoom in apps that support Control–Plus and Control–Minus.", systemImage: "plus.magnifyingglass")
+                    Label("Pinch two fingers to zoom: the gesture goes to the app, which zooms itself.", systemImage: "plus.magnifyingglass")
                 }
                 Section("Windows & Input") {
                     Label("In Laptop mode, scrub three or four fingers left or right to slide between Trackpad, Keyboard, and Controller.", systemImage: "hand.draw.fill")

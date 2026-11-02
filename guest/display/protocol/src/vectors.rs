@@ -346,6 +346,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 mime: "text/plain;charset=utf-8".into(),
                 data: "héllo ✓".as_bytes().to_vec(),
                 alternatives: Vec::new(),
+                secret: false,
             }),
         ),
         one(
@@ -361,7 +362,63 @@ pub fn all(media: &Media) -> Vec<Vector> {
                         data: b"file:///home/caboose/Pictures/a%20b.png\r\n".to_vec(),
                     },
                 ],
+                secret: false,
             }),
+        ),
+        one(
+            "clipboard-server-secret",
+            "A secret copy: pasted only, never kept in history; the phone holds it local-only for about a minute.",
+            Message::ServerClipboard(Clipboard {
+                mime: "text/plain;charset=utf-8".into(),
+                data: b"hunter2".to_vec(),
+                alternatives: Vec::new(),
+                secret: true,
+            }),
+        ),
+        one(
+            "pinch-begin",
+            "A two-finger pinch begins on window 7, centred in the window.",
+            Message::Pinch(Pinch { id: 7, phase: GesturePhase::Begin, x: 400.5, y: 812.0, scale: 1.0, rotation: 0.0, fingers: 2 }),
+        ),
+        one(
+            "pinch-update",
+            "The pinch grew to 1.5 times and turned 15 degrees clockwise since the last sample.",
+            Message::Pinch(Pinch { id: 7, phase: GesturePhase::Update, x: 402.0, y: 810.5, scale: 1.5, rotation: 15.0, fingers: 2 }),
+        ),
+        one(
+            "pinch-end",
+            "The pinch ends at 1.75 times.",
+            Message::Pinch(Pinch { id: 7, phase: GesturePhase::End, x: 402.0, y: 810.5, scale: 1.75, rotation: 0.0, fingers: 2 }),
+        ),
+        one(
+            "pinch-cancel",
+            "The pinch is cancelled by the system.",
+            Message::Pinch(Pinch { id: 7, phase: GesturePhase::Cancel, x: 402.0, y: 810.5, scale: 1.75, rotation: 0.0, fingers: 2 }),
+        ),
+        one(
+            "swipe-begin",
+            "A three-finger swipe begins on window 7.",
+            Message::Swipe(Swipe { id: 7, phase: GesturePhase::Begin, x: 400.5, y: 812.0, dx: 0.0, dy: 0.0, fingers: 3 }),
+        ),
+        one(
+            "swipe-update",
+            "The swipe centre moved left and up.",
+            Message::Swipe(Swipe { id: 7, phase: GesturePhase::Update, x: 390.5, y: 800.0, dx: -10.0, dy: -12.0, fingers: 3 }),
+        ),
+        one(
+            "swipe-end",
+            "The swipe ends.",
+            Message::Swipe(Swipe { id: 7, phase: GesturePhase::End, x: 390.5, y: 800.0, dx: 0.0, dy: 0.0, fingers: 3 }),
+        ),
+        one(
+            "hold-begin",
+            "Two fingers rest on window 7 without moving.",
+            Message::Hold(Hold { id: 7, phase: GesturePhase::Begin, x: 400.5, y: 812.0, fingers: 2 }),
+        ),
+        one(
+            "hold-end",
+            "The resting fingers lift.",
+            Message::Hold(Hold { id: 7, phase: GesturePhase::End, x: 400.5, y: 812.0, fingers: 2 }),
         ),
         one(
             "drop-status",
@@ -392,6 +449,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 mime: "text/uri-list".into(),
                 data: b"file:///home/caboose/Documents/report.pdf\r\n".to_vec(),
                 alternatives: Vec::new(),
+                secret: false,
             }),
         ),
         one(
@@ -853,12 +911,13 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 mime: "text/plain;charset=utf-8".into(),
                 data: b"copied on the phone".to_vec(),
                 alternatives: Vec::new(),
+                secret: false,
             }),
         ),
         one(
             "clipboard-client-image",
             "An image copied on the phone, with no text.",
-            Message::ClientClipboard(Clipboard { mime: "image/png".into(), data: media.png.clone(), alternatives: Vec::new() }),
+            Message::ClientClipboard(Clipboard { mime: "image/png".into(), data: media.png.clone(), alternatives: Vec::new(), secret: false }),
         ),
         one(
             "drop-enter",
@@ -883,6 +942,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
                     data: b"file:///home/caboose/.cache/caboose/transfers/0123456789abcdef0123456789abcdef/IMG_0001.jpeg\r\n"
                         .to_vec(),
                 }],
+                secret: false,
             }),
         ),
         one("drag-take", "", Message::DragTake),

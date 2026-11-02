@@ -15,11 +15,15 @@ public struct ClipboardEntry: Sendable, Equatable {
 /// representation and the same content in other types.
 public struct ClipboardContent: Sendable, Equatable {
     public let entries: [ClipboardEntry]
+    /// Marked secret by its source: pasted only, never kept in history, and held
+    /// on the phone local-only and expiring (see `secretLifetime`).
+    public let secret: Bool
 
     /// Nil without entries: a copy always has a first representation.
-    public init?(_ entries: [ClipboardEntry]) {
+    public init?(_ entries: [ClipboardEntry], secret: Bool = false) {
         guard !entries.isEmpty else { return nil }
         self.entries = entries
+        self.secret = secret
     }
 
     public func data(_ mime: String) -> Data? { entries.first { $0.mime == mime }?.data }
@@ -43,6 +47,8 @@ public enum ClipboardPolicy {
     public static let types = [text, png, jpeg, uriList]
     /// What this client takes from the computer besides text, sent in its hello.
     public static let clientTypes = [png, jpeg, uriList]
+    /// How long a secret copy stays on the phone's pasteboard.
+    public static let secretLifetime: TimeInterval = 60
 
     /// The most one copy carries, every representation together.
     public static let maxBytes = 12 * 1024 * 1024
@@ -148,7 +154,7 @@ public enum ClipboardPolicy {
         return ClipboardContent(content.entries.filter { entry in
             (entry.mime == text || clientTypes.contains(entry.mime)) && seen.insert(entry.mime).inserted
                 && check(entry.mime, entry.data) == nil
-        })
+        }, secret: content.secret)
     }
 
     private static func percentDecode(_ string: String) -> String? {

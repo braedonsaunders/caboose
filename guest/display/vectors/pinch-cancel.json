@@ -1,0 +1,8 @@
+{
+  "name": "pinch-cancel",
+  "description": "The pinch is cancelled by the system.",
+  "messages": [
+    {"direction": "client", "type": "pinch", "type_id": 149, "fields": {"x": {"$float": 402.0}, "y": {"$float": 810.5}, "id": 7, "phase": "cancel", "scale": {"$float": 1.75}, "fingers": 2, "rotation": {"$float": 0.0}}}
+  ],
+  "hex": "9552000000a76178fb40792000000000006179fb4089540000000000626964076570686173656663616e63656c657363616c65fb3ffc0000000000006766696e676572730268726f746174696f6efb0000000000000000"
+}

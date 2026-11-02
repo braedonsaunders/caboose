@@ -1,0 +1,8 @@
+{
+  "name": "pinch-end",
+  "description": "The pinch ends at 1.75 times.",
+  "messages": [
+    {"direction": "client", "type": "pinch", "type_id": 149, "fields": {"x": {"$float": 402.0}, "y": {"$float": 810.5}, "id": 7, "phase": "end", "scale": {"$float": 1.75}, "fingers": 2, "rotation": {"$float": 0.0}}}
+  ],
+  "hex": "954f000000a76178fb40792000000000006179fb40895400000000006269640765706861736563656e64657363616c65fb3ffc0000000000006766696e676572730268726f746174696f6efb0000000000000000"
+}

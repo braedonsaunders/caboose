@@ -11,10 +11,10 @@ use smithay::desktop::utils::under_from_surface_tree;
 use smithay::desktop::WindowSurfaceType;
 use smithay::input::keyboard::{FilterResult, Keycode};
 use smithay::input::pointer::{ButtonEvent, MotionEvent, PointerHandle, RelativeMotionEvent};
-use smithay::wayland::pointer_constraints::{with_pointer_constraint, PointerConstraint};
 use smithay::input::touch::{DownEvent, MotionEvent as TouchMotionEvent, UpEvent};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Logical, Point, Rectangle, Size};
+use smithay::wayland::pointer_constraints::{with_pointer_constraint, PointerConstraint};
 use std::collections::{HashMap, HashSet};
 
 mod scroll;
@@ -56,6 +56,11 @@ pub struct InputState {
     scroll_stop: Option<smithay::reexports::calloop::RegistrationToken>,
     /// The timer of kinetic scrolling after a finger lifted (scroll.rs).
     coast: Option<smithay::reexports::calloop::RegistrationToken>,
+    /// Gestures in progress, each bound to the window it began on: the last centre
+    /// in logical pixels, for the next sample's movement.
+    pinch: Option<(u64, Point<f64, Logical>)>,
+    swipe: Option<(u64, Point<f64, Logical>)>,
+    hold: Option<u64>,
 }
 
 /// The rectangle a full-screen or maximized window takes, relative to its display, or none
@@ -98,7 +103,9 @@ impl InputState {
 
 /// Whether the pointer is locked on `surface` (pointer-constraints-v1).
 fn locked(surface: &WlSurface, pointer: &PointerHandle<State>) -> bool {
-    with_pointer_constraint(surface, pointer, |c| c.is_some_and(|c| c.is_active() && matches!(&*c, PointerConstraint::Locked(_))))
+    with_pointer_constraint(surface, pointer, |c| {
+        c.is_some_and(|c| c.is_active() && matches!(&*c, PointerConstraint::Locked(_)))
+    })
 }
 
 /// Puts a constraint the client asked for on `surface` into effect, once the pointer is on it.
@@ -255,6 +262,124 @@ impl State {
                 None => self.arm_scroll_stop(),
             }
         }
+    }
+
+    /// Moves the pointer to a gesture's centre on `begin`, so the gesture goes to
+    /// the surface under it and stays with that window until it ends.
+    fn gesture_begin(&mut self, id: u64, x: f64, y: f64) -> Option<Point<f64, Logical>> {
+        let (location, under) = self.locate(id, x, y)?;
+        let pointer = self.seat.get_pointer()?;
+        let serial = self.next_serial();
+        let time = self.now_ms();
+        pointer.motion(self, under, &MotionEvent { location, serial, time });
+        pointer.frame(self);
+        Some(location)
+    }
+
+    /// A `pinch`, delivered as `zwp_pointer_gestures_v1` pinch (and by Xwayland as
+    /// XInput 2.4 pinch) to the window it began on. No window or app is special.
+    pub fn pinch(&mut self, m: &proto::Pinch) {
+        use proto::GesturePhase::*;
+        use smithay::input::pointer::{GesturePinchBeginEvent, GesturePinchEndEvent, GesturePinchUpdateEvent};
+        self.input_trace.push(crate::frame_trace::Input { at_us: self.now_us(), kind: "pinch" });
+        let Some(pointer) = self.seat.get_pointer() else { return };
+        let time = self.now_ms();
+        match m.phase {
+            Begin => {
+                let Some(location) = self.gesture_begin(m.id, m.x, m.y) else { return };
+                self.input.pinch = Some((m.id, location));
+                let serial = self.next_serial();
+                pointer.gesture_pinch_begin(self, &GesturePinchBeginEvent { serial, time, fingers: m.fingers });
+            }
+            Update => {
+                let Some((id, last)) = self.input.pinch else { return };
+                if id != m.id {
+                    return;
+                }
+                let Some((location, _)) = self.locate(m.id, m.x, m.y) else { return };
+                self.input.pinch = Some((m.id, location));
+                pointer.gesture_pinch_update(
+                    self,
+                    &GesturePinchUpdateEvent { time, delta: location - last, scale: m.scale, rotation: m.rotation },
+                );
+            }
+            End | Cancel => {
+                if self.input.pinch.take().is_none() {
+                    return;
+                }
+                let serial = self.next_serial();
+                pointer.gesture_pinch_end(self, &GesturePinchEndEvent { serial, time, cancelled: m.phase == Cancel });
+            }
+        }
+        pointer.frame(self);
+    }
+
+    /// A `swipe`, delivered as `zwp_pointer_gestures_v1` swipe (XInput 2.4 in Xwayland).
+    pub fn swipe(&mut self, m: &proto::Swipe) {
+        use proto::GesturePhase::*;
+        use smithay::input::pointer::{GestureSwipeBeginEvent, GestureSwipeEndEvent, GestureSwipeUpdateEvent};
+        self.input_trace.push(crate::frame_trace::Input { at_us: self.now_us(), kind: "swipe" });
+        let Some(pointer) = self.seat.get_pointer() else { return };
+        let time = self.now_ms();
+        match m.phase {
+            Begin => {
+                let Some(location) = self.gesture_begin(m.id, m.x, m.y) else { return };
+                self.input.swipe = Some((m.id, location));
+                let serial = self.next_serial();
+                pointer.gesture_swipe_begin(self, &GestureSwipeBeginEvent { serial, time, fingers: m.fingers });
+            }
+            Update => {
+                let Some((id, last)) = self.input.swipe else { return };
+                if id != m.id {
+                    return;
+                }
+                let Some((location, _)) = self.locate(m.id, m.x, m.y) else { return };
+                self.input.swipe = Some((m.id, location));
+                let _ = last;
+                let display_scale =
+                    self.windows.get(m.id).map(|w| self.displays.resolve(Some(w.display)).info.scale).unwrap_or(1.0);
+                pointer.gesture_swipe_update(
+                    self,
+                    &GestureSwipeUpdateEvent { time, delta: Point::from((m.dx / display_scale, m.dy / display_scale)) },
+                );
+            }
+            End | Cancel => {
+                if self.input.swipe.take().is_none() {
+                    return;
+                }
+                let serial = self.next_serial();
+                pointer.gesture_swipe_end(self, &GestureSwipeEndEvent { serial, time, cancelled: m.phase == Cancel });
+            }
+        }
+        pointer.frame(self);
+    }
+
+    /// A `hold`, delivered as `zwp_pointer_gestures_v1` hold (XInput 2.4 in Xwayland).
+    pub fn hold(&mut self, m: &proto::Hold) {
+        use proto::GesturePhase::*;
+        use smithay::input::pointer::{GestureHoldBeginEvent, GestureHoldEndEvent};
+        self.input_trace.push(crate::frame_trace::Input { at_us: self.now_us(), kind: "hold" });
+        let Some(pointer) = self.seat.get_pointer() else { return };
+        let time = self.now_ms();
+        match m.phase {
+            Begin => {
+                if self.gesture_begin(m.id, m.x, m.y).is_none() {
+                    return;
+                }
+                self.input.hold = Some(m.id);
+                let serial = self.next_serial();
+                pointer.gesture_hold_begin(self, &GestureHoldBeginEvent { serial, time, fingers: m.fingers });
+            }
+            Update => {}
+            End | Cancel => {
+                if self.input.hold.take().is_none() {
+                    return;
+                }
+                let serial = self.next_serial();
+                pointer.gesture_hold_end(self, &GestureHoldEndEvent { serial, time, cancelled: m.phase == Cancel });
+            }
+        }
+        pointer.frame(self);
     }
 
     pub fn touch(&mut self, m: &proto::Touch) {
@@ -535,6 +660,34 @@ impl State {
                 }
             }
             pointer.frame(self);
+        }
+        // A gesture in progress ends cancelled when its client goes.
+        if self.input.pinch.take().is_some() {
+            if let Some(pointer) = self.seat.get_pointer() {
+                let serial = self.next_serial();
+                pointer.gesture_pinch_end(
+                    self,
+                    &smithay::input::pointer::GesturePinchEndEvent { serial, time: self.now_ms(), cancelled: true },
+                );
+            }
+        }
+        if self.input.swipe.take().is_some() {
+            if let Some(pointer) = self.seat.get_pointer() {
+                let serial = self.next_serial();
+                pointer.gesture_swipe_end(
+                    self,
+                    &smithay::input::pointer::GestureSwipeEndEvent { serial, time: self.now_ms(), cancelled: true },
+                );
+            }
+        }
+        if self.input.hold.take().is_some() {
+            if let Some(pointer) = self.seat.get_pointer() {
+                let serial = self.next_serial();
+                pointer.gesture_hold_end(
+                    self,
+                    &smithay::input::pointer::GestureHoldEndEvent { serial, time: self.now_ms(), cancelled: true },
+                );
+            }
         }
         self.input.pointer_buttons = 0;
         for code in self.input.held.clone() {

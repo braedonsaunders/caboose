@@ -49,6 +49,9 @@ public enum DisplayProtocol {
         case displays = 0x87
         case touch = 0x90
         case pencil = 0x91
+        case pinch = 0x95
+        case swipe = 0x96
+        case hold = 0x99
         case pointer = 0x92
         case key = 0x93
         case text = 0x94
@@ -506,6 +509,9 @@ public enum ClientMessage: Sendable {
     case displays([DisplayInfo])
     case touch(window: Int, points: [TouchPoint])
     case pencil(window: Int, PencilSample)
+    case pinch(PinchGesture)
+    case swipe(SwipeGesture)
+    case hold(HoldGesture)
     /// `scrollSeq`: the window's input sequence number for the scroll (docs/display.md,
     /// "Input sequencing").
     /// `relative`: motion in display pixels that leaves the pointer where it is (a stick
@@ -637,6 +643,21 @@ public enum ClientMessage: Sendable {
                 ("cursor", cursor.map { [CBOR($0.0), CBOR($0.1)] }),
                 ("delete_before", deleteBefore.map { CBOR($0) }), ("delete_after", deleteAfter.map { CBOR($0) }),
             ]))
+        case .pinch(let g):
+            return DisplayFrame(type: T.pinch.rawValue, body: map([
+                ("id", CBOR(g.window)), ("phase", CBOR(g.phase.rawValue)), ("x", CBOR(g.x)), ("y", CBOR(g.y)),
+                ("scale", CBOR(g.scale)), ("rotation", CBOR(g.rotation)), ("fingers", CBOR(g.fingers)),
+            ]))
+        case .swipe(let g):
+            return DisplayFrame(type: T.swipe.rawValue, body: map([
+                ("id", CBOR(g.window)), ("phase", CBOR(g.phase.rawValue)), ("x", CBOR(g.x)), ("y", CBOR(g.y)),
+                ("dx", CBOR(g.dx)), ("dy", CBOR(g.dy)), ("fingers", CBOR(g.fingers)),
+            ]))
+        case .hold(let g):
+            return DisplayFrame(type: T.hold.rawValue, body: map([
+                ("id", CBOR(g.window)), ("phase", CBOR(g.phase.rawValue)), ("x", CBOR(g.x)), ("y", CBOR(g.y)),
+                ("fingers", CBOR(g.fingers)),
+            ]))
         case .clipboard(let content):
             return DisplayFrame(type: T.clipboard.rawValue, body: content.cbor)
         case .dropEnter(let window, let x, let y, let types):
@@ -656,6 +677,59 @@ public enum ClientMessage: Sendable {
     }
 }
 
+/// A pointer gesture's phase.
+public enum GesturePhase: String, Sendable {
+    case begin, update, end, cancel
+}
+
+/// A `pinch` on window `window`, centred at window-local display pixels: `scale`
+/// since it began (1 at `begin`), `rotation` in degrees clockwise since the
+/// previous sample, and its finger count.
+public struct PinchGesture: Equatable, Sendable {
+    public var window: Int
+    public var phase: GesturePhase
+    public var x: Double
+    public var y: Double
+    public var scale: Double
+    public var rotation: Double
+    public var fingers: Int
+
+    public init(window: Int, phase: GesturePhase, x: Double, y: Double, scale: Double, rotation: Double, fingers: Int) {
+        self.window = window; self.phase = phase; self.x = x; self.y = y
+        self.scale = scale; self.rotation = rotation; self.fingers = fingers
+    }
+}
+
+/// A `swipe` on window `window`: its centre and the centre's movement since the
+/// previous sample, in display pixels.
+public struct SwipeGesture: Equatable, Sendable {
+    public var window: Int
+    public var phase: GesturePhase
+    public var x: Double
+    public var y: Double
+    public var dx: Double
+    public var dy: Double
+    public var fingers: Int
+
+    public init(window: Int, phase: GesturePhase, x: Double, y: Double, dx: Double, dy: Double, fingers: Int) {
+        self.window = window; self.phase = phase; self.x = x; self.y = y
+        self.dx = dx; self.dy = dy; self.fingers = fingers
+    }
+}
+
+/// A `hold` on window `window`: fingers resting without moving.
+public struct HoldGesture: Equatable, Sendable {
+    public var window: Int
+    public var phase: GesturePhase
+    public var x: Double
+    public var y: Double
+    public var fingers: Int
+
+    public init(window: Int, phase: GesturePhase, x: Double, y: Double, fingers: Int) {
+        self.window = window; self.phase = phase; self.x = x; self.y = y; self.fingers = fingers
+    }
+}
+
 extension ClipboardContent {
     /// A `clipboard` payload: `mime` and `data`, then `alternatives` when there are any.
     init?(cbor body: CBOR) {
@@ -668,11 +742,12 @@ extension ClipboardContent {
                 entries.append(ClipboardEntry(mime: mime, data: data))
             }
         }
-        self.init(entries)
+        self.init(entries, secret: body["secret"]?.bool ?? false)
     }
 
     var cbor: CBOR {
         var pairs: [(CBOR, CBOR)] = [(.text("mime"), CBOR(entries[0].mime)), (.text("data"), .bytes(entries[0].data))]
+        if secret { pairs.append((.text("secret"), CBOR(true))) }
         if entries.count > 1 {
             pairs.append((.text("alternatives"), .array(entries.dropFirst().map {
                 .map([(.text("mime"), CBOR($0.mime)), (.text("data"), .bytes($0.data))])

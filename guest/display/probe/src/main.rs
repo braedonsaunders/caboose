@@ -305,12 +305,13 @@ fn action_messages(id: u64, action: &str) -> Result<Vec<Message>, String> {
             mime: "text/plain;charset=utf-8".into(),
             data: arg.as_bytes().to_vec(),
             alternatives: Vec::new(),
+            secret: false,
         })],
         // copy-file:MIME:PATH copies the file's bytes as MIME, as copying an image does.
         "copy-file" => {
             let (mime, path) = arg.split_once(':').ok_or_else(|| format!("bad copy-file {arg}"))?;
             let data = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
-            vec![Message::ClientClipboard(proto::Clipboard { mime: mime.into(), data, alternatives: Vec::new() })]
+            vec![Message::ClientClipboard(proto::Clipboard { mime: mime.into(), data, alternatives: Vec::new(), secret: false })]
         }
         // copy-files:PATH,... copies files the phone uploaded, as a text/uri-list.
         "copy-files" => {
@@ -382,6 +383,7 @@ fn action_messages(id: u64, action: &str) -> Result<Vec<Message>, String> {
             mime: proto::clipboard::TEXT.into(),
             data: arg.as_bytes().to_vec(),
             alternatives: Vec::new(),
+            secret: false,
         })],
         "drop-files" => {
             let paths: Vec<&str> = arg.split(',').collect();

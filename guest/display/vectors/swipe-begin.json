@@ -1,0 +1,8 @@
+{
+  "name": "swipe-begin",
+  "description": "A three-finger swipe begins on window 7.",
+  "messages": [
+    {"direction": "client", "type": "swipe", "type_id": 150, "fields": {"x": {"$float": 400.5}, "y": {"$float": 812.0}, "dx": {"$float": 0.0}, "dy": {"$float": 0.0}, "id": 7, "phase": "begin", "fingers": 3}}
+  ],
+  "hex": "9648000000a76178fb40790800000000006179fb4089600000000000626478fb0000000000000000626479fb00000000000000006269640765706861736565626567696e6766696e6765727303"
+}

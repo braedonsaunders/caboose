@@ -133,7 +133,7 @@ rejecting the ordinary display.
 
 `features` names only what the server implements. caboose-display lists `vsync`,
 `touch`, `pencil`, `text-input-v3`, `cursor-named`, `clipboard`, `clipboard-types`,
-`drop` and `drag`; `xwayland` when Xwayland runs; `audio` when it plays sound;
+`drop`, `drag` and `gestures`; `xwayland` when Xwayland runs; `audio` when it plays sound;
 `wasm` when it hands games off and the client's hello says `wasm: true`; `webview`
 on the owner display when the client supports agent-app handoff; `devices` when the
 owner's display accepts the phone's hardware and the client's hello says
@@ -165,7 +165,7 @@ Server → client (`0x01`–`0x7F`):
 | `0x22` | `text_input` | `id`, `enabled: bool`, `purpose?: text`, `surrounding?: { text, cursor, anchor }` |
 | `0x28` | `targets` | `id`, `serial: uint`, `targets: [[x, y, w, h, kind]]` |
 | `0x29` | `text_focus` | `id`, `editing: bool` |
-| `0x30` | `clipboard` | `mime`, `data: bytes`, `alternatives?: [{ mime, data }]` |
+| `0x30` | `clipboard` | `mime`, `data: bytes`, `alternatives?: [{ mime, data }]`, `secret?: bool` |
 | `0x31` | `notification` | `id`, `app`, `summary`, `body` |
 | `0x32` | `drop.status` | `accepted?: bool` |
 | `0x33` | `drop.result` | `ok: bool`, `reason?: "rejected"\|"cancelled"\|"timeout"\|"invalid"` |
@@ -195,6 +195,9 @@ Client → server (`0x81`–`0xFF`):
 | `0x92` | `pointer` | `id`, `x`, `y`, `buttons: uint` (1 left, 2 middle, 4 right, 8 back, 16 forward), `scroll?: { dx, dy, precise, seq?, lift?: [vx, vy], hold? }`, `relative?: [dx, dy]` |
 | `0x93` | `key` | `keysym: uint`, `pressed: bool`, `mods: ["shift"\|"control"\|"mod1"\|"mod4"]` |
 | `0x94` | `text` | `commit?`, `preedit?`, `cursor?: [begin, end]`, `delete_before?`, `delete_after?` |
+| `0x95` | `pinch` | `id`, `phase: "begin"\|"update"\|"end"\|"cancel"`, `x`, `y`, `scale`, `rotation`, `fingers: uint` |
+| `0x96` | `swipe` | `id`, `phase`, `x`, `y`, `dx`, `dy`, `fingers: uint` |
+| `0x99` | `hold` | `id`, `phase`, `x`, `y`, `fingers: uint` |
 | `0x97` | `game.decline` | `id`, `reason: text` |
 | `0x98` | `webview.decline` | `id`, `reason: text` |
 | `0xA0` | `clipboard` | as server `clipboard` |
@@ -236,6 +239,19 @@ launches and taskbar entries to windows by `desktop_id` first, then by class
 the X server's record of the client that created it, with `_NET_WM_PID` only when the
 server has none.
 
+### Gestures
+
+A `pinch` is a real pinch, not a shortcut: `phase` is `begin`, `update`, `end` or
+`cancel`; `x`, `y` are its centre in window-local display pixels; `scale` is the
+magnification since `begin` (1 at `begin`); `rotation` is degrees clockwise since the
+previous sample (0 at `begin`); and `fingers` is the finger count. A `swipe` carries
+the centre and its movement since the previous sample (`dx`, `dy`); a `hold` carries
+resting fingers (only `begin`, `end` and `cancel`). caboose-display delivers all three
+through `zwp_pointer_gestures_v1` (pinch, swipe and hold) to the surface under the
+gesture's centre when it began, which keeps the gesture for its whole life; Xwayland
+receives them as XInput 2.4 gestures. The delivery is general: no application, window
+or content is treated specially.
+
 ### Scrolling input
 
 A `pointer` message's `scroll` is in the window's pixels when `precise` (a finger)
@@ -256,6 +272,18 @@ file lists. A copy carries each type at most once and at most 12 MiB in total. T
 client, the server sends text, and the other types only when the client's `hello`
 lists them in `clipboard_types`. From the client, `text/uri-list` may only name
 files the client has uploaded to the computer's transfer area.
+
+A copy whose source offers `x-kde-passwordManagerHint` with the value `secret`
+(a password manager's copy) is marked `secret: true`. It may be pasted, but it is
+never kept: the compositor does not retain it to resend after a reconnect, and the
+phone puts it on its pasteboard local-only with an expiry of about 60 seconds, so it
+is neither synced nor kept in pasteboard history. It is never offered to X11
+applications. Applications are offered the hint itself, so a receiving application
+can tell the copy is secret.
+
+Every clipboard offer is bound to the selection it was made for. Each new selection
+advances the compositor's selection generation, and an offer for an older generation
+gives no data, so a stale offer cannot read a later copy.
 
 ### Drag and drop
 

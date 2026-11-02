@@ -1,0 +1,8 @@
+{
+  "name": "pinch-begin",
+  "description": "A two-finger pinch begins on window 7, centred in the window.",
+  "messages": [
+    {"direction": "client", "type": "pinch", "type_id": 149, "fields": {"x": {"$float": 400.5}, "y": {"$float": 812.0}, "id": 7, "phase": "begin", "scale": {"$float": 1.0}, "fingers": 2, "rotation": {"$float": 0.0}}}
+  ],
+  "hex": "9551000000a76178fb40790800000000006179fb40896000000000006269640765706861736565626567696e657363616c65fb3ff00000000000006766696e676572730268726f746174696f6efb0000000000000000"
+}

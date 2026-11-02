@@ -106,7 +106,7 @@ struct TrackpadGesturesTests {
         #expect(feedback == [.click, .dragBegan, .dragEnded, .secondaryClick])
         #expect(TrackpadGestures.feedback(for: .doubleClick) == .click)
         #expect(TrackpadGestures.feedback(for: .click(button: 2)) == .click)
-        #expect(TrackpadGestures.feedback(for: .zoom(0.2)) == nil)
+        #expect(TrackpadGestures.feedback(for: .pinch(TrackpadGestures.PinchEvent(phase: .update, scale: 1.2, rotation: 0, fingers: 2))) == nil)
         #expect(TrackpadGestures.feedback(for: .workspace(.up)) == nil)
     }
 
@@ -207,17 +207,35 @@ struct TrackpadGesturesTests {
         #expect(gestures.ended(remaining: 0, centroid: nil, at: 1.5) == [])
     }
 
-    @Test func pinchEmitsIncrementalLogScaleAndNeverScrollsOrClicks() {
+    @Test func pinchEmitsBeginUpdateEndAndNeverScrollsOrClicks() {
         var gestures = TrackpadGestures()
         _ = gestures.began(touches: 1, centroid: .zero, at: 1)
         _ = gestures.began(touches: 2, centroid: here, at: 1.02, spread: 50)
         #expect(gestures.moved(touches: 2, centroid: here, at: 1.03, spread: 53) == [])
-        #expect(gestures.moved(touches: 2, centroid: here, at: 1.04, spread: 60) == [.zoom(log(1.2))])
-        #expect(gestures.moved(touches: 2, centroid: CGPoint(x: 150, y: 200), at: 1.05, spread: 66) == [.zoom(log(1.1))])
-        #expect(gestures.moved(touches: 2, centroid: here, at: 1.06, spread: 33) == [.zoom(log(0.5))])
-        #expect(gestures.ended(remaining: 1, centroid: .zero, at: 1.07) == [])
+        #expect(gestures.moved(touches: 2, centroid: here, at: 1.04, spread: 60) == [
+            .pinch(TrackpadGestures.PinchEvent(phase: .begin, scale: 1, rotation: 0, fingers: 2)),
+            .pinch(TrackpadGestures.PinchEvent(phase: .update, scale: 1.2, rotation: 0, fingers: 2)),
+        ])
+        #expect(gestures.moved(touches: 2, centroid: CGPoint(x: 150, y: 200), at: 1.05, spread: 66) == [
+            .pinch(TrackpadGestures.PinchEvent(phase: .update, scale: 66.0 / 50.0, rotation: 0, fingers: 2)),
+        ])
+        #expect(gestures.moved(touches: 2, centroid: here, at: 1.06, spread: 33) == [
+            .pinch(TrackpadGestures.PinchEvent(phase: .update, scale: 33.0 / 50.0, rotation: 0, fingers: 2)),
+        ])
+        #expect(gestures.ended(remaining: 1, centroid: .zero, at: 1.07) == [
+            .pinch(TrackpadGestures.PinchEvent(phase: .end, scale: 33.0 / 50.0, rotation: 0, fingers: 2)),
+        ])
         #expect(gestures.moved(touches: 1, centroid: here, at: 1.08) == [])
         #expect(gestures.ended(remaining: 0, centroid: nil, at: 1.09) == [])
+    }
+
+    @Test func pinchReportsRotationSinceThePreviousSample() {
+        var gestures = TrackpadGestures()
+        _ = gestures.began(touches: 2, centroid: here, at: 1, spread: 50, angle: 0)
+        _ = gestures.moved(touches: 2, centroid: here, at: 1.04, spread: 60, angle: 0)
+        let actions = gestures.moved(touches: 2, centroid: here, at: 1.05, spread: 66, angle: .pi / 6)
+        #expect(actions == [.pinch(TrackpadGestures.PinchEvent(phase: .update, scale: 66.0 / 50.0, rotation: 30, fingers: 2))])
+        #expect(gestures.cancelled() == [.pinch(TrackpadGestures.PinchEvent(phase: .cancel, scale: 66.0 / 50.0, rotation: 0, fingers: 2))])
     }
 
     @Test func normalScrollLatchesDespiteLaterSpreadChange() {
@@ -233,7 +251,10 @@ struct TrackpadGesturesTests {
         var gestures = TrackpadGestures()
         _ = gestures.began(touches: 2, centroid: .zero, at: 1, spread: 50)
         #expect(gestures.moved(touches: 2, centroid: CGPoint(x: 5, y: 0), at: 1.1, spread: 55) == [])
-        #expect(gestures.moved(touches: 2, centroid: CGPoint(x: 5, y: 0), at: 1.2, spread: 60) == [.zoom(log(1.2))])
+        #expect(gestures.moved(touches: 2, centroid: CGPoint(x: 5, y: 0), at: 1.2, spread: 60) == [
+            .pinch(TrackpadGestures.PinchEvent(phase: .begin, scale: 1, rotation: 0, fingers: 2)),
+            .pinch(TrackpadGestures.PinchEvent(phase: .update, scale: 1.2, rotation: 0, fingers: 2)),
+        ])
     }
 
     @Test func invalidOrMissingSpreadDoesNotProduceInvalidZoom() {
@@ -254,24 +275,3 @@ struct TrackpadGesturesTests {
     }
 }
 
-struct TrackpadZoomTests {
-    @Test func smallChangesAccumulateAndReverse() {
-        var zoom = TrackpadZoom()
-        #expect(zoom.consume(0.07) == 0)
-        #expect(zoom.consume(0.07) == 1)
-        #expect(zoom.consume(-0.15) == -1)
-    }
-    @Test func resetAndInvalidInputDoNotLeakIntoNextPinch() {
-        var zoom = TrackpadZoom()
-        #expect(zoom.consume(0.1) == 0)
-        zoom.reset()
-        #expect(zoom.consume(0.05) == 0)
-        #expect(zoom.consume(.infinity) == 0)
-        #expect(zoom.consume(.nan) == 0)
-    }
-    @Test func enormousJumpsAreBounded() {
-        var zoom = TrackpadZoom()
-        #expect(zoom.consume(1_000_000) == 8)
-        #expect(zoom.consume(-1_000_000) == -8)
-    }
-}

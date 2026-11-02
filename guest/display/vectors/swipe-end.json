@@ -1,0 +1,8 @@
+{
+  "name": "swipe-end",
+  "description": "The swipe ends.",
+  "messages": [
+    {"direction": "client", "type": "swipe", "type_id": 150, "fields": {"x": {"$float": 390.5}, "y": {"$float": 800.0}, "dx": {"$float": 0.0}, "dy": {"$float": 0.0}, "id": 7, "phase": "end", "fingers": 3}}
+  ],
+  "hex": "9646000000a76178fb40786800000000006179fb4089000000000000626478fb0000000000000000626479fb00000000000000006269640765706861736563656e646766696e6765727303"
+}

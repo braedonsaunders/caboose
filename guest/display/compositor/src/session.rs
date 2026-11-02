@@ -45,6 +45,7 @@ pub fn features(xwayland: bool, audio: bool, wasm: bool) -> Vec<String> {
         "clipboard-types",
         "drop",
         "drag",
+        "gestures",
     ];
     if xwayland {
         f.push("xwayland");
@@ -184,6 +185,9 @@ impl State {
             Message::DropPerform(c) => self.drop_perform(c),
             Message::DragTake => self.drag_take(),
             Message::Pencil(p) => self.pencil(&p),
+            Message::Pinch(m) => self.pinch(&m),
+            Message::Swipe(m) => self.swipe(&m),
+            Message::Hold(m) => self.hold(&m),
             Message::Devices { devices } => {
                 if let (Some(hub), true) = (&self.devices, self.session.as_ref().is_some_and(|s| s.devices)) {
                     hub.offer(devices);
@@ -431,11 +435,8 @@ impl State {
     /// paces it).
     pub(crate) fn release_paced_callbacks(&mut self, id: u64) {
         let Some(w) = self.windows.get(id) else { return };
-        let paced = self
-            .session
-            .as_ref()
-            .and_then(|s| s.last_vsync.get(&w.display))
-            .is_some_and(|t| t.elapsed() < VSYNC_STALE);
+        let paced =
+            self.session.as_ref().and_then(|s| s.last_vsync.get(&w.display)).is_some_and(|t| t.elapsed() < VSYNC_STALE);
         if paced && w.picture.callbacks_pending && w.picture.can_release_callbacks() {
             self.release_frame_callbacks(id);
         }

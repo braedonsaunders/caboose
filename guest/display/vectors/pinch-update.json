@@ -1,0 +1,8 @@
+{
+  "name": "pinch-update",
+  "description": "The pinch grew to 1.5 times and turned 15 degrees clockwise since the last sample.",
+  "messages": [
+    {"direction": "client", "type": "pinch", "type_id": 149, "fields": {"x": {"$float": 402.0}, "y": {"$float": 810.5}, "id": 7, "phase": "update", "scale": {"$float": 1.5}, "fingers": 2, "rotation": {"$float": 15.0}}}
+  ],
+  "hex": "9552000000a76178fb40792000000000006179fb40895400000000006269640765706861736566757064617465657363616c65fb3ff80000000000006766696e676572730268726f746174696f6efb402e000000000000"
+}

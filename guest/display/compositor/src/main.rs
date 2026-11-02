@@ -447,6 +447,7 @@ fn run(config: Config) -> Result<(), String> {
     seat.add_touch();
     let tablet = pencil::advertise(&dh, &seat);
     let data_device = DataDeviceState::new::<State>(&dh);
+    let pointer_gestures = smithay::wayland::pointer_gestures::PointerGesturesState::new::<State>(&dh);
     let primary_selection = PrimarySelectionState::new::<State>(&dh);
     let xwayland_shell = XWaylandShellState::new::<State>(&dh);
     let text_inputs = text_input::TextInputs::new(&dh);
@@ -558,6 +559,7 @@ fn run(config: Config) -> Result<(), String> {
         dmabuf,
         seat_state,
         data_device,
+        pointer_gestures,
         primary_selection,
         xwayland_shell,
         seat,

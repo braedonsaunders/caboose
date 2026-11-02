@@ -1,7 +1,7 @@
 # Caboose input
 
 The input system takes what the phone sends in the display protocol (`pointer`, `touch`,
-`pencil`, `key`, `text`; [display.md](display.md#messages)) and delivers it to
+`pencil`, `pinch`, `swipe`, `hold`, `key`, `text`; [display.md](display.md#messages)) and delivers it to
 applications the way a Linux input stack does: as Wayland seat events, and through
 Xwayland as core X and XInput 2 events. It is independent of the pictures: input is
 never turned into a change of what the phone shows, and a picture never stands in for
@@ -14,6 +14,17 @@ an application's own response to input.
 | `guest/display/compositor/src/input/xwayland.rs` | The X11 finger scroll distance, set on Xwayland |
 | `guest/display/compositor/src/pencil.rs` | Apple Pencil as the seat's tablet pen |
 | `guest/xwayland/touchpad-scroll.patch` | Xwayland's touchpad device for finger scrolling ([guest/xwayland](../guest/xwayland/README.md)) |
+
+## Gestures
+
+A `pinch`, `swipe` or `hold` from the phone is delivered through
+`zwp_pointer_gestures_v1` v3 to the surface under the gesture's centre when it began:
+pinch with its scale since `begin` and its rotation since the previous sample, swipe
+with the centre's movement, and hold with its finger count. The target does not change
+while the gesture runs. Through Xwayland the same gestures arrive as XInput 2.4
+gesture events, so an X11 application that understands pinch zooms itself. No
+application is given a keyboard shortcut or any other substitute, and no application
+is treated specially.
 
 ## Scrolling
 

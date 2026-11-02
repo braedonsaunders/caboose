@@ -31,6 +31,11 @@ pub const TEXT_MIMES: &[&str] = &[TEXT, "UTF8_STRING", "text/plain", "TEXT", "ST
 const IMAGE_MIMES: &[&str] = &[PNG, JPEG];
 /// GNOME's and Thunar's list of copied files: `copy` or `cut`, then one URI per line.
 const GNOME_FILES: &str = "x-special/gnome-copied-files";
+/// The hint a source offers with the value `secret` when its copy must not be kept
+/// (KeePassXC and other password managers): `x-kde-passwordManagerHint`.
+pub const SECRET_HINT: &str = "x-kde-passwordManagerHint";
+/// The hint's secret value, as bytes.
+pub const SECRET_VALUE: &[u8] = b"secret";
 /// How long an application has to hand over what it copied.
 const READ_TIMEOUT: Duration = Duration::from_secs(5);
 /// How long an application has to take what it pastes.
@@ -42,7 +47,9 @@ pub const X11_TIMEOUT: Duration = Duration::from_secs(10);
 /// Who provides a selection the compositor owns.
 #[derive(Debug, Clone)]
 pub enum Owner {
-    X11,
+    /// An X11 copy, read from X11 on demand, bound to selection generation `u64`:
+    /// an offer made for an older selection gives nothing.
+    X11(u64),
     Phone(Arc<Offer>),
 }
 
@@ -51,11 +58,20 @@ pub enum Owner {
 pub struct Offer {
     /// Every type applications may ask for, with its bytes.
     types: Vec<(String, Arc<Vec<u8>>)>,
+    /// The selection generation this offer was made for.
+    pub generation: u64,
+    /// A secret copy: pasteable, never kept, and never offered to X11.
+    pub secret: bool,
 }
 
 impl Offer {
     /// The offer for a copy that passed [`types::validate`].
     pub fn new(content: &proto::Clipboard) -> Self {
+        Self::with_generation(content, 0)
+    }
+
+    /// The offer for a copy, bound to selection generation `generation`.
+    pub fn with_generation(content: &proto::Clipboard, generation: u64) -> Self {
         let mut offered = Vec::new();
         for (mime, data) in content.entries() {
             let data = Arc::new(data.to_vec());
@@ -76,7 +92,15 @@ impl Offer {
                 other => offered.push((other.to_string(), data)),
             }
         }
-        Self { types: offered }
+        if content.secret {
+            offered.push((SECRET_HINT.to_string(), Arc::new(SECRET_VALUE.to_vec())));
+        }
+        Self { types: offered, generation, secret: content.secret }
+    }
+
+    /// Whether this offer still names the current selection.
+    pub fn is_current(&self, generation: u64) -> bool {
+        self.generation == generation
     }
 
     /// The types applications are offered for content in the protocol's `types`.
@@ -174,6 +198,11 @@ fn normalize(offered: &str, data: Vec<u8>) -> Vec<u8> {
 /// A copy from a set of representations read from an application: the valid ones, in
 /// the protocol's order, or None if none is.
 pub fn assemble(read: Vec<(&'static str, Vec<u8>)>) -> Option<proto::Clipboard> {
+    assemble_secret(read, false)
+}
+
+/// As [`assemble`], marking the copy secret when its source offered the secret hint.
+pub fn assemble_secret(read: Vec<(&'static str, Vec<u8>)>, secret: bool) -> Option<proto::Clipboard> {
     let mut entries: Vec<ClipboardEntry> = types::TYPES
         .iter()
         .filter_map(|t| read.iter().find(|(m, _)| m == t))
@@ -184,7 +213,7 @@ pub fn assemble(read: Vec<(&'static str, Vec<u8>)>) -> Option<proto::Clipboard> 
         return None;
     }
     let first = entries.remove(0);
-    let mut clip = proto::Clipboard { mime: first.mime, data: first.data, alternatives: entries };
+    let mut clip = proto::Clipboard { mime: first.mime, data: first.data, alternatives: entries, secret };
     // Over the limit together (a file list grows a little as it is normalized): the
     // largest alternative goes first.
     while types::validate(&clip).is_err() && !clip.alternatives.is_empty() {
@@ -206,7 +235,7 @@ pub fn for_client(content: &proto::Clipboard, takes: &[String]) -> Option<proto:
         return None;
     }
     let first = entries.remove(0);
-    Some(proto::Clipboard { mime: first.mime, data: first.data, alternatives: entries })
+    Some(proto::Clipboard { mime: first.mime, data: first.data, alternatives: entries, secret: content.secret })
 }
 
 /// A representation read from an application, for the copy numbered `serial`; None
@@ -220,7 +249,20 @@ pub struct Read {
 /// What to read of a copy (or a drag) offering `offered`: each type to ask for, with
 /// where its bytes go once read, tagged `serial`.
 pub fn sinks(serial: u64, offered: &[String], done: &Sender<Read>) -> Vec<(String, Sink)> {
-    wanted(offered).into_iter().map(|w| (w.offered.clone(), Sink { serial, wanted: w, done: done.clone() })).collect()
+    let mut out: Vec<(String, Sink)> = wanted(offered)
+        .into_iter()
+        .map(|w| (w.offered.clone(), Sink { serial, wanted: w, done: done.clone() }))
+        .collect();
+    if offered.iter().any(|m| m == SECRET_HINT) {
+        let w = Wanted { offered: SECRET_HINT.to_string(), mime: SECRET_HINT, limit: 64 };
+        out.push((SECRET_HINT.to_string(), Sink { serial, wanted: w, done: done.clone() }));
+    }
+    out
+}
+
+/// Whether a read of the secret hint marks its copy secret.
+pub fn is_secret_hint(mime: &str, data: &[u8]) -> bool {
+    mime == SECRET_HINT && data.trim_ascii() == SECRET_VALUE
 }
 
 /// Whether every file a copy names is in the transfer area, where the phone's files are.
@@ -235,6 +277,7 @@ struct Pending {
     serial: u64,
     expected: usize,
     read: Vec<(&'static str, Vec<u8>)>,
+    secret: bool,
 }
 
 /// Clipboard state: the channel reads arrive on, the copy being read, and what the
@@ -243,13 +286,17 @@ pub struct Clipboard {
     pub done: Sender<Read>,
     serial: u64,
     pending: Option<Pending>,
-    /// The copy the phone has (sent to it, or copied on it).
+    /// The current selection generation. Every new selection advances it, so an
+    /// offer bound to an older selection can no longer be read.
+    pub generation: u64,
+    /// The copy the phone has (sent to it, or copied on it). A secret copy is
+    /// never kept here: it is sent once and not resent after a reconnect.
     pub last_sent: Option<Arc<proto::Clipboard>>,
 }
 
 impl Clipboard {
     pub fn new(done: Sender<Read>) -> Self {
-        Self { done, serial: 0, pending: None, last_sent: None }
+        Self { done, serial: 0, pending: None, generation: 0, last_sent: None }
     }
 
     /// Starts reading a new copy offering `offered`; returns what to read, each with
@@ -257,8 +304,12 @@ impl Clipboard {
     fn begin(&mut self, offered: &[String]) -> Vec<(String, Sink)> {
         self.serial += 1;
         let sinks = sinks(self.serial, offered, &self.done);
-        self.pending =
-            (!sinks.is_empty()).then(|| Pending { serial: self.serial, expected: sinks.len(), read: Vec::new() });
+        self.pending = (!sinks.is_empty()).then(|| Pending {
+            serial: self.serial,
+            expected: sinks.len(),
+            read: Vec::new(),
+            secret: false,
+        });
         sinks
     }
 }
@@ -307,10 +358,12 @@ impl State {
             tracing::warn!("clipboard: refused the phone's copy: a file is not in the transfer area");
             return;
         }
-        let offer = Arc::new(Offer::new(&c));
+        self.clipboard.generation += 1;
+        let offer = Arc::new(Offer::with_generation(&c, self.clipboard.generation));
         self.clipboard.serial += 1;
         self.clipboard.pending = None;
-        self.clipboard.last_sent = Some(Arc::new(c));
+        // A secret copy is offered for pasting but never kept for a reconnect.
+        self.clipboard.last_sent = (!c.secret).then(|| Arc::new(c));
         let mimes = offer.mime_types();
         set_data_device_selection(&self.dh, &self.seat, mimes.clone(), Owner::Phone(offer));
         if let Some(xwm) = self.xwm.as_mut() {
@@ -322,6 +375,8 @@ impl State {
 
     /// A Wayland client copied: tell X11, and read the copy for the phone.
     pub fn clipboard_from_wayland(&mut self, ty: SelectionTarget, source: Option<SelectionSource>) {
+        // A new selection invalidates every offer made for an older one.
+        self.clipboard.generation += 1;
         if let Some(xwm) = self.xwm.as_mut() {
             if let Err(e) = xwm.new_selection(ty, source.as_ref().map(|s| s.mime_types())) {
                 tracing::warn!("cannot offer the selection to X11: {e}");
@@ -388,19 +443,25 @@ impl State {
         pending.expected -= 1;
         if let Some(data) = read.data {
             tracing::debug!("clipboard: read {} bytes of {} from the computer", data.len(), read.mime);
-            pending.read.push((read.mime, data));
+            if read.mime == SECRET_HINT {
+                pending.secret = is_secret_hint(read.mime, &data);
+            } else {
+                pending.read.push((read.mime, data));
+            }
         }
         if pending.expected > 0 {
             return;
         }
         let pending = self.clipboard.pending.take().unwrap();
-        let Some(content) = assemble(pending.read) else { return };
+        let Some(content) = assemble_secret(pending.read, pending.secret) else { return };
         // The phone's own copy coming back through an application is not news.
         if self.clipboard.last_sent.as_deref() == Some(&content) {
             return;
         }
+        let secret = content.secret;
         let content = Arc::new(content);
-        self.clipboard.last_sent = Some(content.clone());
+        // A secret copy reaches the phone once; it is not kept to resend.
+        self.clipboard.last_sent = (!secret).then(|| content.clone());
         self.send_clipboard(&content);
     }
 
@@ -476,6 +537,30 @@ mod tests {
     }
 
     #[test]
+    fn a_secret_hint_marks_the_copy_and_it_is_not_kept() {
+        assert!(is_secret_hint(SECRET_HINT, b"secret"));
+        assert!(is_secret_hint(SECRET_HINT, b"secret\r\n"));
+        assert!(!is_secret_hint(SECRET_HINT, b"none"));
+        assert!(!is_secret_hint(TEXT, b"secret"));
+        let clip = assemble_secret(vec![(TEXT, b"hunter2".to_vec())], true).unwrap();
+        assert!(clip.secret);
+        // The hint itself is not a representation the phone is sent.
+        assert_eq!(clip.entries().count(), 1);
+        let sent = for_client(&clip, &[]).unwrap();
+        assert!(sent.secret);
+    }
+
+    #[test]
+    fn an_offer_only_reads_the_selection_it_was_made_for() {
+        let clip = proto::Clipboard { mime: TEXT.into(), data: b"hi".to_vec(), alternatives: vec![], secret: true };
+        let offer = Offer::with_generation(&clip, 7);
+        assert!(offer.is_current(7));
+        assert!(!offer.is_current(8));
+        assert!(offer.secret);
+        assert_eq!(offer.data(SECRET_HINT).unwrap().as_slice(), SECRET_VALUE);
+    }
+
+    #[test]
     fn the_phones_copy_is_offered_in_every_type_applications_ask_for() {
         let clip = proto::Clipboard {
             mime: TEXT.into(),
@@ -484,6 +569,7 @@ mod tests {
                 mime: URI_LIST.into(),
                 data: b"file:///h/a\r\nfile:///h/b\r\n".to_vec(),
             }],
+            secret: false,
         };
         let offer = Offer::new(&clip);
         let mimes = offer.mime_types();

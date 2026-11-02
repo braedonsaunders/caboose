@@ -174,6 +174,9 @@ pub struct State {
     pub dmabuf: DmabufState,
     pub seat_state: SeatState<State>,
     pub data_device: DataDeviceState,
+    /// Held so the `zwp_pointer_gestures_v1` global stays registered.
+    #[allow(dead_code)]
+    pub pointer_gestures: smithay::wayland::pointer_gestures::PointerGesturesState,
     pub primary_selection: PrimarySelectionState,
     pub xwayland_shell: XWaylandShellState,
     pub seat: Seat<State>,
@@ -1431,8 +1434,17 @@ impl SelectionHandler for State {
         owner: &crate::clipboard::Owner,
     ) {
         match owner {
-            crate::clipboard::Owner::Phone(offer) => offer.send(&mime_type, fd),
-            crate::clipboard::Owner::X11 => {
+            // An offer bound to an older selection gives nothing: dropping the
+            // descriptor is the refusal, so a stale offer cannot read a later copy.
+            crate::clipboard::Owner::Phone(offer) => {
+                if offer.is_current(self.clipboard.generation) {
+                    offer.send(&mime_type, fd);
+                }
+            }
+            crate::clipboard::Owner::X11(generation) => {
+                if *generation != self.clipboard.generation {
+                    return;
+                }
                 // Smithay's window manager transfers text; other types are read directly.
                 if ty == SelectionTarget::Clipboard && !crate::x11sel::smithay_transfers(&mime_type) {
                     if let Some(access) = self.x11.clone() {
@@ -1555,6 +1567,7 @@ impl smithay::wayland::pointer_constraints::PointerConstraintsHandler for State 
     }
 }
 smithay::delegate_data_device!(State);
+smithay::delegate_pointer_gestures!(State);
 smithay::delegate_primary_selection!(State);
 smithay::delegate_output!(State);
 smithay::delegate_viewporter!(State);

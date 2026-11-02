@@ -270,10 +270,14 @@ impl XwmHandler for State {
         if selection == SelectionTarget::Clipboard {
             let phone = current_data_device_selection_userdata(&self.seat).and_then(|owner| match &*owner {
                 crate::clipboard::Owner::Phone(offer) => Some(offer.clone()),
-                crate::clipboard::Owner::X11 => None,
+                crate::clipboard::Owner::X11(_) => None,
             });
             if let Some(offer) = phone {
-                offer.send(&mime_type, fd);
+                // Secrets never go to X11: in X the pasted text is readable by
+                // any client (docs/display.md, Clipboard).
+                if !offer.secret && offer.is_current(self.clipboard.generation) {
+                    offer.send(&mime_type, fd);
+                }
                 return;
             }
         }
@@ -294,10 +298,14 @@ impl XwmHandler for State {
         use crate::clipboard::Owner;
         match selection {
             SelectionTarget::Clipboard => {
-                set_data_device_selection(&self.dh, &self.seat, mime_types.clone(), Owner::X11);
+                self.clipboard.generation += 1;
+                set_data_device_selection(&self.dh, &self.seat, mime_types.clone(), Owner::X11(self.clipboard.generation));
                 self.clipboard_from_x11(&mime_types);
             }
-            SelectionTarget::Primary => set_primary_selection(&self.dh, &self.seat, mime_types, Owner::X11),
+            SelectionTarget::Primary => {
+                self.clipboard.generation += 1;
+                set_primary_selection(&self.dh, &self.seat, mime_types, Owner::X11(self.clipboard.generation))
+            }
         }
     }
 

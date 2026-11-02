@@ -778,7 +778,7 @@ public final class CabooseDisplaySession: DisplaySession {
     public func offerClipboard(_ content: ClipboardContent) {
         guard state == .ready, has("clipboard") else { return }
         // A server without `clipboard-types` takes text only.
-        let offered = has("clipboard-types") ? content : ClipboardContent(content.entries.filter { $0.mime == ClipboardPolicy.text })
+        let offered = has("clipboard-types") ? content : ClipboardContent(content.entries.filter { $0.mime == ClipboardPolicy.text }, secret: content.secret)
         guard let offered, offered != lastClipboard, ClipboardPolicy.validate(offered) == nil else { return }
         lastClipboard = offered
         send(.clipboard(offered))
@@ -893,6 +893,25 @@ public final class CabooseDisplaySession: DisplaySession {
         send(.pointer(window: window.id, x: Double(point.x), y: Double(point.y), buttons: buttons,
                       scroll: (Double(dx), Double(dy), true), scrollSeq: nextScrollSeq(window.id),
                       scrollLift: lift))
+    }
+
+    /// A real pinch, as a `pinch` gesture for the application itself to zoom with.
+    /// A server without `gestures` gets nothing: no shortcut is substituted.
+    public func pinch(phase: GesturePhase, scale: Double, rotation: Double, fingers: Int, in window: RemoteWindow, at point: CGPoint) {
+        guard window.game == nil, has("gestures"), scale.isFinite, scale > 0, rotation.isFinite else { return }
+        send(.pinch(PinchGesture(window: window.id, phase: phase, x: Double(point.x), y: Double(point.y),
+                                 scale: scale, rotation: rotation, fingers: max(1, fingers))))
+    }
+
+    public func swipe(phase: GesturePhase, dx: Double, dy: Double, fingers: Int, in window: RemoteWindow, at point: CGPoint) {
+        guard window.game == nil, has("gestures") else { return }
+        send(.swipe(SwipeGesture(window: window.id, phase: phase, x: Double(point.x), y: Double(point.y),
+                                 dx: Double(dx), dy: Double(dy), fingers: max(1, fingers))))
+    }
+
+    public func hold(phase: GesturePhase, fingers: Int, in window: RemoteWindow, at point: CGPoint) {
+        guard window.game == nil, has("gestures") else { return }
+        send(.hold(HoldGesture(window: window.id, phase: phase, x: Double(point.x), y: Double(point.y), fingers: max(1, fingers))))
     }
 
     public func holdScroll() {
