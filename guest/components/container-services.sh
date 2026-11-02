@@ -53,9 +53,11 @@ owner_service() {
     printf '%s\n' "$pid" > "$pidfile"
     if [ "${MODE:-}" = restart ]; then
       start-stop-daemon --stop --signal TERM --pidfile "$pidfile"
-      for _ in $(seq 1 10); do
+      # Ten seconds to finish what it holds (a terminal closes its sessions), then KILL.
+      for i in $(seq 1 15); do
         [ ! -r "/proc/$pid/stat" ] && break
         [ "$(awk '{print $3}' "/proc/$pid/stat")" = Z ] && break
+        [ "$i" = 10 ] && kill -KILL "$pid" 2>/dev/null
         sleep 1
       done
       if [ -r "/proc/$pid/stat" ] && [ "$(awk '{print $3}' "/proc/$pid/stat")" != Z ]; then
