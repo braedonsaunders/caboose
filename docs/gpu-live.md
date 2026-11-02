@@ -846,7 +846,10 @@ phone waits for the acquire's fence on the CPU instead (not at all in mailbox, a
 50 ms in FIFO), reports a present whose image has not arrived as queued and released, and
 gives the acquired image to the next present once it has. The host relay logs why it ended any relay early (phone silence, a full
 queue, a socket error or an abnormal close), and each side may queue up to 2048 messages
-or 8 MiB before a peer that keeps sending past that is ended.
+or 8 MiB before a peer that keeps sending past that is ended. The phone stops reading its
+socket while its decoder has half of that queued (several applications connecting at once)
+and reads again below a quarter; the relay meanwhile holds the guest back, so a slow decoder
+never ends the executor.
 
 Native surface preparation, query, present and retirement run off main. Only
 layer attachment and detachment are asynchronously dispatched to main; main never

@@ -58,6 +58,8 @@ public final class LiveGPUSession: @unchecked Sendable {
     private var stopping = false
     private var opened = false
     private var draining = false
+    /// The transport's receiving is held back while the decoder catches up (under `lock`).
+    private var receivePaused = false
     private var confirmedRetirement = false
     public var remoteRetirementCompleted: Bool { lock.withLock { confirmedRetirement } }
     private var drainDeadline: DispatchWorkItem?
@@ -188,8 +190,22 @@ public final class LiveGPUSession: @unchecked Sendable {
             if let error = ingress.admit(charge) {
                 lock.unlock(); stop(error); return
             }
+            // The decoder is behind (several applications connecting at once): hold the
+            // socket back until it catches up, rather than overflow and end the executor.
+            if !receivePaused, ingress.full {
+                receivePaused = true
+                (transport as? LiveGPUReceiveFlow)?.setReceivingPaused(true)
+            }
             worker.async { [self] in
-                defer { ingress.release(charge) }
+                defer {
+                    ingress.release(charge)
+                    let resume = lock.withLock { () -> Bool in
+                        guard receivePaused, ingress.drained else { return false }
+                        receivePaused = false
+                        return true
+                    }
+                    if resume { (transport as? LiveGPUReceiveFlow)?.setReceivingPaused(false) }
+                }
                 guard ingress.active else { return }
                 do { try consumer.consume(data) } catch { stop(error) }
             }

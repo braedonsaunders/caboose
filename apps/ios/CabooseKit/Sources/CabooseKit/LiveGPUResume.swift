@@ -101,7 +101,7 @@ enum LiveGPUResumeWire {
 /// retained until the broker acknowledges it, the new socket opens with RESUME, and each side
 /// retransmits what the other has not received. The session and its native executor never see
 /// the gap. Without negotiation it behaves exactly as one socket.
-final class LiveGPUResumableTransport: LiveGPUTransport, @unchecked Sendable {
+final class LiveGPUResumableTransport: LiveGPUTransport, LiveGPUReceiveFlow, @unchecked Sendable {
     struct Policy {
         /// How long after a loss the phone keeps trying to resume before the executor ends.
         var holdWindow: TimeInterval = 30
@@ -130,6 +130,8 @@ final class LiveGPUResumableTransport: LiveGPUTransport, @unchecked Sendable {
     private var started = false
     private var ended = false
     private var openedOnce = false
+    /// Receiving held back by the session; a new socket starts held back too.
+    private var receivePaused = false
     private var identity: (executor: Data, generation: UInt64)?
     // Inbound: the highest contiguous sequence delivered upward, and acknowledgement pacing.
     private var received: UInt64 = 0
@@ -267,7 +269,16 @@ final class LiveGPUResumableTransport: LiveGPUTransport, @unchecked Sendable {
         return socket
     }
 
+    func setReceivingPaused(_ paused: Bool) {
+        let socket = condition.withLock { () -> LiveGPUResumeSocket? in
+            receivePaused = paused
+            return self.socket
+        }
+        (socket as? LiveGPUReceiveFlow)?.setReceivingPaused(paused)
+    }
+
     private func attach(_ socket: LiveGPUResumeSocket) {
+        if condition.withLock({ receivePaused }) { (socket as? LiveGPUReceiveFlow)?.setReceivingPaused(true) }
         socket.open { [weak self, weak socket] incoming in
             guard let self, let socket else { return }
             self.receive(incoming, from: socket)

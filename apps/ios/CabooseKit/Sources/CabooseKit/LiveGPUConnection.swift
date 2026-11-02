@@ -22,6 +22,13 @@ public enum LiveGPUTransportEvent: Sendable {
     case opened, bytes(Data), closed(Error?)
 }
 
+/// A transport whose receiving the session holds back while its decoder is behind, so the
+/// host waits (its relay pauses the guest until the phone reads) instead of the phone's
+/// queue overflowing and ending the executor.
+protocol LiveGPUReceiveFlow: AnyObject {
+    func setReceivingPaused(_ paused: Bool)
+}
+
 /// Counts retained logical work, including running work and any coalesced send
 /// scratch buffer. This is retained logical byte accounting, not an allocator or
 /// physical RSS proof. Revocation never releases a running permit.
@@ -32,6 +39,10 @@ final class LiveGPUBudget: @unchecked Sendable {
     /// stream (video, a pipeline compile backlog) queues many small messages.
     static let byteLimit = 8 * 1024 * 1024
     static let countLimit = 2048
+    /// Receiving pauses above these and resumes below a quarter of the limits, far from the
+    /// limits themselves: a paused socket delivers at most the message it already holds.
+    static let pauseBytes = byteLimit / 2
+    static let pauseCount = countLimit / 2
     private let lock = NSLock()
     private var bytes = 0
     private var count = 0
@@ -65,6 +76,10 @@ final class LiveGPUBudget: @unchecked Sendable {
     func revoke() { lock.withLock { revoked = true } }
     var active: Bool { lock.withLock { !revoked } }
     var retained: (bytes: Int, count: Int) { lock.withLock { (bytes, count) } }
+    /// Whether retained work is past the pause watermark.
+    var full: Bool { lock.withLock { bytes >= Self.pauseBytes || count >= Self.pauseCount } }
+    /// Whether retained work has drained below the resume watermark.
+    var drained: Bool { lock.withLock { bytes <= Self.pauseBytes / 2 && count <= Self.pauseCount / 2 } }
 }
 
 /// Serial outbound queue helper that coalesces a ready FIFO prefix into one
@@ -213,6 +228,9 @@ public final class LiveGPUConnection: NSObject, LiveGPUResumeSocket, URLSessionW
         return Double(Self.clock() &- heard) / 1e9
     }
     private var heardAt = LiveGPUConnection.clock() // under credentialLock
+    /// Receiving held back by the session (on `queue`), and whether a receive is outstanding.
+    private var receivePaused = false
+    private var receiving = false
     private func heard() { credentialLock.withLock { heardAt = Self.clock() } }
     private static func clock() -> UInt64 { clock_gettime_nsec_np(CLOCK_MONOTONIC) }
 
@@ -342,9 +360,11 @@ public final class LiveGPUConnection: NSObject, LiveGPUResumeSocket, URLSessionW
     }
 
     private func receive() {
-        guard !ended, budget.active, let task else { return }
+        guard !ended, budget.active, !receivePaused, !receiving, let task else { return }
+        receiving = true
         task.receive { [self] result in
             queue.async { [self] in
+                receiving = false
                 guard !ended, budget.active else { return }
                 switch result {
                 case .success(let message):
@@ -354,6 +374,14 @@ public final class LiveGPUConnection: NSObject, LiveGPUResumeSocket, URLSessionW
                 case .failure(let error): finish(error)
                 }
             }
+        }
+    }
+
+    func setReceivingPaused(_ paused: Bool) {
+        queue.async { [self] in
+            guard receivePaused != paused else { return }
+            receivePaused = paused
+            if !paused && ready { receive() }
         }
     }
 
@@ -422,3 +450,5 @@ public final class LiveGPUConnection: NSObject, LiveGPUResumeSocket, URLSessionW
         completionHandler(nil)
     }
 }
+
+extension LiveGPUConnection: LiveGPUReceiveFlow {}
