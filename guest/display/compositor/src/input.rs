@@ -179,6 +179,15 @@ impl State {
         id
     }
 
+    /// Records an input that only lets go (a key's release, the last fingers
+    /// lifting): applications seldom draw for one, so it starts no latency entry,
+    /// which would otherwise be charged the window's next commit, for whatever
+    /// input came next.
+    fn trace_release(&mut self, kind: &'static str) {
+        let at = self.now_us();
+        self.input_trace.push(crate::frame_trace::Input { at_us: at, kind, id: 0 });
+    }
+
     fn trace_delivered(&mut self, id: u64) {
         if id != 0 {
             let at = self.now_us();
@@ -383,7 +392,13 @@ impl State {
     }
 
     pub fn touch(&mut self, m: &proto::Touch) {
-        let trace_id = self.trace_input("touch", m.id);
+        let lifting = !m.points.is_empty() && m.points.iter().all(|p| matches!(p.phase, TouchPhase::Up));
+        let trace_id = if lifting {
+            self.trace_release("touch");
+            0
+        } else {
+            self.trace_input("touch", m.id)
+        };
         let Some(touch) = self.seat.get_touch() else { return };
         if self.input.coast.is_some() && m.points.iter().any(|p| matches!(p.phase, TouchPhase::Down)) {
             self.end_scroll();
@@ -453,7 +468,12 @@ impl State {
 
     pub fn key(&mut self, m: &proto::Key) {
         let focus_window = self.keyboard_focus_surface().and_then(|s| self.window_of_surface(&s)).unwrap_or(0);
-        let trace_id = self.trace_input("key", focus_window);
+        let trace_id = if m.pressed {
+            self.trace_input("key", focus_window)
+        } else {
+            self.trace_release("key");
+            0
+        };
         let Some(pos) = self.input.keysyms.lookup(m.keysym) else {
             // Not on the layout: text-input-v3 can still take it as text.
             if m.pressed {

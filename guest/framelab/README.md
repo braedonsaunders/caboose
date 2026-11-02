@@ -57,7 +57,9 @@ One JSON file per app (`<app>.json`), and `summary.md`, a table with one row per
   `CABOOSE_GPU_PRESENT_RATE` counters, the rate and the largest gap come from them.
 - **`latency`**: the compositor's per-input correlation (`frames` latency entries):
   for each input, its id from the phone event through delivery to the client, the
-  client's next commit, and that commit's present, as p50/p95/max per stage. Timing
+  client's next commit, and that commit's present, as p50/p95/max per stage. An input
+  that only lets go (a key's release, the last fingers lifting) starts no entry: it
+  seldom draws, and would be charged the next input's commit. Timing
   only — entries never carry a key code — and the trace stops itself 120 s after
   its first traced input. Absent when the compositor traced nothing.
 - **`input`**: for each injected input, the time to the first frame after it, to the
