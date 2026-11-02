@@ -1,0 +1,66 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Caboose <caboose@invalid>
+Date: Sun, 1 Nov 2026 00:00:00 +0000
+Subject: [PATCH 54/54] Consume an imported sync file with the wait that uses it
+
+A SYNC_FD import is temporary: the first wait consumes it and the semaphore
+returns to its permanent payload. The driver kept the imported descriptor on
+the semaphore forever, so when Zink recycled one of its sync file semaphores
+as a signal semaphore (its dma-buf export), the signal was pruned from the
+host submission while the semaphore was still recorded as signalled on the
+queue; the sync file export then waited, on the phone, for a signal that
+never came, until Metal's command buffer timeout lost the device.
+
+In socket mode a wait now takes the imported descriptor off the semaphore and
+closes it once waited, and a signal drops an unwaited import, so the host
+always signals what a later export waits for.
+
+diff --git a/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp b/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp
+index 25c5b78..20a62c9 100644
+--- a/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp
++++ b/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp
+@@ -8023,6 +8023,8 @@ VkResult ResourceTracker::on_vkQueueSubmitTemplate(void* context, VkResult input
+ #endif
+ #if defined(VK_USE_PLATFORM_ANDROID_KHR) || DETECT_OS_LINUX
+     std::vector<int> preSignalSyncFds;
++    // Imported sync files this submission consumed: closed once waited.
++    std::vector<int> cabooseConsumedSyncFds;
+ #endif
+ 
+     std::vector<std::pair<zx_handle_t, zx_koid_t>> post_wait_events;
+@@ -8069,6 +8071,13 @@ VkResult ResourceTracker::on_vkQueueSubmitTemplate(void* context, VkResult input
+                     if (semInfo.syncFd.has_value()) {
+                         preSignalSyncFds.push_back(semInfo.syncFd.value());
+                         waitSemsToRemove.push_back(semaphore);
++                        // Socket mode: a sync file import is temporary and this wait consumes
++                        // it; the semaphore is the host one again for its next use (Zink
++                        // recycles its sync file semaphores as signal semaphores).
++                        if (!usingDirectMapping()) {
++                            semInfo.syncFd.reset();
++                            cabooseConsumedSyncFds.push_back(preSignalSyncFds.back());
++                        }
+                     }
+ #endif
+                 }
+@@ -8096,6 +8105,12 @@ VkResult ResourceTracker::on_vkQueueSubmitTemplate(void* context, VkResult input
+                     }
+ #endif
+ #if defined(VK_USE_PLATFORM_ANDROID_KHR) || DETECT_OS_LINUX
++                    if (!usingDirectMapping() && semInfo.syncFd.has_value()) {
++                        // Socket mode: a signal replaces an unwaited temporary import; the
++                        // host signals the semaphore, which a sync file export then waits.
++                        if (*semInfo.syncFd >= 0) cabooseConsumedSyncFds.push_back(*semInfo.syncFd);
++                        semInfo.syncFd.reset();
++                    }
+                     if (semInfo.syncFd.value_or(-1) >= 0) {
+                         post_wait_sync_fds.push_back(semInfo.syncFd.value());
+                         signalSemsToRemove.push_back(semaphore);
+@@ -8155,6 +8170,8 @@ VkResult ResourceTracker::on_vkQueueSubmitTemplate(void* context, VkResult input
+ #endif
+         }
+     }
++    for (int fd : cabooseConsumedSyncFds)
++        if (fd >= 0) mSyncHelper->close(fd);
+ #endif
+ 
+     // The main queue submission
