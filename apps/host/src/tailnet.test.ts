@@ -34,10 +34,10 @@ describe('tailnet device names', () => {
 describe('tailscale status', () => {
   const running = {
     BackendState: 'Running', AuthURL: '',
-    Self: { ID: 'nAbC123', HostName: 'dev-box', DNSName: 'dev-box.tailea5249.ts.net.', TailscaleIPs: ['fd7a:115c:a1e0::1234', '100.101.102.103', '8.8.8.8'] },
+    Self: { ID: 'nAbC123', HostName: 'dev-box', DNSName: 'dev-box.tail1234ab.ts.net.', TailscaleIPs: ['fd7a:115c:a1e0::1234', '100.101.102.103', '8.8.8.8'] },
   }
   it('reads a running device', () => {
-    expect(parseTailscaleStatus(running)).toEqual({ state: 'running', name: 'dev-box.tailea5249.ts.net', addresses: ['100.101.102.103', 'fd7a:115c:a1e0::1234'], nodeId: 'nAbC123' })
+    expect(parseTailscaleStatus(running)).toEqual({ state: 'running', name: 'dev-box.tail1234ab.ts.net', addresses: ['100.101.102.103', 'fd7a:115c:a1e0::1234'], nodeId: 'nAbC123' })
   })
   it('offers only a genuine sign-in link', () => {
     expect(parseTailscaleStatus({ BackendState: 'NeedsLogin', AuthURL: 'https://login.tailscale.com/a/1a2b3c' })).toEqual({ state: 'needs-login', loginUrl: 'https://login.tailscale.com/a/1a2b3c' })
@@ -172,11 +172,11 @@ describe('a computer’s companion', () => {
   it('joins with a key through standard input, never an argument', async () => {
     let joined = false
     const { docker, calls } = fakeDocker({ backend: () => joined
-      ? { BackendState: 'Running', Self: { ID: 'n1', DNSName: 'dev-box.tailea5249.ts.net.', TailscaleIPs: ['100.64.1.2'] } }
+      ? { BackendState: 'Running', Self: { ID: 'n1', DNSName: 'dev-box.tail1234ab.ts.net.', TailscaleIPs: ['100.64.1.2'] } }
       : { BackendState: 'NeedsLogin' } })
     const dockerInput = vi.fn(async (_args: string[], _input: string) => { joined = true; return '' })
     const node = new TailnetNode({ ...base, config: { mode: 'authkey', image: TAILSCALE_IMAGE, authKey: 'tskey-auth-secret', tags: ['tag:caboose'] }, docker, dockerInput, allow: async () => {} })
-    expect(await node.ensure()).toEqual({ state: 'running', name: 'dev-box.tailea5249.ts.net', addresses: ['100.64.1.2'] })
+    expect(await node.ensure()).toEqual({ state: 'running', name: 'dev-box.tail1234ab.ts.net', addresses: ['100.64.1.2'] })
     expect(dockerInput.mock.calls[0]![1]).toBe('tskey-auth-secret')
     expect(dockerInput.mock.calls[0]![0]).toEqual(expect.arrayContaining(['--auth-key=file:/dev/stdin', '--advertise-tags=tag:caboose']))
     expect(calls.flat().join(' ')).not.toContain('tskey-auth-secret')

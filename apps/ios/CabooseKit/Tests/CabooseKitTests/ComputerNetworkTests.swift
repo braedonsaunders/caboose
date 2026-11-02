@@ -4,9 +4,9 @@ import XCTest
 
 final class ComputerNetworkTests: XCTestCase {
     func testDecodesTheHostsNetworkStatus() throws {
-        let json = #"{"tailnet":{"state":"running","name":"dev-box.tailea5249.ts.net","addresses":["100.101.102.103","fd7a:115c:a1e0::1"]},"servers":[{"protocol":"tcp","address":"0.0.0.0","port":5432},{"protocol":"udp","address":"0.0.0.0","port":27015}]}"#
+        let json = #"{"tailnet":{"state":"running","name":"dev-box.tail1234ab.ts.net","addresses":["100.101.102.103","fd7a:115c:a1e0::1"]},"servers":[{"protocol":"tcp","address":"0.0.0.0","port":5432},{"protocol":"udp","address":"0.0.0.0","port":27015}]}"#
         let network = try JSONDecoder().decode(ComputerNetwork.self, from: Data(json.utf8))
-        XCTAssertEqual(network.host, "dev-box.tailea5249.ts.net")
+        XCTAssertEqual(network.host, "dev-box.tail1234ab.ts.net")
         XCTAssertEqual(network.tailnet?.ipv4, "100.101.102.103")
         XCTAssertEqual(network.servers?.map(\.id), ["tcp/5432", "udp/27015"])
     }
