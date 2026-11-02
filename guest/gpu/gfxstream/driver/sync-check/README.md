@@ -2,7 +2,9 @@
 
 `sync_check.c` runs the driver's synchronization paths against a real phone executor and
 times them. It needs a computer whose broker has a phone attached (the broker's socket,
-`$XDG_RUNTIME_DIR/caboose-gpu/gpu.sock`, exists) and the driver under test.
+`$XDG_RUNTIME_DIR/caboose-gpu/gpu.sock`, exists) and the driver under test. The
+[Linux executor](../../../../../apps/ios/GPUStream/gfxstream/linux-executor/README.md) can
+stand in for the phone; its `check.sh` runs this probe in a disposable computer.
 
 Build it on any x86-64 Linux host with Vulkan headers and the loader:
 
