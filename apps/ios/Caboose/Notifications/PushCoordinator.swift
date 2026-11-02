@@ -124,7 +124,7 @@ final class PushCoordinator: NSObject, UNUserNotificationCenterDelegate {
             do {
                 guard let credentials = Credentials.load() else { throw HostClient.Failure.unauthorized }
                 let url = await credentials.reachableURL()
-                try await HostClient(baseURL: url, token: credentials.token).decideAgentApproval(task, request: approval, allow: action == "ALLOW", option: nil)
+                try await HostClient(credentials: credentials, baseURL: url).decideAgentApproval(task, request: approval, allow: action == "ALLOW", option: nil)
             } catch {
                 self.error = error.localizedDescription
                 AppModel.shared.notificationTaskID = task
@@ -177,7 +177,7 @@ final class PushCoordinator: NSObject, UNUserNotificationCenterDelegate {
         guard let uuid = UUID(uuidString: id) else { throw HostClient.Failure.server(400, "This notification can't be answered.") }
         let url = await credentials.reachableURL()
         let request = answer.request
-        let reply: [String: Bool] = try await HostClient(baseURL: url, token: credentials.token).request(
+        let reply: [String: Bool] = try await HostClient(credentials: credentials, baseURL: url).request(
             "POST", "/v1/notifications/\(uuid.uuidString.lowercased())/respond", body: [request.field: .string(request.value)], timeout: 25)
         guard reply["responded"] == true else { throw HostClient.Failure.server(200, "The computer did not confirm the answer.") }
     }

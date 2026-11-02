@@ -4,7 +4,7 @@ import WidgetKit
 
 private func widgetClient() async throws -> HostClient {
     guard let credentials = Credentials.load() else { throw HostClient.Failure.unauthorized }
-    return HostClient(baseURL: await credentials.reachableURL(), token: credentials.token)
+    return HostClient(credentials: credentials, baseURL: await credentials.reachableURL())
 }
 
 struct ComputerEntry: TimelineEntry {

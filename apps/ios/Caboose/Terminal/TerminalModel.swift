@@ -68,9 +68,9 @@ final class TerminalModel {
 
     /// The screen is on screen with the app in front: attach.
     func show(host: HostClient?) {
-        if host?.baseURL != self.host?.baseURL || host?.token != self.host?.token {
+        if host != self.host {
             disconnect()
-            if self.host != nil, host?.token != self.host?.token {
+            if self.host != nil, host?.token != self.host?.token || host?.computerID != self.host?.computerID {
                 // Another sign-in, so another computer: its sessions are not this one's. The
                 // same computer at another address (home, or the VPN) keeps its session.
                 sessionID = nil
@@ -117,7 +117,7 @@ final class TerminalModel {
         retry?.cancel()
         retry = nil
         connection?.close()
-        let url = TerminalProtocol.url(base: host.baseURL, columns: size.columns, rows: size.rows, session: sessionID, offset: sessionID == nil ? nil : offset, wake: wake)
+        let url = TerminalProtocol.url(base: host.baseURL, route: host.route, columns: size.columns, rows: size.rows, session: sessionID, offset: sessionID == nil ? nil : offset, wake: wake)
         let connection = TerminalConnection(transport: URLSessionTerminalTransport(url: url, token: host.token))
         self.connection = connection
         let view = view

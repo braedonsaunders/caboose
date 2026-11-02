@@ -159,7 +159,7 @@ final class ShareModel {
 
     private func host() async throws -> HostClient {
         guard let credentials else { throw HostClient.Failure.unauthorized }
-        return HostClient(baseURL: await credentials.reachableURL(), token: credentials.token)
+        return HostClient(credentials: credentials, baseURL: await credentials.reachableURL())
     }
 
     func openPage() { run("Opening on your computer…", done: "Opened on your computer.") { host in

@@ -32,7 +32,7 @@ struct LinuxAppActionQuery: EntityStringQuery {
     }
     func suggestedEntities() async throws -> [LinuxAppActionEntity] {
         guard let credentials = Credentials.load() else { throw HostClient.Failure.unauthorized }
-        let client = HostClient(baseURL: await credentials.reachableURL(), token: credentials.token)
+        let client = HostClient(credentials: credentials, baseURL: await credentials.reachableURL())
         _ = try await client.wake()
         return try await client.apps().flatMap { app in
             (app.actions ?? []).map { LinuxAppActionEntity(id: AppActionIdentifier.id(app: app.id, action: $0.id), app: app.name, name: $0.name) }

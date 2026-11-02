@@ -22,7 +22,7 @@ struct HostShortcutFiles: ShortcutFileClient {
     let credentials: Credentials
     private func request(_ operation: String, path: String, method: String = "GET") async -> URLRequest {
         let host = await credentials.reachableURL()
-        var components = URLComponents(url: host.appendingPathComponent("v1/fs/" + operation), resolvingAgainstBaseURL: false)!
+        var components = URLComponents(url: ComputerRoute(computer: credentials.routeComputer).url(base: host, "/v1/fs/" + operation), resolvingAgainstBaseURL: false)!
         components.queryItems = [URLQueryItem(name: "path", value: path)]
         var request = URLRequest(url: components.url!, timeoutInterval: 3600)
         request.httpMethod = method

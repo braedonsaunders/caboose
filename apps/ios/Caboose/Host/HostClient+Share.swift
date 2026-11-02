@@ -29,7 +29,7 @@ extension HostClient {
     /// Upload directly from a local file, retaining only URLSession's streaming buffers.
     func sendFile(name: String, file: URL, open: Bool = false) async throws -> String {
         func endpoint(_ operation: String, _ path: String) -> URL {
-            var components = URLComponents(url: baseURL.appendingPathComponent("v1/fs/" + operation), resolvingAgainstBaseURL: false)!
+            var components = URLComponents(url: self.endpoint("/v1/fs/" + operation), resolvingAgainstBaseURL: false)!
             components.queryItems = [URLQueryItem(name: "path", value: path)]
             return components.url!
         }

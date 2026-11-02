@@ -101,7 +101,7 @@ struct OpenRemoteItem: Decodable { let etag: String; let kind: String }
 
 extension HostClient {
     private func fileRequest(_ operation: String, path: String, method: String = "GET", match: String? = nil, create: Bool = false) -> URLRequest {
-        var components = URLComponents(url: baseURL.appendingPathComponent("v1/fs/" + operation), resolvingAgainstBaseURL: false)!
+        var components = URLComponents(url: endpoint("/v1/fs/" + operation), resolvingAgainstBaseURL: false)!
         components.queryItems = [URLQueryItem(name: "path", value: path)]
         var request = URLRequest(url: components.url!, timeoutInterval: 3600)
         request.httpMethod = method

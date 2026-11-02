@@ -8,7 +8,7 @@ private enum IntentConnectionError: LocalizedError {
 
 private func intentClient() async throws -> HostClient {
     guard let credentials = Credentials.load() else { throw IntentConnectionError.notPaired }
-    return HostClient(baseURL: await credentials.reachableURL(), token: credentials.token)
+    return HostClient(credentials: credentials, baseURL: await credentials.reachableURL())
 }
 
 struct LinuxAppEntity: AppEntity {

@@ -1,6 +1,6 @@
 import Foundation
 
-/// A validated handoff from the authenticated owner's computer.
+/// A validated handoff from the authenticated computer the phone has open.
 public enum PhoneEvent: Equatable, Decodable {
     case open(URL)
     case share(File)

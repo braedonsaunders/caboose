@@ -4,26 +4,59 @@ import CryptoKit
 
 /// Where your computer lives and the token that opens it, kept in the Keychain in the
 /// app's shared access group so the share extension can reach the same computer.
+///
+/// A sign-in is one of three kinds. A phone paired to one computer (`scope == .computer`)
+/// and a pasted owner token (no scope) reach a computer through the host's unscoped routes.
+/// A host sign-in (`scope == .host`) reaches every computer on the host: `computerID` is the
+/// one this phone has open, reached through its scoped routes, and may be nil while the
+/// host has none.
 struct Credentials: Equatable, Codable, Identifiable {
+    enum Scope: String, Codable {
+        /// Paired to one computer.
+        case computer
+        /// Signed in to the host: every computer on it.
+        case host
+    }
+
     var hostURL: URL
     var token: String
     /// Other addresses of the same host — its Tailscale or other VPN address, say — tried
     /// alongside `hostURL` so the computer is reachable at home and away.
     var alternateURLs: [URL] = []
 
+    var scope: Scope?
     var computerID: String?
     var computerName: String?
     private var storedIdentity: String?
-    var id: String { fileDomainIdentifier }
-    var displayName: String { computerName.flatMap { $0.isEmpty ? nil : $0 } ?? hostURL.host ?? "Caboose" }
-    /// Console authentication uses its own browser session; never put a phone token in a URL.
-    var consoleURL: URL? { Self.normalizedAddress(hostURL.absoluteString) }
-
-    /// A pairing-specific identifier, so cached Files data is never reused for another computer.
-    var fileDomainIdentifier: String {
+    /// The sign-in, the same whichever of a host's computers it has open.
+    var id: String {
         if let storedIdentity { return storedIdentity }
         let bytes = SHA256.hash(data: Data((hostURL.absoluteString + "\n" + token).utf8))
         return "computer-" + bytes.map { String(format: "%02x", $0) }.joined()
+    }
+    var isHostSignIn: Bool { scope == .host }
+    /// The computer a host sign-in reaches through scoped routes; nil for the unscoped routes.
+    var routeComputer: String? { isHostSignIn ? computerID : nil }
+    /// The host's name as its address shows it.
+    var hostName: String { hostURL.host ?? "Caboose" }
+    var displayName: String { computerName.flatMap { $0.isEmpty ? nil : $0 } ?? hostName }
+    /// Console authentication uses its own browser session; never put a phone token in a URL.
+    var consoleURL: URL? { Self.normalizedAddress(hostURL.absoluteString) }
+
+    /// A computer-specific identifier, so cached Files data is never reused for another
+    /// computer: the sign-in's own, and for a host sign-in the open computer's within it.
+    var fileDomainIdentifier: String {
+        guard isHostSignIn, let computerID, !computerID.isEmpty else { return id }
+        let safe = computerID.unicodeScalars.map { CharacterSet.alphanumerics.contains($0) || $0 == "-" ? String($0) : "_" }.joined()
+        return id + "." + safe
+    }
+
+    /// The same host sign-in with another of the host's computers open, or none.
+    func opening(computer id: String?, name: String?) -> Credentials {
+        var copy = self
+        copy.computerID = id
+        copy.computerName = id == nil ? nil : name
+        return copy
     }
 
     /// Every address of the host, the preferred one first.
@@ -44,15 +77,23 @@ struct Credentials: Equatable, Codable, Identifiable {
 
         mutating func select(_ incoming: Credentials) -> Credentials {
             var value = incoming
-            // Server ids are scoped to a host; names and tokens are never computer ids.
+            // Server ids are scoped to a host; names and tokens are never computer ids. A host
+            // sign-in is one per host; its open computer is not a pairing of its own.
             let host = Credentials.normalizedAddress(value.hostURL.absoluteString)
+            func sameHost(_ other: Credentials) -> Bool {
+                host != nil && Credentials.normalizedAddress(other.hostURL.absoluteString) == host
+            }
             if let index = computers.firstIndex(where: {
-                $0.id == value.id || (value.computerID != nil && $0.computerID == value.computerID &&
-                    host != nil && Credentials.normalizedAddress($0.hostURL.absoluteString) == host)
+                $0.id == value.id
+                    || (value.isHostSignIn && $0.isHostSignIn && sameHost($0))
+                    || (!value.isHostSignIn && !$0.isHostSignIn && value.computerID != nil
+                        && $0.computerID == value.computerID && sameHost($0))
             }) {
                 let old = computers[index]
                 value.storedIdentity = old.id
-                if value.computerName == nil { value.computerName = old.computerName }
+                // A new host sign-in keeps the computer the old one had open.
+                if value.isHostSignIn && value.computerID == nil && old.isHostSignIn { value.computerID = old.computerID }
+                if value.computerName == nil && value.computerID == old.computerID { value.computerName = old.computerName }
                 computers[index] = value
             } else {
                 value.storedIdentity = value.id
@@ -163,7 +204,8 @@ struct Credentials: Equatable, Codable, Identifiable {
         self.init(hostURL: url, token: token, alternateURLs: alternates)
     }
 
-    init(hostURL: URL, token: String, alternateURLs: [URL] = [], computerID: String? = nil, computerName: String? = nil) {
+    init(hostURL: URL, token: String, alternateURLs: [URL] = [], scope: Scope? = nil, computerID: String? = nil, computerName: String? = nil) {
+        self.scope = scope
         self.computerID = computerID
         self.computerName = computerName
         self.hostURL = hostURL

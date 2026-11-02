@@ -26,7 +26,7 @@ actor BackupEngine {
     static let kept = 2
 
     private func client(_ credentials: Credentials) async -> HostClient {
-        HostClient(baseURL: await credentials.reachableURL(), token: credentials.token)
+        HostClient(credentials: credentials, baseURL: await credentials.reachableURL())
     }
 
     func backUp(_ credentials: Credentials, progress: @escaping @Sendable (Progress) -> Void = { _ in }) async throws -> Outcome {

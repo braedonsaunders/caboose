@@ -33,7 +33,7 @@ extension HostClient {
 /// The paired computer's client, for intents and the command view, without the app's connection.
 func pairedHostClient() async throws -> HostClient {
     guard let credentials = Credentials.load() else { throw HostClient.Failure.unauthorized }
-    return HostClient(baseURL: await credentials.reachableURL(), token: credentials.token)
+    return HostClient(credentials: credentials, baseURL: await credentials.reachableURL())
 }
 
 /// What Run Command on Computer returns to a shortcut.
@@ -71,7 +71,7 @@ struct RunComputerCommandIntent: AppIntent {
 
     func perform() async throws -> some IntentResult & ReturnsValue<ComputerCommandResult> & ProvidesDialog {
         guard let credentials = Credentials.load() else { throw HostClient.Failure.unauthorized }
-        let client = HostClient(baseURL: await credentials.reachableURL(), token: credentials.token)
+        let client = HostClient(credentials: credentials, baseURL: await credentials.reachableURL())
         let fs = HostShortcutFiles(credentials: credentials)
         let stdin = input.flatMap { $0.isEmpty ? nil : $0 }
         if let stdin, stdin.utf8.count > 1_048_576 {

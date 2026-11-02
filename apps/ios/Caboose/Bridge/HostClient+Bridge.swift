@@ -45,7 +45,7 @@ extension HostClient {
     /// A folder of the computer's home, folders first, then by name.
     func folder(_ path: ComputerPath) async throws -> [FolderItem] {
         struct Listing: Decodable { let items: [FolderItem] }
-        var components = URLComponents(url: baseURL.appendingPathComponent("v1/fs/list"), resolvingAgainstBaseURL: false)!
+        var components = URLComponents(url: endpoint("/v1/fs/list"), resolvingAgainstBaseURL: false)!
         components.queryItems = [URLQueryItem(name: "path", value: path.relative)]
         var request = URLRequest(url: components.url!, timeoutInterval: 30)
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")

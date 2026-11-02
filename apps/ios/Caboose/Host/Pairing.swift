@@ -43,7 +43,8 @@ struct PairingLink: Equatable {
     }
 
     /// Trades the code for this phone's token at the first address that answers, and returns
-    /// the credentials to keep.
+    /// the credentials to keep: a computer's pairing code signs in to that computer, a host's
+    /// to the host and every computer on it.
     func redeem(deviceName: String, session: URLSession = .shared) async throws -> Credentials {
         let base = await Credentials(hostURL: hostURL, token: "", alternateURLs: alternateURLs).reachableURL()
         var request = URLRequest(url: base.appendingPathComponent("v1/pair"), timeoutInterval: 20)
@@ -57,11 +58,16 @@ struct PairingLink: Equatable {
             struct Paired: Decodable {
                 struct Computer: Decodable { let id: String; let name: String }
                 let token: String
+                /// Absent from hosts that predate host sign-ins: those pair one computer.
+                let scope: String?
                 let computer: Computer?
             }
             let paired = try JSONDecoder().decode(Paired.self, from: data)
             guard !paired.token.isEmpty else { throw Failure.rejected("The computer returned an empty sign-in token.") }
-            return Credentials(hostURL: hostURL, token: paired.token, alternateURLs: alternateURLs,
+            if paired.scope == "host" {
+                return Credentials(hostURL: hostURL, token: paired.token, alternateURLs: alternateURLs, scope: .host)
+            }
+            return Credentials(hostURL: hostURL, token: paired.token, alternateURLs: alternateURLs, scope: .computer,
                                computerID: paired.computer?.id, computerName: paired.computer?.name)
         case 404: throw Failure.expired
         case 429: throw Failure.tooManyAttempts

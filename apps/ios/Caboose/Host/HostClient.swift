@@ -3,8 +3,9 @@ import CabooseKit
 #endif
 import Foundation
 
-/// The caboose-host HTTP API (see docs/architecture.md).
-struct HostClient: Sendable {
+/// The caboose-host HTTP API (see docs/architecture.md). Every computer route goes through
+/// `endpoint` or `socketURL`, which scope it to `computerID` for a host sign-in.
+struct HostClient: Equatable, Sendable {
     struct Session: Decodable, Sendable {
         struct Display: Decodable, Sendable {
             var path: String
@@ -114,6 +115,9 @@ struct HostClient: Sendable {
     enum Failure: LocalizedError {
         case unauthorized
         case notRunning
+        /// The host has no computer yet (`404`, `code: "no-computer"`): an owner-level sign-in
+        /// on an unscoped route.
+        case noComputer
         case server(Int, String?)
         case unreachable(String)
 
@@ -121,6 +125,7 @@ struct HostClient: Sendable {
             switch self {
             case .unauthorized: "Your computer did not accept this sign-in token."
             case .notRunning: "Your computer is not awake."
+            case .noComputer: "This host has no computer yet."
             case .server(let status, let message): message ?? "Your computer answered with an error (\(status))."
             case .unreachable(let reason): "Your computer could not be reached. \(reason)"
             }
@@ -129,6 +134,11 @@ struct HostClient: Sendable {
 
     var baseURL: URL
     var token: String
+    /// The computer a host sign-in reaches through `/v1/computers/<id>/…`; nil for the
+    /// unscoped routes a computer's own sign-in and the owner token use.
+    var computerID: String? = nil
+
+    var route: ComputerRoute { ComputerRoute(computer: computerID) }
 
     /// A cold boot can take minutes; reconnecting to a computer that was just running passes a shorter `timeout`.
     func wake(timeout: TimeInterval = 300) async throws -> Session { try await request("POST", "/v1/session", timeout: timeout) }
@@ -165,20 +175,14 @@ struct HostClient: Sendable {
         try await request("POST", "/v1/computer/restart", body: ["confirm": .bool(true)], timeout: 300)
     }
 
-    /// The WebSocket URL for a path on this host (http → ws, https → wss).
-    func socketURL(_ path: String) -> URL {
-        var components = URLComponents(url: baseURL.appendingPathComponent(path), resolvingAgainstBaseURL: false)!
-        components.scheme = baseURL.scheme == "https" ? "wss" : "ws"
-        return components.url!
-    }
+    /// The WebSocket URL for a route on this host (http → ws, https → wss), such as the
+    /// display path a session returns, scoped like `endpoint`.
+    func socketURL(_ path: String) -> URL { route.socketURL(base: baseURL, path) }
 
-    /// The address of a route. `path` is percent-encoded (ids through `pathComponent`) and may
-    /// end in a query string; characters a URL cannot hold are encoded, escapes are kept.
-    func endpoint(_ path: String) -> URL {
-        var root = baseURL.absoluteString
-        while root.hasSuffix("/") { root.removeLast() }
-        return URL(string: root + path) ?? baseURL.appendingPathComponent(path)
-    }
+    /// The address of a route, scoped to `computerID` when it is a computer's. `path` is
+    /// percent-encoded (ids through `pathComponent`) and may end in a query string;
+    /// characters a URL cannot hold are encoded, escapes are kept.
+    func endpoint(_ path: String) -> URL { route.url(base: baseURL, path) }
 
     func request<T: Decodable>(_ method: String, _ path: String, body: [String: JSONValue]? = nil,
                                timeout: TimeInterval) async throws -> T {
@@ -225,9 +229,18 @@ struct HostClient: Sendable {
         case 409:
             throw Failure.notRunning
         default:
-            let message = (try? JSONDecoder().decode([String: String].self, from: data))?["error"]
-            throw Failure.server(status, message)
+            let problem = try? JSONDecoder().decode([String: String].self, from: data)
+            if status == 404, problem?["code"] == "no-computer" { throw Failure.noComputer }
+            throw Failure.server(status, problem?["error"])
         }
+    }
+}
+
+extension HostClient {
+    /// The client for a sign-in at one of its host's addresses, scoped to the computer a host
+    /// sign-in has open.
+    init(credentials: Credentials, baseURL: URL? = nil) {
+        self.init(baseURL: baseURL ?? credentials.hostURL, token: credentials.token, computerID: credentials.routeComputer)
     }
 }
 

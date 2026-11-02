@@ -198,7 +198,7 @@ final class LocationSharing: NSObject, CLLocationManagerDelegate {
     }
 
     func start(for computer: String, host: HostClient) {
-        guard target?.computer != computer || target?.host.baseURL != host.baseURL else { return }
+        guard target?.computer != computer || target?.host != host else { return }
         stop()
         target = (computer, host)
         switch manager.authorizationStatus {

@@ -40,7 +40,7 @@ extension HostClient {
         guard let path = ChatArtifactPolicy.guestPath(destination) else {
             throw Failure.unreachable("This link is not a file inside your computer home.")
         }
-        var components = URLComponents(url: baseURL.appendingPathComponent("v1/fs/content"), resolvingAgainstBaseURL: false)!
+        var components = URLComponents(url: endpoint("/v1/fs/content"), resolvingAgainstBaseURL: false)!
         components.queryItems = [URLQueryItem(name: "path", value: path)]
         var request = URLRequest(url: components.url!, timeoutInterval: 60)
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")

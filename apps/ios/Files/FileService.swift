@@ -1,3 +1,4 @@
+import CabooseKit
 import Foundation
 import FileProvider
 
@@ -41,7 +42,7 @@ struct FileService {
     }
     func request(_ operation: String, path: String = "", method: String = "GET", query: [URLQueryItem] = [], data: Data? = nil, match: String? = nil) async throws -> Data {
         let host = await credentials.reachableURL()
-        var components = URLComponents(url: host.appendingPathComponent("v1/fs/" + operation), resolvingAgainstBaseURL: false)!
+        var components = URLComponents(url: ComputerRoute(computer: credentials.routeComputer).url(base: host, "/v1/fs/" + operation), resolvingAgainstBaseURL: false)!
         components.queryItems = [URLQueryItem(name: "path", value: path)] + query
         var request = URLRequest(url: components.url!, timeoutInterval: 300)
         request.httpMethod = method
@@ -64,7 +65,7 @@ struct FileService {
     }
     func content(_ path: String, version: String? = nil, progress: Progress) async throws -> URL {
         let host = await credentials.reachableURL()
-        var components = URLComponents(url: host.appendingPathComponent("v1/fs/content"), resolvingAgainstBaseURL: false)!
+        var components = URLComponents(url: ComputerRoute(computer: credentials.routeComputer).url(base: host, "/v1/fs/content"), resolvingAgainstBaseURL: false)!
         components.queryItems = [URLQueryItem(name: "path", value: path)]
         var request = URLRequest(url: components.url!, timeoutInterval: 3600)
         request.setValue("Bearer \(credentials.token)", forHTTPHeaderField: "Authorization")
@@ -93,7 +94,7 @@ struct FileService {
     }
     func upload(_ path: String, file: URL, match: String?, progress: Progress) async throws -> RemoteItem {
         let host = await credentials.reachableURL()
-        var components = URLComponents(url: host.appendingPathComponent("v1/fs/content"), resolvingAgainstBaseURL: false)!
+        var components = URLComponents(url: ComputerRoute(computer: credentials.routeComputer).url(base: host, "/v1/fs/content"), resolvingAgainstBaseURL: false)!
         components.queryItems = [URLQueryItem(name: "path", value: path)]
         var request = URLRequest(url: components.url!, timeoutInterval: 3600)
         request.httpMethod = "PUT"

@@ -17,7 +17,7 @@ extension HostClient {
     /// path on the computer.
     func uploadTransfer(id: String, name: String, file: URL) async throws -> String {
         struct Uploaded: Decodable { var path: String }
-        var components = URLComponents(url: baseURL.appendingPathComponent("v1/fs/transfer"), resolvingAgainstBaseURL: false)!
+        var components = URLComponents(url: endpoint("/v1/fs/transfer"), resolvingAgainstBaseURL: false)!
         components.queryItems = [URLQueryItem(name: "id", value: id), URLQueryItem(name: "name", value: Self.transferName(name))]
         var request = URLRequest(url: components.url!, timeoutInterval: 120)
         request.httpMethod = "PUT"
@@ -44,7 +44,7 @@ extension HostClient {
 
     /// Removes a transfer, for an upload abandoned part way.
     func cancelTransfer(id: String) async {
-        var components = URLComponents(url: baseURL.appendingPathComponent("v1/fs/transfer"), resolvingAgainstBaseURL: false)!
+        var components = URLComponents(url: endpoint("/v1/fs/transfer"), resolvingAgainstBaseURL: false)!
         components.queryItems = [URLQueryItem(name: "id", value: id)]
         var request = URLRequest(url: components.url!, timeoutInterval: 30)
         request.httpMethod = "DELETE"
@@ -55,7 +55,7 @@ extension HostClient {
     /// Downloads a home file to disk (never into memory), refusing more than `limit` bytes.
     func downloadHomeFile(_ relative: String, into directory: URL, limit: Int64) async throws -> URL {
         func fsRequest(_ operation: String) -> URLRequest {
-            var components = URLComponents(url: baseURL.appendingPathComponent("v1/fs/" + operation), resolvingAgainstBaseURL: false)!
+            var components = URLComponents(url: endpoint("/v1/fs/" + operation), resolvingAgainstBaseURL: false)!
             components.queryItems = [URLQueryItem(name: "path", value: relative)]
             var request = URLRequest(url: components.url!, timeoutInterval: 60)
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")

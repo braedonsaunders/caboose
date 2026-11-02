@@ -92,6 +92,8 @@ targets:
     sources:
       - path: Share
       - path: Caboose/Host
+      # HostClient's route scoping; the extension does not link CabooseKit.
+      - path: CabooseKit/Sources/CabooseKit/Host/ComputerRoute.swift
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.braedonsaunders.caboose.share
@@ -123,6 +125,7 @@ targets:
       - path: Caboose/Host/Credentials.swift
       - path: Caboose/Host/HostClient.swift
       - path: Caboose/Host/HostClient+Share.swift
+      - path: CabooseKit/Sources/CabooseKit/Host/ComputerRoute.swift
       - path: Caboose/Intents/ComputerIntents.swift
       - path: Caboose/Intents/OpenAskIntent.swift
     settings:

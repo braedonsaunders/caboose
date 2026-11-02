@@ -22,7 +22,7 @@ final class AgentLibrary {
     var selectedProfile: AgentProfile? { profiles.first { $0.id == selectedProfileId && !$0.archived } }
     var activeProfiles: [AgentProfile] { profiles.filter { !$0.archived } }
     func attach(_ host: HostClient) {
-        if let current = self.host, current.baseURL != host.baseURL || current.token != host.token { reset() }
+        if let current = self.host, current.token != host.token || current.computerID != host.computerID || current.baseURL != host.baseURL { reset() }
         self.host = host
         Task { await refreshProfiles(); await refreshRoutines() }
     }

@@ -66,14 +66,14 @@ enum ComputerSearch {
             try await HostShortcutFiles(credentials: credentials).open(String(identifier.dropFirst(5)))
         } else if let (appID, actionID) = AppActionIdentifier.parse(identifier) {
             guard let credentials = Credentials.load() else { throw HostClient.Failure.unauthorized }
-            let client = HostClient(baseURL: await credentials.reachableURL(), token: credentials.token)
+            let client = HostClient(credentials: credentials, baseURL: await credentials.reachableURL())
             _ = try await client.wake()
             guard let app = try await client.apps().first(where: { $0.id == appID }),
                   let action = app.actions?.first(where: { $0.id == actionID }) else { throw HostClient.Failure.server(404, "That action is no longer available.") }
             try await client.launch(app, action: action)
         } else if identifier.hasPrefix("app:") {
             guard let credentials = Credentials.load() else { throw HostClient.Failure.unauthorized }
-            let client = HostClient(baseURL: await credentials.reachableURL(), token: credentials.token)
+            let client = HostClient(credentials: credentials, baseURL: await credentials.reachableURL())
             _ = try await client.wake()
             let id = String(identifier.dropFirst(4))
             guard let app = try await client.apps().first(where: { $0.id == id }) else { throw HostClient.Failure.server(404, "App no longer installed.") }

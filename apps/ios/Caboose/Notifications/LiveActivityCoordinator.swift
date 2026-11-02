@@ -44,7 +44,7 @@ final class LiveActivityCoordinator {
     private func resolvedHost() async -> HostClient? {
         guard let credentials = Credentials.load() else { return nil }
         let url = await credentials.reachableURL()
-        return HostClient(baseURL: url, token: credentials.token)
+        return HostClient(credentials: credentials, baseURL: url)
     }
     private func registerStartToken() async {
         let currentGeneration = generation
