@@ -16,11 +16,12 @@ checks; pure policy tests do not establish live app behavior.
 
 | Path | What |
 | --- | --- |
-| `CabooseKit/` | Swift package, no app UI. `Session/` holds the window model the app works against (`DisplaySession`, `RemoteWindow`, the screen description, keyboard mapping). `Display/` is the protocol: canonical CBOR, framing, messages, `CabooseDisplaySession` and sound. `LiveGPU*.swift` and `LinkedLiveGPUSurfaces.swift` are the GPU executor: the live Vulkan command stream from the computer, decoded on the phone's GPU through `CabooseGPULive.xcframework`, presenting each window into its own `CAMetalLayer`. `Session/WindowSnapshot` is a window's last picture held on the phone, copied on demand from its GPU layer's presents. `Input/` has the typing buffer, trackpad gestures, touch slots and the on-screen controller (`OnScreenGamepad`: its types, layouts and touch tracking). `Terminal/` is the terminal protocol: control messages, closes, the key row's sequences and `TerminalConnection`, which tracks the output offset a reattach continues from. `Commands/` is a command run on the computer through `/v1/commands` (`ComputerCommand`) and the names its files may have (`CommandFileName`). `Switchyard/` is the tiling layout of the device's own desktop: columns on a scrolling track, widths per screen, stacks, drops and focus. `Game/` runs games the computer hands off ([game handoff](../../docs/game-handoff.md)): `RemoteGame` and declining a game the device cannot run, `GameServer`, the loopback HTTP origin a game's page loads from, with its file cache, save sync, the page's IndexedDB and gamepad scripts, and `GameSurfaceView`, the web view a window's game runs in. `UI/RemoteWindowView` shows a window, its GPU layer or its snapshot, takes touch, Pencil, trackpad and keyboard input, and lays a window's game over its picture; `UI/LiveGPUPresentationOwners` places each window's GPU layer in the one view showing it live. `Devices/` offers the phone's hardware to the computer as Linux devices ([phone hardware](../../docs/devices.md)): `DeviceCenter` builds `devices` from the owner's switches (`DeviceCatalog`), answers `device.open`, `device.close`, `device.keyframe`, `device.rumble` and `device.status`, and sends the battery and the on-screen controller; `PhoneDevices` is the hardware behind it: `CameraCapture` (one capture session, real-time H.264 from VideoToolbox, the depth sensor, the volume buttons and Camera Control through `AVCaptureEventInteraction`), `MicrophoneCapture` (voice-processed input as 20 ms Opus), `MotionCapture` (Core Motion and the barometer, batched every 20 ms) and the paired controllers with their rumble. The device messages' types are `Display/DeviceMessages.swift`. |
+| `CabooseKit/` | Swift package, no app UI. `Session/` holds the window model the app works against (`DisplaySession`, `RemoteWindow`, the screen description, keyboard mapping). `Display/` is the protocol: canonical CBOR, framing, messages, `CabooseDisplaySession` and sound. `LiveGPU*.swift` and `LinkedLiveGPUSurfaces.swift` are the GPU executor: the live Vulkan command stream from the computer, decoded on the phone's GPU through `CabooseGPULive.xcframework`, presenting each window into its own `CAMetalLayer`. `Session/WindowSnapshot` is a window's last picture held on the phone, copied on demand from its GPU layer's presents. `Input/` has the typing buffer, trackpad gestures, touch slots and the on-screen controller (`OnScreenGamepad`: its types, layouts and touch tracking). `Terminal/` is the terminal protocol: control messages, closes, the key row's sequences and `TerminalConnection`, which tracks the output offset a reattach continues from. `Commands/` is a command run on the computer through `/v1/commands` (`ComputerCommand`) and the names its files may have (`CommandFileName`). `Switchyard/` is the tiling layout of the device's own desktop: columns on a scrolling track, widths per screen, stacks, drops and focus. `Game/` runs games the computer hands off ([game handoff](../../docs/game-handoff.md)): `RemoteGame` and declining a game the device cannot run, `GameServer`, the loopback HTTP origin a game's page loads from, with its file cache, save sync, the page's IndexedDB and gamepad scripts, and `GameSurfaceView`, the web view a window's game runs in. `UI/RemoteWindowView` shows a window, its GPU layer or its snapshot, takes touch, Pencil, trackpad and keyboard input, and lays a window's game over its picture; `UI/LiveGPUPresentationOwners` places each window's GPU layer in the one view showing it live. `Devices/` offers the phone's hardware to the computer as Linux devices ([phone hardware](../../docs/devices.md)): `DeviceCenter` builds `devices` from the owner's switches (`DeviceCatalog`), answers `device.open`, `device.close`, `device.keyframe`, `device.rumble` and `device.status`, and sends the battery and the on-screen controller; `PhoneDevices` is the hardware behind it: `CameraCapture` (one capture session, real-time H.264 from VideoToolbox, the depth sensor, the volume buttons and Camera Control through `AVCaptureEventInteraction`), `MicrophoneCapture` (voice-processed input as 20 ms Opus), `MotionCapture` (Core Motion and the barometer, batched every 20 ms) and the paired controllers with their rumble. The device messages' types are `Display/DeviceMessages.swift`. `Host/` is where a computer's routes are on its host (`ComputerRoute`), a host's computer list (`HostComputerList`) and a computer's boot progress (`ComputerBoot`, `ServerSentEvents`, `BootTracker`). |
 | `GPUStream/` | The GPU executor's native side: the live Vulkan decoder's adapter over the gfxstream fork, its C API (`live/include/caboose_gpu_live.h`) and the provider patches, built and packaged into `CabooseKit/Frameworks/CabooseGPULive.xcframework` by `scripts/build-live-gpu.sh` and `scripts/package-live-gpu.py` (see [GPUStream/README.md](GPUStream/README.md)). |
 | `Caboose/` | The app: pairing, wake, the tab shell (Home, Desktop, Agents, Apps and Terminal), window screens, the desktop on this screen or a TV, agents, AirPlay, the background, settings, intents, the Task Manager (`Tasks/`). |
 | `Caboose/AI/` | On-device AI ([docs/ai.md](../../docs/ai.md)): `PhoneAI` serves Apple's on-device model to the computer's programs on the host's `/v1/ai` while Caboose is open, with its Computer settings section; `AppleModelRunner` runs each request as a turn of a Foundation Models session, with the program's tools. CabooseKit's `AI/` holds the messages (`AIRelay`), order-keeping JSON (`AIJSON`), turns and context fitting (`AIConversation`), stop sequences (`AIStreamText`) and JSON Schema as generation schemas (`AISchema`). |
 | `AIProbe/` | A separate app that measures Apple's model on a connected phone (`scripts/check-on-device-ai.sh`). |
+| `Caboose/Onboarding/` | Making a computer on the host: the first-computer screen shown while a host has none, Create a Computer from the computer menu, and the spinning-up screen that follows the host's boot events (`ComputerCreation`, `HostClient+Computers`). |
 | `Caboose/Devices/` | Computer settings' hardware section (`DeviceSettings`: which devices each computer may use) and the indicator shown while a computer app uses the camera, microphone or motion. |
 | `Caboose/Catalog/`, `Caboose/McpLibrary/` | The Apps tab's Library (`CatalogCenter`, `CatalogViews`) and the Agents tab's Tools, the MCP Library (`McpCenter`, `McpLibraryViews`). Both storefronts draw with `StoreChrome`: the icon well, rows of tiles with See All, tiles and list rows. The MCP Library's routes, answers and setup form are `CabooseKit/Catalog/McpLibrary`. |
 | `Caboose/Terminal/` | The Terminal tab: `TerminalScreen`, the session model, libghostty's surface in the Caboose look and the key row above the keyboard. |
@@ -64,7 +65,59 @@ the QR code with the iPhone's camera (or open its `caboose://connect?host=…&co
 the phone). The app trades the single-use code for its own token through `POST /v1/pair`
 (`Caboose/Host/Pairing.swift`) at the first of the link's addresses that answers. The
 sign-in screen also takes an address with a typed pairing code, or with a token, and older
-links that carry `token=` still work. Under Computer settings, Remote Access adds or removes
+links that carry `token=` still work.
+
+A sign-in (`Credentials`) is one of three kinds, and `HostClient` reaches the computer the
+way each needs:
+
+- **One computer** (`scope: "computer"`, from a computer's pairing code): the host's
+  unscoped routes (`/v1/session`, `/v1/display`, …) are that computer's.
+- **The host** (`scope: "host"` with `computer: null`, from a host pairing code): the phone
+  acts for the owner on every computer of the host. It lists them (`GET /v1/computers`),
+  keeps the one it has open in the sign-in, and reaches it through scoped routes,
+  `/v1/computers/<id>/<route>`, for every request and socket, the display path a session
+  returns included. With none open yet it opens the host's default computer, else its first.
+  A computer that has since been deleted is replaced by the next one the same way.
+- **An owner token** (typed or in a `token=` link): the unscoped routes, which serve the
+  host's default computer. Where the host has none, they answer `404` with
+  `code: "no-computer"`, and the app treats that as a host with no computer.
+
+`ComputerRoute` (`CabooseKit/Sources/CabooseKit/Host/ComputerRoute.swift`) is the one place a
+path is scoped: `HostClient.endpoint` and `socketURL`, the GPU and terminal sockets, the
+Files extension, game files and the agent-app bridge all go through it. The host's own
+routes (`/v1/computers…`, `/v1/host…`, `/v1/health`, `/v1/pair`) are never scoped. The
+share and widget extensions compile that file directly, since they do not link CabooseKit.
+Each computer a host sign-in opens has its own Files domain, caches, shortcuts and window
+layouts (`fileDomainIdentifier` is the sign-in's identity and the computer's id).
+
+## A host with no computer
+
+A host may have no computer at all: after the first host sign-in on a new server, or once
+its last computer is deleted. The app then shows **Create your first computer** in place of
+the tabs (`Caboose/Onboarding`). The name is prefilled from the device's name ("Sam's
+Computer", otherwise "My Computer", numbered when taken) and the sizes are the host's
+(`sizes` in `GET /v1/computers`), only those available now. Where the host cannot make one
+(`canCreate` false, every slot taken, or no size available) the screen says why and offers
+the console. **Create Computer** sends `POST /v1/computers` with `{ name, size, start: true }`.
+
+The computer then spins up on a native screen that follows its boot as the host reports it,
+from `GET /v1/computers/<id>/boot` as Server-Sent Events: each step in the runtime's order
+(the system image, its network, its disk, starting it, its display) with the host's own
+label and detail. A bar fills only for a step whose `progress.total` the host knows; the
+step under way otherwise turns calmly, and nothing turns under Reduce Motion. A step the
+boot did not need reads as done without work ("Not needed"). Time taken counts from the
+host's `startedAt`. A dropped stream is opened again after 1, 2, 4, then every 8 s, which
+reads the current boot first, while the screen says it is reconnecting and keeps the last
+report. A computer with no boot yet is started once (`POST /v1/computers/<id>/boot`). When
+the boot succeeds the computer opens as any computer does. When it fails the screen names
+the failed step and shows the host's `error`, and **Try Again** starts it again through
+`POST /v1/computers/<id>/boot` and follows the new attempt.
+
+With a host sign-in the computer menu on Home lists the host's computers and offers
+**Create a Computer**, the same screens in a sheet; closing the sheet leaves the computer
+starting on the host. The decoding, the event-stream parser, the boot tracker and how each
+step reads are in CabooseKit (`Host/ComputerBoot.swift`, `Host/HostComputers.swift`) and
+unit-tested. Under Computer settings, Remote Access adds or removes
 alternate HTTP or HTTPS addresses without replacing the phone's token or Files identity.
 The settings are available even when the host is unreachable. The app probes saved addresses
 at each wake without sending a token; an anonymous health response filters captive portals but
@@ -147,6 +200,13 @@ seconds (`CABOOSE_VIDEO_SECONDS`), and prints the server's features, whether it 
 GPU epoch, the windows and the round trip. Pictures come through the GPU executor, not this
 connection. `CABOOSE_SOUND_CHECK=1 swift test --filter LiveSound` plays and times the
 compositor's sound test page.
+
+`ComputerRouteTests` cover where each kind of sign-in reaches a computer (scoped and
+unscoped routes, host routes left alone, prefixes, sockets and a scoped display's game
+files); `ComputerBootTests` the boot's decoding, the event stream split anywhere and with
+any line ending, the tracker across dropped streams and retries, and how each step reads;
+`HostComputerListTests` the computer list, which computer opens, why one cannot be made,
+sizes and suggested names.
 
 The MCP Library's routes (a qualified name's one `/` kept as a separator, every other
 character of a segment encoded, 1-based search pages and where paging stops), its answers
@@ -384,8 +444,9 @@ the view that shows the window, and draws its own title bars, window controls an
 around it.
 
 - **The executor.** `AppModel` starts one GPU executor (`LiveGPUOwnerSession`) for the
-  owner's computer whenever its display is ready and the app is in the foreground, over the
-  host's authenticated `/v1/gpu` endpoint. The display's hello then carries
+  computer the phone has open whenever its display is ready and the app is in the
+  foreground, over the host's authenticated `/v1/gpu` endpoint (scoped to the computer for
+  a host sign-in). The display's hello then carries
   `gpu_live_epoch`, which matches the compositor's surfaces to this display's windows. An
   executor that ends is started again after 1 s, doubling to 30 s. Agent, thumbnail and
   auxiliary sessions never run one. The app links `CabooseKit/Frameworks/CabooseGPULive.xcframework`
@@ -1246,12 +1307,14 @@ must not leave the initial cascade frame surrounded by wallpaper.
 Tap the name and chevron on Home to select a saved computer or Add Computer. Computer
 selection is available only on Home; Desktop, retry screens, and other tabs follow it. Adding a
 pairing keeps the others. Manage Computers opens the host console, where an authorized
-administrator signs in to provision computers and generate pairing codes. The phone lists
-only computers explicitly paired here. Keychain failures appear as sign-in errors and do
+administrator signs in to provision computers and generate pairing codes. With a host
+sign-in the menu also lists the host's computers, with how each is, and Create a Computer;
+a sign-in paired to one computer lists only the pairings made here. Keychain failures appear as sign-in errors and do
 not disconnect the current computer.
 
 Run `python3 apps/ios/scripts/test-computer-switcher.py` from the repository root for pure
-collection tests. On a signed phone, pair two computers at one host and another on a
+collection tests, host sign-ins included (one per host, the open computer kept in it, a Files
+identity per computer). On a signed phone, pair two computers at one host and another on a
 second host; switch while waking, reconnecting, searching files, and loading apps. Verify
 names and the selected checkmark, no old frames/apps/tasks after switching, separate Files
 identities, and retained pairings after relaunch. Cancel Add Computer and verify the old
@@ -1576,8 +1639,8 @@ end-to-end file results.
 
 ### GPU executor checks
 
-Every build runs the GPU executor for the paired owner computer, with its existing phone
-token and the host's `/v1/gpu` endpoint ([the live GPU contract](../../docs/gpu-live.md)).
+Every build runs the GPU executor for the computer the phone has open, with its existing
+phone token and the host's `/v1/gpu` endpoint ([the live GPU contract](../../docs/gpu-live.md)).
 Backgrounding suspends the executor in place when the computer resumes executors, and
 drains it otherwise; switching computers drains it. Failed or unconfirmed retirement keeps
 its reservation and disables replacement for that app process.
