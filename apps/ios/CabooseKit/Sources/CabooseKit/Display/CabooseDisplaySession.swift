@@ -124,6 +124,9 @@ public final class CabooseDisplaySession: DisplaySession {
     /// Each window's last scroll input sequence number this connection (docs/display.md,
     /// "Input sequencing").
     private var scrollSeq: [Int: UInt64] = [:]
+    /// The window of a finger scroll that lifted moving, and until when the computer may
+    /// still be coasting it: a finger touching down before then stops it.
+    private var coasting: (window: Int, until: CFTimeInterval)?
     /// Authenticated window output assignment; never inferred from the view's screen.
     private var windowDisplays: [Int: Int] = [:]
     private var lastVsync: [Int: UInt64] = [:]
@@ -265,6 +268,7 @@ public final class CabooseDisplaySession: DisplaySession {
         sound = nil
         pendingGeometry.removeAll()
         scrollSeq.removeAll()
+        coasting = nil
         if !keepWindows { windowDisplays.removeAll() }
         lastVsync.removeAll()
         buttons = 0 // the server releases what was held when the connection ends
@@ -877,12 +881,28 @@ public final class CabooseDisplaySession: DisplaySession {
         send(.pointer(window: window.id, x: Double(point.x), y: Double(point.y), buttons: buttons, scroll: nil))
     }
 
-    /// Wayland scrolls by any amount, so every swipe is precise.
-    public func scroll(in window: RemoteWindow, dx: CGFloat, dy: CGFloat, at point: CGPoint, modifiers: [String] = []) {
-        guard dx != 0 || dy != 0 else { return }
-        if let game = window.game { return game.scroll(dx: dx, dy: dy, at: point, in: window.frame.size, modifiers: modifiers) }
+    /// Wayland scrolls by any amount, so every swipe is precise. `lift` ends the swipe: the
+    /// finger's velocity as it lifted, from which the computer scrolls on kinetically.
+    public func scroll(in window: RemoteWindow, dx: CGFloat, dy: CGFloat, at point: CGPoint, lift: CGPoint?, modifiers: [String] = []) {
+        if let game = window.game {
+            guard dx != 0 || dy != 0 else { return }
+            return game.scroll(dx: dx, dy: dy, at: point, in: window.frame.size, modifiers: modifiers)
+        }
+        guard dx != 0 || dy != 0 || lift != nil else { return }
+        if let lift { coasting = (window.id, CACurrentMediaTime() + KineticScroll.duration(lifting: lift)) }
         send(.pointer(window: window.id, x: Double(point.x), y: Double(point.y), buttons: buttons,
-                      scroll: (Double(dx), Double(dy), true), scrollSeq: nextScrollSeq(window.id)))
+                      scroll: (Double(dx), Double(dy), true), scrollSeq: nextScrollSeq(window.id),
+                      scrollLift: lift))
+    }
+
+    public func holdScroll() {
+        guard let coasting else { return }
+        self.coasting = nil
+        guard CACurrentMediaTime() < coasting.until else { return }
+        // The computer stops coasting wherever the pointer is; it does not move it.
+        let point = lastPointer.flatMap { $0.window == coasting.window ? $0.point : nil } ?? .zero
+        send(.pointer(window: coasting.window, x: Double(point.x), y: Double(point.y), buttons: buttons,
+                      scroll: (0, 0, true), scrollHold: true))
     }
 
     private func nextScrollSeq(_ window: Int) -> UInt64 {

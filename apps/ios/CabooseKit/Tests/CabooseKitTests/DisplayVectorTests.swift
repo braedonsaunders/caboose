@@ -366,6 +366,9 @@ import Testing
         "pointer-left-drag": .pointer(window: 7, x: 10.5, y: 20, buttons: 1, scroll: nil),
         "pointer-scroll-precise": .pointer(window: 7, x: 640, y: 480, buttons: 0, scroll: (0, -42.5, true)),
         "pointer-scroll-seq": .pointer(window: 7, x: 640, y: 480, buttons: 0, scroll: (0, -42.5, true), scrollSeq: 42),
+        "pointer-scroll-lift": .pointer(window: 7, x: 640, y: 480, buttons: 0, scroll: (0, 12.5, true), scrollSeq: 43,
+                                        scrollLift: CGPoint(x: 0, y: 1800)),
+        "pointer-scroll-hold": .pointer(window: 7, x: 640, y: 480, buttons: 0, scroll: (0, 0, true), scrollHold: true),
         "pointer-relative": .pointer(window: 7, x: 640, y: 480, buttons: 0, scroll: nil, relative: CGPoint(x: 12.5, y: -3.25)),
         "client-hello-targets": .hello(token: "f3a9c1d27e8b4a6f", displays: [
             DisplayInfo(id: 1, width: 1179, height: 2556, scale: 3, refreshHz: 120, hdr: true),

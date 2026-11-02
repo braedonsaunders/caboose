@@ -436,7 +436,7 @@ Client → server (`0x81`–`0xFF`):
 | `0x89` | `video.keyframe` | `id`: the decoder failed; frames are dropped until a keyframe |
 | `0x90` | `touch` | `id`, `points: [{ slot, phase: "down"\|"motion"\|"up"\|"cancel", x, y, force?, radius? }]`; one message is one `wl_touch.frame` |
 | `0x91` | `pencil` | `id`, `phase: "down"\|"motion"\|"up"\|"cancel"\|"hover"\|"leave"`, `x`, `y`, `pressure` (0…1), `tilt: [x_deg, y_deg]`, `azimuth_deg` |
-| `0x92` | `pointer` | `id`, `x`, `y`, `buttons: uint` (the pressed set: 1 left, 2 middle, 4 right, 8 back, 16 forward), `scroll?: { dx, dy, precise: bool, seq?: uint }` (pixels when precise, otherwise wheel clicks; `seq`: [Input sequencing](#input-sequencing)), `relative?: [dx, dy]` (motion in display pixels that leaves the pointer at `x`, `y`) |
+| `0x92` | `pointer` | `id`, `x`, `y`, `buttons: uint` (the pressed set: 1 left, 2 middle, 4 right, 8 back, 16 forward), `scroll?: { dx, dy, precise: bool, seq?: uint, lift?: [vx, vy], hold?: bool }` (pixels when precise, otherwise wheel clicks; `seq`: [Input sequencing](#input-sequencing); `lift`: the finger lifted at this velocity in window pixels per second, on a precise scroll's last sample; `hold: true`: a finger touched down, with `dx` and `dy` 0, stopping kinetic scrolling), `relative?: [dx, dy]` (motion in display pixels that leaves the pointer at `x`, `y`) |
 | `0x93` | `key` | `keysym: uint`, `pressed: bool`, `mods: ["shift"\|"control"\|"mod1"\|"mod4"]` |
 | `0x94` | `text` | `commit?`, `preedit?`, `cursor?: [begin, end]` (byte offsets into `preedit`), `delete_before?`, `delete_after?` (extended grapheme clusters) |
 | `0x95` | `scroll.target` | `id`, `scroller: uint`, `seq: uint`, `delta: [dx, dy]` ([Scroll reports](#scroll-reports)) |
@@ -502,8 +502,8 @@ the pointer message's pixel coordinates or its precise-pixel versus wheel-click 
 - Clients keep pointer gestures (tap, a hold that aims the pointer, swipe to scroll) for
   `xwayland: true` windows and send real touch to native Wayland ones, because most X11
   apps turn a touch drag into a selection. Emulated pans retain one gesture owner;
-  a finger-count change cancels that pan. Card and free-desktop scroll delivery,
-  including momentum, stops when its connection or coordinate mapping changes.
+  a finger-count change cancels that pan. Card and free-desktop scroll delivery
+  stops when its connection or coordinate mapping changes.
 
 caboose-display sends a subset of these messages. It sends named cursors (`cursor.named`)
 and no `cursor` images; tiles only as `png` in legacy mode; `alpha: true` for windows of kind `popup` and
@@ -709,8 +709,11 @@ picture as the application drew it, at the window's size.
 ### Scrolling input
 
 A `pointer` message's `scroll` is in the window's pixels when `precise` (a finger) and in
-wheel clicks otherwise. How the computer delivers it to Wayland and X11 applications,
-and what they do with it, is the input system's ([input.md](input.md#scrolling)).
+wheel clicks otherwise. A finger's last sample carries its `lift` velocity, from which the
+computer scrolls on kinetically, and a finger touching down sends `hold`, which stops that.
+How the computer delivers it to Wayland and X11 applications, and what they do with it, is
+the input system's ([input.md](input.md#scrolling)). `pointer-scroll-lift` and
+`pointer-scroll-hold` in `guest/display/vectors/` pin the two.
 
 ### Clipboard
 

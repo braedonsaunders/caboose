@@ -7,10 +7,10 @@ struct ScrollPhysicsTests {
         var physics = ScrollPhysics()
         physics.begin(at: 0)
         for i in 1...10 { physics.append(CGPoint(x: 0.03, y: -0.07), at: Double(i) / 240) }
-        let delta = physics.frame(elapsed: 1.0 / 60)
+        let delta = physics.frame(elapsed: 1.0 / 60).delta
         #expect(abs(delta.x - 0.3) < 0.000001)
         #expect(abs(delta.y + 0.7) < 0.000001)
-        #expect(physics.frame(elapsed: 1.0 / 60) == .zero)
+        #expect(physics.frame(elapsed: 1.0 / 60).delta == .zero)
     }
 
     @Test func samplesWithSameTimestampRetainDistance() {
@@ -18,7 +18,7 @@ struct ScrollPhysicsTests {
         physics.begin(at: 0)
         physics.append(CGPoint(x: 1, y: 2), at: 0.01)
         physics.append(CGPoint(x: 3, y: 4), at: 0.01)
-        #expect(physics.frame(elapsed: 0.016) == CGPoint(x: 4, y: 6))
+        #expect(physics.frame(elapsed: 0.016).delta == CGPoint(x: 4, y: 6))
     }
 
     @Test func slowRecognitionDoesNotManufactureAFastFling() {
@@ -26,44 +26,28 @@ struct ScrollPhysicsTests {
         physics.begin(at: 0)
         physics.append(CGPoint(x: 0, y: 8), at: 0.4)
         physics.end(at: 0.41)
-        #expect(!physics.isCoasting)
-        #expect(physics.frame(elapsed: 0.016).y == 8)
+        // 8 points over 0.4 s: a lift at rest, with the last movement.
+        #expect(physics.frame(elapsed: 0.016) == ScrollPhysics.Step(delta: CGPoint(x: 0, y: 8), lift: .zero))
     }
 
-    private func distance(hz: Double) -> CGPoint {
+    @Test func theLiftCarriesTheMeasuredVelocityWithTheLastMovement() {
         var physics = ScrollPhysics()
         physics.begin(at: 0)
         physics.append(CGPoint(x: 10, y: -20), at: 0.01)
-        _ = physics.frame(elapsed: 0.01)
         physics.end(at: 0.01, velocity: CGPoint(x: 1000, y: -2000))
-        var total = CGPoint.zero
-        for _ in 0..<Int(hz * 5) {
-            let delta = physics.frame(elapsed: 1 / hz)
-            total.x += delta.x
-            total.y += delta.y
-        }
-        #expect(!physics.isCoasting)
-        return total
+        #expect(physics.needsFrame)
+        #expect(physics.frame(elapsed: 0.008) == ScrollPhysics.Step(delta: CGPoint(x: 10, y: -20), lift: CGPoint(x: 1000, y: -2000)))
+        #expect(!physics.needsFrame)
+        #expect(physics.frame(elapsed: 0.008) == ScrollPhysics.Step(delta: .zero))
     }
 
-    @Test func flingDistanceDoesNotDependOnRefreshRate() {
-        let baseline = distance(hz: 60)
-        for hz in [30.0, 90, 120] {
-            let actual = distance(hz: hz)
-            #expect(abs(actual.x - baseline.x) < 0.000001)
-            #expect(abs(actual.y - baseline.y) < 0.000001)
-        }
-        #expect(baseline.x > 400 && baseline.x < 500)
-    }
-
-    @Test func liftAfterPauseAndHardwareScrollDoNotFling() {
+    @Test func liftAfterPauseAndHardwareScrollLiftAtRest() {
         for hardware in [false, true] {
             var physics = ScrollPhysics()
             physics.begin(at: 0)
             physics.append(CGPoint(x: 0, y: 20), at: 0.02)
             physics.end(at: hardware ? 0.03 : 0.3, coast: !hardware)
-            #expect(!physics.isCoasting)
-            #expect(physics.frame(elapsed: 0.016).y == 20)
+            #expect(physics.frame(elapsed: 0.016) == ScrollPhysics.Step(delta: CGPoint(x: 0, y: 20), lift: .zero))
         }
     }
 
@@ -72,45 +56,34 @@ struct ScrollPhysicsTests {
         physics.begin(at: 0)
         physics.append(CGPoint(x: 10, y: 20), at: 0.01)
         physics.end(at: 0.02)
-        #expect(physics.isCoasting)
         physics.begin(at: 1)
-        #expect(physics.frame(elapsed: 0.016) == .zero)
+        #expect(physics.frame(elapsed: 0.016) == ScrollPhysics.Step(delta: .zero))
         physics.append(CGPoint(x: 2, y: 3), at: 1.01)
         physics.cancel()
         #expect(!physics.needsFrame)
-        #expect(physics.frame(elapsed: 0.016) == .zero)
+        #expect(physics.frame(elapsed: 0.016) == ScrollPhysics.Step(delta: .zero))
     }
 
-    @Test func stalledDisplayNeverReplaysBacklog() {
+    @Test func aDisplayStallDropsMovementButStillLifts() {
         var physics = ScrollPhysics()
         physics.begin(at: 0)
         physics.append(CGPoint(x: 10, y: 20), at: 0.01)
-        physics.end(at: 0.02)
-        #expect(physics.frame(elapsed: 1) == .zero)
-        #expect(!physics.needsFrame)
-    }
-
-    @Test func aDisplayStallDoesNotDisableTheRestOfAFingerPan() {
-        var physics = ScrollPhysics()
-        physics.begin(at: 0)
-        physics.append(CGPoint(x: 10, y: 20), at: 0.01)
-        #expect(physics.frame(elapsed: 0.2) == .zero)
+        #expect(physics.frame(elapsed: 0.2) == ScrollPhysics.Step(delta: .zero))
         #expect(!physics.needsFrame)
         physics.append(CGPoint(x: 3, y: 7), at: 0.22)
-        #expect(physics.frame(elapsed: 1.0 / 60) == CGPoint(x: 3, y: 7))
-        physics.end(at: 0.23, coast: false)
-        #expect(!physics.isCoasting)
+        #expect(physics.frame(elapsed: 1.0 / 60).delta == CGPoint(x: 3, y: 7))
+        physics.append(CGPoint(x: 0, y: 9), at: 0.23)
+        physics.end(at: 0.23, velocity: CGPoint(x: 0, y: 900))
+        #expect(physics.frame(elapsed: 1) == ScrollPhysics.Step(delta: .zero, lift: CGPoint(x: 0, y: 900)))
     }
 
-    @Test func partialLiftDiscardsPendingMovementAndCannotFling() {
+    @Test func partialLiftDiscardsPendingMovementAndCannotLift() {
         var physics = ScrollPhysics()
         physics.begin(at: 0)
         physics.append(CGPoint(x: 0, y: 30), at: 0.02)
         physics.end(at: 0.03, remainingContacts: 1)
-        #expect(!physics.isCoasting)
         #expect(!physics.needsFrame)
-        let afterPartialLift = physics.frame(elapsed: 0.016)
-        #expect(afterPartialLift == .zero)
+        #expect(physics.frame(elapsed: 0.016) == ScrollPhysics.Step(delta: .zero))
         physics.append(CGPoint(x: 0, y: 30), at: 0.04)
         physics.end(at: 0.05)
         #expect(!physics.needsFrame)
@@ -118,12 +91,12 @@ struct ScrollPhysicsTests {
         physics.begin(at: 1)
         physics.append(CGPoint(x: 0, y: 30), at: 1.02)
         physics.end(at: 1.03, remainingContacts: 0)
-        #expect(physics.isCoasting)
-        let afterLastLift = physics.frame(elapsed: 0.016)
-        #expect(afterLastLift.y > 30)
+        let last = physics.frame(elapsed: 0.016)
+        #expect(last.delta.y == 30)
+        #expect((last.lift?.y ?? 0) > 80)
     }
 
-    @Test func reversedMovementReversesFlingAndRejectsInvalidSamples() {
+    @Test func reversedMovementReversesTheLiftAndRejectsInvalidSamples() {
         var physics = ScrollPhysics()
         physics.begin(at: 0)
         physics.append(CGPoint(x: 0, y: 30), at: 0.03)
@@ -131,8 +104,15 @@ struct ScrollPhysicsTests {
         physics.append(CGPoint(x: CGFloat.nan, y: 0), at: 0.25)
         physics.append(CGPoint(x: 100, y: 100), at: 0.1)
         physics.end(at: 0.25)
-        #expect(physics.isCoasting)
-        #expect(physics.velocity.y < 0)
-        #expect(physics.velocity.x == 0)
+        let lift = physics.frame(elapsed: 0.016).lift
+        #expect((lift?.y ?? 0) < 0)
+        #expect(lift?.x == 0)
+    }
+
+    @Test func theComputerCoastsAsLongAsItsDecelerationTakes() {
+        // 2000 px/s slowing 0.2 % a millisecond to 20 px/s: ln(100) / 2.002 s.
+        #expect(abs(KineticScroll.duration(lifting: CGPoint(x: 0, y: 2000)) - log(100) / (-log(0.998) * 1000)) < 1e-9)
+        #expect(KineticScroll.duration(lifting: .zero) == 0)
+        #expect(KineticScroll.duration(lifting: CGPoint(x: 1e9, y: 0)) == KineticScroll.duration(lifting: CGPoint(x: 30000, y: 0)))
     }
 }

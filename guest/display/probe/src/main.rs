@@ -427,7 +427,7 @@ fn action_messages(id: u64, action: &str) -> Result<Vec<Message>, String> {
                 x,
                 y,
                 buttons: 0,
-                scroll: Some(proto::Scroll { dx: 0.0, dy, precise: verb != "notch", seq: None }),
+                scroll: Some(proto::Scroll { dx: 0.0, dy, precise: verb != "notch", seq: None, lift: None, hold: false }),
                 relative: None,
             })]
         }

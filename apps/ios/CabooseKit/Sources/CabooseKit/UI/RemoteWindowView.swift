@@ -860,6 +860,8 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     }
 
     public override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+        // A finger down stops content the computer is coasting, as on a touchpad.
+        if touches.contains(where: { $0.type == .direct }) { session?.holdScroll() }
         // A second contact belongs to the current recognizer. Its topology check
         // cancels the whole gesture; do not silently strand an active driver here.
         if !scrollOwnership.isActive { stopMomentum() }
@@ -1032,17 +1034,20 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
             let epoch = session.epoch
             let connection = (session as? CabooseDisplaySession)?.connections
             scrollOwnership.begin(owner, contacts: gesture.numberOfTouches)
-            scrollDriver.begin(at: now - 1.0 / 120) { [weak self, weak session, weak remoteWindow] delta in
+            scrollDriver.begin(at: now - 1.0 / 120) { [weak self, weak session, weak remoteWindow] delta, lift in
                 guard let self, let session, let remoteWindow, self.isInteractive,
                       self.window != nil, self.session === session, self.remoteWindow === remoteWindow,
                       session.state == .ready, session.windows[remoteWindow.id] === remoteWindow,
                       session.epoch == epoch, (session as? CabooseDisplaySession)?.connections == connection,
                       self.pixelsPerPoint == scale, self.bounds == geometry, remoteWindow.frame.size == size
                 else { return false }
-                let mapped = CGPoint(x: delta.x * size.width / max(1, geometry.width),
-                                     y: delta.y * size.height / max(1, geometry.height))
-                // The finger's distance in window pixels: the computer scrolls content exactly that far.
-                session.scroll(in: remoteWindow, dx: mapped.x, dy: mapped.y, at: anchor)
+                func mapped(_ p: CGPoint) -> CGPoint {
+                    CGPoint(x: p.x * size.width / max(1, geometry.width), y: p.y * size.height / max(1, geometry.height))
+                }
+                // The finger's distance in window pixels: the computer scrolls content exactly that far,
+                // and on from the lift as its input system coasts.
+                let delta = mapped(delta)
+                session.scroll(in: remoteWindow, dx: delta.x, dy: delta.y, at: anchor, lift: lift.map(mapped))
                 return true
             }
             appendScroll(gesture, at: now)

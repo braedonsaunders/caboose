@@ -510,8 +510,11 @@ public enum ClientMessage: Sendable {
     /// "Input sequencing").
     /// `relative`: motion in display pixels that leaves the pointer where it is (a stick
     /// looking around in a game).
+    /// `scrollLift`: the finger lifted at this velocity (window pixels per second), on the
+    /// last sample of a precise scroll; `scrollHold`: a finger touched down, stopping
+    /// kinetic scrolling (docs/input.md, "Kinetic scrolling").
     case pointer(window: Int, x: Double, y: Double, buttons: Int, scroll: (dx: Double, dy: Double, precise: Bool)?,
-                 scrollSeq: UInt64? = nil, relative: CGPoint? = nil)
+                 scrollSeq: UInt64? = nil, relative: CGPoint? = nil, scrollLift: CGPoint? = nil, scrollHold: Bool = false)
     case key(keysym: Int, pressed: Bool, modifiers: [String])
     case text(commit: String?, preedit: String? = nil, cursor: (Int, Int)? = nil, deleteBefore: Int? = nil, deleteAfter: Int? = nil)
     case clipboard(ClipboardContent)
@@ -614,11 +617,13 @@ public enum ClientMessage: Sendable {
                 ("pressure", CBOR(sample.pressure)), ("tilt", [CBOR(sample.tilt.x), CBOR(sample.tilt.y)]),
                 ("azimuth_deg", CBOR(sample.azimuth)),
             ]))
-        case .pointer(let window, let x, let y, let buttons, let scroll, let seq, let relative):
+        case .pointer(let window, let x, let y, let buttons, let scroll, let seq, let relative, let lift, let hold):
             return DisplayFrame(type: T.pointer.rawValue, body: map([
                 ("id", CBOR(window)), ("x", CBOR(x)), ("y", CBOR(y)), ("buttons", CBOR(buttons)),
                 ("scroll", scroll.map { s in
-                    map([("dx", CBOR(s.dx)), ("dy", CBOR(s.dy)), ("precise", CBOR(s.precise)), ("seq", seq.map { CBOR($0) })])
+                    map([("dx", CBOR(s.dx)), ("dy", CBOR(s.dy)), ("precise", CBOR(s.precise)), ("seq", seq.map { CBOR($0) }),
+                         ("lift", lift.map { [CBOR(Double($0.x)), CBOR(Double($0.y))] }),
+                         ("hold", hold ? CBOR(true) : nil)])
                 }),
                 ("relative", relative.map { [CBOR(Double($0.x)), CBOR(Double($0.y))] }),
             ]))

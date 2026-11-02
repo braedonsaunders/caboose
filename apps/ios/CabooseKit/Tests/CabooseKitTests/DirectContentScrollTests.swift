@@ -22,28 +22,19 @@ struct DirectContentScrollTests {
         }
     }
 
-    @Test func trackingAndInertiaAddUpTheSameAtEveryFrameRate() {
-        var totals: [CGPoint] = []
+    @Test func aPanEndsWithTheFingersLiftVelocityAtEveryFrameRate() {
         for hz in [30.0, 60, 90, 120] {
             var physics = ScrollPhysics()
             physics.begin(at: 0)
             physics.append(CGPoint(x: -0.3, y: 0.7), at: 0.01)
             let tracked = physics.frame(elapsed: 1 / hz)
-            #expect(abs(tracked.x + 0.3) < 1e-9)
-            #expect(abs(tracked.y - 0.7) < 1e-9)
+            #expect(abs(tracked.delta.x + 0.3) < 1e-9)
+            #expect(abs(tracked.delta.y - 0.7) < 1e-9)
+            #expect(tracked.lift == nil)
             physics.end(at: 0.02, velocity: CGPoint(x: -600, y: 1200))
-            var total = tracked
-            for _ in 0..<Int(hz * 5) {
-                let delta = physics.frame(elapsed: 1 / hz)
-                total.x += delta.x
-                total.y += delta.y
-            }
-            #expect(!physics.isCoasting)
-            totals.append(total)
-        }
-        for total in totals.dropFirst() {
-            #expect(abs(total.x - totals[0].x) < 1e-7)
-            #expect(abs(total.y - totals[0].y) < 1e-7)
+            // The phone sends the lift and nothing after it: the computer coasts.
+            #expect(physics.frame(elapsed: 1 / hz) == ScrollPhysics.Step(delta: .zero, lift: CGPoint(x: -600, y: 1200)))
+            #expect(!physics.needsFrame)
         }
     }
 }

@@ -396,6 +396,11 @@ pub struct Scroll {
     /// The window's input sequence number for this scroll: per window, strictly
     /// increasing from 1 for each display session.
     pub seq: Option<u64>,
+    /// The finger lifted with this velocity `[vx, vy]`, window pixels per second: the
+    /// last sample of a precise scroll (docs/input.md, "Kinetic scrolling").
+    pub lift: Option<[f64; 2]>,
+    /// A finger touched down: kinetic scrolling stops. `dx` and `dy` are zero.
+    pub hold: bool,
 }
 
 pub mod buttons {
@@ -982,7 +987,16 @@ impl Message {
                     "scroll",
                     m.scroll
                         .as_ref()
-                        .map(|s| MapBuilder::new().put("dx", s.dx).put("dy", s.dy).put("precise", s.precise).opt("seq", s.seq).build()),
+                        .map(|s| {
+                            MapBuilder::new()
+                                .put("dx", s.dx)
+                                .put("dy", s.dy)
+                                .put("precise", s.precise)
+                                .opt("seq", s.seq)
+                                .opt("lift", s.lift.map(|[vx, vy]| Value::Array(vec![vx.into(), vy.into()])))
+                                .opt("hold", s.hold.then_some(true))
+                                .build()
+                        }),
                 )
                 .opt("relative", m.relative.map(|[dx, dy]| Value::Array(vec![dx.into(), dy.into()])))
                 .build(),
@@ -1199,7 +1213,14 @@ impl Message {
                     None => None,
                     Some(v) => {
                         let s = Fields::new("pointer.scroll", v)?;
-                        Some(Scroll { dx: s.f64("dx")?, dy: s.f64("dy")?, precise: s.bool("precise")?, seq: s.opt_u64("seq")? })
+                        Some(Scroll {
+                            dx: s.f64("dx")?,
+                            dy: s.f64("dy")?,
+                            precise: s.bool("precise")?,
+                            seq: s.opt_u64("seq")?,
+                            lift: s.opt("lift", fields::as_f64_pair)?,
+                            hold: s.opt_bool("hold")?.unwrap_or(false),
+                        })
                     }
                 },
                 relative: f.opt("relative", fields::as_f64_pair)?,

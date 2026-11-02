@@ -1,17 +1,27 @@
 import Foundation
 
-/// Frame-independent scrolling in view points. Input samples are accumulated without
-/// rounding; the consumer drains once per display frame. No remote geometry is retained.
+/// A finger scroll in view points, sampled for the computer: movement is accumulated
+/// without rounding and drained once per display frame, and the lift carries the
+/// finger's velocity. The computer's input system scrolls on kinetically from that
+/// velocity (docs/input.md, "Kinetic scrolling"); nothing coasts on the phone.
 public struct ScrollPhysics {
     public private(set) var velocity = CGPoint.zero
-    public private(set) var isCoasting = false
     private var pending = CGPoint.zero
+    /// The lift waiting for the next frame: the velocity to send with the last movement.
+    private var lift: CGPoint?
     private var lastSample: TimeInterval?
     private var tracking = false
-    private let decay = -log(0.998) * 1000
+
+    /// One display frame's share of the scroll.
+    public struct Step: Equatable {
+        public var delta: CGPoint
+        /// Present on the frame that ends the scroll: the finger's velocity as it lifted,
+        /// zero when it lifted still.
+        public var lift: CGPoint?
+    }
 
     public init() {}
-    public var needsFrame: Bool { pending != .zero || isCoasting }
+    public var needsFrame: Bool { pending != .zero || lift != nil }
 
     public mutating func begin(at time: TimeInterval) {
         cancel()
@@ -34,8 +44,10 @@ public struct ScrollPhysics {
         lastSample = time
     }
 
-    /// A pause before lifting stops the fling. UIKit pans may supply their measured
-    /// release velocity; raw touch surfaces use the filtered sample velocity.
+    /// The finger lifted. A pause before lifting lifts it still. UIKit pans may supply
+    /// their measured release velocity; raw touch surfaces use the filtered sample
+    /// velocity. `coast: false` (hardware scrolling, which has the system's own momentum)
+    /// lifts still.
     public mutating func end(at time: TimeInterval, velocity measured: CGPoint? = nil, coast: Bool = true, remainingContacts: Int = 0) {
         // A partial lift cancels the sequence, including movement awaiting a frame.
         guard remainingContacts == 0 else { cancel(); return }
@@ -43,60 +55,54 @@ public struct ScrollPhysics {
         tracking = false
         if let measured, measured.x.isFinite, measured.y.isFinite { velocity = measured }
         let fresh = lastSample.map { time >= $0 && time - $0 <= 0.12 } ?? false
-        let speed = hypot(velocity.x, velocity.y)
-        isCoasting = coast && fresh && speed >= 80
-        if !isCoasting { velocity = .zero }
-        else if speed > 8000 {
-            velocity.x *= 8000 / speed
-            velocity.y *= 8000 / speed
-        }
+        lift = coast && fresh ? KineticScroll.liftVelocity(velocity) : .zero
+        velocity = .zero
     }
 
-    public mutating func frame(elapsed: TimeInterval) -> CGPoint {
-        guard elapsed.isFinite, elapsed >= 0 else { cancel(); return .zero }
+    public mutating func frame(elapsed: TimeInterval) -> Step {
+        guard elapsed.isFinite, elapsed >= 0 else { cancel(); return Step(delta: .zero) }
         if elapsed > 0.1 {
             // Drop stale movement after a rendering stall, but keep accepting a
-            // finger that is still down. Cancelling tracking here strands the
-            // recognizer's remaining changed events until the user lifts.
+            // finger that is still down, and still end a lifted one.
             pending = .zero
             velocity = .zero
-            isCoasting = false
-            return .zero
         }
-        var result = pending
-        pending = .zero
-        guard isCoasting else { return result }
-        let speed = hypot(velocity.x, velocity.y)
-        // Integrate exactly, including the final partial frame at the stop threshold.
-        let dt = min(elapsed, max(0, log(speed / 20) / decay))
-        let factor = exp(-decay * dt)
-        result.x += velocity.x * (1 - factor) / decay
-        result.y += velocity.y * (1 - factor) / decay
-        velocity.x *= factor
-        velocity.y *= factor
-        if dt < elapsed || hypot(velocity.x, velocity.y) <= 20.000001 {
-            isCoasting = false
-            velocity = .zero
-        }
-        return result
-    }
-
-    /// The distance coasting still covers within `horizon` seconds, at the same exact
-    /// decay and stop threshold as `frame(elapsed:)`; zero while not coasting.
-    public func projectedDistance(over horizon: TimeInterval) -> CGPoint {
-        guard isCoasting, horizon > 0, horizon.isFinite else { return .zero }
-        let speed = hypot(velocity.x, velocity.y)
-        guard speed > 20 else { return .zero }
-        let dt = min(horizon, log(speed / 20) / decay)
-        let travelled = (1 - exp(-decay * dt)) / decay
-        return CGPoint(x: velocity.x * travelled, y: velocity.y * travelled)
+        defer { pending = .zero; lift = nil }
+        return Step(delta: pending, lift: lift)
     }
 
     public mutating func cancel() {
         velocity = .zero
         pending = .zero
+        lift = nil
         lastSample = nil
         tracking = false
-        isCoasting = false
+    }
+}
+
+/// The computer's kinetic scrolling, as far as the phone needs to know it
+/// (guest/display `input/scroll.rs`): which lifts coast, and for how long at most.
+public enum KineticScroll {
+    /// A lift slower than this (points per second) is a lift at rest, as a UIScrollView
+    /// does not coast from it either.
+    static let minimumSpeed: CGFloat = 80
+    /// The computer's coasting, in window pixels per second: it starts at most this fast,
+    /// slows as a UIScrollView normally decelerates, and ends at the stop speed.
+    static let maximumSpeed: CGFloat = 30000
+    static let decay = -log(0.998) * 1000
+    static let stopSpeed: CGFloat = 20
+
+    /// The velocity a lift sends: zero when too slow to coast.
+    static func liftVelocity(_ velocity: CGPoint) -> CGPoint {
+        let speed = hypot(velocity.x, velocity.y)
+        guard speed.isFinite, speed >= minimumSpeed else { return .zero }
+        return velocity
+    }
+
+    /// How long the computer coasts after a lift at `velocity` (window pixels per second).
+    public static func duration(lifting velocity: CGPoint) -> TimeInterval {
+        let speed = min(hypot(velocity.x, velocity.y), maximumSpeed)
+        guard speed.isFinite, speed > stopSpeed else { return 0 }
+        return log(speed / stopSpeed) / decay
     }
 }

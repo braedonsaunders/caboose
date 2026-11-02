@@ -326,7 +326,7 @@ impl State {
             })(),
             "scroll" => (|| {
                 let at: Point<f64, Logical> = (number(0)?, number(1)?).into();
-                let scroll = proto::Scroll { dx: number(2)?, dy: number(3)?, precise: false, seq: None };
+                let scroll = proto::Scroll { dx: number(2)?, dy: number(3)?, precise: false, seq: None, lift: None, hold: false };
                 let id = self.window_at(at).ok_or("nothing is at that position")?;
                 self.pointer_at(id, at, 0, Some(scroll));
                 Ok(format!("{{\"ok\":true,\"window\":{id}}}\n").into_bytes())

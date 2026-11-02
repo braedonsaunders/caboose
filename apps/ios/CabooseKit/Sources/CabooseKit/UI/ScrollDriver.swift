@@ -1,14 +1,16 @@
 #if canImport(UIKit)
 import UIKit
 
-/// Shared display-paced scroll delivery. The receiver validates its captured session
-/// and window on every frame and returns false when that input target is no longer live.
+/// Shared display-paced scroll delivery. The receiver gets each frame's movement and, at
+/// the end, the finger's lift velocity (zero for a lift at rest); it validates its captured
+/// session and window every time and returns false when that input target is no longer live.
 @MainActor
 public final class ScrollDriver: NSObject {
+    public typealias Send = (_ delta: CGPoint, _ lift: CGPoint?) -> Bool
     private var physics = ScrollPhysics()
     private var link: CADisplayLink?
     private var lastFrame: CFTimeInterval?
-    private var send: ((CGPoint) -> Bool)?
+    private var send: Send?
 
     public override init() {
         super.init()
@@ -16,7 +18,7 @@ public final class ScrollDriver: NSObject {
             name: UIApplication.willResignActiveNotification, object: nil)
     }
 
-    public func begin(at time: TimeInterval, send: @escaping (CGPoint) -> Bool) {
+    public func begin(at time: TimeInterval, send: @escaping Send) {
         cancel()
         physics.begin(at: time)
         self.send = send
@@ -27,10 +29,14 @@ public final class ScrollDriver: NSObject {
         if physics.needsFrame { startLink() }
     }
 
+    /// The finger lifted: what it moved since the last frame goes now, with its velocity,
+    /// so the computer starts coasting without waiting for a frame.
     public func end(at time: TimeInterval, velocity: CGPoint? = nil, coast: Bool = true, remainingContacts: Int = 0) {
         physics.end(at: time, velocity: velocity, coast: coast, remainingContacts: remainingContacts)
-        if physics.needsFrame { startLink() }
-        else { cancel() }
+        let elapsed = lastFrame.map { max(0, CACurrentMediaTime() - $0) } ?? 0
+        let step = physics.frame(elapsed: elapsed)
+        if step.delta != .zero || step.lift != nil { _ = send?(step.delta, step.lift) }
+        cancel()
     }
 
     @objc public func cancel() {
@@ -52,9 +58,9 @@ public final class ScrollDriver: NSObject {
 
     fileprivate func tick(_ link: CADisplayLink) {
         let now = CACurrentMediaTime()
-        let delta = physics.frame(elapsed: max(0, now - (lastFrame ?? now)))
+        let step = physics.frame(elapsed: max(0, now - (lastFrame ?? now)))
         lastFrame = now
-        if delta != .zero, send?(delta) != true { cancel(); return }
+        if step.delta != .zero || step.lift != nil, send?(step.delta, step.lift) != true { cancel(); return }
         if !physics.needsFrame {
             // Tracking can resume with another sample; keep its receiver and velocity.
             link.invalidate()

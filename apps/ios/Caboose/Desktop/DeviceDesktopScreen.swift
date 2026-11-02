@@ -438,6 +438,8 @@ final class DesktopTouchSurface: RemoteTextInputView {
 
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
         scrollDriver.cancel()
+        // A finger down stops content the computer is coasting, as on a touchpad.
+        session?.holdScroll()
         let fingers = live(event)
         if maxFingers > 0, (dragging || scrolling) {
             if dragging { releaseDrag() }
@@ -562,7 +564,7 @@ final class DesktopTouchSurface: RemoteTextInputView {
                 guard let mapping = desktop.inputMapping(for: target, windows: session.windows) else { return }
                 let epoch = session.epoch
                 let connection = (session as? CabooseDisplaySession)?.connections
-                scrollDriver.begin(at: scrollOriginTime) { [weak self, weak session, weak target, weak desktop] delta in
+                scrollDriver.begin(at: scrollOriginTime) { [weak self, weak session, weak target, weak desktop] delta, lift in
                     guard let self, let session, let target, let desktop, self.window != nil,
                           self.session === session, self.desktop === desktop, session.state == .ready,
                           session.windows[id] === target, desktop.isVisible(id),
@@ -570,8 +572,10 @@ final class DesktopTouchSurface: RemoteTextInputView {
                           desktop.inputMapping(for: target, windows: session.windows) == mapping,
                           case .content(let current, _) = desktop.hitTest(desktop.cursor, windows: session.windows), current == id else { return false }
                     guard let remoteDelta = mapping.delta(delta) else { return false }
-                    // The finger's distance in window pixels: the computer scrolls content exactly that far.
-                    session.scroll(in: target, dx: remoteDelta.x, dy: remoteDelta.y, at: anchor)
+                    // The finger's distance in window pixels: the computer scrolls content exactly that far,
+                    // and on from the lift as its input system coasts.
+                    session.scroll(in: target, dx: remoteDelta.x, dy: remoteDelta.y, at: anchor,
+                                   lift: lift.flatMap { mapping.delta($0) })
                     return true
                 }
             }

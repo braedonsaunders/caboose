@@ -54,6 +54,8 @@ pub struct InputState {
     pub pencil: crate::pencil::PencilState,
     /// The timer that ends a finger scroll sequence with axis_stop once samples stop.
     scroll_stop: Option<smithay::reexports::calloop::RegistrationToken>,
+    /// The timer of kinetic scrolling after a finger lifted (scroll.rs).
+    coast: Option<smithay::reexports::calloop::RegistrationToken>,
 }
 
 /// The rectangle a full-screen or maximized window takes, relative to its display, or none
@@ -160,6 +162,16 @@ impl State {
     pub fn pointer(&mut self, m: &proto::Pointer) {
         let kind = if m.scroll.is_some() { "scroll" } else { "pointer" };
         self.input_trace.push(crate::frame_trace::Input { at_us: self.now_us(), kind });
+        // A finger touching down stops kinetic scrolling, as do another scroll and a button.
+        if m.scroll.as_ref().is_some_and(|s| s.hold) {
+            if self.input.coast.is_some() {
+                self.end_scroll();
+            }
+            return;
+        }
+        if self.input.coast.is_some() && (m.scroll.is_some() || m.buttons != self.input.pointer_buttons) {
+            self.end_scroll();
+        }
         let Some((location, under)) = self.locate(m.id, m.x, m.y) else { return };
         let Some(pointer) = self.seat.get_pointer() else { return };
         let utime = self.now_us();
@@ -203,18 +215,33 @@ impl State {
         }
         self.input.pointer_buttons = m.buttons;
         if let Some(scroll) = &m.scroll {
-            pointer.axis(self, scroll::axis_frame(scroll, display_scale, time));
-            if scroll.precise {
-                self.arm_scroll_stop();
+            if scroll.dx != 0.0 || scroll.dy != 0.0 {
+                pointer.axis(self, scroll::axis_frame(scroll, display_scale, time));
             }
         }
         // One sample is one wl_pointer.frame: Xwayland turns each frame into its events.
         pointer.frame(self);
+        if let Some(scroll) = m.scroll.as_ref().filter(|s| s.precise) {
+            match scroll.lift {
+                Some(velocity) => {
+                    let refresh_hz = self
+                        .windows
+                        .get(m.id)
+                        .map(|w| self.displays.resolve(Some(w.display)).info.refresh_hz)
+                        .unwrap_or(60.0);
+                    self.lift_scroll(velocity, display_scale, refresh_hz);
+                }
+                None => self.arm_scroll_stop(),
+            }
+        }
     }
 
     pub fn touch(&mut self, m: &proto::Touch) {
         self.input_trace.push(crate::frame_trace::Input { at_us: self.now_us(), kind: "touch" });
         let Some(touch) = self.seat.get_touch() else { return };
+        if self.input.coast.is_some() && m.points.iter().any(|p| matches!(p.phase, TouchPhase::Down)) {
+            self.end_scroll();
+        }
         let time = self.now_ms();
         for p in &m.points {
             let slot = Some(p.slot).into();

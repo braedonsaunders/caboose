@@ -1,0 +1,8 @@
+{
+  "name": "pointer-scroll-lift",
+  "description": "The last sample of a finger scroll: the finger lifted moving 1800 window pixels per second up the content.",
+  "messages": [
+    {"direction": "client", "type": "pointer", "type_id": 146, "fields": {"x": {"$float": 640.0}, "y": {"$float": 480.0}, "id": 7, "scroll": {"dx": {"$float": 0.0}, "dy": {"$float": 12.5}, "seq": 43, "lift": [{"$float": 0.0}, {"$float": 1800.0}], "precise": true}, "buttons": 0}}
+  ],
+  "hex": "926b000000a56178fb40840000000000006179fb407e00000000000062696407667363726f6c6ca5626478fb0000000000000000626479fb402900000000000063736571182b646c69667482fb0000000000000000fb409c2000000000006770726563697365f567627574746f6e7300"
+}

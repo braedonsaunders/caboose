@@ -18,9 +18,10 @@ an application's own response to input.
 ## Scrolling
 
 A `pointer` message's `scroll` is either precise or wheel clicks. Precise scrolling is a
-finger: a pan on the phone's screen or trackpad, its coasting, in the window's pixels
-(display pixels), one message per display refresh while the content moves. Wheel
-scrolling is clicks of a mouse wheel, `dy` 1 for one click down.
+finger: a pan on the phone's screen or trackpad, in the window's pixels (display pixels),
+one message per display refresh while the finger moves; the last carries the finger's
+velocity as it lifted (`lift`). Wheel scrolling is clicks of a mouse wheel, `dy` 1 for
+one click down.
 
 ### Wayland
 
@@ -31,9 +32,26 @@ A scroll sample is one `wl_pointer.frame`, with the motion of its `pointer` mess
 | Precise `dx`, `dy` | `finger` | `dx / s`, `dy / s` logical pixels at the window's display scale `s` | none |
 | Wheel clicks `n` | `wheel` | `15 n` logical pixels | `120 n` |
 
-A finger sequence ends with `axis_stop` on both axes 50 ms after its last sample, where
-clients finish the gesture and start their own kinetic scrolling. An axis that did not
-move is not sent.
+A finger sequence ends with `axis_stop` on both axes when it stops: after kinetic
+scrolling (below), at once for a lift too slow to coast, or 50 ms after the last sample of
+a client that sends no `lift`. An axis that did not move is not sent.
+
+### Kinetic scrolling
+
+Content keeps moving after the finger lifts, as a touchpad driver's coasting does, and it is
+the input system that moves it: the phone sends the finger and nothing after it. A
+`scroll.lift` of `[vx, vy]` window pixels per second at least 80 fast starts coasting at
+that velocity (at most 30000): finger axis events at the window's display refresh, each
+the distance covered since the last, the velocity slowing by 0.2 % a millisecond (a
+UIScrollView's normal deceleration) until it is under 20 pixels per second, then
+`axis_stop`. A lift at 2000 pixels per second coasts 989 pixels in 2.3 seconds, at any
+refresh rate. Wayland and X11 clients see one finger sequence, so an application's own
+kinetic scrolling, started at `axis_stop`, starts from the coast's last speed and adds
+nothing visible.
+
+A `scroll.hold` (a finger touched down on the phone), any other scroll, a button and a
+touch down stop coasting at once with `axis_stop`. The phone sends `hold` only while the
+computer may still be coasting a scroll it lifted.
 
 ### X11
 
@@ -69,13 +87,13 @@ the same scale, with a 1902-pixel view, moves 256 pixels for that pan before its
 scrolling.
 
 The phone's direct-content pans (a finger on a window's picture, as opposed to its
-trackpad) are sent as one twelfth of the finger's window pixels
-(`apps/ios` `DirectScrollCalibration`), so Chromium on X11 scrolls a twelfth of the
-finger's distance for them.
+trackpad) are sent as the finger's distance in window pixels, so content moves with the
+finger.
 
 ## Checks
 
-`cargo test -p caboose-display input::` in guest/display covers the scroll units and
-the X11 scroll distance. `scripts/check-finger-scroll.py` in guest/display checks finger
+`cargo test -p caboose-display input::` in guest/display covers the scroll units,
+kinetic scrolling's distance and stop, and the X11 scroll distance; `swift test` in
+apps/ios/CabooseKit covers the phone's samples and lift (`ScrollPhysicsTests`). `scripts/check-finger-scroll.py` in guest/display checks finger
 and wheel scrolling end to end in Chromium on X11 through the computer's Xwayland
 ([guest/display](../guest/display/README.md)).

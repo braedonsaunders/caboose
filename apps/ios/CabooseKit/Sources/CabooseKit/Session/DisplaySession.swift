@@ -86,8 +86,11 @@ public protocol DisplaySession: AnyObject {
 
     func pointerMove(in window: RemoteWindow, to point: CGPoint, modifiers: [String])
     func pointerButton(in window: RemoteWindow, button: Int, pressed: Bool, at point: CGPoint, modifiers: [String])
-    /// Deltas in pixels, positive down/right.
-    func scroll(in window: RemoteWindow, dx: CGFloat, dy: CGFloat, at point: CGPoint, modifiers: [String])
+    /// Deltas in pixels, positive down/right. `lift` is on a finger scroll's last sample:
+    /// the finger's velocity in pixels per second as it lifted (docs/input.md).
+    func scroll(in window: RemoteWindow, dx: CGFloat, dy: CGFloat, at point: CGPoint, lift: CGPoint?, modifiers: [String])
+    /// A finger touched down: stops the computer's kinetic scrolling, if it may be running.
+    func holdScroll()
     /// Relative motion in pixels that leaves the pointer where it is: mouse look in a game.
     func pointerLook(in window: RemoteWindow, by delta: CGPoint)
     func resetScroll()
@@ -154,7 +157,10 @@ public extension DisplaySession {
         pointerButton(in: window, button: button, pressed: pressed, at: point, modifiers: [])
     }
     func scroll(in window: RemoteWindow, dx: CGFloat, dy: CGFloat, at point: CGPoint) {
-        scroll(in: window, dx: dx, dy: dy, at: point, modifiers: [])
+        scroll(in: window, dx: dx, dy: dy, at: point, lift: nil, modifiers: [])
+    }
+    func scroll(in window: RemoteWindow, dx: CGFloat, dy: CGFloat, at point: CGPoint, lift: CGPoint?) {
+        scroll(in: window, dx: dx, dy: dy, at: point, lift: lift, modifiers: [])
     }
     func key(_ stroke: KeyStroke, pressed: Bool, in window: RemoteWindow?) {
         key(stroke, pressed: pressed, in: window, extraModifiers: [])

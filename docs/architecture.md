@@ -3355,19 +3355,20 @@ and restores its dock.
   releases it. Two fingers can also scroll, and a two-finger tap sends a right click (an
   amber ring blooms where it lands, with a tick). Pencil strokes and hardware pointers
   retain direct dragging. The free desktop uses the same finger pan/hold convention for
-  content while title bars and resize handles drag immediately. Emulated scrolling uses fractional deltas paced to display refresh, with
-  time-based deceleration shared by window swipes, desktop two-finger scrolling and the
-  phone trackpad. Direct content pans map local points through the presented surface to
-  guest pixels, then apply a 1/12 gain to tracking and inertia; hardware scrolling and
-  dedicated phone trackpads do not. Applications take precise scrolling as a finger's
+  content while title bars and resize handles drag immediately. Emulated scrolling uses fractional deltas paced to display refresh, shared by
+  window swipes, desktop two-finger scrolling and the phone trackpad, and ends with the
+  finger's lift velocity, from which the computer's input system scrolls on kinetically
+  ([input.md](input.md#kinetic-scrolling)); nothing coasts on the phone. Direct content
+  pans map local points through the presented surface to guest pixels, so content moves
+  with the finger. Applications take precise scrolling as a finger's
   ([input.md](input.md#scrolling)). The phone
   shows only the newest picture the app drew: a pan scrolls the app, and the content moves
   when the app's next picture arrives.
-  A new touch, context action, target change, detach or app backgrounding
-  stops client inertia. Card and free-desktop scroll delivery is fenced to the original
+  A finger touching down stops the computer's kinetic scrolling; a context action, target
+  change, detach or app backgrounding cancels a pan in progress. Card and free-desktop scroll delivery is fenced to the original
   connection and geometry. Changing the finger count during an emulated pan cancels
-  that pan through lift; unrelated recognizers cannot end its driver. A delayed display tick discards stale movement and momentum without
-  disabling the rest of an ongoing finger pan. Native touch leaves fling and gesture interpretation to the Linux app.
+  that pan through lift; unrelated recognizers cannot end its driver. A delayed display tick discards stale movement without
+  disabling the rest of an ongoing finger pan or its lift. Native touch leaves fling and gesture interpretation to the Linux app.
   Pointer taps are sent individually, retaining their real timing for double
   clicks. A stationary half-second hold in native-touch content opens context immediately
   at the held point; lifting or cancellation cannot send another click. A mouse-only

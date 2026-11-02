@@ -207,6 +207,8 @@ final class TrackpadSurface: RemoteTextInputView {
 
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
         scrollDriver.cancel()
+        // A finger down stops content the computer is coasting, as on a touchpad.
+        session?.holdScroll()
         scrolling = false
         inputTime = event?.timestamp ?? ProcessInfo.processInfo.systemUptime
         scrollOriginTime = inputTime
@@ -301,7 +303,7 @@ final class TrackpadSurface: RemoteTextInputView {
             let connection = (session as? CabooseDisplaySession)?.connections
             scrolling = true
             session.resetScroll()
-            scrollDriver.begin(at: scrollOriginTime) { [weak self, weak session, weak window, weak directTarget, weak originalDesktop] delta in
+            scrollDriver.begin(at: scrollOriginTime) { [weak self, weak session, weak window, weak directTarget, weak originalDesktop] delta, lift in
                 guard let self, let session, let window, self.window != nil,
                       self.inputEnabled, self.pointerEnabled, self.session === session,
                       session.state == .ready, session.windows[window.id] === window,
@@ -314,7 +316,8 @@ final class TrackpadSurface: RemoteTextInputView {
                           case .content(let id, _) = desktop.hitTest(desktop.cursor, windows: session.windows), id == window.id else { return false }
                 }
                 let mapped = mapping?.delta(delta) ?? delta
-                session.scroll(in: window, dx: mapped.x, dy: mapped.y, at: anchor)
+                session.scroll(in: window, dx: mapped.x, dy: mapped.y, at: anchor,
+                               lift: lift.map { mapping?.delta($0) ?? $0 })
                 return true
             }
         }
