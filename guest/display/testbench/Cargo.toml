@@ -1,0 +1,22 @@
+[package]
+name = "caboose-display-testbench"
+description = "Caboose testbench client: an ordinary Wayland client (plus an X11 mode) that tests the compositor from outside"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "caboose_display_testbench"
+path = "src/lib.rs"
+
+[[bin]]
+name = "caboose-display-testbench"
+path = "src/main.rs"
+
+[dependencies]
+libc = "0.2"
+wayland-client = "0.31"
+wayland-protocols = { version = "0.32", features = ["client"] }
+x11rb = { version = "0.13", features = ["allow-unsafe-code"] }
