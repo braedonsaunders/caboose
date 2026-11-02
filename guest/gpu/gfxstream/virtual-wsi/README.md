@@ -119,6 +119,13 @@ frame and `pump` (or any later wait) consumes its result when it arrives. A fram
 was not queued ends its swapchain: the next present or acquire returns
 `VK_ERROR_OUT_OF_DATE_KHR` (or `VK_ERROR_DEVICE_LOST`), a rejected frame's image counts
 as released, and an uncertain frame never retires and is not waited for.
+An ordered present with wait semaphores first submits, on its queue and in stream
+order, a submission that waits for them and signals the presented image's own binary
+semaphore, which is all the phone waits for. The application may signal its semaphores
+again once vkQueuePresentKHR returns, before the phone runs that present; the image's
+semaphore is signaled again only when the image is presented again, after the phone has
+released it. Swapchain retirement waits until the surface's ordered presents have
+retired, since retirement rejects presents still waiting for their order mark.
 
 With ordered presents and the completion feed, the next image is acquired right after
 each present, on the phone, against one of three private semaphores. The application's

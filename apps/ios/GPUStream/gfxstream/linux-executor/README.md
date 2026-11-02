@@ -89,7 +89,7 @@ runs a guest driver release end to end: a disposable container of the computer i
 `IMAGE` runs `broker_host.py` and an Xvfb display, an executor container shares its network
 namespace, the [synchronization probe](../../../../../guest/gpu/gfxstream/driver/sync-check/README.md)
 `SYNC_CHECK` runs on the driver `DRIVER` against an executor with the phone's capabilities,
-and vkcube presents 300 frames through one without `guest-images` (see Limits). Both
+and vkcube presents 300 frames through another with the same capabilities. Both
 executors must drain cleanly. Each window bind is answered 0.4 s late (`BIND_DELAY`), as a
 phone waiting for its window's layer is, and surfaces report the R8G8B8A8 formats besides
 lavapipe's two (`EXTRA_FORMATS`), as the phone does, so the answers a window gets before and
@@ -99,7 +99,7 @@ this. With `caboose-computer:flathub-79f46a1` and the driver of
 
 ```
 PASS sync-check: 13 cases
-PASS vkcube: window=0x200000 swapchain=1 frames=300 captured=300 distinct=50 chain=28069973
+PASS vkcube: window=0x200000 swapchain=1 frames=300 captured=300 distinct=50 chain=e51ca5e4
 ```
 
 The probe's `surface_enumeration` case reports the range of format counts it saw
@@ -109,16 +109,6 @@ the same build and settings give the same chain.
 
 ## Limits
 
-- **Guest-owned images stop presenting on Mesa.** With `guest-images` the guest hands the
-  next image to the application without asking the phone, so the decoder can run a later
-  frame's submission, which signals again the binary semaphore an earlier present waits
-  on, before the executor has submitted that earlier present's copy; the earlier copy then
-  takes the later signal, and the later copy waits for one that never comes. MoltenVK
-  queues such a wait; Mesa (lavapipe submits immediately) waits in `vkQueueSubmit` for a
-  pending signal while holding the queue's lock, which the decoder's next submission needs.
-  vkcube with `guest-images` stops after some tens of frames, at a copy waiting on a
-  semaphore with no pending signal while the decoder has passed that present's ORDER mark.
-  The check presents without it.
 - The phone's application lifecycle is absent: the executor never suspends
   (`EXECUTOR_SUSPEND`, `QUIESCE`) and never reconnects with a resume credential, so a lost
   socket ends it; it acknowledges the broker as a resumable phone does. It never requests a

@@ -9,13 +9,13 @@
 # runs broker_host.py (the broker from this checkout) and an Xvfb display; an executor
 # container from build.sh's image shares its network namespace and connects to the broker.
 # The probe runs against the executor with the phone's capabilities; then vkcube (from the
-# executor image) presents 300 frames through an executor without `guest-images` (README.md,
-# "Limits"). Logs go to OUT (default ./linux-executor-check). CPUS (default 4) bounds each
-# container. BIND_DELAY (seconds, default 0.4) answers each window bind that much later, as
-# a phone waiting for its window's layer does, so what an application asks before its window
-# is bound is exercised; EXTRA_FORMATS (FORMAT:SPACE,..., default 37:0,43:0, the R8G8B8A8
-# formats) has surfaces report formats beyond lavapipe's two, as the phone does, so the
-# answers before and after a bind differ. Exit status 0 when every step passed.
+# executor image) presents 300 frames through another with the same capabilities. Logs go to
+# OUT (default ./linux-executor-check). CPUS (default 4) bounds each container. BIND_DELAY
+# (seconds, default 0.4) answers each window bind that much later, as a phone waiting for
+# its window's layer does, so what an application asks before its window is bound is
+# exercised; EXTRA_FORMATS (FORMAT:SPACE,..., default 37:0,43:0, the R8G8B8A8 formats) has
+# surfaces report formats beyond lavapipe's two, as the phone does, so the answers before
+# and after a bind differ. Exit status 0 when every step passed.
 set -eu
 [ $# -ge 4 ] && [ $# -le 5 ] || { sed -n '4,15p' "$0" >&2; exit 2; }
 image=$1
@@ -90,7 +90,7 @@ fi
 grep 'note=surface_enumeration' "$out/sync-check.log" || true
 drain "$out/executor-sync-check.log"
 
-executor "$(echo "$phone" | sed 's/,guest-images//')"
+executor "$phone"
 if app timeout 600 /shared/vkcube --c 300 > "$out/vkcube.log" 2>&1; then :; else status=1; echo 'FAIL vkcube did not finish'; fi
 drain "$out/executor-vkcube.log"
 retired=$(grep 'swapchain retired' "$out/executor-vkcube.log" | tail -1)

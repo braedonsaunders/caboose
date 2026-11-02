@@ -5,6 +5,12 @@ struct Image {
     VkDeviceMemory memory=VK_NULL_HANDLE;
     uint64_t serial=0;
     bool held=false;   // guest-owned images: acquired by the application, not yet presented
+    // An ordered present's wait: a submission at the present waits for the application's
+    // semaphores and signals this one, which the phone waits for. The application may signal
+    // its semaphores again as soon as vkQueuePresentKHR returns, while the phone may wait
+    // later; this one is signaled again only when the image is presented again, after the
+    // phone has given it back.
+    VkSemaphore presentWait=VK_NULL_HANDLE;
 };
 // Pipelined acquisition, with ordered presents and the completion feed: after each
 // present the next image is acquired on the phone against one of these private
@@ -121,6 +127,10 @@ static void freeImages(DeviceSwapchain& swap) {
         slot={};
     }
     for (auto& image:swap.images) {
+        if (image.presentWait) {
+            tracker->on_vkDestroySemaphore(encoder,device->internal_object,image.presentWait,nullptr);
+            image.presentWait=VK_NULL_HANDLE;
+        }
         if (image.image) {
             tracker->on_vkDestroyImage(encoder,device->internal_object,image.image,nullptr);
             image.image=VK_NULL_HANDLE;
@@ -245,6 +255,9 @@ static bool retireSwapchain(DeviceSwapchain& swap) {
             // An uncertain CREATE may have allocated remotely without returning its ID.
             if (!swap.native) return false;
             cancelPreAcquire(swap);
+            // Retirement rejects presents still waiting for their ORDER mark: the frames the
+            // application presented before destroying its swapchain run first.
+            if (swap.guestImages || caboose_gfxstream_ordered_present==1) client.waitPresentationIdle(deadline());
             auto result=client.retireSwapchain(swap.native,deadline());
             if (apiStatus(status(result.body,48))!=VK_SUCCESS) return false;
         }
@@ -727,6 +740,28 @@ static VkResult VKAPI_CALL present(VkQueue handle, const VkPresentInfoKHR* info)
             // The phone runs this present only after decoding everything the device stream
             // sent before the mark: no round trip, and its result is checked later.
             auto* encoder=gfxstream::vk::ResourceTracker::getThreadLocalEncoder();
+            if (!internalWaits.empty()) {
+                // The application's semaphores are waited for here, in stream order, so a later
+                // signal of them never meets an unconsumed one; the phone waits for the image's own.
+                auto* tracker=gfxstream::vk::ResourceTracker::get();
+                auto& image=swap->images[index];
+                if (!image.presentWait) {
+                    VkSemaphoreCreateInfo semaphoreInfo{}; semaphoreInfo.sType=VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+                    VK_FROM_HANDLE(gfxstream_vk_device, device, swap->device);
+                    const VkResult created=tracker->on_vkCreateSemaphore(encoder,VK_SUCCESS,device->internal_object,
+                                                                          &semaphoreInfo,nullptr,&image.presentWait);
+                    if (created!=VK_SUCCESS) return wsiFailed("present","wait semaphore",created);
+                }
+                std::vector<VkPipelineStageFlags> stages(internalWaits.size(),VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
+                VkSubmitInfo handoff{}; handoff.sType=VK_STRUCTURE_TYPE_SUBMIT_INFO;
+                handoff.waitSemaphoreCount=uint32_t(internalWaits.size());
+                handoff.pWaitSemaphores=internalWaits.data(); handoff.pWaitDstStageMask=stages.data();
+                handoff.signalSemaphoreCount=1; handoff.pSignalSemaphores=&image.presentWait;
+                const VkResult submitted=tracker->on_vkQueueSubmit(encoder,VK_SUCCESS,queue->internal_object,1,&handoff,
+                                                                   VK_NULL_HANDLE);
+                if (submitted!=VK_SUCCESS) return wsiFailed("present","wait submit",submitted);
+                waits.assign(1,get_host_u64_VkSemaphore(image.presentWait));
+            }
             const uint64_t order=encoder->cabooseSendOrderMark(true);
             if (order) {
                 surface.client.presentOrdered(swap->native,serial,get_host_u64_VkQueue(queue->internal_object),
