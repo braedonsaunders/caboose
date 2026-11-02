@@ -218,7 +218,8 @@ colours=$(convert "$logs/seat.png" -format %k info: 2>&1); echo "screenshot: $(i
 check 'mcp screenshot shows the new window, not a blank seat' test "${colours:-0}" -gt 16
 pkill -u caboose -f 'title Seat window'; sleep 0.5
 
-# Chromium reads /etc/chromium.d/caboose-accessibility; --no-sandbox only because this test
+# Chromium builds the page's tree because the desktop's accessibility switch is on (install.sh),
+# with no flag of its own; --no-sandbox only because this test
 # container has no user namespaces for its sandbox. It runs as a native Wayland client.
 on agent chromium --ozone-platform=wayland --no-sandbox --no-first-run --disable-gpu --user-data-dir="$logs/chromium" \
   --window-size=900,700 file:///src/check/page.html >"$logs/chromium.log" 2>&1 &
