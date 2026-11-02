@@ -51,7 +51,8 @@ class Harness:
             key = (b'e' * 16, bytes([self.binds]) * 16, self.binds)
             session.surfaces[key] = {'process': process, 'window': window, 'retiring': False, 'retire_sent': False,
                                      'revoke_requested': False, 'bind_sent': False, 'disconnected': False,
-                                     'retired': asyncio.Event()}
+                                     'retired': asyncio.Event(),
+                                     'stats': broker.SurfaceStats(self.binds, session.processes[process])}
             session.processes[process]['surfaces'].add(key)
             return control_protocol.BindResult(self.binds, 0, key[0], key[1], window, key[2])
 
@@ -126,6 +127,9 @@ class BrokerBufferTests(unittest.IsolatedAsyncioTestCase):
             retried, = h.sent()
             self.assertEqual(retried.payload[48:], buffers.present_body(3, IMAGE)[8:])
             self.assertEqual(h.binds, 1)
+            # The window's surface counts what it presented and what the phone returned.
+            stats = next(iter(h.session.surfaces.values()))['stats']
+            self.assertEqual((stats.presented, stats.results, stats.released), (3, 2, 1))
         finally:
             h.close()
 

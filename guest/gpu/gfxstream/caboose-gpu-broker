@@ -1105,6 +1105,7 @@ class Session:
             return
         surface['presents'][frame.serial] = {'result': False, 'release': False, 'terminal': False}
         surface['last_present'] = frame.serial
+        if surface.get('stats') is not None: surface['stats'].event('present')
         identity = window.key[0] + window.key[1] + struct.pack('<Q', window.key[2])
         try:
             self.send(Kind.PRESENT, window.process, payload=identity + buffers.present_body(frame.serial, frame.image))
