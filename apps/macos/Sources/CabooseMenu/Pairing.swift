@@ -76,7 +76,7 @@ final class PairingModel: ObservableObject {
             let tailscale = reach["tailscale"] as? [String: Any] ?? [:]
             tailscaleInstalled = tailscale["installed"] as? Bool == true
             tailscaleServing = tailscale["serving"] as? Bool == true
-            let phones = try await request("/v1/computers/owner/phones")
+            let phones = try await request("/v1/host/phones")
             let entries = phones["phones"] as? [[String: Any]] ?? []
             let ids = Set(entries.compactMap { $0["id"] as? String })
             if let known, let joined = entries.first(where: { row in
@@ -103,7 +103,7 @@ final class PairingModel: ObservableObject {
     }
 
     private func mint() async throws {
-        let result = try await request("/v1/computers/owner/pairing", method: "POST")
+        let result = try await request("/v1/host/pairing", method: "POST")
         guard let value = result["code"] as? String, let expiry = result["expiresAt"] as? String,
               let date = PairingLink.expiry(expiry) else { throw URLError(.cannotParseResponse) }
         code = value; expires = date; connected = nil
@@ -118,7 +118,7 @@ final class PairingModel: ObservableObject {
         guard !busy else { return }; busy = true
         defer { busy = false }
         do {
-            let phones = try await request("/v1/computers/owner/phones")
+            let phones = try await request("/v1/host/phones")
             known = Set((phones["phones"] as? [[String: Any]] ?? []).compactMap { $0["id"] as? String })
             try await mint(); failure = nil
         } catch { failure = error.localizedDescription }

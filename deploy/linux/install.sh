@@ -357,7 +357,7 @@ echo "  Owner token:  sudo cat $token_file"
 echo "  Settings:     $env_file (then: systemctl restart caboose-host)"
 
 if [[ ${#addresses[@]} -gt 0 ]]; then
-  pairing=$(curl -fsS -X POST -H "authorization: Bearer $token" "$url/v1/computers/owner/pairing" 2>/dev/null || true)
+  pairing=$(curl -fsS -X POST -H "authorization: Bearer $token" "$url/v1/host/pairing" 2>/dev/null || true)
   code=$(printf '%s' "$pairing" | sed -n 's/.*"code":"\([^"]*\)".*/\1/p')
   if [[ -n $code ]]; then
     link="caboose://connect?host=${addresses[0]}"
@@ -367,7 +367,7 @@ if [[ ${#addresses[@]} -gt 0 ]]; then
     say "Pair your iPhone: scan this with the Camera within 10 minutes, or open the link on the phone."
     if command -v qrencode >/dev/null; then qrencode -t ansiutf8 "$link"; fi
     echo "  $link"
-    echo "  A new code later: Computers › your computer › Phones › Sign in a phone, in the console."
+    echo "  A new code later: Host › Pair a phone with this host, in the console."
   fi
 fi
 if [[ -n $wsl_mode && $wsl_mode != mirrored ]]; then

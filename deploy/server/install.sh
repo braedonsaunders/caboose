@@ -167,7 +167,7 @@ setup_code=$(compose exec -T caboose-host node -e '
 if [[ -n $setup_code ]]; then echo "  Set up:       https://$domain/setup?code=$setup_code"; fi
 echo "  Owner token:  docker compose -f $dir/compose.yaml exec caboose-host cat /data/caboose/disks/owner-token"
 echo "  Settings:     $env_file (then: docker compose -f $dir/compose.yaml up -d)"
-code=$(host_api POST /v1/computers/owner/pairing 'console.log(body.code ?? "")' 2>/dev/null || true)
+code=$(host_api POST /v1/host/pairing 'console.log(body.code ?? "")' 2>/dev/null || true)
 if [[ -n $code ]]; then
   link="caboose://connect?host=https://$domain&code=$code"
   echo

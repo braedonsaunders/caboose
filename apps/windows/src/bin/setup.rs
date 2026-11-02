@@ -70,7 +70,7 @@ mod windows {
         Ok(Snapshot {
             reach: api("GET", "/v1/host/reach", None)?,
             image: api("GET", "/v1/health", None)?["image"].clone(),
-            phones: api("GET", "/v1/computers/owner/phones", None)?["phones"]
+            phones: api("GET", "/v1/host/phones", None)?["phones"]
                 .as_array()
                 .cloned()
                 .unwrap_or_default(),
@@ -348,7 +348,7 @@ mod windows {
                     Action::Refresh => Ok(Reply::Snapshot(snapshot()?)),
                     Action::Pair => Ok(Reply::Code(api(
                         "POST",
-                        "/v1/computers/owner/pairing",
+                        "/v1/host/pairing",
                         None,
                     )?)),
                     Action::Tailscale => {
