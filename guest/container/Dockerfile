@@ -3,7 +3,7 @@ FROM debian:trixie-slim AS display
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl build-essential pkg-config clang libclang-dev \
-      libwayland-dev libxkbcommon-dev libudev-dev libavcodec-dev libavutil-dev libva-dev libdrm-dev libgbm-dev && \
+      libwayland-dev libxkbcommon-dev libudev-dev libavcodec-dev libavformat-dev libavutil-dev libva-dev libdrm-dev libgbm-dev && \
     rm -rf /var/lib/apt/lists/*
 ENV RUSTUP_HOME=/opt/rustup CARGO_HOME=/opt/cargo PATH=/opt/cargo/bin:$PATH
 RUN curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain 1.95.0

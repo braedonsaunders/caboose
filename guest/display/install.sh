@@ -14,7 +14,7 @@ for b in caboose-display caboose-display-probe; do
 done
 export DEBIAN_FRONTEND=noninteractive
 apt-get install -y --no-install-recommends xwayland libegl1 libgl1-mesa-dri libxkbcommon0 \
-  libavcodec61 libavutil59 python3-gi dbus-user-session
+  libavcodec61 libavutil59 libavformat61 python3-gi dbus-user-session
 install -m 0755 "$bin/caboose-display" "$bin/caboose-display-probe" /usr/local/bin/
 install -m 0755 "$here/caboose-display-ready" /usr/local/bin/
 install -m 0644 "$here/systemd/caboose-display.service" "$here/systemd/caboose-display-agent.service" /etc/systemd/system/
