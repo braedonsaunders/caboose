@@ -34,6 +34,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[5] / 'guest' / 'gpu' / '
 from live_protocol import HEADER, Decoder, Envelope, Kind, encode  # noqa: E402
 import live_compression  # noqa: E402
 import native  # noqa: E402
+import surfaces  # noqa: E402
 from surfaces import FrameLog, NativeError, ProtocolViolation, SerialQueue, SurfaceController, log  # noqa: E402
 
 PROTOCOL = 'caboose.gpu.live.v1'
@@ -630,8 +631,11 @@ def main():
     parser.add_argument('--display', default='1920x1080', help='extent of a window bound without one')
     parser.add_argument('--zstd-window-log', type=int, default=27)
     parser.add_argument('--log-every', type=int, default=60, help='log every Nth presented frame of a swapchain')
+    parser.add_argument('--extra-formats', default='', metavar='FORMAT:SPACE,...',
+                        help='surface formats to report beyond the implementation\'s (VkFormat:VkColorSpaceKHR numbers)')
     parser.add_argument('--no-checksums', action='store_true', help='do not capture presented pictures')
     options = parser.parse_args()
+    surfaces.EXTRA_FORMATS[:] = [tuple(int(n) for n in pair.split(':')) for pair in options.extra_formats.split(',') if pair]
     width, _, height = options.display.partition('x')
     options.display = (int(width), int(height))
     runtime = native.Runtime(str(options.library))

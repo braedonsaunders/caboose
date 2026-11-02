@@ -347,6 +347,7 @@ static void surfaceCase(void) {
     PFN_vkGetPhysicalDeviceSurfaceFormats2KHR formats2 =
         surfaces2 ? (PFN_vkGetPhysicalDeviceSurfaceFormats2KHR)vkGetInstanceProcAddr(instance, "vkGetPhysicalDeviceSurfaceFormats2KHR") : NULL;
     int bad = 0, enumerations = 0;
+    uint32_t fewestFormats = UINT32_MAX, mostFormats = 0;
     char first[96] = "";
     for (int round = 0; round < 5; ++round) {
         xcb_window_t window = xcb_generate_id(connection);
@@ -363,9 +364,17 @@ static void surfaceCase(void) {
             uint32_t count = 0, filled;
             VkResult result = vkGetPhysicalDeviceSurfaceFormatsKHR(physical, surface, &count, NULL);
             VkSurfaceFormatKHR formats[64];
+            // Work between the two calls, as an application allocating its array does: the
+            // window's bind may complete in between.
+            struct timespec between = {0, 25 * 1000 * 1000};
+            nanosleep(&between, NULL);
             filled = count < 64 ? count : 64;
             VkResult fill = result == VK_SUCCESS ? vkGetPhysicalDeviceSurfaceFormatsKHR(physical, surface, &filled, formats) : result;
             ++enumerations;
+            if (result == VK_SUCCESS) {
+                if (count < fewestFormats) fewestFormats = count;
+                if (count > mostFormats) mostFormats = count;
+            }
             if (result != VK_SUCCESS || fill != VK_SUCCESS || filled != count) {
                 if (!bad++) snprintf(first, sizeof(first), "formats round=%d i=%d count=%u filled=%u result=%d", round, i, count, filled, fill);
             }
@@ -395,18 +404,18 @@ static void surfaceCase(void) {
             if (result != VK_SUCCESS || fill != VK_SUCCESS || filled != count) {
                 if (!bad++) snprintf(first, sizeof(first), "modes round=%d i=%d count=%u filled=%u result=%d", round, i, count, filled, fill);
             }
-            if (i < 10) {
-                struct timespec pause = {0, 20 * 1000 * 1000};  // span the window's bind
-                nanosleep(&pause, NULL);
-            }
+            struct timespec pause = {0, 50 * 1000 * 1000};  // 2 s a window: span its bind
+            nanosleep(&pause, NULL);
         }
         vkDestroySurfaceKHR(instance, surface, NULL);
         xcb_destroy_window(connection, window);
         xcb_flush(connection);
     }
     xcb_disconnect(connection);
-    report("surface_enumeration", bad == 0, "enumerations=%d inconsistent=%d%s%s", enumerations, bad, bad ? " first: " : "",
-           first);
+    // Formats that change across the bind (local defaults, then the phone's) are what an
+    // enumeration must survive; the range shows whether this run saw that change.
+    report("surface_enumeration", bad == 0, "enumerations=%d inconsistent=%d formats=%u..%u%s%s", enumerations, bad,
+           fewestFormats == UINT32_MAX ? 0 : fewestFormats, mostFormats, bad ? " first: " : "", first);
 }
 
 // Calls that must not wait for the phone: each is timed; a round trip takes milliseconds.

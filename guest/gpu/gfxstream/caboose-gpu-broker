@@ -1471,6 +1471,21 @@ class Broker:
             os.close(pidfd)
             self.pending_binds.pop(request, None)
 
+    def bind_answered(self, record):
+        """The compositor's answer to a bind request. A request given up meanwhile (its
+        surface connection ended, or the answer came after the deadline) is only logged, and a
+        grant made for it is handed back."""
+        future = self.pending_binds.get(record.request)
+        if future is not None and not future.done():
+            future.set_result(record)
+            return
+        print(f'CABOOSE_GPU_BROKER late bind answer for request {record.request} status {record.status}',
+              file=sys.stderr, flush=True)
+        if record.status == 0:
+            task = asyncio.create_task(self.send_control(control_protocol.encode_revoke_request(
+                control_protocol.RevokeRequest(record.epoch, record.grant, record.generation))))
+            self.tasks.add(task); task.add_done_callback(self.tasks.discard)
+
     async def send_control(self, data, fd=None):
         loop = asyncio.get_running_loop()
         ancillary = [] if fd is None else [(socket.SOL_SOCKET, socket.SCM_RIGHTS, array.array('i', [fd]))]
@@ -1698,9 +1713,7 @@ class Broker:
             try:
                 record = receive_record(self.control, os.getuid(), self.compositor_pid, self.compositor_start)
                 if isinstance(record, control_protocol.BindResult):
-                    future = self.pending_binds.get(record.request)
-                    if future is None or future.done(): raise ValueError('unexpected bind response')
-                    future.set_result(record)
+                    self.bind_answered(record)
                     return
                 if isinstance(record, control_protocol.RevokeGrant):
                     # A revoke can cross the end of its session or surface: nothing is left

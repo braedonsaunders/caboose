@@ -78,13 +78,17 @@ connection's end is reported to `peerGone`). The surface binds lazily: a query t
 again at most every 100 ms on a new connection (`Client::reset`), and a present always
 tries. The bind is sent at once and its reply is collected by a later call when it has
 not arrived (a query waits up to 250 ms for it, a present not at all), so neither blocks
-on the phone's own wait for the window's layer. A bind the phone answered with a failure (it could not take the window's layer)
+on the phone's own wait for the window's layer. Without guest-owned images a query has no
+local answer and waits up to 5 s for a bind in flight, as long as the broker waits for the
+compositor. A bind the phone answered with a failure (it could not take the window's layer)
 is retried after 100 ms, doubling up to 4 s, by queries and presents alike. The first
 four attempts and every 32nd after them print `CABOOSE_GPU_SURFACE_BIND object=…
 space=… attempt=… refused|failed|bound errno=… vk=…` on stderr. Until a bind succeeds, with guest-owned images, queries are answered locally:
 the phone's formats (`B8G8R8A8_UNORM` and `_SRGB`, sRGB nonlinear), FIFO, 4 to 8 images,
 opaque or premultiplied alpha, and no fixed extent (X11 surfaces report their window's
-size). Presentation support needs no window and is answered for the first queue family.
+size). The count and the fill of one enumeration agree: a fill after a count reports the
+formats and present modes the count did, though the phone's answer replaced the local one in
+between. Presentation support needs no window and is answered for the first queue family.
 `vkGetPhysicalDevice{Xcb,Xlib,Wayland}PresentationSupportKHR` are returned from
 `vkGetInstanceProcAddr` directly (patch 0029).
 

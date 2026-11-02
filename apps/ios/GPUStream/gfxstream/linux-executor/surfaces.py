@@ -99,6 +99,10 @@ CAPTURE_CALLBACK = native.CAPTURE_CALLBACK(_capture_callback)
 NO_CAPTURE = ctypes.cast(None, native.CAPTURE_CALLBACK)
 # Bytes per texel of the presentable formats (B8G8R8A8 and R8G8B8A8, UNORM and SRGB).
 FOUR_BYTE_FORMATS = frozenset((37, 43, 44, 50))
+# Formats a surface reports beyond what the Vulkan implementation lists (executor.py
+# --extra-formats), as (format, colour space) pairs: the phone lists more formats than an
+# unbound window's local defaults, and an application's enumeration must survive the change.
+EXTRA_FORMATS = []
 
 
 def checksum(pixels):
@@ -292,13 +296,14 @@ class Surface:
             v = view.contents
             if max(v.format_count, v.present_mode_count, v.queue_family_count) > 4096:
                 return Status(errno.EOVERFLOW), None
+            formats = [(v.formats[i].format, v.formats[i].color_space) for i in range(v.format_count)]
+            formats += [extra for extra in EXTRA_FORMATS if extra not in formats]
             fields = [v.min_image_count, v.max_image_count, v.current_width, v.current_height, v.min_width,
                       v.min_height, v.max_width, v.max_height, v.max_image_array_layers, v.supported_transforms,
                       v.current_transform, offered_alpha(v.supported_composite_alpha), v.supported_usage_flags,
-                      v.format_count, v.present_mode_count, v.queue_family_count]
+                      len(formats), v.present_mode_count, v.queue_family_count]
             data = struct.pack('<16I', *fields)
-            data += b''.join(struct.pack('<II', v.formats[i].format, v.formats[i].color_space)
-                             for i in range(v.format_count))
+            data += b''.join(struct.pack('<II', *pair) for pair in formats)
             data += b''.join(U32.pack(v.present_modes[i]) for i in range(v.present_mode_count))
             data += b''.join(struct.pack('<IIII', i, v.queue_families[i].queue_flags, v.queue_families[i].queue_count,
                                          1 if v.queue_families[i].present_supported == 1 else 0)

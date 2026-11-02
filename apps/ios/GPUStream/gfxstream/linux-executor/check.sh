@@ -11,7 +11,11 @@
 # The probe runs against the executor with the phone's capabilities; then vkcube (from the
 # executor image) presents 300 frames through an executor without `guest-images` (README.md,
 # "Limits"). Logs go to OUT (default ./linux-executor-check). CPUS (default 4) bounds each
-# container. Exit status 0 when every step passed.
+# container. BIND_DELAY (seconds, default 0.4) answers each window bind that much later, as
+# a phone waiting for its window's layer does, so what an application asks before its window
+# is bound is exercised; EXTRA_FORMATS (FORMAT:SPACE,..., default 37:0,43:0, the R8G8B8A8
+# formats) has surfaces report formats beyond lavapipe's two, as the phone does, so the
+# answers before and after a bind differ. Exit status 0 when every step passed.
 set -eu
 [ $# -ge 4 ] && [ $# -le 5 ] || { sed -n '4,15p' "$0" >&2; exit 2; }
 image=$1
@@ -48,7 +52,7 @@ cp "$probe" "$shared/sync_check"
 docker run -d --name "$name-computer" --init --network none --cpus "$cpus" --memory 6g --entrypoint "" \
   -v "$repo/guest/gpu:/repo/guest/gpu:ro" -v "$here:/repo/apps/ios/GPUStream/gfxstream/linux-executor:ro" \
   -v "$shared:/shared" "$image" runuser -u caboose -- env HOME=/tmp python3 -u \
-  /repo/apps/ios/GPUStream/gfxstream/linux-executor/broker_host.py --directory /shared/gpu --listen 127.0.0.1:14650 \
+  /repo/apps/ios/GPUStream/gfxstream/linux-executor/broker_host.py --directory /shared/gpu --listen 127.0.0.1:14650 --bind-delay "${BIND_DELAY:-0.4}" \
   > /dev/null
 wait_log "$name-computer" 'listening on' 30 || fail 'the broker did not start'
 docker exec -d -u caboose "$name-computer" Xvfb :99 -screen 0 1920x1080x24 -nolisten tcp
@@ -65,7 +69,7 @@ executor() { # features
     -v "$work/build:/build:ro" -v "$repo/guest/gpu:/repo/guest/gpu:ro" \
     -v "$here:/repo/apps/ios/GPUStream/gfxstream/linux-executor:ro" -v "$shared:/shared:ro" caboose-linux-executor \
     python3 -u /repo/apps/ios/GPUStream/gfxstream/linux-executor/executor.py --connect 127.0.0.1:14650 \
-    --token-file /shared/gpu/token --library /build/libcaboose_gpu_executor.so --features "$1" > /dev/null
+    --token-file /shared/gpu/token --library /build/libcaboose_gpu_executor.so --features "$1" --extra-formats "${EXTRA_FORMATS-37:0,43:0}" > /dev/null
   wait_log "$name-executor" 'session ready' 60 || fail 'the executor session did not start'
 }
 drain() { # log

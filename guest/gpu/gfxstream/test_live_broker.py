@@ -694,6 +694,26 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
             if not task.done(): task.cancel(); await asyncio.gather(task, return_exceptions=True)
             control.close(); peer.close()
 
+    async def test_a_late_bind_answer_is_logged_and_its_grant_handed_back(self):
+        broker_instance = broker.Broker.__new__(broker.Broker)
+        broker_instance.pending_binds = {}
+        broker_instance.tasks = set()
+        sent = []
+        async def send_control(data, fd=None): sent.append(data)
+        broker_instance.send_control = send_control
+        with mock.patch('builtins.print') as output:
+            broker_instance.bind_answered(control_protocol.BindResult(7, 0, b'e' * 16, b'g' * 16, 9, 3))
+            broker_instance.bind_answered(control_protocol.BindResult(8, 1, b'e' * 16, b'h' * 16, 9, 4))
+            await asyncio.sleep(0)
+        self.assertIn('late bind answer for request 7 status 0', output.call_args_list[0].args[0])
+        self.assertEqual(sent, [control_protocol.encode_revoke_request(control_protocol.RevokeRequest(b'e' * 16, b'g' * 16, 3))])
+        # A pending request takes its answer.
+        future = asyncio.get_running_loop().create_future()
+        broker_instance.pending_binds[9] = future
+        answer = control_protocol.BindResult(9, 0, b'e' * 16, b'i' * 16, 9, 5)
+        broker_instance.bind_answered(answer)
+        self.assertEqual(future.result(), answer)
+
     async def test_surface_retirement_receipt_precedes_compositor_release(self):
         session = broker.Session(None, b'a' * 16, 1, None, Writer())
         session.session_ready.set()

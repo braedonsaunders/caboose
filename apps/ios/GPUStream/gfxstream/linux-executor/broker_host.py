@@ -8,7 +8,10 @@ records: every surface bind is granted to the window it names, and every revoke 
 granted. It does not check that the bound process made the window, as the compositor does
 (docs/gpu-live.md, "Window identity boundary"), so it is for disposable test computers only.
 
-    python3 broker_host.py --directory DIR --listen 127.0.0.1:14650
+    python3 broker_host.py --directory DIR --listen 127.0.0.1:14650 [--bind-delay SECONDS]
+
+--bind-delay answers each bind that much later, as a compositor waiting for a window's layer
+does, so the queries an application makes before its window is bound are exercised.
 
 DIR (created mode 0700) receives token, gpu.sock and surface.sock. Applications reach the
 broker with CABOOSE_GFXSTREAM_SOCKET=DIR/gpu.sock and CABOOSE_GFXSTREAM_SURFACE_SOCKET=DIR/surface.sock.
@@ -22,6 +25,7 @@ import signal
 import socket
 import subprocess
 import sys
+import time
 
 BROKER_DIR = Path(__file__).resolve().parents[5] / 'guest' / 'gpu' / 'gfxstream'
 sys.path.insert(0, str(BROKER_DIR))
@@ -37,6 +41,7 @@ def main():
     parser.add_argument('--directory', type=Path, required=True)
     parser.add_argument('--listen', default='127.0.0.1:14650', metavar='HOST:PORT')
     parser.add_argument('--broker', type=Path, default=BROKER_DIR / 'caboose-gpu-broker')
+    parser.add_argument('--bind-delay', type=float, default=0.0, metavar='SECONDS')
     options = parser.parse_args()
     directory = options.directory
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -62,12 +67,19 @@ def main():
     epoch = os.urandom(16)
     generation = 0
     stopping = []
+    delayed = []  # (due, record bytes, log line) of bind results not yet answered
     signal.signal(signal.SIGTERM, lambda *_: stopping.append(True))
     signal.signal(signal.SIGINT, lambda *_: stopping.append(True))
     try:
         while not stopping and broker.poll() is None:
+            now = time.monotonic()
+            while delayed and delayed[0][0] <= now:
+                _, data, line = delayed.pop(0)
+                parent.sendall(data)
+                log(line)
+            timeout = 0.5 if not delayed else max(0.0, min(0.5, delayed[0][0] - now))
             try:
-                ready, _, _ = select.select([listener, parent], [], [], 0.5)
+                ready, _, _ = select.select([listener, parent], [], [], timeout)
             except InterruptedError:
                 continue
             if listener in ready:
@@ -91,10 +103,11 @@ def main():
                 if isinstance(record, control_protocol.Bind):
                     generation += 1
                     grant = os.urandom(16)
-                    parent.sendall(control_protocol.encode_result(control_protocol.BindResult(
-                        record.request, 0, epoch, grant, record.object_id, generation)))
-                    log(f'bind granted process={record.process} pid={record.pid} object={record.object_id:#x} '
-                        f'space={record.space} generation={generation}')
+                    data = control_protocol.encode_result(control_protocol.BindResult(
+                        record.request, 0, epoch, grant, record.object_id, generation))
+                    line = (f'bind granted process={record.process} pid={record.pid} object={record.object_id:#x} '
+                            f'space={record.space} generation={generation}')
+                    delayed.append((time.monotonic() + options.bind_delay, data, line))
                 elif isinstance(record, control_protocol.RevokeRequest):
                     parent.sendall(control_protocol.encode_revoke(control_protocol.RevokeGrant(
                         record.epoch, record.grant, record.generation)))

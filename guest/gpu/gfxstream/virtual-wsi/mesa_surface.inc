@@ -132,7 +132,11 @@ static void logBind(const Surface& surface, const char* outcome, int error, int 
 // to the wl_surface), so a dropped first frame would leave the application waiting for a
 // frame callback.
 constexpr auto kQueryBindWait=std::chrono::milliseconds(250);
-static bool tryBind(Surface& surface, bool present=false) {
+// Without guest-owned images a query has no local answer, so it waits for a bind in flight as
+// long as the broker does for the compositor's answer: a slow bind is not a lost surface.
+constexpr auto kQueryBindPatience=std::chrono::seconds(5);
+static bool tryBind(Surface& surface, bool present=false,
+                    std::chrono::steady_clock::duration wait=kQueryBindWait) {
     if (surface.bound) return true;
     const auto now=std::chrono::steady_clock::now();
     try {
@@ -143,7 +147,7 @@ static bool tryBind(Surface& surface, bool present=false) {
             surface.client.beginBind(surface.boxedInstance,surface.object,0,0,deadline(),surface.space);
         }
         Record reply;
-        if (!surface.client.awaitBind(present ? now : now+kQueryBindWait,&reply)) return false;
+        if (!surface.client.awaitBind(present ? now : now+wait,&reply)) return false;
         const auto answer=status(reply.body,48);
         if (apiStatus(answer)==VK_SUCCESS) {
             surface.bound=true;
@@ -192,7 +196,8 @@ static VkResult query(VkPhysicalDevice physical, VkSurfaceKHR handle, Bytes& cap
     if (surface.instance!=gfxstream_vk_instance_to_handle(device->instance) || surface.poisoned)
         return VK_ERROR_SURFACE_LOST_KHR;
     try {
-        if (!tryBind(surface)) {
+        if (!tryBind(surface,false,lazyBind() ? std::chrono::steady_clock::duration(kQueryBindWait)
+                                              : std::chrono::steady_clock::duration(kQueryBindPatience))) {
             if (!lazyBind()) return VK_ERROR_SURFACE_LOST_KHR;
             caps=localCaps();
             return VK_SUCCESS;
