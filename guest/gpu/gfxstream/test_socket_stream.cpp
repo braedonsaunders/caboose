@@ -255,5 +255,21 @@ int main() {
         assert(stream->connect("/tmp/caboose-socket-stream-absent/gpu") == -1 && errno == ENOENT);
         delete stream;
     }
+    // The executor leaves (last: it marks the process's executor lost). A reply reads as
+    // VK_ERROR_DEVICE_LOST in every word; a read sized by such a reply writes nothing.
+    {
+        Broker broker(1, [](const Hello&) { return hello(0x70); }, [](int, int) {});
+        auto* stream = new CabooseSocketStream(1024);
+        assert(stream->connect(broker.path.c_str()) == 0);
+        int32_t words[2] = {};
+        assert(stream->readFully(words, sizeof(words)) && words[0] == -4 && words[1] == -4);
+        unsigned char data[16];
+        std::memset(data, 0x5a, sizeof(data));
+        uint64_t size = 0;
+        std::memcpy(&size, words, sizeof(size));
+        assert(stream->readFully(data, static_cast<size_t>(size)) == data);
+        for (unsigned char byte : data) assert(byte == 0x5a);
+        delete stream;
+    }
     return 0;
 }
