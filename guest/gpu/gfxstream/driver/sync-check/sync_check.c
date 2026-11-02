@@ -258,6 +258,52 @@ static void freeCase(void) {
     report("free_after_wait", 1, "rounds=%d worst_free_us=%llu", rounds, (unsigned long long)worstUs);
 }
 
+// The feed reports a batch complete only once the GPU has finished it. A long batch's
+// timeline value is waited for (answered by the feed), then the queue is waited idle on the
+// phone: that takes one round trip when the batch had finished, and the rest of the batch
+// as well when its completion was reported early.
+static void completionCase(void) {
+    const VkDeviceSize size = 256ull << 20;
+    VkBufferCreateInfo bufferInfo = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    bufferInfo.size = size;
+    bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    VkBuffer buffer;
+    CHECK(vkCreateBuffer(device, &bufferInfo, NULL, &buffer));
+    VkMemoryRequirements req;
+    vkGetBufferMemoryRequirements(device, buffer, &req);
+    VkMemoryAllocateInfo alloc = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    alloc.allocationSize = req.size;
+    alloc.memoryTypeIndex = memoryType(req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    VkDeviceMemory memory;
+    CHECK(vkAllocateMemory(device, &alloc, NULL, &memory));
+    CHECK(vkBindBufferMemory(device, buffer, memory, 0));
+    const int rounds = 6;
+    uint64_t idleUs = 0, idleMax = 0, batchUs = 0, roundTripUs = 0;
+    for (int i = 0; i < rounds; ++i) {
+        // One round trip on an idle queue, for reference.
+        uint64_t start = nowUs();
+        CHECK(vkQueueWaitIdle(queue));
+        roundTripUs += nowUs() - start;
+        begin();
+        for (int k = 0; k < 64; ++k) vkCmdFillBuffer(cb, buffer, 0, VK_WHOLE_SIZE, (uint32_t)(i + k));
+        start = nowUs();
+        waitTimeline(submit2(1));
+        batchUs += nowUs() - start;
+        start = nowUs();
+        CHECK(vkQueueWaitIdle(queue));
+        const uint64_t idle = nowUs() - start;
+        idleUs += idle;
+        if (idle > idleMax) idleMax = idle;
+    }
+    vkDestroyBuffer(device, buffer, NULL);
+    vkFreeMemory(device, memory, NULL);
+    const double roundTrip = roundTripUs / 1000.0 / rounds, batch = batchUs / 1000.0 / rounds;
+    // Early completion leaves part of a batch that takes far longer than a round trip.
+    report("completion_after_gpu", idleMax / 1000.0 < roundTrip * 2 + 20 || batch < roundTrip,
+           "rounds=%d round_trip_ms=%.1f batch_ms=%.1f idle_after_ms=%.1f idle_after_max_ms=%.1f", rounds, roundTrip,
+           batch, idleUs / 1000.0 / rounds, idleMax / 1000.0);
+}
+
 // Calls that must not wait for the phone: each is timed; a round trip takes milliseconds.
 static void callsCase(void) {
     const int n = 40;
@@ -451,6 +497,7 @@ int main(int argc, char** argv) {
     RUN("query_timestamp", queryCase(VK_QUERY_TYPE_TIMESTAMP));
     RUN("query_occlusion", queryCase(VK_QUERY_TYPE_OCCLUSION));
     RUN("free_after_wait", freeCase());
+    RUN("completion_after_gpu", completionCase());
     RUN("calls", callsCase());
 
     CHECK(vkDeviceWaitIdle(device));
