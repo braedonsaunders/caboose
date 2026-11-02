@@ -220,9 +220,14 @@ static std::atomic<CabooseSocketStream*> firstStream{nullptr};
 static std::string firstPath;
 // The executor is gone. A null read aborts the process in the encoder, so the reply reads
 // as VK_ERROR_DEVICE_LOST in every 32-bit word instead: a call's VkResult says the device
-// is lost and its other outputs go unused.
+// is lost and its other outputs go unused. A length read from such a reply is that word
+// (0xfcffffff, or twice it for 64 bits) times an element size, so a read of a gigabyte or
+// more is one sized by the lost reply itself (vkGetPipelineCacheData's data, after its
+// size): it is left unwritten, never filled past the caller's buffer.
+constexpr size_t kLostReadLimit = size_t(1) << 30;
 static const unsigned char* lostReply(unsigned char* data, size_t len) {
     caboose::completion::awaitExecutorReturn();  // CABOOSE_GPU_ON_LOSS=pause
+    if (len >= kLostReadLimit) return data;
     const int32_t lost = -4;
     for (size_t i = 0; i < len; ++i) data[i] = reinterpret_cast<const unsigned char*>(&lost)[i % sizeof(lost)];
     return data;
