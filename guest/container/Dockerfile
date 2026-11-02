@@ -86,13 +86,10 @@ RUN export USER=root HOME=/root TERM=xterm && mkdir -p /tmp/themes && \
     /tmp/themes/WhiteSur-gtk-theme/install.sh -d /usr/share/themes -c light -c dark && \
     /tmp/themes/WhiteSur-icon-theme/install.sh -d /usr/share/icons && \
     (cd /tmp/themes/WhiteSur-cursors && ./install.sh) && \
-    mkdir -p /etc/xdg/gtk-3.0 /etc/chromium.d && \
+    mkdir -p /etc/xdg/gtk-3.0 && \
     printf '[Settings]\ngtk-theme-name=WhiteSur-Dark\ngtk-icon-theme-name=WhiteSur-dark\ngtk-cursor-theme-name=WhiteSur-cursors\ngtk-font-name=Inter 10\ngtk-decoration-layout=:\ngtk-application-prefer-dark-theme=1\n' > /etc/xdg/gtk-3.0/settings.ini && \
-    printf 'CHROMIUM_FLAGS="$CHROMIUM_FLAGS --ignore-gpu-blocklist --use-gl=angle --use-angle=gl"\n' > /etc/chromium.d/caboose-gpu && \
     rm -rf /tmp/themes /tmp/desktop-mcp /var/lib/apt/lists/*
 RUN apt-get update && apt-get install -y --no-install-recommends chromium-sandbox && rm -rf /var/lib/apt/lists/*
-COPY container/chromium-gpu /etc/chromium.d/caboose-gpu
-COPY container/chromium-policy.json /etc/chromium/policies/managed/caboose-gpu.json
 COPY --from=display /src/target/release/caboose-display /src/target/release/caboose-display-probe /usr/local/bin/
 COPY --from=display /out/vaapi/caboose_drv_video.so /tmp/caboose_drv_video.so
 COPY --from=display /out/gbm/vgem_gbm.so /tmp/vgem_gbm.so

@@ -13,8 +13,6 @@ vendor), an NVIDIA GPU on Linux through the NVIDIA container toolkit, and Linux 
 | --- | --- |
 | `Dockerfile` | The image. Its first stages compile Caboose Display, the Caboose VA-API driver, the GBM backend and Xwayland with DRI3 on the render node and touchpad finger scrolling (`guest/xwayland`); the last installs Debian packages, `guest/image/apps.sh` and the guest components. Built with `guest/` as the context. |
 | `caboose-session` | The session script the host runs with `docker exec` (installed as `/usr/local/bin/caboose-session`). |
-| `chromium-gpu` | Chromium flags for the display and GPU in use (installed as `/etc/chromium.d/caboose-gpu`). |
-| `chromium-policy.json` | Chromium's managed policy (installed as `/etc/chromium/policies/managed/caboose-gpu.json`): no warning for the flags `chromium-gpu` sets. |
 | `caboose-seccomp.json` | The seccomp profile the host gives each container, so Chromium's and Flatpak's sandboxes can start. |
 | `check.sh` | A check for a running computer's encoders and sound. |
 
@@ -115,19 +113,6 @@ reading and driving one seat at a time (see [`guest/desktop-mcp`](../desktop-mcp
 
 The displays and notification processes log to `/home/caboose/.cache/<name>.log`
 (`caboose-display.log`, `caboose-display-agent.log`, …).
-
-### Chromium
-
-`/etc/chromium.d/caboose-gpu` renders Chromium on the phone's GPU on an owner display that
-serves it: as an X11 client with ANGLE on Vulkan, without its GPU sandbox and with no
-limit on GPU process restarts ([docs/gpu-live.md](../../docs/gpu-live.md#applications)).
-Otherwise it runs Chromium as a native Wayland client on the owner's display. On WSL, Chromium on the owner's display uses software raster, because its Wayland
-GPU path needs a DRM render node that WSL does not have; on the agent seat (X11) it uses
-ANGLE over Mesa D3D12. Where the launch environment selects the Caboose VA-API driver
-(hosts with a render node), Chromium decodes video through it, so a video reaches the phone
-as its own stream.
-
-Chromium keeps its sandbox enabled; only its GPU process runs without one on the phone's GPU.
 
 ### Sandboxes and seccomp
 

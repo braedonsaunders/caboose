@@ -36,12 +36,6 @@ the phone what it decodes. A decoder context (`vaCreateContext`) is decoded on t
   the phone's pictures (Chromium's GPU process, mpv `--vo=gpu-next` through Vulkan, GL
   applications through Zink).
 
-On the seat that renders on the phone's GPU, Chromium and Electron applications decode through
-the driver (`guest/container/chromium-gpu`, and the launcher's Electron switches): VA-API video
-decoding on the computer's render node. They are X11 clients there, and take the GBM device
-they allocate their frames with from Xwayland's DRI3, which opens the render node
-([guest/xwayland](../guest/xwayland/README.md)).
-
 Otherwise the stream is decoded locally by the driver into the surfaces. While the media connection is open, the driver advertises only the
 VA profiles the phone decodes, so an application that picks its codec by the hardware decoders
 it has (a site asking `MediaCapabilities`) picks one the phone decodes. `CABOOSE_VA_GPU=0` turns phone decoding off; `CABOOSE_VA_MODE=decode`

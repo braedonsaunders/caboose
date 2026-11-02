@@ -30,12 +30,9 @@ if [[ ${1:-} != --here ]]; then
   [[ $# -ge 3 ]] || { sed -n '6,13p' "$0" >&2; exit 2; }
   image=$1 bin=$(realpath "$2") driver=$(realpath "$3")
   out=$(mkdir -p "${4:-$here/out/apps}" && cd "${4:-$here/out/apps}" && pwd)
-  # The computer's own seccomp policy, which Chromium's sandbox needs, and this branch's
-  # Chromium flags and policy.
+  # The computer's own seccomp policy, which Chromium's sandbox needs.
   exec docker run --rm -i --init --network none --cpus "${CABOOSE_CHECK_CPUS:-4}" --memory "${CABOOSE_CHECK_MEMORY:-4g}" \
     --security-opt seccomp="$here/../container/caboose-seccomp.json" \
-    -v "$here/../container/chromium-gpu:/etc/chromium.d/caboose-gpu:ro" \
-    -v "$here/../container/chromium-policy.json:/etc/chromium/policies/managed/caboose-gpu.json:ro" \
     -v "$here:/gpu:ro" -v "$bin/caboose-display:/usr/local/bin/caboose-display:ro" \
     -v "$bin/caboose-display-probe:/usr/local/bin/caboose-display-probe:ro" -v "$driver:/check/libvulkan_gfxstream.so:ro" \
     -v "$out:/out" "$image" bash -c \
@@ -82,7 +79,6 @@ expect_env CABOOSE_GFXSTREAM_SOCKET "$gpu/gpu.sock"
 expect_env CABOOSE_GFXSTREAM_SURFACE_SOCKET "$gpu/surface.sock"
 expect_env GSK_RENDERER vulkan
 expect_env QSG_RHI_BACKEND vulkan
-expect_env ELECTRON_OZONE_PLATFORM_HINT x11
 expect_env QT_QPA_PLATFORM 'xcb;wayland'
 expect_env SDL_VIDEODRIVER x11,wayland
 expect_env MOZ_ENABLE_WAYLAND 0

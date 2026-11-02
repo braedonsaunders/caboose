@@ -123,76 +123,6 @@ def desktop_shortcut(ident):
         finally: os.close(fd)
     print(json.dumps({'path': 'Desktop/' + ident}))
 
-# Electron applications build their pages' accessibility trees only with this switch. The
-# trees give the phone its touch targets and name the window controls an application draws
-# in its own page, which Caboose hides: every window already has Caboose's own.
-ELECTRON_SWITCH = '--force-renderer-accessibility'
-# On the seat that renders on the phone's GPU (its display names the broker's socket), an
-# Electron application renders as Chromium does there (guest/container/chromium-gpu): with
-# ANGLE on Vulkan, which reaches the phone's driver, as an X11 client, and outside the GPU
-# sandbox that would keep it from the socket. Electron reads no Chromium flags file.
-ELECTRON_GPU_SWITCHES = ('--ozone-platform=x11', '--ignore-gpu-blocklist', '--use-gl=angle',
-                         '--use-angle=vulkan', '--enable-features=Vulkan,VulkanFromANGLE,DefaultANGLEVulkan',
-                         '--disable-gpu-sandbox', '--disable-gpu-process-crash-limit')
-# With the Caboose VA-API driver, video decodes on the phone, as in Chromium there
-# (docs/gpu-media.md): the same switches, VA-API decoding on the computer's render node.
-ELECTRON_VA_FEATURES = ',VaapiVideoDecoder,VaapiIgnoreDriverChecks,VaapiVideoDecodeLinuxGL,' \
-    'AcceleratedVideoDecodeLinuxGL,AcceleratedVideoDecodeLinuxZeroCopyGL'
-
-def render_node():
-    """The computer's vgem render node (docs/gpu-buffers.md), or None."""
-    for node in sorted(pathlib.Path('/dev/dri').glob('renderD*')):
-        if pathlib.Path(os.path.realpath(f'/sys/class/drm/{node.name}/device')).name == 'vgem':
-            return str(node)
-    return None
-
-def electron(exec_line):
-    """Whether an Exec line starts an Electron (or other Chromium-packaged) binary itself:
-    its directory holds Chromium's resource packs and V8 snapshot beside `resources/`."""
-    try:
-        argv = shlex.split(exec_line)
-    except ValueError:
-        return False
-    program = shutil.which(argv[0]) if argv else None
-    if not program:
-        return False
-    here = pathlib.Path(os.path.realpath(program)).parent
-    return ((here / 'resources').is_dir() and (here / 'v8_context_snapshot.bin').is_file()
-            and any((here / pack).is_file() for pack in ('resources.pak', 'chrome_100_percent.pak')))
-
-def electron_switches(exec_line):
-    """The switches an Electron Exec line lacks on this seat."""
-    switches = [ELECTRON_SWITCH]
-    if os.environ.get('CABOOSE_GFXSTREAM_SOCKET') and os.environ.get('DISPLAY'):
-        switches += ELECTRON_GPU_SWITCHES
-        node = render_node() if os.environ.get('LIBVA_DRIVER_NAME') == 'caboose' else None
-        if node:
-            switches = [switch + ELECTRON_VA_FEATURES if switch.startswith('--enable-features=') else switch
-                        for switch in switches] + [f'--hardware-video-device-path={node}']
-    try:
-        present = set(shlex.split(exec_line))
-    except ValueError:
-        present = set()
-    return [switch for switch in switches if switch not in present]
-
-def for_electron(entry, section):
-    """The entry to launch: for an Electron binary, a copy under the runtime directory whose
-    Exec adds electron_switches(), with the same file name (the launch still names the entry)."""
-    exec_line = section['Exec']
-    switches = electron_switches(exec_line) if electron(exec_line) else []
-    if not switches:
-        return entry
-    runtime = pathlib.Path(os.environ.get('XDG_RUNTIME_DIR') or f'/tmp/caboose-{os.getuid()}') / 'caboose-launch'
-    runtime.mkdir(mode=0o700, parents=True, exist_ok=True)
-    copy = runtime / entry.name
-    lines = []
-    for line in entry.read_text(encoding='utf-8').splitlines():
-        if re.match(r'^Exec\s*=', line):
-            line = ' '.join([line, *switches])
-        lines.append(line)
-    copy.write_text('\n'.join(lines) + '\n', encoding='utf-8')
-    return copy
-
 def enter_scope(ident):
     """Asks caboose-scopes (guest/scopes) to put this process in a new app scope, so the
     launch and everything it starts are one app. Without the daemon (a microVM, an older
@@ -232,7 +162,7 @@ if sys.argv[1] in ('launch', 'action'):
     import gi
     gi.require_version('Gio', '2.0')
     from gi.repository import Gio
-    info = Gio.DesktopAppInfo.new_from_filename(str(for_electron(entry, section)))
+    info = Gio.DesktopAppInfo.new_from_filename(str(entry))
     if info is None:
         raise SystemExit('Application could not be started')
     # Everything the launch starts inherits the entry's id, through wrapper scripts and game

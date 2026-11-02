@@ -264,7 +264,7 @@ sockets and with the phone's driver installed, it routes applications to the pho
 instead: `VK_ADD_DRIVER_FILES`, `CABOOSE_GFXSTREAM_SOCKET`,
 `CABOOSE_GFXSTREAM_SURFACE_SOCKET`, `CABOOSE_GPU_EXECUTOR_SWITCH=1`, `CABOOSE_GPU_ROUTING=1`,
 `NODEVICE_SELECT=1`, `CABOOSE_GPU_ON_LOSS=auto`,
-`GSK_RENDERER=vulkan` and `ELECTRON_OZONE_PLATFORM_HINT=x11`,
+and `GSK_RENDERER=vulkan`,
 ([docs/gpu-live.md](../../docs/gpu-live.md#applications)). It also serves an input method,
 `IBUS_ADDRESS` and `IBUS_ADDRESS_FILE` (with `QT_IM_MODULE=ibus`): applications without
 text-input-v3 (X11 clients, whose GTK selects IBus from the window manager's XSETTINGS

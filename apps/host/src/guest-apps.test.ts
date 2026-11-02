@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync, symlinkSync, readdirSync, realpathSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { basename, join } from 'node:path'
+import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { AgentInputError, AgentNotFoundError } from './agents.js'
 import { guestLaunch, guestLaunchArgs, parseAppLaunch } from './guest-apps.js'
@@ -152,50 +152,6 @@ describe('guest-apps.py', () => {
     const hidden = run('action', 'hidden.desktop', 'go')
     expect(hidden.stderr).toContain('Application not found')
     expect(recorded()).toHaveLength(2)
-  })
-
-  it('launches an Electron binary with its pages\' accessibility trees, and on the GPU seat with Vulkan, through a copy of the entry', () => {
-    const app = mkdtempSync(join(tmpdir(), 'caboose-electron-test-')); roots.push(app)
-    mkdirSync(join(app, 'resources'))
-    for (const file of ['v8_context_snapshot.bin', 'resources.pak']) writeFileSync(join(app, file), '')
-    writeFileSync(join(app, 'notes'), '#!/bin/sh\n', { mode: 0o755 })
-    const { run, recorded, root } = fixture({
-      ...ENTRIES,
-      'notes.desktop': `[Desktop Entry]\nType=Application\nName=Notes\nExec=${join(app, 'notes')} %U\n`,
-    })
-    const runtime = join(root, 'runtime')
-    mkdirSync(runtime)
-    const launched = spawnSync('/usr/bin/env', [`XDG_RUNTIME_DIR=${runtime}`, ...run.command, 'launch', 'notes.desktop'], run.options)
-    expect(launched.status).toBe(0)
-    expect(readFileSync(join(runtime, 'caboose-launch', 'notes.desktop'), 'utf8'))
-      .toContain(`Exec=${join(app, 'notes')} %U --force-renderer-accessibility\n`)
-    // On the seat that renders on the phone's GPU it also renders with ANGLE on Vulkan.
-    const gpu = spawnSync('/usr/bin/env', [`XDG_RUNTIME_DIR=${runtime}`, 'CABOOSE_GFXSTREAM_SOCKET=/run/caboose-gpu/gpu.sock', 'DISPLAY=:140',
-      ...run.command, 'launch', 'notes.desktop'], run.options)
-    expect(gpu.status).toBe(0)
-    expect(readFileSync(join(runtime, 'caboose-launch', 'notes.desktop'), 'utf8'))
-      .toContain(`Exec=${join(app, 'notes')} %U --force-renderer-accessibility --ozone-platform=x11 --ignore-gpu-blocklist`
-        + ' --use-gl=angle --use-angle=vulkan --enable-features=Vulkan,VulkanFromANGLE,DefaultANGLEVulkan'
-        + ' --disable-gpu-sandbox --disable-gpu-process-crash-limit\n')
-    // With the Caboose VA-API driver it also decodes video on the computer's vgem render node,
-    // when there is one.
-    const va = spawnSync('/usr/bin/env', [`XDG_RUNTIME_DIR=${runtime}`, 'CABOOSE_GFXSTREAM_SOCKET=/run/caboose-gpu/gpu.sock', 'DISPLAY=:140',
-      'LIBVA_DRIVER_NAME=caboose', ...run.command, 'launch', 'notes.desktop'], run.options)
-    expect(va.status).toBe(0)
-    const node = existsSync('/dev/dri') ? readdirSync('/dev/dri').filter(name => name.startsWith('renderD')).sort()
-      .map(name => `/dev/dri/${name}`)
-      .find(path => basename(realpathSync(`/sys/class/drm/${basename(path)}/device`)) === 'vgem') : undefined
-    expect(readFileSync(join(runtime, 'caboose-launch', 'notes.desktop'), 'utf8'))
-      .toContain(`Exec=${join(app, 'notes')} %U --force-renderer-accessibility --ozone-platform=x11 --ignore-gpu-blocklist`
-        + ' --use-gl=angle --use-angle=vulkan --enable-features=Vulkan,VulkanFromANGLE,DefaultANGLEVulkan'
-        + (node ? ',VaapiVideoDecoder,VaapiIgnoreDriverChecks,VaapiVideoDecodeLinuxGL,AcceleratedVideoDecodeLinuxGL,AcceleratedVideoDecodeLinuxZeroCopyGL' : '')
-        + ' --disable-gpu-sandbox --disable-gpu-process-crash-limit'
-        + (node ? ` --hardware-video-device-path=${node}` : '') + '\n')
-    // Anything else launches from its own entry, unchanged.
-    expect(spawnSync('/usr/bin/env', [`XDG_RUNTIME_DIR=${runtime}`, ...run.command, 'launch', 'plain.desktop'], run.options).status).toBe(0)
-    expect(existsSync(join(runtime, 'caboose-launch', 'plain.desktop'))).toBe(false)
-    expect(recorded()).toEqual([{ launch: 'notes.desktop', files: [] }, { launch: 'notes.desktop', files: [] },
-      { launch: 'notes.desktop', files: [] }, { launch: 'plain.desktop', files: [] }])
   })
 })
 

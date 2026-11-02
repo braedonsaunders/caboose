@@ -87,9 +87,6 @@ const TOOLKIT_ENV: &[(&str, &str)] = &[
     ("QT_QPA_PLATFORM", "wayland;xcb"),
     ("MOZ_ENABLE_WAYLAND", "1"),
     ("SDL_VIDEODRIVER", "wayland,x11"),
-    ("ELECTRON_OZONE_PLATFORM_HINT", "auto"),
-    ("OZONE_PLATFORM", "wayland"),
-    ("CHROMIUM_USER_FLAGS", "--ozone-platform-hint=auto"),
 ];
 
 fn main() {
@@ -198,8 +195,7 @@ fn launch_env(config: &Config, x_display: Option<u32>, xauthority: Option<&std::
 const GPU_LIVE_ICD: &str = "/usr/local/lib/caboose-gpu-live/icd.json";
 
 /// Toolkit switches for the seat that renders on the phone's GPU (docs/gpu-live.md,
-/// "Applications"). GTK 4 and Qt 6 Quick draw with Vulkan; Electron runs as an X11 client,
-/// where its input methods and windows behave as Chromium's do. OpenGL reaches the phone
+/// "Applications"). GTK 4 and Qt 6 Quick draw with Vulkan. OpenGL reaches the phone
 /// through Zink, which Mesa tries before llvmpipe when no other driver serves the display
 /// (`LIBGL_KOPPER_DRI2`); it presents through the driver's X11 windows (Kopper) but, without a DRM
 /// render node, not through Wayland: toolkits that draw with OpenGL (Qt 5 Quick, SDL games,
@@ -209,7 +205,6 @@ const GPU_LIVE_ICD: &str = "/usr/local/lib/caboose-gpu-live/icd.json";
 const GPU_LIVE_TOOLKIT_ENV: &[(&str, &str)] = &[
     ("GSK_RENDERER", "vulkan"),
     ("QSG_RHI_BACKEND", "vulkan"),
-    ("ELECTRON_OZONE_PLATFORM_HINT", "x11"),
     ("QT_QPA_PLATFORM", "xcb;wayland"),
     ("SDL_VIDEODRIVER", "x11,wayland"),
     ("MOZ_ENABLE_WAYLAND", "0"),
@@ -802,8 +797,6 @@ mod tests {
         assert_eq!(get(&env, "WAYLAND_DISPLAY"), Some("wayland-caboose-0"));
         assert_eq!(get(&env, "DISPLAY"), Some(":110"));
         assert_eq!(get(&env, "GDK_BACKEND"), Some("wayland,x11"));
-        assert_eq!(get(&env, "OZONE_PLATFORM"), Some("wayland"));
-        assert_eq!(get(&env, "CHROMIUM_USER_FLAGS"), Some("--ozone-platform-hint=auto"));
     }
 
     #[test]
@@ -832,12 +825,8 @@ mod tests {
     #[test]
     fn the_gpu_seat_routes_vulkan_and_opengl_to_the_phone() {
         let icd = tempfile_icd();
-        let mut env = vec![
-            ("GALLIUM_DRIVER".to_owned(), "d3d12".to_owned()),
-            ("ELECTRON_OZONE_PLATFORM_HINT".to_owned(), "auto".to_owned()),
-        ];
+        let mut env = vec![("GALLIUM_DRIVER".to_owned(), "d3d12".to_owned())];
         apply_gpu_live(&mut env, &config(GPU_ARGS), &icd, false);
-        assert_eq!(env.iter().filter(|(k, _)| k == "ELECTRON_OZONE_PLATFORM_HINT").count(), 1);
         assert_eq!(get(&env, "VK_ADD_DRIVER_FILES"), icd.to_str());
         assert_eq!(get(&env, "CABOOSE_GFXSTREAM_SOCKET"), Some("/run/user/1000/caboose-gpu/gpu.sock"));
         assert_eq!(get(&env, "CABOOSE_GFXSTREAM_SURFACE_SOCKET"), Some("/run/user/1000/caboose-gpu/surface.sock"));
@@ -855,7 +844,6 @@ mod tests {
         assert_eq!(get(&env, "CABOOSE_GPU_ROUTING"), Some("1"));
         assert_eq!(get(&env, "NODEVICE_SELECT"), Some("1"));
         assert_eq!(get(&env, "CABOOSE_GPU_ON_LOSS"), Some("auto"));
-        assert_eq!(get(&env, "ELECTRON_OZONE_PLATFORM_HINT"), Some("x11"));
         assert_eq!(get(&env, "PRESSURE_VESSEL_FILESYSTEMS_RW"), Some("/run/user/1000/caboose-gpu"));
         assert_eq!(get(&env, "GALLIUM_DRIVER"), Some("zink"), "OpenGL goes through Zink, never Mesa D3D12");
         assert_eq!(get(&env, "LIBVA_DRIVER_NAME"), None, "no VA-API driver installed");
