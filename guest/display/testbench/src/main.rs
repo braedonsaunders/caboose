@@ -178,7 +178,7 @@ mod wayland {
         c.push(Check::new("globals_core", if has("wl_compositor") && has("wl_shm") && has("xdg_wm_base") { CheckState::Pass } else { CheckState::Fail },
             format!("{} globals advertised", state.report.globals.len())));
         c.push(Check::new("shm_argb8888", if state.shm_argb { CheckState::Pass } else { CheckState::Fail }, "ARGB8888 advertised by wl_shm"));
-        c.push(Check::new("shm_xrgb8888", if state.shm_xrgb { CheckState::Info } else { CheckState::Fail }, "XRGB8888 advertised by wl_shm"));
+        c.push(Check::new("shm_xrgb8888", if state.shm_xrgb { CheckState::Pass } else { CheckState::Fail }, "XRGB8888 advertised by wl_shm"));
         c.push(Check::new("xdg_configure", if state.configured { CheckState::Pass } else { CheckState::Fail }, "xdg_surface configure received and acked"));
         c.push(Check::new("frame_callback", if state.report.frames > 1 { CheckState::Pass } else { CheckState::Fail },
             format!("{} frames committed", state.report.frames)));

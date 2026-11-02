@@ -45,6 +45,8 @@ pub fn run(auto: Option<f64>) -> i32 {
         )
         .ok()?;
         conn.create_gc(gc, win, &CreateGCAux::new().foreground(screen.white_pixel)).ok()?;
+        let name = b"Caboose testbench";
+        conn.change_property(PropMode::REPLACE, win, AtomEnum::WM_NAME, AtomEnum::STRING, 8, name.len() as u32, name).ok()?;
         conn.map_window(win).ok()?;
         conn.flush().ok()?;
         Some(())
@@ -56,18 +58,27 @@ pub fn run(auto: Option<f64>) -> i32 {
     let mut marker = Marker::default();
     let mut mapped = false;
     let mut exposed = 0u64;
+    let mut frames = 0u64;
     let deadline = auto.map(|s| start + Duration::from_secs_f64(s));
+    let mut next_frame = Instant::now();
     loop {
+        // An X11 client drives its own frames: redraw the stepped marker at
+        // display rate once mapped, as an animating application would.
+        if mapped && Instant::now() >= next_frame {
+            next_frame = Instant::now() + Duration::from_millis(16);
+            let _ = conn.poly_fill_rectangle(win, gc, &[Rectangle { x: 0, y: 0, width: W, height: H }]);
+            let x = marker.x(W as i32) as i16;
+            let _ = conn.change_gc(gc, &ChangeGCAux::new().foreground(screen.white_pixel));
+            let _ = conn.poly_fill_rectangle(win, gc, &[Rectangle { x, y: 48, width: 16, height: H - 96 }]);
+            let _ = conn.change_gc(gc, &ChangeGCAux::new().foreground(screen.black_pixel));
+            let _ = conn.flush();
+            frames += 1;
+            marker.advance();
+        }
         while let Ok(Some(event)) = conn.poll_for_event() {
             match event {
                 Event::MapNotify(_) => mapped = true,
-                Event::Expose(_) => {
-                    exposed += 1;
-                    let x = marker.x(W as i32) as i16;
-                    let _ = conn.poly_fill_rectangle(win, gc, &[Rectangle { x, y: 48, width: 16, height: H - 96 }]);
-                    let _ = conn.flush();
-                    marker.advance();
-                }
+                Event::Expose(_) => exposed += 1,
                 Event::KeyPress(e) => report.inputs.push(InputEvent {
                     at_us: start.elapsed().as_micros() as u64,
                     kind: "key_press".into(),
@@ -89,9 +100,10 @@ pub fn run(auto: Option<f64>) -> i32 {
         }
         std::thread::sleep(Duration::from_millis(5));
     }
-    report.frames = exposed;
+    report.frames = frames;
     report.checks.push(Check::new("window_mapped", if mapped { CheckState::Pass } else { CheckState::Fail }, "MapNotify received"));
-    report.checks.push(Check::new("expose_frames", if exposed > 1 { CheckState::Pass } else { CheckState::Fail }, format!("{exposed} exposes, marker stepped per expose")));
+    report.checks.push(Check::new("expose_received", if exposed >= 1 { CheckState::Pass } else { CheckState::Fail }, format!("{exposed} exposes received")));
+    report.checks.push(Check::new("frames_stepped", if frames > 10 { CheckState::Pass } else { CheckState::Fail }, format!("{frames} frames drawn, marker stepped per frame")));
     report.checks.push(Check::new("input_events", CheckState::Info, format!("{} input events logged", report.inputs.len())));
     let failed = report.failed();
     if auto.is_some() {
