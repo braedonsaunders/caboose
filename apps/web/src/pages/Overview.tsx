@@ -104,7 +104,7 @@ export function Overview({ computers, host, me }: { computers: ComputersHandle; 
           icon={<Monitor className="size-4" aria-hidden />}
           actions={<Button size="sm" variant="outline" onClick={() => navigate('/computers')}>Manage</Button>}
         >
-          <ComputersTable computers={list.computers} tenants={me.tenants} />
+          <ComputersTable computers={list.computers} tenants={me.tenants} emptyAction={list.canCreate ? <Button onClick={() => navigate('/computers?new=1')}>Create a computer</Button> : undefined} />
         </DashboardPanel>
       </div>
     </PageContainer>

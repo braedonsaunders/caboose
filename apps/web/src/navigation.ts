@@ -9,6 +9,8 @@ export type Route =
   | { page: 'overview' }
   | { page: 'computers' }
   | { page: 'computer'; id: string; tab: ComputerTab }
+  /** An address from a single-computer console: the host's default computer, once the list says which. */
+  | { page: 'default-computer'; tab: ComputerTab }
   | { page: 'people' }
   | { page: 'tenants' }
   | { page: 'host' }
@@ -28,7 +30,6 @@ export const COMPUTER_TABS: Array<{ key: ComputerTab; label: string }> = [
   { key: 'settings', label: 'Settings' },
 ]
 
-const OWNER = 'owner'
 const COMPUTER_ID = /^[a-z0-9-]{1,40}$/
 
 /**
@@ -75,9 +76,23 @@ export function parseRoute(raw: string): Route {
   if (clean === '/invite') return { page: 'invite' }
   const [, section, id, tab] = clean.split('/')
   if (section === 'computers' && id) return COMPUTER_ID.test(id) ? { page: 'computer', id, tab: tabOf(tab) } : { page: 'computers' }
-  if (section === 'computer' && clean.split('/').length <= 3) return { page: 'computer', id: OWNER, tab: tabOf(id) }
+  if (section === 'computer' && clean.split('/').length <= 3) return { page: 'default-computer', tab: tabOf(id) }
   const legacy = Object.keys(LEGACY).find(path => clean === path || clean.startsWith(`${path}/`))
-  return legacy ? { page: 'computer', id: OWNER, tab: LEGACY[legacy]! } : { page: 'overview' }
+  return legacy ? { page: 'default-computer', tab: LEGACY[legacy]! } : { page: 'overview' }
+}
+
+/**
+ * Where a single-computer address lands: that tab of the host's default computer when the
+ * caller manages it, otherwise the Computers page (a host may have no computer at all).
+ */
+export function defaultComputerHref(
+  tab: ComputerTab,
+  list: { computers: Array<{ id: string }>; defaultComputer: string | null },
+): string {
+  const id = list.defaultComputer
+  return id && list.computers.some(computer => computer.id === id)
+    ? routeHref({ page: 'computer', id, tab })
+    : routeHref({ page: 'computers' })
 }
 
 export function routeHref(route: Route): string {
@@ -92,6 +107,7 @@ export function routeHref(route: Route): string {
     case 'tenants': return '/tenants'
     case 'setup': return '/setup'
     case 'invite': return '/invite'
+    case 'default-computer': return route.tab === 'overview' ? '/computer' : `/computer/${route.tab}`
     case 'computer': {
       const base = `/computers/${encodeURIComponent(route.id)}`
       return route.tab === 'overview' ? base : `${base}/${route.tab}`
@@ -101,7 +117,7 @@ export function routeHref(route: Route): string {
 
 /** The address the sidebar highlights for a route: every computer's pages sit under Computers. */
 export function sidebarPath(route: Route): string {
-  return route.page === 'computer' ? '/computers' : routeHref(route)
+  return route.page === 'computer' || route.page === 'default-computer' ? '/computers' : routeHref(route)
 }
 
 export function navigate(href: string, options: { replace?: boolean } = {}): void {

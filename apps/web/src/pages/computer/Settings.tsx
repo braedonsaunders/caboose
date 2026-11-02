@@ -15,7 +15,7 @@ function same(a: ComputerSettings | null, b: ComputerSettings | null): boolean {
   return Boolean(a && b) && a!.name === b!.name && a!.memoryMb === b!.memoryMb && a!.vcpus === b!.vcpus && a!.idleMs === b!.idleMs
 }
 
-/** `onDelete` is absent for the owner's computer, which cannot be deleted. */
+/** Without `onDelete` the page offers no Delete section. */
 export function Settings({ client, computer, onDelete, assignment }: { client: CabooseClient; computer: ComputerHandle; onDelete?: () => Promise<void>; assignment?: React.ReactNode }) {
   const { status } = computer
   const actions = useComputerActions(client, computer)

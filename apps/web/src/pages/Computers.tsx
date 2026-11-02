@@ -8,7 +8,7 @@ import {
 } from '../api.js'
 import { ComputersTable } from '../components/ComputersTable.js'
 import { errorMessage } from '../components/common.js'
-import { navigate, routeHref } from '../navigation.js'
+import { navigate, routeHref, useSearchParam } from '../navigation.js'
 import { idleChoices, memoryChoices } from '../state.js'
 import type { ComputersHandle } from '../useComputer.js'
 import { RollingWordmark } from '../brand/Logo.js'
@@ -17,7 +17,10 @@ export function Computers({ client, computers, me }: { client: CabooseClient; co
   const { list, error } = computers
   const [query, setQuery] = React.useState('')
   const [state, setState] = React.useState('all')
-  const [creating, setCreating] = React.useState(false)
+  const asked = useSearchParam('new') !== null
+  const [creating, setCreating] = React.useState(asked)
+  // `?new` (the Overview's invitation on an empty host) opens New computer once.
+  React.useEffect(() => { if (asked) { setCreating(true); navigate('/computers', { replace: true }) } }, [asked])
 
   if (!list) {
     return (
@@ -37,6 +40,11 @@ export function Computers({ client, computers, me }: { client: CabooseClient; co
     return search.includes(query.trim().toLowerCase()) && (state === 'all' || computer.state === state)
   })
   const full = list.computers.length >= list.limits.computers
+  const newComputer = list.canCreate ? (
+    <Button onClick={() => setCreating(true)} disabled={full} title={full ? `This host runs at most ${list.limits.computers} computers.` : undefined}>
+      <Plus className="size-4" aria-hidden />New computer
+    </Button>
+  ) : null
 
   return (
     <PageContainer>
@@ -46,11 +54,7 @@ export function Computers({ client, computers, me }: { client: CabooseClient; co
           description={list.limits.running
             ? `Manage assignments, resources and access. Up to ${list.limits.running} computers can run at once.`
             : 'Manage computer assignments, resources and access.'}
-          actions={list.canCreate ? (
-            <Button onClick={() => setCreating(true)} disabled={full} title={full ? `This host runs at most ${list.limits.computers} computers.` : undefined}>
-              <Plus className="size-4" aria-hidden />New computer
-            </Button>
-          ) : null}
+          actions={newComputer}
         />
 
         {error ? (
@@ -60,14 +64,23 @@ export function Computers({ client, computers, me }: { client: CabooseClient; co
           </Alert>
         ) : null}
 
-        <DashboardPanel title="All computers" icon={<Monitor className="size-4" aria-hidden />}>
+        {list.computers.length === 0 ? (
+          <EmptyState
+            icon={<Monitor className="size-6" aria-hidden />}
+            title="This host has no computer yet"
+            description={list.canCreate
+              ? 'Create the first one: a Linux machine with its own disk, for a person in your household or team to use from their phone.'
+              : 'Computers you manage appear here.'}
+            action={newComputer}
+          />
+        ) : <DashboardPanel title="All computers" icon={<Monitor className="size-4" aria-hidden />}>
           <div className="mb-5 flex flex-wrap items-end gap-3">
             <div className="min-w-0 flex-[1_1_16rem] space-y-2"><Label htmlFor="computer-search">Search computers</Label><Input id="computer-search" type="search" placeholder="Name, person or tenant…" value={query} onChange={event => setQuery(event.target.value)} /></div>
             <div className="w-44 space-y-2"><Label htmlFor="computer-state">State</Label><Select id="computer-state" value={state} onChange={event => setState(event.target.value)}><option value="all">All states</option>{['running', 'parked', 'frozen', 'waking', 'parking', 'restarting', 'error'].map(value => <option key={value} value={value}>{value === 'frozen' ? 'Sleeping' : value === 'error' ? 'Needs attention' : value[0]!.toUpperCase() + value.slice(1)}</option>)}</Select></div>
             <p className="pb-2 text-xs text-fg-muted" role="status">{visible.length} of {list.computers.length} computers</p>
           </div>
           {list.computers.length > 0 && visible.length === 0 ? <EmptyState title="No matching computers" description="Try a different name or state." action={<Button variant="outline" onClick={() => { setQuery(''); setState('all') }}>Clear filters</Button>} /> : <ComputersTable computers={visible} tenants={me.tenants} />}
-        </DashboardPanel>
+        </DashboardPanel>}
       </div>
 
       <NewComputerDialog
@@ -97,6 +110,7 @@ function NewComputerDialog({ client, open, list, me, onClose, onCreate }: {
   onCreate: (input: NewComputer) => Promise<void>
 }) {
   const template = list.computers[0]
+  const sizes = list.sizes
   const limits = effectiveLimits(template)
   const initial = React.useCallback((): NewComputer => ({
     name: '',
@@ -199,15 +213,15 @@ function NewComputerDialog({ client, open, list, me, onClose, onCreate }: {
             </div>
           ) : null}
         </div>
-        {template?.sizes?.length ? <div className="space-y-1.5">
+        {sizes.length ? <div className="space-y-1.5">
           <Label htmlFor="new-computer-size">Size</Label>
           <Select id="new-computer-size" value={sizeId} onChange={event => {
             const id = event.target.value; setSizeId(id)
-            const size = template.sizes?.find(entry => entry.id === id)
+            const size = sizes.find(entry => entry.id === id)
             if (size) update({ memoryMb: size.memoryMb, vcpus: size.vcpus })
           }}>
             <option value="custom">Custom</option>
-            {template.sizes.map(size => <option key={size.id} value={size.id} disabled={!size.available}>{size.name} · {formatMemoryMb(size.memoryMb)} · {size.vcpus} vCPUs{size.available ? '' : ' (unavailable)'}</option>)}
+            {sizes.map(size => <option key={size.id} value={size.id} disabled={!size.available}>{size.name} · {formatMemoryMb(size.memoryMb)} · {size.vcpus} vCPUs{size.available ? '' : ' (unavailable)'}</option>)}
           </Select>
           <p className="text-xs text-fg-muted">GPU provides access to the host GPU when enabled; it is shared.</p>
         </div> : null}

@@ -6,7 +6,7 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow, confirmDialog, promptDialog, toast,
 } from '@braedonsaunders/appkit-ui'
 import { ArrowUp, ChevronRight, Download, File, Folder, FolderPlus, Pencil, RefreshCw, Trash2, Upload } from 'lucide-react'
-import { CabooseApiError, OWNER_COMPUTER, type CabooseClient } from '../../api.js'
+import { CabooseApiError, type CabooseClient } from '../../api.js'
 import {
   breadcrumbs, formatBytes, joinPath, nameProblem, normalizeFsPath, parentPath, visibleItems,
   type FileItem, type FileSortKey,
@@ -16,8 +16,8 @@ import { navigate, routeHref, useSearchParam } from '../../navigation.js'
 import { isTransitioning } from '../../state.js'
 import type { ComputerHandle } from '../../useComputer.js'
 
-export function Files({ client, computer, onUnauthorized }: { client: CabooseClient; computer: ComputerHandle; onUnauthorized: () => void }) {
-  const base = routeHref({ page: 'computer', id: client.computerId ?? OWNER_COMPUTER, tab: 'files' })
+export function Files({ id, client, computer, onUnauthorized }: { id: string; client: CabooseClient; computer: ComputerHandle; onUnauthorized: () => void }) {
+  const base = routeHref({ page: 'computer', id, tab: 'files' })
   const filesHref = (target: string) => target ? `${base}?path=${encodeURIComponent(target)}` : base
   const path = normalizeFsPath(useSearchParam('path'))
   const state = computer.status?.state

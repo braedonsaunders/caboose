@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react'
 import { Monitor } from 'lucide-react'
 import { Badge, EmptyState, Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@braedonsaunders/appkit-ui'
 import { formatIdleDuration, formatMemoryMb, type ComputerSummary, type Tenant } from '../api.js'
@@ -5,8 +6,8 @@ import { navigate, routeHref } from '../navigation.js'
 import { stateLabel, stateTone } from '../state.js'
 
 /** Every computer on the host, each row opening that computer's page. Each row shows its ownership chain. */
-export function ComputersTable({ computers, tenants }: { computers: ComputerSummary[]; tenants: Tenant[] }) {
-  if (!computers.length) return <EmptyState icon={<Monitor className="size-6" aria-hidden />} title="No computers yet" description="Create a computer to give someone a persistent workspace for their apps and files." />
+export function ComputersTable({ computers, tenants, emptyAction }: { computers: ComputerSummary[]; tenants: Tenant[]; emptyAction?: ReactNode }) {
+  if (!computers.length) return <EmptyState icon={<Monitor className="size-6" aria-hidden />} title="No computers yet" description="This host has no computer yet. Create one to give someone a persistent workspace for their apps and files." action={emptyAction} />
   const tenantName = (id: string | null) => tenants.find(tenant => tenant.id === id)?.name ?? 'Assignment required'
   return (
     <Table containerClassName="border-0 shadow-none">

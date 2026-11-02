@@ -4,7 +4,7 @@ import {
   Alert, AlertDescription, AlertTitle, Badge, Button, DetailHeader, DetailPageLayout, EmptyState, PageContainer, SubtabNav,
 } from '@braedonsaunders/appkit-ui'
 import { Monitor, Power, RotateCcw, Sunrise } from 'lucide-react'
-import { OWNER_COMPUTER, formatMemoryMb, type CabooseClient, type Me } from '../api.js'
+import { formatMemoryMb, type CabooseClient, type Me } from '../api.js'
 import { Assignment } from '../components/Assignment.js'
 import { useComputerActions } from '../actions.js'
 import { COMPUTER_TABS, navigate, routeHref, type ComputerTab } from '../navigation.js'
@@ -133,16 +133,16 @@ export function Computer({ client: hostClient, computers, id, host, me, tab, onU
       }
     >
       {tab === 'overview' ? <><ComputerOverview computer={computer} host={host} /><ComputerUsagePanel key={id} client={hostClient} id={id} /></> : null}
-      {tab === 'files' ? <Files client={client} computer={computer} onUnauthorized={onUnauthorized} /> : null}
+      {tab === 'files' ? <Files id={id} client={client} computer={computer} onUnauthorized={onUnauthorized} /> : null}
       {tab === 'apps' ? <Apps client={client} computer={computer} onUnauthorized={onUnauthorized} /> : null}
-      {tab === 'phones' ? <Phones client={client} computer={computer} onUnauthorized={onUnauthorized} /> : null}
+      {tab === 'phones' ? <Phones id={id} client={client} computer={computer} onUnauthorized={onUnauthorized} /> : null}
       {tab === 'backups' ? <Backups client={client} onUnauthorized={onUnauthorized} /> : null}
       {tab === 'settings' ? (
         <Settings
           client={client}
           computer={computer}
           assignment={summary ? <Assignment client={hostClient} computer={summary} me={me} onChanged={computers.refresh} /> : null}
-          onDelete={id === OWNER_COMPUTER ? undefined : async () => {
+          onDelete={async () => {
             await hostClient.deleteComputer(id)
             await computers.refresh()
             navigate('/computers')

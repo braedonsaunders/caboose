@@ -3,7 +3,7 @@ import {
   CabooseApiError, CabooseClient, DEFAULT_LIMITS, buildInviteLink, buildPairingLink, computeSettingsPatch, settingsSavePatch, formatPairingCode, readSessionToken,
   validateSettingsInput, willRequireColdRestart, writeSessionToken, type ComputerSettings,
 } from './api.js'
-import { navigationGroups, parseRoute, routeHref, sidebarPath } from './navigation.js'
+import { defaultComputerHref, navigationGroups, parseRoute, routeHref, sidebarPath } from './navigation.js'
 import { quotaDraft, quotasFromDraft } from './tenants.js'
 import { availableActions, idleChoices, memoryChoices, stateLabel } from './state.js'
 
@@ -151,15 +151,33 @@ describe('navigation and actions', () => {
     expect(parseRoute('/nope')).toEqual({ page: 'overview' })
   })
 
-  it("sends addresses from earlier consoles to the owner's computer, or the page that took them over", () => {
-    expect(parseRoute('/computer')).toEqual({ page: 'computer', id: 'owner', tab: 'overview' })
-    expect(parseRoute('/computer/phones')).toEqual({ page: 'computer', id: 'owner', tab: 'phones' })
-    expect(parseRoute('/files')).toEqual({ page: 'computer', id: 'owner', tab: 'files' })
-    expect(parseRoute('/apps/')).toEqual({ page: 'computer', id: 'owner', tab: 'apps' })
-    expect(parseRoute('/devices')).toEqual({ page: 'computer', id: 'owner', tab: 'phones' })
-    expect(parseRoute('/settings')).toEqual({ page: 'computer', id: 'owner', tab: 'settings' })
+  it('sends addresses from earlier consoles to the default computer, or the page that took them over', () => {
+    expect(parseRoute('/computer')).toEqual({ page: 'default-computer', tab: 'overview' })
+    expect(parseRoute('/computer/phones')).toEqual({ page: 'default-computer', tab: 'phones' })
+    expect(parseRoute('/computer/a/b')).toEqual({ page: 'overview' })
+    expect(parseRoute('/files')).toEqual({ page: 'default-computer', tab: 'files' })
+    expect(parseRoute('/apps/')).toEqual({ page: 'default-computer', tab: 'apps' })
+    expect(parseRoute('/devices')).toEqual({ page: 'default-computer', tab: 'phones' })
+    expect(parseRoute('/settings')).toEqual({ page: 'default-computer', tab: 'settings' })
     expect(parseRoute('/system/x')).toEqual({ page: 'host' })
     expect(parseRoute('/agents')).toEqual({ page: 'overview' })
+  })
+
+  it('keeps a default-computer address until the computer list resolves it', () => {
+    expect(routeHref({ page: 'default-computer', tab: 'overview' })).toBe('/computer')
+    expect(routeHref({ page: 'default-computer', tab: 'files' })).toBe('/computer/files')
+    expect(parseRoute(routeHref({ page: 'default-computer', tab: 'files' }))).toEqual({ page: 'default-computer', tab: 'files' })
+    expect(sidebarPath({ page: 'default-computer', tab: 'apps' })).toBe('/computers')
+  })
+
+  it('resolves a single-computer address to the default computer, or Computers when there is none', () => {
+    const computers = [{ id: 'owner' }, { id: 'c-0123456789' }]
+    expect(defaultComputerHref('files', { computers, defaultComputer: 'c-0123456789' })).toBe('/computers/c-0123456789/files')
+    expect(defaultComputerHref('overview', { computers, defaultComputer: 'owner' })).toBe('/computers/owner')
+    expect(defaultComputerHref('files', { computers, defaultComputer: null })).toBe('/computers')
+    expect(defaultComputerHref('files', { computers: [], defaultComputer: null })).toBe('/computers')
+    // A tenant administrator may not manage the host's default computer.
+    expect(defaultComputerHref('apps', { computers: [{ id: 'c-0123456789' }], defaultComputer: 'owner' })).toBe('/computers')
   })
 
   it('writes one canonical address per page and files every computer under Computers', () => {
@@ -191,6 +209,26 @@ describe('navigation and actions', () => {
       expect(parseRoute(routeHref({ page }))).toEqual({ page })
     }
     expect(parseRoute('/computers/owner/backups')).toEqual({ page: 'computer', id: 'owner', tab: 'backups' })
+  })
+
+  it('sends host settings, host phones and host pairing to the host, even from a computer client', async () => {
+    const seen: Array<{ method: string; url: string; body?: unknown }> = []
+    const client = new CabooseClient(() => '', '', async (url, init) => {
+      seen.push({ method: init?.method ?? 'GET', url: String(url), ...(init?.body ? { body: JSON.parse(String(init.body)) } : {}) })
+      return new Response('{}', { status: 200 })
+    }).forComputer('c-0123456789')
+    await client.hostSettings()
+    await client.updateHostSettings({ name: null, defaultComputer: 'owner' })
+    await client.hostPhones()
+    await client.startHostPairing()
+    await client.removeHostPhone('p 1')
+    expect(seen).toEqual([
+      { method: 'GET', url: '/v1/host/settings' },
+      { method: 'PATCH', url: '/v1/host/settings', body: { name: null, defaultComputer: 'owner' } },
+      { method: 'GET', url: '/v1/host/phones' },
+      { method: 'POST', url: '/v1/host/pairing' },
+      { method: 'DELETE', url: '/v1/host/phones/p%201' },
+    ])
   })
 
   it('never sends account, tenant or invitation routes under a computer', async () => {

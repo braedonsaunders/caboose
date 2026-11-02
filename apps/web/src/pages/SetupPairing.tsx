@@ -1,6 +1,6 @@
 import * as React from 'react'
 import { Alert, AlertDescription, Button } from '@braedonsaunders/appkit-ui'
-import { OWNER_COMPUTER, buildPairingLink, formatPairingCode, type CabooseClient, type Reach } from '../api.js'
+import { buildPairingLink, formatPairingCode, type CabooseClient, type Reach } from '../api.js'
 import { imageLabel, type ImageStatus } from '../host.js'
 import { pairingAddresses, tailscaleGuidance } from '../remote-access.js'
 import { errorMessage } from '../components/common.js'
@@ -41,7 +41,7 @@ export function SetupPairingStep({ client, onDone }: { client: CabooseClient; on
         const attempt = generation.current
         const results = await Promise.allSettled([
           client.health(),
-          pairing && !joined ? client.phones(OWNER_COMPUTER) : Promise.resolve(null),
+          pairing && !joined ? client.hostPhones() : Promise.resolve(null),
         ])
         if (disposed || attempt !== generation.current) return
         if (results[0].status === 'fulfilled') setImage(results[0].value.image)
@@ -74,10 +74,10 @@ export function SetupPairingStep({ client, onDone }: { client: CabooseClient; on
 
   return <div className="space-y-5">
     <h2 className="text-lg font-semibold">Pair your iPhone</h2>
-    {joined ? <Alert variant="success"><AlertDescription>{joined} is connected. Open Caboose on your iPhone to use your computer.</AlertDescription></Alert> : <>
-      <p className="text-sm text-fg-muted">Open the iPhone Camera and scan the code, or enter the code in Caboose. Your phone needs the Caboose app installed.</p>
+    {joined ? <Alert variant="success"><AlertDescription>{joined} is signed in to this host. Open Caboose on your iPhone: it guides you through creating your first computer.</AlertDescription></Alert> : <>
+      <p className="text-sm text-fg-muted">Open the iPhone Camera and scan the code, or enter the code in Caboose. Your phone needs the Caboose app installed. It signs in to this host, and Caboose then guides you through creating your first computer.</p>
       {pairing && !expired && link ? <div className="flex flex-col items-center gap-3">
-        <QrCode value={link} label="Pair your iPhone with Caboose" />
+        <QrCode value={link} label="Pair your iPhone with this host" />
         <p className="font-mono text-xl tracking-widest">{formatPairingCode(pairing.code.code)}</p>
         <p className="text-sm text-fg-muted">Works once; expires in {Math.max(1, Math.ceil((Date.parse(pairing.code.expiresAt) - now) / 60_000))} minutes.</p>
         <Button variant="outline" onClick={() => { navigator.clipboard.writeText(link).catch(failure => setError(errorMessage(failure))) }}>Copy pairing link</Button>

@@ -1,7 +1,7 @@
 import * as React from 'react'
 import { AccountMenu, Alert, AlertDescription, AlertTitle, Button, AppShell, ConfirmRoot, PromptRoot, Toaster, type LinkRender } from '@braedonsaunders/appkit-ui'
 import { CabooseApiError, CabooseClient, readSessionToken, writeSessionToken, type Me } from './api.js'
-import { navigate, navigationGroups, sidebarPath, useRoute } from './navigation.js'
+import { defaultComputerHref, navigate, navigationGroups, sidebarPath, useRoute } from './navigation.js'
 import { useComputers } from './useComputer.js'
 import { useHost } from './useHost.js'
 import { Wordmark, RollingWordmark } from './brand/Logo.js'
@@ -108,6 +108,13 @@ function Console({ session, onSignOut }: { session: Session; onSignOut: () => vo
     if (route.page !== 'computer') document.title = titles[route.page] ? `${titles[route.page]} — Caboose` : 'Caboose'
   }, [route.page])
 
+  // A single-computer address opens the host's default computer, or Computers when there is none.
+  React.useEffect(() => {
+    if (route.page !== 'default-computer' || !computers.list) return
+    const href = defaultComputerHref(route.tab, computers.list)
+    navigate(href.startsWith('/computers/') ? href + window.location.search : href, { replace: true })
+  }, [route, computers.list])
+
   // Tenants and Host are the operator's; anyone else who lands there goes to the Overview.
   React.useEffect(() => {
     if (me && !me.operator && (route.page === 'tenants' || route.page === 'host')) navigate('/', { replace: true })
@@ -159,7 +166,7 @@ function Console({ session, onSignOut }: { session: Session; onSignOut: () => vo
       {route.page === 'usage' ? <Usage client={client} me={me} onUnauthorized={onSignOut} /> : null}
       {route.page === 'overview' ? <Overview computers={computers} host={host} me={me} /> : null}
       {route.page === 'security' && session.kind === 'account' ? <Security onSignOut={onSignOut} /> : null}
-      {route.page === 'computers' ? <Computers client={client} computers={computers} me={me} /> : null}
+      {route.page === 'computers' || route.page === 'default-computer' ? <Computers client={client} computers={computers} me={me} /> : null}
       {route.page === 'computer' ? (
         // Keyed by computer, so nothing one computer's tabs loaded is shown for another.
         <Computer key={route.id} client={client} computers={computers} id={route.id} host={host} me={me} tab={route.tab} onUnauthorized={onSignOut} />

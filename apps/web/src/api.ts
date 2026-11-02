@@ -33,7 +33,7 @@ export interface ComputerResources {
 export interface ComputerSize { id: string; name: string; memoryMb: number; vcpus: number; available: boolean }
 
 export interface ComputerStatus {
-  sizes?: ComputerSize[]
+  sizes: ComputerSize[]
   state: ComputerState
   settings: ComputerSettings
   limits?: ComputerLimits
@@ -56,7 +56,7 @@ export interface ComputerStatus {
 /** A computer as the host lists it (`GET /v1/computers`): its id and when it was made, with its status. */
 export interface ComputerSummary extends ComputerStatus {
   id: string
-  /** Null for an owner's computer made before the host recorded it. */
+  /** Null for a computer made before the host recorded when computers were made. */
   createdAt: string | null
   /** The tenant the computer belongs to; null on a host that has not been set up. */
   tenantId: string | null
@@ -66,14 +66,25 @@ export interface ComputerSummary extends ComputerStatus {
 }
 
 export interface ComputersResponse {
+  /** Every computer the caller manages; empty on a host with no computer yet. */
   computers: ComputerSummary[]
-  /** False for a host that serves only the owner's computer. */
+  /** False for a host that cannot make computers. */
   canCreate: boolean
   limits: { computers: number; running: number | null }
+  /** The computer the host's unscoped routes serve; null when it has none. */
+  defaultComputer: string | null
+  /** The sizes a new computer can be made in. */
+  sizes: ComputerSize[]
 }
 
-/** The owner's computer: the one the owner token's own routes serve, and the one that cannot be deleted. */
-export const OWNER_COMPUTER = 'owner'
+/** `GET /v1/host/settings`: the host's own name and which computer its unscoped routes serve. */
+export interface HostSettings {
+  /** The name the operator gave the host; null while it has none. */
+  name: string | null
+  /** `name`, or `Caboose on <machine>` while it is null; what mDNS advertises. */
+  displayName: string
+  defaultComputer: string | null
+}
 
 export interface NewComputer {
   name: string
@@ -122,7 +133,7 @@ export function buildInviteLink(origin: string, token: string): string {
   return `${origin.replace(/\/+$/, '')}/invite?token=${encodeURIComponent(token)}`
 }
 
-/** A phone signed in to a computer with its own token. The host never shows the token again. */
+/** A phone signed in to a computer or to the host with its own token. The host never shows the token again. */
 export interface PhoneSignIn {
   id: string
   name: string
@@ -346,7 +357,7 @@ export class CabooseClient {
     private readonly baseUrl = '',
     // Browsers reject a native fetch called with any receiver but the window, so never call it as a method.
     private readonly fetchImpl: typeof fetch = (input, init) => globalThis.fetch(input, init),
-    /** The computer this client's computer routes go to; the owner token's own computer when absent. */
+    /** The computer this client's computer routes go to; the host's default computer when absent. */
     readonly computerId?: string,
   ) {}
 
@@ -557,6 +568,29 @@ export class CabooseClient {
 
   removePhone(id: string, phoneId: string): Promise<{ revoked: true }> {
     return this.request<{ revoked: true }>('DELETE', `/v1/computers/${encodeURIComponent(id)}/phones/${encodeURIComponent(phoneId)}`, { timeoutMs: 15_000 })
+  }
+
+  /** The host's name and default computer. */
+  hostSettings(): Promise<HostSettings> {
+    return this.request<HostSettings>('GET', '/v1/host/settings', { timeoutMs: 15_000 })
+  }
+
+  updateHostSettings(changes: { name?: string | null; defaultComputer?: string | null }): Promise<HostSettings> {
+    return this.request<HostSettings>('PATCH', '/v1/host/settings', { body: changes, timeoutMs: 15_000 })
+  }
+
+  /** Phones signed in to the host itself, which reach every computer as the owner does. */
+  hostPhones(): Promise<{ phones: PhoneSignIn[] }> {
+    return this.request<{ phones: PhoneSignIn[] }>('GET', '/v1/host/phones', { timeoutMs: 15_000 })
+  }
+
+  /** A single-use code that signs one phone in to the host, valid for ten minutes. */
+  startHostPairing(): Promise<PairingCode> {
+    return this.request<PairingCode>('POST', '/v1/host/pairing', { timeoutMs: 15_000 })
+  }
+
+  removeHostPhone(phoneId: string): Promise<{ revoked: true }> {
+    return this.request<{ revoked: true }>('DELETE', `/v1/host/phones/${encodeURIComponent(phoneId)}`, { timeoutMs: 15_000 })
   }
 
   computer(): Promise<ComputerStatus> {
