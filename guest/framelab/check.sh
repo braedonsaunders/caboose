@@ -36,6 +36,7 @@ if [[ ${1:-} != --here ]]; then
     -v "$here:/framelab:ro" -v "$here/../gpu:/gpu:ro" \
     -v "$bin/caboose-display:/usr/local/bin/caboose-display:ro" \
     -v "$bin/caboose-display-probe:/usr/local/bin/caboose-display-probe:ro" \
+    -v "$bin/caboose-display-testbench:/usr/local/bin/caboose-display-testbench:ro" \
     -v "$out:/out" "$image" bash /framelab/check.sh --here /out "$@"
 fi
 
@@ -77,6 +78,21 @@ owner caboose-display-probe --url ws://127.0.0.1:14690/ --token-file "$dir/token
 pids+=($!)
 
 guest() { owner env HOME=/home/caboose XDG_RUNTIME_DIR="$rt" python3 /framelab/framelab-guest.py --env "$out/display.env" "$@"; }
+
+# The testbench, from outside: an ordinary Wayland client, then an X11 one.
+if command -v caboose-display-testbench >/dev/null; then
+  owner sh -c 'set -a; . "$1"; caboose-display-testbench --auto 3' sh "$out/display.env" > "$out/testbench-wayland.json" ||
+    fail 'the Wayland testbench checklist failed'
+  owner sh -c 'set -a; . "$1"; caboose-display-testbench --x11 --auto 3' sh "$out/display.env" > "$out/testbench-x11.json" ||
+    fail 'the X11 testbench checklist failed'
+  python3 - "$out/testbench-wayland.json" "$out/testbench-x11.json" <<'PYEOF' || fail 'the testbench reports are not valid'
+import json, sys
+for path in sys.argv[1:]:
+    report = json.load(open(path))
+    assert report['ok'] and report['frames'] > 1, report
+    print(f"testbench {report['mode']}: {report['frames']} frames, {[c['id'] for c in report['checks'] if c['state'] == 'fail']} failed")
+PYEOF
+fi
 
 # The matrix, every app on the computer's drivers.
 guest --out "$out/matrix" --offline "$@" > "$out/matrix.jsonl" || fail 'the matrix did not complete'

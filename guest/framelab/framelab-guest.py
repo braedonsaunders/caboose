@@ -203,6 +203,7 @@ class Run:
         self.broker_log_path = broker_log_path
         self.records, self.inputs, self.cpu = [], [], []
         self.windows, self.window_ids = {}, set()
+        self.latency = []
         self.lock = threading.Lock()
         self.proc = None
         self.log = None
@@ -273,6 +274,7 @@ class Run:
                 raise
             self.no_timeline = True
             return since
+        self.latency += [list(e) for e in reply.get('latency', [])]
         for w in reply['windows']:
             if w['id'] in self.window_ids:
                 entry = self.windows.setdefault(str(w['id']), {'commits': []})
@@ -464,7 +466,7 @@ class Run:
             self.stop()
         with self.lock:
             record.update(records=list(self.records), inputs=self.inputs, cpu=self.cpu, windows=self.windows,
-                          compositor_timeline=not self.no_timeline)
+                          latency=self.latency, compositor_timeline=not self.no_timeline)
         return record
 
 

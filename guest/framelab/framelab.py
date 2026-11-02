@@ -248,6 +248,22 @@ def input_latency(inputs, frames, results=(), glass=()):
     return {'inputs': len(rows), 'unanswered': sum(1 for row in rows if row[0] is None), 'to_frame_ms': summary(0), 'to_phone_result_ms': summary(1), 'to_glass_ms': summary(2)}
 
 
+def key_latency(entries):
+    """Per-input latency correlation from the compositor's `frames` latency
+    entries ([id, at, delivered, commit, present, window], microseconds):
+    each stage after the phone event, in milliseconds, with p50 and p95.
+    Timing only; an entry never carries a key code. A stage at 0 never
+    happened and is left out of that stage's distribution."""
+    stages = {'to_delivered_ms': 2, 'to_commit_ms': 3, 'to_present_ms': 4}
+    out = {'inputs': len(entries)}
+    for name, index in stages.items():
+        values = [(e[index] - e[1]) / 1000 for e in entries if len(e) > index and e[index]]
+        out[name] = ({'n': len(values), 'p50': _r(percentile(values, 0.5)), 'p95': _r(percentile(values, 0.95)),
+                      'max': _r(max(values))} if values else None)
+    out['completed'] = sum(1 for e in entries if len(e) > 4 and e[4])
+    return out
+
+
 def wire(streams, measured, inputs):
     """What crossed to the phone over the measured span, from the broker's
     CABOOSE_GPU_STREAM counters: bytes per second, and per input for an app driven by
@@ -333,6 +349,7 @@ def scorecard(app, run, phone_records=(), offset=None):
     else:
         card['input'] = None
 
+    card['latency'] = key_latency(run.get('latency', [])) if run.get('latency') else None
     streams = [r for r in records if r['kind'] == 'gpu_stream']
     card['wire'] = wire(streams, measured, inputs)
     to_phone = card['wire']['to_phone_per_s'] if card['wire'] else None

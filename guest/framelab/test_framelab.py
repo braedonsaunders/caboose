@@ -167,6 +167,15 @@ class LatencyTests(unittest.TestCase):
         late = fl.input_latency([1 * S], [4 * S])
         self.assertEqual((late['unanswered'], late['to_frame_ms']), (1, None))
 
+    def test_key_latency_correlates_each_stage_with_p50_and_p95(self):
+        entries = [[1, 1_000_000, 1_001_000, 1_006_000, 1_017_000, 7],
+                   [2, 2_000_000, 2_002_000, 2_010_000, 0, 7]]
+        got = fl.key_latency(entries)
+        self.assertEqual(got['to_commit_ms'], {'n': 2, 'p50': 6.0, 'p95': 10.0, 'max': 10.0})
+        self.assertEqual(got['to_present_ms'], {'n': 1, 'p50': 17.0, 'p95': 17.0, 'max': 17.0})
+        self.assertEqual((got['inputs'], got['completed']), (2, 1))
+        self.assertIsNone(fl.key_latency([[9, 5, 0, 0, 0, 1]])['to_delivered_ms'])
+
 
 class ScorecardTests(unittest.TestCase):
     def run_record(self, presents, **extra):

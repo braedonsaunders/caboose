@@ -55,6 +55,11 @@ One JSON file per app (`<app>.json`), and `summary.md`, a table with one row per
   (`CABOOSE_GPU_PRESENT`), and also the rate and gaps of the phone's present results; on the
   computer path, the window's commits. When the broker has only its two-second
   `CABOOSE_GPU_PRESENT_RATE` counters, the rate and the largest gap come from them.
+- **`latency`**: the compositor's per-input correlation (`frames` latency entries):
+  for each input, its id from the phone event through delivery to the client, the
+  client's next commit, and that commit's present, as p50/p95/max per stage. Timing
+  only — entries never carry a key code — and the trace stops itself 120 s after
+  its first traced input. Absent when the compositor traced nothing.
 - **`input`**: for each injected input, the time to the first frame after it, to the
   phone's result for that frame (GPU path), and to the phone's glass when the phone reports
   presentation times (`caboose-framelab: present`, below); p50, p95 and max. Input is
@@ -189,12 +194,14 @@ the executor's arrival.
 ## Check it headless
 
 ```sh
-cargo build --release -p caboose-display -p caboose-display-probe   # in guest/display
+cargo build --release -p caboose-display -p caboose-display-probe -p caboose-display-testbench   # in guest/display
 guest/framelab/check.sh IMAGE guest/display/target/release [OUT] [-- --apps vkcube,gtk4]
 ```
 
 `IMAGE` is a computer image with the matrix's apps (see the comment in `check.sh`). The
-check starts a private seat with caboose-display-probe as its client, runs the matrix
+check starts a private seat with caboose-display-probe as its client, runs the
+testbench (`guest/display/testbench`) against it as an ordinary Wayland client and
+as an X11 client, and then runs the matrix
 with local pages, and then measures vkcube against `standin-broker.py`, which writes the
 real broker's present trace. It fails when an installed app shows no window or no frames,
 when a compared app has no comparison, or when the stand-in's presents do not reach the
