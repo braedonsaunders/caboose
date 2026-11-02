@@ -1,8 +1,13 @@
 #!/bin/sh
 set -eu
-# Serialize requests from multiple MCP servers and host-started sessions.
-exec 9>/run/caboose-agent-seat.lock
-flock 9
+# Serialize requests from multiple MCP servers and host-started sessions. flock holds the
+# lock on its own descriptor and closes it for the command (-o): the daemons the seat
+# starts must not inherit it, or they would hold it after this request and every later
+# request would wait on it forever.
+if [ -z "${CABOOSE_AGENT_SEAT_LOCKED:-}" ]; then
+  CABOOSE_AGENT_SEAT_LOCKED=1 exec flock -o /run/caboose-agent-seat.lock "$0" "$@"
+fi
+unset CABOOSE_AGENT_SEAT_LOCKED
 if [ -x /usr/local/bin/caboose-session ]; then
   exec /usr/local/bin/caboose-session start-agent
 fi
