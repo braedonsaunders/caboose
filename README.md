@@ -39,7 +39,7 @@ The machine belongs to the agent, and you watch.
 
 Caboose starts from the other end:
 
-- **Linux apps as native surfaces.** Every window streams on its own, with its title,
+- **Linux apps as native surfaces.** Every window is its own GPU layer, with its title,
   menus and dialogs, and the icon of the app it belongs to. On iPhone it behaves like an
   app; on iPad or a TV it behaves like a window. Menus and dialogs sit next to the window
   they belong to, not in a separate frame.
@@ -75,12 +75,12 @@ lived and worked. Here it's the computer that comes along wherever your phone go
 
 | | |
 | --- | --- |
-| **iOS app** (`apps/ios`) | SwiftUI shell over UIKit and Metal. Each Linux window is its own Metal surface; H.264, HEVC and, where the device has a decoder, AV1 decode in VideoToolbox straight into GPU memory. Touch, hardware trackpad and mouse, the iOS keyboard with autocorrect, dictation and CJK input, ⌘ shortcuts sent as Control, and a TV mode with the phone as a trackpad. Extensions put the computer in the Files app and the share sheet, and add widgets and Live Activities. |
-| **CabooseKit** (`apps/ios/CabooseKit`) | The display client as a Swift package: `CabooseDisplaySession` speaks the Caboose Display Protocol, with native touch, IME text, video layers and Opus sound. Unit-tested against the protocol's golden vectors. |
+| **iOS app** (`apps/ios`) | SwiftUI shell over UIKit and Metal. Each Linux window is its own Metal surface, its picture rendered on the phone's GPU; apps' video decodes in VideoToolbox straight into GPU memory. Touch, hardware trackpad and mouse, the iOS keyboard with autocorrect, dictation and CJK input, ⌘ shortcuts sent as Control, and a TV mode with the phone as a trackpad. Extensions put the computer in the Files app and the share sheet, and add widgets and Live Activities. |
+| **CabooseKit** (`apps/ios/CabooseKit`) | The display client as a Swift package: `CabooseDisplaySession` speaks the Caboose Display Protocol, with native touch, IME text and Opus sound, and its GPU executor renders every window's picture. Unit-tested against the protocol's golden vectors. |
 | **Host** (`apps/host`) | `caboose-host`, TypeScript on Node 22. Owner-token auth, computer lifecycle (wake, lease, park with memory, cold restart), a display relay that never decodes a pixel, the app catalog, files, the agent task API, and the management API. |
 | **Console** (`apps/web`) | The self-host web console the host serves, for running the server rather than using the computer: what the computers are given of the machine, each computer's state, wake, park and restart, files, catalog apps, phones and settings, and the host's own health and configuration. |
 | **The computer** (`guest/`) | A Debian 13 golden image on Cloud Hypervisor. Each computer is a copy-on-write clone of it and keeps its own installs. The image includes Chromium, Firefox, VS Code, LibreOffice, Obsidian, Docker, a modern shell kit, and Claude Code, Codex, OpenCode and Gemini CLI; more apps, such as GIMP, install from the catalog. On a GPU host it can run as a container instead (WSL2, NVIDIA, or an Intel or AMD render node). |
-| **Caboose Display** (`guest/display`) | The computer's display server, in Rust: a headless Wayland compositor with Xwayland that streams each window on its own. |
+| **Caboose Display** (`guest/display`) | The computer's display server, in Rust: a headless Wayland compositor with Xwayland that renders each window on the phone's GPU, on its own. |
 | **Agents** | Any agent in the [Agent Client Protocol registry](https://github.com/agentclientprotocol/registry), installed and signed in from the iPhone app, run by `caboose-agentd` in the computer on a second display only agents use, with `caboose-desktop-mcp` giving them accessibility-tree, screenshot, click, type, key, scroll, drag and launch tools for GUI apps. |
 
 ## How it works
@@ -92,7 +92,8 @@ lived and worked. Here it's the computer that comes along wherever your phone go
  │  Home grid, app cards,   │ ──────────▶ │  wake · lease · park-with-memory      │
  │  windows on iPad / TV    │ /v1/session │  display relay (bytes, never pixels)  │
  │  CabooseKit: display     │ /v1/display │  control: apps, agents, settings      │
- │  VideoToolbox → Metal    │ /v1/control │           │ vsock + TAP               │
+ │  GPU executor → Metal    │ /v1/gpu     │  GPU relay (bytes, never decoded)     │
+ │                          │ /v1/control │           │ vsock + TAP               │
  └──────────────────────────┘             │ ┌─────────▼─────────────────────────┐ │
                                           │ │ microVM: Debian 13, CoW home      │ │
                                           │ │  Caboose Display :14600  (you)    │ │
@@ -102,11 +103,11 @@ lived and worked. Here it's the computer that comes along wherever your phone go
                                           └───────────────────────────────────────┘
 ```
 
-- **Per-window, not per-desktop.** Every window is its own stream with its own title,
-  size hints and parent, and only what changed is re-encoded; the phone takes the icon
+- **Per-window, not per-desktop.** Every window is its own GPU layer with its own title,
+  size hints and parent, and only what changed is redrawn; the phone takes the icon
   from the app the window belongs to. That's what lets the phone show a Linux app as an
   app.
-- **Relay, don't transcode.** The host passes the stream through untouched, so latency
+- **Relay, don't transcode.** The host passes the streams through untouched, so latency
   is guest-to-phone and the host spends nothing on pixels.
 - **Park with memory.** Cloud Hypervisor snapshots (via
   [`appkit-desk`](https://github.com/braedonsaunders/appkit)) make resuming the product
@@ -116,13 +117,12 @@ lived and worked. Here it's the computer that comes along wherever your phone go
   you allow your LAN.
 - **Caboose Display.** Caboose's own display server ([guest/display](guest/display),
   [docs/display.md](docs/display.md)): a headless Wayland compositor with Xwayland that
-  streams each window on its own, paced by the phone's screen. Nothing runs while nothing
-  changes. Window pictures stay lossless, scrolls go as exact copies, still text sharpens once,
-  and the computer's sound goes as Opus in step with the pictures. Touch and the iOS
+  renders each window on its own into images in the phone's GPU memory, paced by the
+  phone's screen. Nothing runs while nothing changes. Window pictures stay exact at their
+  own density, and the computer's sound goes as Opus. Touch and the iOS
   keyboard (autocorrect, dictation, CJK) arrive as native Wayland input, and the
   clipboard works across the phone, Wayland and X11 apps. Players that decode through
   VA-API hand their compressed video straight to the phone ([guest/vaapi](guest/vaapi)).
-  It encodes with NVENC where the host has an NVIDIA GPU, otherwise with x264.
 - **Two seats.** The owner's display and the agent seat are separate Caboose Display
   instances, each with its own Wayland and X11 displays and its own D-Bus session. The
   phone's on-device agent and the computer's agents read and drive them through the
@@ -217,7 +217,7 @@ loopback, so run it on a host you trust. The GPU container runtime for WSL2 and 
 | [`guest/image`](guest/image) | The golden machine image: Debian 13, Caboose Display, apps and agent runtimes |
 | [`guest/container`](guest/container) | The same computer as a GPU container, for WSL2 and Linux GPU hosts |
 | [`guest/display`](guest/display) | Caboose Display: the per-window display server, its protocol and golden vectors (Rust) |
-| [`guest/vaapi`](guest/vaapi) | The VA-API codec-passthrough driver that forwards apps' compressed video to the phone (C) |
+| [`guest/vaapi`](guest/vaapi) | The VA-API driver through which apps' video is decoded on the phone (C) |
 | [`guest/agentd`](guest/agentd) | `caboose-agentd`: the ACP client that runs any registry agent for a task |
 | [`guest/desktop-mcp`](guest/desktop-mcp) | GUI tools for agents on their own seat, and the accessibility helper behind `/v1/screen` |
 | [`guest/apps`](guest/apps) | `caboose-app`: apps agents make, web apps that run in their own window and appear in Apps |

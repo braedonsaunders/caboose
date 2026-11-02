@@ -144,14 +144,13 @@ in `~/.cache/caboose-display`, and caps the container at 6 CPUs and 6 GiB
 (`CABOOSE_DISPLAY_CPUS`, `CABOOSE_DISPLAY_MEMORY`). `CABOOSE_DISPLAY_DRI=1` passes the
 host's render nodes through, and `CABOOSE_DISPLAY_DOCKER_ARGS` adds `docker run`
 arguments. Dev builds are optimised (`opt-level = 2`) because the checks measure frame
-rates. The workspace targets `x86-64-v2` so the pixel conversion vectorises. Release
+rates. The workspace targets `x86-64-v2` (`.cargo/config.toml`). Release
 builds (`cargo build --release`) are what the guest images carry.
 
 Unit tests cover the protocol (canonical encoding, the stream decoder on split and
-malformed input, and the committed vectors against the encoder), the pixel conversion
-(reference colours, damage-only and threaded conversion, changed-block detection), the
-encoders (parameter sets on keyframes), keysym mapping on the real `us` keymap, grapheme
-→ byte conversion for deletions, flow control, the launch environment, configuration and
+malformed input, and the committed vectors against the encoder), a window's images and
+their damage uploads, keysym mapping on the real `us` keymap, grapheme → byte conversion
+for deletions, frame-callback pacing, the launch environment, configuration and
 per-instance state directories, the Xauthority format, the control socket's key
 combinations and text escapes, the clipboard's checks and type choice, bounded pipe
 transfers, and the transfer area's path and link checks.
@@ -256,16 +255,15 @@ It needs `XDG_RUNTIME_DIR`. It creates the Wayland socket (`--socket`), starts X
 `--env-file` in sh syntax: `WAYLAND_DISPLAY`, `DISPLAY`, `XAUTHORITY`, `XDG_RUNTIME_DIR`,
 toolkit backends (Wayland first), `CABOOSE_DISPLAY_CONTROL` (its control socket),
 `PULSE_SERVER` when it plays sound, `CABOOSE_GAME_SOCKET` when it hands games off,
-`LIBVA_DRIVER_NAME=caboose`,
-`GST_VA_ALL_DRIVERS=1` and `CABOOSE_VIDEO_SOCKET` when the passthrough driver is
-installed, and the GPU variables it was started with (`GALLIUM_DRIVER`,
+and the GPU variables it was started with (`GALLIUM_DRIVER`,
 `MESA_D3D12_DEFAULT_ADAPTER_NAME`, `LIBVA_DRIVER_NAME`). Started with the private GPU
 sockets and with the phone's driver installed, it routes applications to the phone's GPU
 instead: `VK_ADD_DRIVER_FILES`, `CABOOSE_GFXSTREAM_SOCKET`,
 `CABOOSE_GFXSTREAM_SURFACE_SOCKET`, `CABOOSE_GPU_EXECUTOR_SWITCH=1`, `CABOOSE_GPU_ROUTING=1`,
 `NODEVICE_SELECT=1`, `CABOOSE_GPU_ON_LOSS=auto`,
-`GSK_RENDERER=vulkan` and `ELECTRON_OZONE_PLATFORM_HINT=x11`,
-([docs/gpu-live.md](../../docs/gpu-live.md#applications)). It also serves an input method,
+`GSK_RENDERER=vulkan` and `ELECTRON_OZONE_PLATFORM_HINT=x11`, and, when the Caboose VA-API
+driver is installed, `LIBVA_DRIVER_NAME=caboose` and `GST_VA_ALL_DRIVERS=1`
+([docs/gpu-live.md](../../docs/gpu-live.md#applications), [docs/gpu-media.md](../../docs/gpu-media.md)). It also serves an input method,
 `IBUS_ADDRESS` and `IBUS_ADDRESS_FILE` (with `QT_IM_MODULE=ibus`): applications without
 text-input-v3 (X11 clients, whose GTK selects IBus from the window manager's XSETTINGS
 `Gtk/IMModule`; Qt; SDL) tell it when an editable field gains or loses focus, which shows
@@ -335,7 +333,7 @@ processes of its own user. It is how the computer's own tools see and drive a se
 and X11 windows alike: `windows` (each window's id, kind, title, app id, process, X window
 for Xwayland, geometry, root surface and focus, bottom to top), `focus`, `click`, `press`,
 `release`, `move`, `scroll`, `key`, `type`, `settle`, `screenshot` and `frames` (the
-seat's timeline: each window's commits and sent pictures, and input, in CLOCK_MONOTONIC
+seat's timeline: each window's commits and presented pictures, and input, in CLOCK_MONOTONIC
 microseconds, for [frame lab](../framelab/README.md)). Requests are single
 lines and answers single JSON lines (a screenshot's is followed by the PNG); the full list is
 in [docs/architecture.md § Displays](../../docs/architecture.md#displays) and the code in
@@ -354,7 +352,7 @@ python3 /opt/caboose/seat.py screenshot --out /tmp/seat.png
 ## In the guest
 
 Both guest images build the binaries in a first Docker stage and install them with the
-passthrough driver. Neither enables a unit at boot; the host starts the displays.
+Caboose VA-API driver. Neither enables a unit at boot; the host starts the displays.
 
 - **microVM** (`guest/image`): `caboose-display.service` is the owner's display, started
   by the host at each wake; `caboose-display-agent.service` is the agent seat, started

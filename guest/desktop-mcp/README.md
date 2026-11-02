@@ -50,7 +50,7 @@ load) as `caboose-desktop`. The first GUI tool call starts the agent seat throug
 guest's privileged seat helper, then reads its launch environment from
 `/run/caboose/agent-display.env`: `CABOOSE_AGENT_DISPLAY` (its X display, default `:101`),
 `WAYLAND_DISPLAY`, `CABOOSE_DISPLAY_CONTROL`, `XAUTHORITY`, `XDG_RUNTIME_DIR`,
-`DBUS_SESSION_BUS_ADDRESS`, the toolkit backends and the video passthrough variables. The
+`DBUS_SESSION_BUS_ADDRESS`, the toolkit backends and the VA-API variables. The
 agent runner answers the agent's permission requests itself, so asking before acting needs
 nothing from this server.
 

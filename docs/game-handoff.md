@@ -9,7 +9,7 @@ the game belongs to and where its files are; the client runs the game in a `WKWe
 into that window and streams the game's files from the computer. Rendering, sound and input
 stay on the device, and the computer does no per-frame work for the window.
 
-It is the compute counterpart of [codec passthrough](codec-passthrough.md). The pieces:
+The pieces:
 
 | Piece | Where |
 | --- | --- |
@@ -109,8 +109,8 @@ While a game is bound and the connected client plays games, caboose-display send
 `game.create { id, window, root, entry, saves? }` after the window's `window.create`
 (including in the burst that answers each `hello`), and `game.destroy { id }` when the
 launcher disconnects or its window closes. Game ids are their own namespace, unique for the
-server process's lifetime. While its game is shown on a client, the window sends no
-`frame`, `tile` or video stream, and `request_keyframe` for it is ignored. The client's
+server process's lifetime. While its game is shown on a client, the window's picture is
+not presented. The client's
 `configure` and `close` for the window are handled as for any window.
 
 ### Declining

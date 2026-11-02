@@ -42,8 +42,7 @@ decoding on the computer's render node. They are X11 clients there, and take the
 they allocate their frames with from Xwayland's DRI3, which opens the render node
 ([guest/xwayland](../guest/xwayland/README.md)).
 
-Otherwise the stream takes the path in [codec-passthrough.md](codec-passthrough.md): decoded
-locally into the surfaces. While the media connection is open, the driver advertises only the
+Otherwise the driver decodes the stream itself with libavcodec, into the surfaces. While the media connection is open, the driver advertises only the
 VA profiles the phone decodes, so an application that picks its codec by the hardware decoders
 it has (a site asking `MediaCapabilities`) picks one the phone decodes. `CABOOSE_VA_GPU=0` turns phone decoding off; `CABOOSE_VA_MODE=decode`
 decodes everything locally.
@@ -116,9 +115,10 @@ Phone to driver:
 | `0x83` | REPLAY | `u32 stream`: send again from the last key frame |
 
 The phone answers HELLO with CAPS, listing only formats it decodes in hardware. A UNIT is one
-access unit in decode order, exactly as in [codec-passthrough.md](codec-passthrough.md#the-driver):
-Annex-B for H.264 and HEVC with parameter sets at random access points, a VP9 frame or
-superframe, an AV1 temporal unit. `flags` are those of `FRAME` there (key, hidden, replay).
+access unit in decode order: Annex-B for H.264 and HEVC with parameter sets at random access
+points, a VP9 frame or superframe, an AV1 temporal unit of OBUs. `flags` are `0x01` key (a
+random access point), `0x02` hidden (not shown when decoded; kept for the application to
+show later, if it does) and `0x04` replay (resent after a replay request).
 `serial` is the serial the unit's surface names, and `surface` is the surface the application
 shows the picture in. A surface's serials never decrease from one unit to the next; a picture
 may be sent more than once with the same serial (a shown AV1 forward key frame, or a replay).
@@ -192,8 +192,8 @@ is never latched again.
   local decoding.
 - **Formats.** The phone decodes what VideoToolbox decodes in hardware: H.264 (8-bit), HEVC (Main,
   Main 10) and, on devices with the decoder, AV1 and VP9. Anything else is decoded locally.
-- **Colour.** VA carries no colour description (see [codec-passthrough.md](codec-passthrough.md#limits));
+- **Colour.** VA carries no colour description (primaries, transfer, HDR metadata);
   the phone copies the coded samples unchanged and the application applies its own colour
   conversion, as it does for any hardware decoder's output.
-- **AV1 is one picture late**, as in passthrough: a unit is sent when the next picture reveals
+- **AV1 is one picture late**: VA does not carry `refresh_frame_flags`, so a unit is sent when the next picture reveals
   its reference refresh.

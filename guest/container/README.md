@@ -66,19 +66,19 @@ display or file service ports are not published as above must be recreated from 
 image; its home volume is kept. A missing terminal port needs no recreation: the host then
 reaches the terminal service on the container's bridge address.
 
-| `CABOOSE_GPU` | Host | The container gets | Apps render with | Caboose Display encodes with |
-| --- | --- | --- | --- | --- |
-| `wsl` | Windows with WSL2, any vendor | `/dev/dxg`, `/usr/lib/wsl` read-only | Mesa D3D12 | NVENC on an NVIDIA GPU (through `/usr/lib/wsl/lib`), otherwise software |
-| `nvidia` | Linux with the NVIDIA container toolkit | `--gpus all`, `/dev/udmabuf` when present | the NVIDIA driver | NVENC |
-| `dri` | Linux, Intel or AMD | `/dev/dri`, `/dev/udmabuf` when present | Mesa | software |
-| `none` | any | nothing | Mesa software rendering | software |
+| `CABOOSE_GPU` | Host | The container gets | Apps render with |
+| --- | --- | --- | --- |
+| `wsl` | Windows with WSL2, any vendor | `/dev/dxg`, `/usr/lib/wsl` read-only | Mesa D3D12 |
+| `nvidia` | Linux with the NVIDIA container toolkit | `--gpus all`, `/dev/udmabuf` when present | the NVIDIA driver |
+| `dri` | Linux, Intel or AMD | `/dev/dri`, `/dev/udmabuf` when present | Mesa |
+| `none` | any | nothing | Mesa software rendering |
 
 Every kind also gets `/dev/userfaultfd` and the host's `vgem` nodes (the computer's render
 node, [docs/gpu-buffers.md](../../docs/gpu-buffers.md)) when the host has them;
 `caboose-session start` gives them to the `caboose` group, for the phone-GPU driver's write
 tracking (`guest/gpu/gfxstream/coherent`) and for apps allocating shared buffers.
 
-The image does not install a Linux NVIDIA driver; WSL supplies `libcuda` and NVENC through
+The image does not install a Linux NVIDIA driver; WSL supplies its libraries through
 `/usr/lib/wsl/lib`, and on Linux the NVIDIA container toolkit supplies the driver's
 libraries.
 
