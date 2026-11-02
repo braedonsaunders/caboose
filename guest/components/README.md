@@ -14,6 +14,12 @@ are updated. The installer is safe to repeat. The Thunar action is a system defa
 custom actions can override it. See `docs/architecture.md` § Guest for the API and
 older-container caveat.
 
+Chromium loads the extension directories under `/usr/share/chromium/extensions` through
+`/etc/chromium.d/zz-caboose-extensions`, which replaces the switch Debian's
+`/etc/chromium.d/extensions` builds (that one breaks with a second entry). The installer
+removes extension links whose target is gone, so no launch shows a "Failed to load
+extension" dialog.
+
 VM installations include `caboose-workloads.slice` and the root-invoked
 `caboose-owner-run` launcher. The launcher enters a transient scope in that
 slice before switching to the owner; supported owner service units also use the

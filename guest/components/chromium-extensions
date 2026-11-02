@@ -1,0 +1,13 @@
+# Installed as /etc/chromium.d/zz-caboose-extensions by guest/components/install.sh.
+# Debian's /etc/chromium.d/extensions passes `ls -dm /usr/share/chromium/extensions/*`:
+# entries joined by ", ", so a second one splits the switch, and links whose target is
+# gone included. Chromium keeps only the last --load-extension, so this one, read after
+# Debian's, names the extension directories that exist, joined by commas alone.
+caboose_extensions=
+for caboose_extension in /usr/share/chromium/extensions/*; do
+  [ -d "$caboose_extension" ] && caboose_extensions="${caboose_extensions:+$caboose_extensions,}$caboose_extension"
+done
+if [ -n "$caboose_extensions" ]; then
+  export CHROMIUM_FLAGS="$CHROMIUM_FLAGS --load-extension=$caboose_extensions"
+fi
+unset caboose_extension caboose_extensions
