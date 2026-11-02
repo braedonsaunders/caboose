@@ -244,6 +244,9 @@ pub struct State {
     pub stats: Stats,
     /// When client input arrived, for frame lab (`frames` on the control socket).
     pub input_trace: crate::frame_trace::Ring<crate::frame_trace::Input>,
+    /// Per-input latency correlation (frame_trace::LatencyTrace).
+    pub latency: crate::frame_trace::LatencyTrace,
+    pub next_input_id: u64,
     /// The cursor last sent, so it is re-sent to a new client.
     pub cursor: Option<proto::Message>,
 }
@@ -1103,6 +1106,7 @@ impl CompositorHandler for State {
                 w.picture.mark_dirty(now);
                 w.picture.source = source;
             }
+            self.latency.commit(id, now);
             if new_children {
                 self.assign_output(id);
             }
@@ -1487,6 +1491,7 @@ impl XWaylandShellHandler for State {
             if let Some(w) = self.windows.get_mut(id) {
                 w.picture.mark_dirty(now);
             }
+            self.latency.commit(id, now);
         }
     }
 }

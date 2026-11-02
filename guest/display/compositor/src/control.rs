@@ -30,8 +30,12 @@
 //! frames [SINCE]               what happened after SINCE (CLOCK_MONOTONIC µs, default 0):
 //!                              now_us; per window its commits and the pictures it presented
 //!                              as [at, commit, upload bytes]; input from the client as
-//!                              [at, kind] (pointer, scroll, touch, key, text). Each list
-//!                              keeps the newest 1024 entries.
+//!                              [at, kind, id] (pointer, scroll, touch, key, text), and
+//!                              latency entries [id, at, delivered, commit, present,
+//!                              window] correlating each input to the client's next
+//!                              commit and that commit's present (0 = never; timing
+//!                              only, never a key code). Each list keeps the newest
+//!                              1024 entries.
 //! ```
 //!
 //! Pictures are rendered by the compositor's renderer (render.rs) at one pixel per logical
@@ -540,13 +544,24 @@ impl State {
                 format!("{{\"id\":{id},\"commits\":[{}],\"presents\":[{}]}}", commits.join(","), presents.join(","))
             })
             .collect();
-        let input: Vec<String> =
-            self.input_trace.after(since, |i| i.at_us).iter().map(|i| format!("[{},\"{}\"]", i.at_us, i.kind)).collect();
+        let input: Vec<String> = self
+            .input_trace
+            .after(since, |i| i.at_us)
+            .iter()
+            .map(|i| format!("[{},\"{}\",{}]", i.at_us, i.kind, i.id))
+            .collect();
+        let latency: Vec<String> = self
+            .latency
+            .after(since)
+            .iter()
+            .map(|e| format!("[{},{},{},{},{},{}]", e.id, e.at_us, e.delivered_us, e.commit_us, e.present_us, e.window))
+            .collect();
         format!(
-            "{{\"ok\":true,\"now_us\":{},\"windows\":[{}],\"input\":[{}]}}\n",
+            "{{\"ok\":true,\"now_us\":{},\"windows\":[{}],\"input\":[{}],\"latency\":[{}]}}\n",
             self.now_us(),
             windows.join(","),
-            input.join(",")
+            input.join(","),
+            latency.join(",")
         )
         .into_bytes()
     }

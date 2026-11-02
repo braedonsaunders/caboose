@@ -307,6 +307,7 @@ impl State {
             return;
         };
         w.picture.trace.presents.push(crate::frame_trace::Present { at_us: now, commit_us, bytes });
+        self.latency.present(window, commit_us, now);
         self.stats.presents += 1;
         self.send_remote_present(request, window, identity, width, height);
     }

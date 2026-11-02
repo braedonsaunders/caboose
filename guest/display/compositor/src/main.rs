@@ -603,6 +603,8 @@ fn run(config: Config) -> Result<(), String> {
         remote_presents: Default::default(),
         stats: Default::default(),
         input_trace: Default::default(),
+        latency: Default::default(),
+        next_input_id: 0,
         cursor: None,
     };
 

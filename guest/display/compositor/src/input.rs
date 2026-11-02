@@ -159,9 +159,29 @@ impl State {
         }
     }
 
+
+    /// Records one phone input event: mints its latency id, traces it, and
+    /// starts its latency entry for `window`. Timing only, never the content.
+    fn trace_input(&mut self, kind: &'static str, window: u64) -> u64 {
+        self.next_input_id += 1;
+        let id = self.next_input_id;
+        let at = self.now_us();
+        let traced = self.latency.begin(id, window, at);
+        let id = if traced { id } else { 0 };
+        self.input_trace.push(crate::frame_trace::Input { at_us: at, kind, id });
+        id
+    }
+
+    fn trace_delivered(&mut self, id: u64) {
+        if id != 0 {
+            let at = self.now_us();
+            self.latency.delivered(id, at);
+        }
+    }
+
     pub fn pointer(&mut self, m: &proto::Pointer) {
         let kind = if m.scroll.is_some() { "scroll" } else { "pointer" };
-        self.input_trace.push(crate::frame_trace::Input { at_us: self.now_us(), kind });
+        let trace_id = self.trace_input(kind, m.id);
         // A finger touching down stops kinetic scrolling, as do another scroll and a button.
         if m.scroll.as_ref().is_some_and(|s| s.hold) {
             if self.input.coast.is_some() {
@@ -221,6 +241,7 @@ impl State {
         }
         // One sample is one wl_pointer.frame: Xwayland turns each frame into its events.
         pointer.frame(self);
+        self.trace_delivered(trace_id);
         if let Some(scroll) = m.scroll.as_ref().filter(|s| s.precise) {
             match scroll.lift {
                 Some(velocity) => {
@@ -237,7 +258,7 @@ impl State {
     }
 
     pub fn touch(&mut self, m: &proto::Touch) {
-        self.input_trace.push(crate::frame_trace::Input { at_us: self.now_us(), kind: "touch" });
+        let trace_id = self.trace_input("touch", m.id);
         let Some(touch) = self.seat.get_touch() else { return };
         if self.input.coast.is_some() && m.points.iter().any(|p| matches!(p.phase, TouchPhase::Down)) {
             self.end_scroll();
@@ -276,6 +297,7 @@ impl State {
             }
         }
         touch.frame(self);
+        self.trace_delivered(trace_id);
     }
 
     fn send_keycode(&mut self, keycode: u32, pressed: bool) {
@@ -305,7 +327,8 @@ impl State {
     }
 
     pub fn key(&mut self, m: &proto::Key) {
-        self.input_trace.push(crate::frame_trace::Input { at_us: self.now_us(), kind: "key" });
+        let focus_window = self.keyboard_focus_surface().and_then(|s| self.window_of_surface(&s)).unwrap_or(0);
+        let trace_id = self.trace_input("key", focus_window);
         let Some(pos) = self.input.keysyms.lookup(m.keysym) else {
             // Not on the layout: text-input-v3 can still take it as text.
             if m.pressed {
@@ -317,6 +340,7 @@ impl State {
                     tracing::debug!("keysym 0x{:x} is not on the keymap", m.keysym);
                 }
             }
+            self.trace_delivered(trace_id);
             return;
         };
         if m.pressed {
@@ -338,6 +362,7 @@ impl State {
                 self.send_keycode(code, false);
             }
         }
+        self.trace_delivered(trace_id);
     }
 
     /// Types text as key presses, for surfaces without text-input-v3. Characters that
@@ -367,8 +392,9 @@ impl State {
     }
 
     pub fn text(&mut self, m: &proto::Text) {
-        self.input_trace.push(crate::frame_trace::Input { at_us: self.now_us(), kind: "text" });
-        let Some(surface) = self.keyboard_focus_surface() else { return };
+        let focus_window = self.keyboard_focus_surface().and_then(|s| self.window_of_surface(&s)).unwrap_or(0);
+        let trace_id = self.trace_input("text", focus_window);
+        let Some(surface) = self.keyboard_focus_surface() else { self.trace_delivered(trace_id); return };
         // Deletions are BackSpace and Delete presses, for every surface. They remove one
         // grapheme cluster in every toolkit, which is what the client counts; text-input-v3's
         // delete_surrounding_text instead needs the application's surrounding-text
@@ -381,6 +407,7 @@ impl State {
             (p, b as i32, e as i32)
         });
         if m.commit.is_none() && preedit.is_none() {
+            self.trace_delivered(trace_id);
             return;
         }
         if !self.text_inputs.send(&surface, m.commit.as_deref(), preedit)
@@ -393,6 +420,7 @@ impl State {
                 self.type_text(commit);
             }
         }
+        self.trace_delivered(trace_id);
     }
 
     /// Applies a `configure` from the client to the window.
