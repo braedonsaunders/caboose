@@ -8,10 +8,15 @@
 //! thread and sent as `audio` with the capture time of its first sample on the clock the
 //! pictures use. Digital silence is not sent after a second of it, and nothing records
 //! while no client listens.
+//!
+//! PulseAudio and the recorder die with the compositor (`PR_SET_PDEATHSIG`), and
+//! PulseAudio stays off the session bus: the `org.PulseAudio1` name it would claim there
+//! outlives a compositor that crashed, and a later PulseAudio that cannot claim it exits.
 
 use ffmpeg_next as ff;
 use smithay::reexports::calloop::channel::Sender;
 use std::io::Read;
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -76,9 +81,13 @@ impl Audio {
             .arg("--load=module-null-sink sink_name=caboose rate=48000 channels=2 sink_properties=device.description=Caboose")
             .env("PULSE_RUNTIME_PATH", &dir)
             .env("PULSE_STATE_PATH", &dir)
+            // A bus address that leads nowhere: PulseAudio then registers no D-Bus names
+            // (it warns and goes on), and applications reach it only by its socket.
+            .env("DBUS_SESSION_BUS_ADDRESS", format!("unix:path={}", dir.join("no-bus").display()))
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
+            .die_with_parent()
             .spawn();
         let mut server = match server {
             Ok(s) => s,
@@ -125,6 +134,7 @@ impl Audio {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
+            .die_with_parent()
             .spawn();
         let mut recorder = match recorder {
             Ok(r) => r,
@@ -160,6 +170,30 @@ impl Audio {
             let _ = c.recorder.kill();
             let _ = c.recorder.wait();
             tracing::info!("audio: capture stopped");
+        }
+    }
+}
+
+trait DieWithParent {
+    /// Kills the child when the compositor's thread that spawned it ends, crash included.
+    fn die_with_parent(&mut self) -> &mut Self;
+}
+
+impl DieWithParent for Command {
+    fn die_with_parent(&mut self) -> &mut Self {
+        let parent = std::process::id();
+        // SAFETY: prctl and getppid are async-signal-safe and touch no shared state.
+        unsafe {
+            self.pre_exec(move || {
+                if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                // The compositor may have died before the prctl took effect.
+                if libc::getppid() as u32 != parent {
+                    return Err(std::io::Error::from(std::io::ErrorKind::BrokenPipe));
+                }
+                Ok(())
+            })
         }
     }
 }
