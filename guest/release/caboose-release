@@ -6,12 +6,18 @@ usage: caboose-release new ID [--from ID]          start a release, a copy of an
        caboose-release capture ID COMPUTER PATH... files as COMPUTER has them now
        caboose-release deb ID DEB                  a package installed with dpkg
        caboose-release remove ID PATH              a path deleted on install
-       caboose-release seal ID NOTE...             write MANIFEST; the release is final
+       caboose-release seal ID NOTE...             write the SBOM and MANIFEST and sign it; final
+       caboose-release sign ID                     sign a sealed release's MANIFEST again
        caboose-release install ID [--wait S] [COMPUTER...]   every running computer by default
        caboose-release status                      what each running computer runs
        caboose-release list                        the releases
 
-Run as root on the host. Releases live in $CABOOSE_RELEASES (default /root/caboose-release)."""
+Run as root on the host. Releases live in $CABOOSE_RELEASES (default /root/caboose-release).
+The signing key is $CABOOSE_RELEASE_KEY (default /root/.config/caboose-release/release-ed25519.key.pem);
+installs verify with $CABOOSE_RELEASE_PUB (default caboose-release.pub.pem beside this program,
+then /usr/local/share/caboose-release/caboose-release.pub.pem)."""
+import base64
+import datetime
 import hashlib
 import json
 import os
@@ -19,6 +25,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 
 ROOT = Path(os.environ.get("CABOOSE_RELEASES", "/root/caboose-release"))
@@ -26,6 +33,10 @@ ROOT = Path(os.environ.get("CABOOSE_RELEASES", "/root/caboose-release"))
 GAME = "MCC-Win64|steam_app_[0-9]|AppId=[0-9]"
 MARKER = "/etc/caboose-release"
 STEAM = "/home/caboose/.var/app/com.valvesoftware.Steam/.local/share/Steam"
+KEY = Path(os.environ.get("CABOOSE_RELEASE_KEY", "/root/.config/caboose-release/release-ed25519.key.pem"))
+PUBLIC_NAME = "caboose-release.pub.pem"
+# Written by seal, outside the MANIFEST it signs.
+UNLISTED = ("MANIFEST", "MANIFEST.sig")
 
 
 class Failure(Exception):
@@ -39,9 +50,10 @@ def release(id_):
 
 
 def manifest_lines(directory):
-    """`sha256  relative path` for every file of a release, sorted: files/, debs/, remove, notes."""
+    """`sha256  mode  relative path` for every file of a release, sorted: files/, debs/,
+    remove, notes and sbom.spdx.json."""
     lines = []
-    for path in sorted(p for p in directory.rglob("*") if p.is_file() and p.name != "MANIFEST"):
+    for path in sorted(p for p in directory.rglob("*") if p.is_file() and str(p.relative_to(directory)) not in UNLISTED):
         digest = hashlib.sha256(path.read_bytes()).hexdigest()
         mode = path.stat().st_mode & 0o7777 if path.parts[len(directory.parts)] == "files" else 0
         lines.append(f"{digest}  {mode:04o}  {path.relative_to(directory)}")
@@ -57,6 +69,108 @@ def verify(directory):
         raise Failure(f"{directory.name} is not sealed")
     if (directory / "MANIFEST").read_text().splitlines() != manifest_lines(directory):
         raise Failure(f"{directory.name} does not match its MANIFEST")
+
+
+def openssl(*args):
+    result = subprocess.run(["openssl", *args], capture_output=True)
+    if result.returncode:
+        raise Failure(f"openssl {args[0]}: {result.stderr.decode(errors='replace').strip()}")
+    return result.stdout
+
+
+def public_key():
+    named = os.environ.get("CABOOSE_RELEASE_PUB")
+    candidates = [Path(named)] if named else [Path(__file__).resolve().parent / PUBLIC_NAME,
+                                              Path("/usr/local/share/caboose-release") / PUBLIC_NAME]
+    for path in candidates:
+        if path.is_file():
+            return path
+    raise Failure(f"no release public key ({', '.join(map(str, candidates))})")
+
+
+def sign(directory, key=None):
+    """MANIFEST.sig: base64 of the Ed25519 signature over MANIFEST's exact bytes, kept only
+    once the public key verifies it."""
+    key = key or KEY
+    if not key.is_file():
+        raise Failure(f"no signing key at {key}")
+    signature = openssl("pkeyutl", "-sign", "-rawin", "-inkey", str(key), "-in", str(directory / "MANIFEST"))
+    check_signature(directory, signature)
+    (directory / "MANIFEST.sig").write_text(base64.b64encode(signature).decode() + "\n")
+
+
+def check_signature(directory, signature):
+    with tempfile.NamedTemporaryFile() as sigfile:
+        sigfile.write(signature)
+        sigfile.flush()
+        result = subprocess.run(["openssl", "pkeyutl", "-verify", "-pubin", "-inkey", str(public_key()), "-rawin",
+                                 "-in", str(directory / "MANIFEST"), "-sigfile", sigfile.name], capture_output=True)
+    if result.returncode:
+        raise Failure(f"{directory.name}: not the release key's signature over its MANIFEST")
+
+
+def verify_signature(directory):
+    """Raises unless MANIFEST.sig is the release key's signature over MANIFEST."""
+    try:
+        signature = base64.b64decode((directory / "MANIFEST.sig").read_text().strip(), validate=True)
+    except (OSError, ValueError):
+        raise Failure(f"{directory.name} is not signed")
+    check_signature(directory, signature)
+
+
+def deb_fields(deb):
+    """Package, Version and Architecture of a .deb."""
+    out = subprocess.run(["dpkg-deb", "-f", str(deb), "Package", "Version", "Architecture"],
+                         capture_output=True, check=True).stdout.decode()
+    fields = dict(line.split(": ", 1) for line in out.splitlines() if ": " in line)
+    return fields.get("Package", deb.stem), fields.get("Version", "NOASSERTION"), fields.get("Architecture", "NOASSERTION")
+
+
+def spdx_id(text):
+    return "SPDXRef-" + "".join(c if c.isalnum() or c in ".-" else "-" for c in text)
+
+
+def sbom(directory, created=None, fields=deb_fields):
+    """An SPDX 2.3 document for the release: the release as a package containing every file
+    it installs (with SHA-1 and SHA-256) and every Debian package it installs."""
+    files = directory / "files"
+    release_id = spdx_id("release-" + directory.name)
+    document = {
+        "spdxVersion": "SPDX-2.3",
+        "dataLicense": "CC0-1.0",
+        "SPDXID": "SPDXRef-DOCUMENT",
+        "name": f"caboose-stack-{directory.name}",
+        "documentNamespace": f"https://github.com/braedonsaunders/caboose/releases/stack/{directory.name}",
+        "creationInfo": {"created": created or datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                         "creators": ["Tool: caboose-release"]},
+        "packages": [{"SPDXID": release_id, "name": "caboose-stack", "versionInfo": directory.name,
+                      "downloadLocation": "NOASSERTION", "filesAnalyzed": True, "licenseConcluded": "NOASSERTION",
+                      "licenseDeclared": "NOASSERTION", "copyrightText": "NOASSERTION",
+                      "comment": " ".join(lines_of(directory / "notes")) or "NOASSERTION"}],
+        "files": [],
+        "relationships": [{"spdxElementId": "SPDXRef-DOCUMENT", "relationshipType": "DESCRIBES", "relatedSpdxElement": release_id}],
+    }
+    for path in sorted(p for p in files.rglob("*") if p.is_file()) if files.is_dir() else []:
+        data = path.read_bytes()
+        name = "/" + str(path.relative_to(files))
+        ident = spdx_id("file" + name)
+        document["files"].append({"SPDXID": ident, "fileName": "." + name,
+                                  "checksums": [{"algorithm": "SHA1", "checksumValue": hashlib.sha1(data).hexdigest()},
+                                                {"algorithm": "SHA256", "checksumValue": hashlib.sha256(data).hexdigest()}],
+                                  "licenseConcluded": "NOASSERTION", "copyrightText": "NOASSERTION"})
+        document["relationships"].append({"spdxElementId": release_id, "relationshipType": "CONTAINS", "relatedSpdxElement": ident})
+    for deb in sorted((directory / "debs").glob("*.deb")) if (directory / "debs").is_dir() else []:
+        package, version, arch = fields(deb)
+        ident = spdx_id(f"deb-{package}-{arch}")
+        document["packages"].append({"SPDXID": ident, "name": package, "versionInfo": version,
+                                     "downloadLocation": "NOASSERTION", "filesAnalyzed": False,
+                                     "packageFileName": deb.name,
+                                     "checksums": [{"algorithm": "SHA256", "checksumValue": hashlib.sha256(deb.read_bytes()).hexdigest()}],
+                                     "externalRefs": [{"referenceCategory": "PACKAGE-MANAGER", "referenceType": "purl",
+                                                       "referenceLocator": f"pkg:deb/{package}@{version}?arch={arch}"}],
+                                     "licenseConcluded": "NOASSERTION", "licenseDeclared": "NOASSERTION", "copyrightText": "NOASSERTION"})
+        document["relationships"].append({"spdxElementId": release_id, "relationshipType": "CONTAINS", "relatedSpdxElement": ident})
+    return json.dumps(document, indent=1, sort_keys=True) + "\n"
 
 
 def writable(id_):
@@ -142,6 +256,7 @@ def marker_text(directory):
 def install(id_, wait, targets):
     directory = release(id_)
     verify(directory)
+    verify_signature(directory)
     marker = marker_text(directory)
     pending = list(targets or computers())
     deadline = time.monotonic() + wait
@@ -178,8 +293,8 @@ def main(argv):
             base = release(args[2])
             verify(base)
             shutil.copytree(base, directory, symlinks=False)
-            (directory / "MANIFEST").unlink()
-            (directory / "notes").unlink(missing_ok=True)
+            for name in ("MANIFEST", "MANIFEST.sig", "notes", "sbom.spdx.json"):
+                (directory / name).unlink(missing_ok=True)
         elif len(args) == 1:
             directory.mkdir(parents=True)
         else:
@@ -208,8 +323,16 @@ def main(argv):
             out.write(args[1] + "\n")
     elif command == "seal" and len(args) >= 2:
         directory = writable(args[0])
+        if not KEY.is_file():
+            raise Failure(f"no signing key at {KEY}")
         (directory / "notes").write_text(" ".join(args[1:]) + "\n")
+        (directory / "sbom.spdx.json").write_text(sbom(directory))
         (directory / "MANIFEST").write_text("".join(f"{l}\n" for l in manifest_lines(directory)))
+        sign(directory)
+    elif command == "sign" and len(args) == 1:
+        directory = release(args[0])
+        verify(directory)
+        sign(directory)
     elif command == "install" and args:
         wait, rest = 0.0, args[1:]
         if rest[:1] == ["--wait"] and len(rest) >= 2:
@@ -220,7 +343,8 @@ def main(argv):
     elif command == "list" and not args:
         for directory in sorted(p for p in ROOT.glob("*") if p.is_dir()):
             note = lines_of(directory / "notes")
-            print(f"{directory.name}  {'sealed' if sealed(directory) else 'open'}  {note[0] if note else ''}")
+            state = ("sealed, signed" if (directory / "MANIFEST.sig").is_file() else "sealed") if sealed(directory) else "open"
+            print(f"{directory.name}  {state}  {note[0] if note else ''}")
     else:
         raise Failure(__doc__.split("\n\n")[1])
     return 0

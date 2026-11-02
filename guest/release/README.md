@@ -17,14 +17,41 @@ keeps releases in `/root/caboose-release` (`CABOOSE_RELEASES` overrides it).
 | `capture ID COMPUTER PATH...` | Adds files as computer `COMPUTER` (its container name) has them now, with their modes |
 | `deb ID DEB` | Adds a package installed with `dpkg -i` |
 | `remove ID PATH` | Adds a path deleted on install |
-| `seal ID NOTE...` | Writes `notes` and `MANIFEST`; a sealed release never changes |
+| `seal ID NOTE...` | Writes `notes`, the SBOM and `MANIFEST`, and signs it; a sealed release never changes |
+| `sign ID` | Signs a sealed release's `MANIFEST` again (with a new key, or one sealed before signing) |
 | `install ID [--wait S] [COMPUTER...]` | Installs on every running computer (or those named) |
 | `status` | Each running computer's release, and whether a game runs there |
 | `list` | The releases, sealed or open, with their notes |
 
 A release is a directory: `files/` mirrors the paths installed in a computer, `debs/`,
-`remove`, `notes` and `MANIFEST`. The manifest lists every file's SHA-256, its mode and its
-path, and an install refuses a release that does not match it.
+`remove`, `notes`, `sbom.spdx.json`, `MANIFEST` and `MANIFEST.sig`. The manifest lists every
+other file's SHA-256, its mode and its path, and an install refuses a release that does not
+match it.
+
+## Signatures and the SBOM
+
+`MANIFEST.sig` is the base64 Ed25519 signature over the exact bytes of `MANIFEST`, made with
+OpenSSL (`openssl pkeyutl -sign -rawin`). The private key never enters the repository: it is
+`/root/.config/caboose-release/release-ed25519.key.pem` (mode 0600) on the host that seals
+releases, or `CABOOSE_RELEASE_KEY`. Sealing refuses to run without it, and keeps a signature
+only once the public key verifies it. The public key is
+[`caboose-release.pub.pem`](caboose-release.pub.pem); `caboose-release` reads it beside
+itself, then from `/usr/local/share/caboose-release/`, or from `CABOOSE_RELEASE_PUB`. Install
+it with the tool:
+
+```sh
+install -m 0755 guest/release/caboose-release /usr/local/sbin/caboose-release
+install -D -m 0644 guest/release/caboose-release.pub.pem /usr/local/share/caboose-release/caboose-release.pub.pem
+```
+
+An install refuses a release whose signature is missing or does not verify. A new key means
+committing its public key and signing each release still to be installed with `sign`.
+
+`sbom.spdx.json` is an SPDX 2.3 software bill of materials written at sealing: the release as
+a package that contains every file it installs, with its SHA-1 and SHA-256, and every Debian
+package in `debs/` with its name, version, architecture and checksum (read with `dpkg-deb`).
+The release's notes are its package comment. The manifest covers the SBOM, so the signature
+covers it too.
 
 Installing on a computer first checks the game gate: while a process matches
 `MCC-Win64|steam_app_[0-9]|AppId=[0-9]` nothing is touched there. With `--wait S` the
@@ -34,5 +61,5 @@ packages applied, Steam asked to quit if it runs, the owner's display restarted 
 `caboose-session`, Steam started again if it ran, and `/etc/caboose-release` written: the
 release id, the manifest's SHA-256 and the notes.
 
-Run `python3 -m unittest guest/release/test_release.py` for the release format tests. They
-need no Docker or root.
+Run `python3 -m unittest guest/release/test_release.py` for the release format, signature
+and SBOM tests. They need OpenSSL with Ed25519 (1.1.1 or later), and no Docker or root.
