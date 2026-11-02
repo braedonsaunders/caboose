@@ -69,7 +69,8 @@ executor() { # features
   wait_log "$name-executor" 'session ready' 60 || fail 'the executor session did not start'
 }
 drain() { # log
-  docker kill -s TERM "$name-executor" > /dev/null
+  # An executor that already exited keeps its logs for the verdict below.
+  docker kill -s TERM "$name-executor" > /dev/null 2>&1 || true
   code=$(docker wait "$name-executor")
   docker logs "$name-executor" > "$1" 2>&1
   [ "$code" = 0 ] && grep -q 'normal close after REVOKED' "$1" || fail "the executor did not drain cleanly ($1)"
