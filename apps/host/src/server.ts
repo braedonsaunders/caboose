@@ -131,6 +131,8 @@ export interface Controller extends ComputerDriver<Session> {
 
 /** Body limits: base64 inflates by a third, plus room for the JSON around it. */
 const TASK_BODY_LIMIT = 15 * 1024 * 1024
+/** How long an application launch waits for the owner keyring to be prepared. */
+const KEYRING_WAIT_MS = 60_000
 /** `POST /v1/files` holds its whole file in memory as base64; larger files stream through `PUT /v1/fs/content`. */
 const FILE_BODY_LIMIT = 16 * 1024 * 1024
 
@@ -143,7 +145,7 @@ export type Principal =
   | { kind: 'phone'; phoneId: string; computerId: string }
 
 /** What one computer is made of: its settings, its runtime, and the notifications its phones get. */
-export interface ComputerPieces { /** A container computer's image, folders, devices and options (container-spec.ts). */ containerSpec?: ContainerSpecStore; /** Phone backups and shared storage (storage.ts). */ storage?: ComputerStorage; /** Commands' results, kept in the host's state (commands/). */ commands?: CommandStore; snapshotPath?: string; snapshotTier?: SnapshotTierOptions; /** The computer's MCP Library record (mcp-library.json), private to the host. */ mcpLibraryFile?: string; /** Whether the computer has autostart services (running-apps.ts). */ serviceMemory?: ServiceMemory; prepareKeyring?: () => Promise<void>; settings: SettingsStore; controller: Controller; push?: PushService; activities?: ActivityService; profiles?: AgentProfiles; openRoutines?: (options: RoutineOptions) => Promise<AgentRoutines>; openToolJournal?: (dispatch: ToolDispatcher) => Promise<AgentToolJournal> }
+export interface ComputerPieces { /** A container computer's image, folders, devices and options (container-spec.ts). */ containerSpec?: ContainerSpecStore; /** Phone backups and shared storage (storage.ts). */ storage?: ComputerStorage; /** Commands' results, kept in the host's state (commands/). */ commands?: CommandStore; snapshotPath?: string; snapshotTier?: SnapshotTierOptions; /** The computer's MCP Library record (mcp-library.json), private to the host. */ mcpLibraryFile?: string; /** Whether the computer has autostart services (running-apps.ts). */ serviceMemory?: ServiceMemory; prepareKeyring?: () => Promise<void>; /** How long a launch waits for keyring preparation (KEYRING_WAIT_MS). */ keyringWaitMs?: number; settings: SettingsStore; controller: Controller; push?: PushService; activities?: ActivityService; profiles?: AgentProfiles; openRoutines?: (options: RoutineOptions) => Promise<AgentRoutines>; openToolJournal?: (dispatch: ToolDispatcher) => Promise<AgentToolJournal> }
 
 
 /**
@@ -225,6 +227,7 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
   }
   let keyringGeneration = 0
   let keyring: { state: 'preparing' | 'ready' | 'failed'; message?: string } | null = null
+  let keyringRetry: Promise<void> | undefined
   let upgrade: UpgradeStatus | null = null
   let upgrading = false
   let upgradeWork: Promise<void> | undefined
@@ -465,10 +468,37 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
     const warning = controller.componentsWarning?.()
     if (warning) throw new ComputerConflictError(warning)
   }
+  /**
+   * An application starts only on an unlocked owner keyring: one started before it is ready
+   * would have GNOME prompt to create or unlock a keyring with a password of its own. The
+   * wait is bounded; a failed preparation is tried once more, then reported.
+   */
   async function ensureKeyringReady(): Promise<void> {
-    await upgradeWork
-    // An existing/custom store may require an interactive unlock or recovery tool.
-    // Keep that route available; the persistent status carries the preparation error.
+    let timer: NodeJS.Timeout | undefined
+    const bounded = <T>(work: Promise<T> | undefined) => Promise.race([
+      work?.then(() => true, () => true) ?? Promise.resolve(true),
+      new Promise<false>(resolve => { timer = setTimeout(() => resolve(false), pieces.keyringWaitMs ?? KEYRING_WAIT_MS) }),
+    ]).finally(() => clearTimeout(timer))
+    if (!await bounded(upgradeWork)) throw new ComputerConflictError('The computer keyring is still being prepared; try again shortly')
+    if (!pieces.prepareKeyring || !keyring) return
+    if (keyring.state === 'failed') {
+      keyringRetry ??= prepareKeyringFor(keyringGeneration).finally(() => { keyringRetry = undefined })
+      if (!await bounded(keyringRetry)) throw new ComputerConflictError('The computer keyring is still being prepared; try again shortly')
+    }
+    if (keyring?.state === 'preparing') throw new ComputerConflictError('The computer keyring is still being prepared; try again shortly')
+    if (keyring?.state === 'failed') throw new ComputerConflictError(keyring.message ?? 'The computer keyring is unavailable')
+  }
+  /** Prepares the owner keyring, publishing the result only for the run that asked. */
+  async function prepareKeyringFor(generation: number): Promise<void> {
+    if (!pieces.prepareKeyring) return
+    try {
+      if (upgrade?.state === 'failed') throw new Error('Update guest components before preparing the keyring')
+      await pieces.prepareKeyring()
+      if (generation === keyringGeneration && computer.state === 'running') keyring = { state: 'ready' }
+    } catch (error) {
+      if (generation === keyringGeneration && computer.state === 'running') keyring = { state: 'failed', message: error instanceof Error ? error.message : 'The computer keyring is unavailable' }
+    }
+    if (generation === keyringGeneration && computer.state === 'running') broadcastSettings()
   }
   /** The guest's services and listening ports, remembering whether it has autostart services. */
   async function serviceActivity(guest: AgentGuest): Promise<GuestActivity> {
@@ -557,17 +587,9 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
         const release = computer.acquire()
         const generation = ++keyringGeneration
         keyring = pieces.prepareKeyring ? { state: 'preparing' } : null
-        upgradeWork = upgradeComponents(guest, controller.componentsMode, publishUpgrade).then(async () => {
-          if (!pieces.prepareKeyring) return
-          try {
-            if (upgrade?.state === 'failed') throw new Error('Update guest components before preparing the keyring')
-            await pieces.prepareKeyring()
-            if (generation === keyringGeneration && computer.state === 'running') keyring = { state: 'ready' }
-          } catch (error) {
-            if (generation === keyringGeneration && computer.state === 'running') keyring = { state: 'failed', message: error instanceof Error ? error.message : 'The computer keyring is unavailable' }
-          }
-          if (generation === keyringGeneration && computer.state === 'running') broadcastSettings()
-        }).finally(() => { upgrading = false; release() })
+        upgradeWork = upgradeComponents(guest, controller.componentsMode, publishUpgrade)
+          .then(() => prepareKeyringFor(generation))
+          .finally(() => { upgrading = false; release() })
       }
     }
     guestEvents.setRunning(state === 'running')
