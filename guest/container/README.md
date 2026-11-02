@@ -100,7 +100,9 @@ owner's session and printing begin on interactive promotion.
 
 Each display is supervised: if it exits with a failure (a crash), `caboose-session` starts it
 again at once, or after a back-off of up to 30 s when it fails within its first minute, and
-notes the exit in its log. A display stopped with SIGTERM exits cleanly and stays stopped.
+notes the exit in its log. A display stopped with SIGTERM exits cleanly and stays stopped. `caboose-session stop-display`
+stops the owner's display and its supervisor together (SIGTERM, then SIGKILL after 30 s), and
+`start` never starts a second supervisor while one runs.
 
 Both displays check the token the host writes to `/run/caboose/display-token` before
 `start`; the host keeps it while the container is paused and writes a new one when the

@@ -123,9 +123,9 @@ def install_one(directory, container, marker):
     if steam:
         docker("exec", "-u", "caboose", container, "sh", "-c",
                "set -a; . /run/caboose/display.env; set +a; timeout 20 flatpak run com.valvesoftware.Steam -shutdown >/dev/null 2>&1", check=False)
-    docker("exec", container, "sh", "-c",
-           "pkill -x caboose-display; for i in $(seq 30); do pgrep -x caboose-display >/dev/null || break; sleep 1; done; "
-           "pkill -9 -x caboose-display; true")
+    # The display and its supervisor stop together, so the supervisor does not start the
+    # old display again while the new session starts its own.
+    docker("exec", container, "caboose-session", "stop-display")
     docker("exec", container, "sh", "-c", "caboose-session start >/dev/null && caboose-session ready >/dev/null")
     if steam:
         docker("exec", "-d", "-u", "caboose", container, "sh", "-c",

@@ -112,9 +112,18 @@ seat_ready() {
 
 # A caboose-display instance (docs/display.md). Its launch environment goes to ENVFILE once
 # it is ready; extra arguments select the instance (port, sockets, X display).
+# The supervisor of display NAME, while it runs.
+supervisor_pid() {
+  local pid
+  pid=$(cat "/run/caboose/$1.supervisor" 2>/dev/null) || return 1
+  [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && echo "$pid"
+}
+
 start_display() {
   local name=$1 port=$2 bus=$3 envfile=$4; shift 4
   if [ -s "$envfile" ] && caboose-display-ready 1 "$port" "$envfile" >/dev/null 2>&1; then return; fi
+  # A supervised display between two runs (restarting after a crash) is not started twice.
+  if supervisor_pid "$name" >/dev/null; then return; fi
   install -d -m 0755 /run/caboose
   # The broker refuses sockets a stopped display left; no display serves them now.
   if [[ " $* " == *" --private-gpu-stream-socket "* ]]; then
@@ -132,6 +141,7 @@ start_display() {
   # Supervised: a display that crashes is started again, so the computer never sits
   # without one; one stopped on purpose (SIGTERM, exit 0) stays stopped.
   (
+    echo "$BASHPID" > "/run/caboose/$name.supervisor"
     delay=1
     while :; do
       started=$SECONDS
@@ -150,7 +160,18 @@ start_display() {
         rm -f -- "$PHONE_GPU_DIR/gpu.sock" "$PHONE_GPU_DIR/surface.sock"
       fi
     done
+    rm -f "/run/caboose/$name.supervisor"
   ) </dev/null >/dev/null 2>&1 &
+}
+
+# Stops display NAME and its supervisor: SIGTERM, then SIGKILL after 30 s.
+stop_display() {
+  local name=$1 pid
+  if pid=$(supervisor_pid "$name"); then kill "$pid"; fi
+  rm -f "/run/caboose/$name.supervisor"
+  pkill -TERM -u caboose -f -- "caboose-display --env-file /run/caboose/$2" || return 0
+  for _ in $(seq 30); do pgrep -u caboose -f -- "caboose-display --env-file /run/caboose/$2" >/dev/null || return 0; sleep 1; done
+  pkill -KILL -u caboose -f -- "caboose-display --env-file /run/caboose/$2" || :
 }
 
 # A seat's notification endpoint: NAME BUS SCRIPT [ARGUMENT...].
@@ -236,6 +257,7 @@ case ${1:-} in
   start) start_printing || echo "Printing unavailable" >&2; app_scopes; start_owner ;;
   ready) seat_ready 14600 /run/caboose/display.env "$XDG_RUNTIME_DIR/bus" ;;
   start-agent) start_agent; seat_ready 14601 /run/caboose/agent-display.env "$XDG_RUNTIME_DIR/agent-bus" ;;
+  stop-display) stop_display caboose-display display.env ;;
   start-files)
     start-stop-daemon --start --oknodo --background --make-pidfile --pidfile /run/caboose/files.pid \
       --chuid caboose:caboose --exec /usr/bin/python3 -- /opt/caboose/files/caboose-files.py
@@ -243,5 +265,5 @@ case ${1:-} in
     for _ in $(seq 1 60); do grep -Eq '^ *[0-9]+: [0-9A-F]+:396C [0-9A-F]+:[0-9A-F]+ 0A ' /proc/net/tcp /proc/net/tcp6 2>/dev/null && exit 0; sleep 1; done
     echo 'File service did not become ready' >&2; exit 1
     ;;
-  *) echo 'Usage: caboose-session start | ready | start-agent | start-files' >&2; exit 2 ;;
+  *) echo 'Usage: caboose-session start | ready | stop-display | start-agent | start-files' >&2; exit 2 ;;
 esac
