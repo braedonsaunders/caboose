@@ -258,50 +258,69 @@ static void freeCase(void) {
     report("free_after_wait", 1, "rounds=%d worst_free_us=%llu", rounds, (unsigned long long)worstUs);
 }
 
-// The feed reports a batch complete only once the GPU has finished it. A long batch's
-// timeline value is waited for (answered by the feed), then the queue is waited idle on the
-// phone: that takes one round trip when the batch had finished, and the rest of the batch
-// as well when its completion was reported early.
+// The feed reports a batch complete only once the GPU has finished it. A long batch ends by
+// writing a new value into host-visible memory; once its timeline value is reported reached
+// (answered by the feed), that memory is invalidated, which reads the phone's copy without
+// waiting for the GPU. The old value there means the completion was reported early.
 static void completionCase(void) {
     const VkDeviceSize size = 256ull << 20;
     VkBufferCreateInfo bufferInfo = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
     bufferInfo.size = size;
     bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-    VkBuffer buffer;
-    CHECK(vkCreateBuffer(device, &bufferInfo, NULL, &buffer));
+    VkBuffer big, small;
+    CHECK(vkCreateBuffer(device, &bufferInfo, NULL, &big));
     VkMemoryRequirements req;
-    vkGetBufferMemoryRequirements(device, buffer, &req);
+    vkGetBufferMemoryRequirements(device, big, &req);
     VkMemoryAllocateInfo alloc = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
     alloc.allocationSize = req.size;
     alloc.memoryTypeIndex = memoryType(req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    VkDeviceMemory memory;
-    CHECK(vkAllocateMemory(device, &alloc, NULL, &memory));
-    CHECK(vkBindBufferMemory(device, buffer, memory, 0));
-    const int rounds = 6;
-    uint64_t idleUs = 0, idleMax = 0, batchUs = 0, roundTripUs = 0;
+    VkDeviceMemory bigMemory, smallMemory;
+    CHECK(vkAllocateMemory(device, &alloc, NULL, &bigMemory));
+    CHECK(vkBindBufferMemory(device, big, bigMemory, 0));
+    bufferInfo.size = 4096;
+    CHECK(vkCreateBuffer(device, &bufferInfo, NULL, &small));
+    vkGetBufferMemoryRequirements(device, small, &req);
+    alloc.allocationSize = req.size;
+    alloc.memoryTypeIndex = memoryType(req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+    CHECK(vkAllocateMemory(device, &alloc, NULL, &smallMemory));
+    CHECK(vkBindBufferMemory(device, small, smallMemory, 0));
+    void* mapped = NULL;
+    CHECK(vkMapMemory(device, smallMemory, 0, VK_WHOLE_SIZE, 0, &mapped));
+    const VkMappedMemoryRange range = {VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, NULL, smallMemory, 0, VK_WHOLE_SIZE};
+    const int rounds = 8;
+    int early = 0;
+    uint64_t batchUs = 0;
     for (int i = 0; i < rounds; ++i) {
-        // One round trip on an idle queue, for reference.
-        uint64_t start = nowUs();
-        CHECK(vkQueueWaitIdle(queue));
-        roundTripUs += nowUs() - start;
+        const uint32_t before = 0x1000u + 2u * (uint32_t)i, after = before + 1;
         begin();
-        for (int k = 0; k < 64; ++k) vkCmdFillBuffer(cb, buffer, 0, VK_WHOLE_SIZE, (uint32_t)(i + k));
-        start = nowUs();
+        vkCmdFillBuffer(cb, small, 0, VK_WHOLE_SIZE, before);
+        waitTimeline(submit2(1));
+        begin();
+        for (int k = 0; k < 64; ++k) vkCmdFillBuffer(cb, big, 0, VK_WHOLE_SIZE, (uint32_t)(i + k));
+        VkMemoryBarrier2 barrier = {VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
+        barrier.srcStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
+        barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        barrier.dstStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
+        barrier.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        VkDependencyInfo dependency = {VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+        dependency.memoryBarrierCount = 1;
+        dependency.pMemoryBarriers = &barrier;
+        vkCmdPipelineBarrier2(cb, &dependency);  // the small write comes after the big ones
+        vkCmdFillBuffer(cb, small, 0, VK_WHOLE_SIZE, after);
+        const uint64_t start = nowUs();
         waitTimeline(submit2(1));
         batchUs += nowUs() - start;
-        start = nowUs();
-        CHECK(vkQueueWaitIdle(queue));
-        const uint64_t idle = nowUs() - start;
-        idleUs += idle;
-        if (idle > idleMax) idleMax = idle;
+        CHECK(vkInvalidateMappedMemoryRanges(device, 1, &range));
+        if (*(volatile uint32_t*)mapped != after) ++early;
     }
-    vkDestroyBuffer(device, buffer, NULL);
-    vkFreeMemory(device, memory, NULL);
-    const double roundTrip = roundTripUs / 1000.0 / rounds, batch = batchUs / 1000.0 / rounds;
-    // Early completion leaves part of a batch that takes far longer than a round trip.
-    report("completion_after_gpu", idleMax / 1000.0 < roundTrip * 2 + 20 || batch < roundTrip,
-           "rounds=%d round_trip_ms=%.1f batch_ms=%.1f idle_after_ms=%.1f idle_after_max_ms=%.1f", rounds, roundTrip,
-           batch, idleUs / 1000.0 / rounds, idleMax / 1000.0);
+    vkUnmapMemory(device, smallMemory);
+    CHECK(vkDeviceWaitIdle(device));
+    vkDestroyBuffer(device, small, NULL);
+    vkFreeMemory(device, smallMemory, NULL);
+    vkDestroyBuffer(device, big, NULL);
+    vkFreeMemory(device, bigMemory, NULL);
+    report("completion_after_gpu", early == 0, "rounds=%d early=%d mean_batch_ms=%.1f", rounds, early,
+           batchUs / 1000.0 / rounds);
 }
 
 // Calls that must not wait for the phone: each is timed; a round trip takes milliseconds.

@@ -31,7 +31,7 @@ when the device cannot be set up. A full run takes about fifteen seconds.
 | `event_set1_fence` | `vkCmdSetEvent` in a `vkQueueSubmit` batch with a fence | as above |
 | `query_timestamp`, `query_occlusion` | 60 times: a host `vkResetQueryPool`, a command buffer that writes a timestamp or ends an occlusion query, then `vkGetQueryPoolResults` without `WAIT` until available | every result arrives within 3 s |
 | `free_after_wait` | 24 times: a 64 MiB buffer filled by the GPU and waited for, then destroyed and its memory freed while a second batch runs on other memory | the device is never lost |
-| `completion_after_gpu` | 6 times: a batch of 64 fills of a 256 MiB buffer, its timeline value waited for (answered by the completion feed), then `vkQueueWaitIdle` | the idle wait takes about one round trip: a completion reported before the GPU finished would leave the rest of the batch to wait for |
+| `completion_after_gpu` | 8 times: a batch of 64 fills of a 256 MiB buffer that ends by writing a new value into host-visible memory, its timeline value waited for (answered by the completion feed), then that memory invalidated, which reads the phone's copy without waiting for the GPU | the new value is there every time: the feed never reports a batch before the GPU has finished it |
 | `call_*` | 40 each of `vkAllocateDescriptorSets`, `vkCreateBufferView`, `vkBindImageMemory2`, `vkBindBufferMemory2` and `vkGetImageMemoryRequirements2` for an image shape already asked about; one batch then fills the bound buffers, so a failed bind shows as device loss | the mean is under a millisecond: the call did not wait for the phone |
 
 It also prints the mean time of `vkGetImageMemoryRequirements2` for a new image shape,
