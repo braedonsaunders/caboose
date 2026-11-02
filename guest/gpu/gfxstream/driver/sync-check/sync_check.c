@@ -9,7 +9,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <xcb/xcb.h>
 #include <vulkan/vulkan.h>
+#include <vulkan/vulkan_xcb.h>
 
 static VkInstance instance;
 static VkPhysicalDevice physical;
@@ -21,6 +23,7 @@ static VkCommandBuffer cb;
 static VkSemaphore timeline;
 static uint64_t timelineValue;
 static int failures;
+static int surfaces;  // the instance has VK_KHR_xcb_surface and VK_KHR_get_surface_capabilities2
 
 static uint64_t nowUs(void) {
     struct timespec ts;
@@ -323,6 +326,88 @@ static void completionCase(void) {
            batchUs / 1000.0 / rounds);
 }
 
+// Surface formats and present modes enumerated the usual way, a count and then an array of
+// that size, from the moment a window's surface exists (while it binds to the phone, whose
+// answers then replace the local defaults): every enumeration must succeed with the count
+// it reported, through vkGetPhysicalDeviceSurfaceFormatsKHR, ...Formats2KHR and
+// ...PresentModesKHR. DXVK fails to create its swapchain on VK_INCOMPLETE.
+static void surfaceCase(void) {
+    if (!surfaces) {
+        printf("CABOOSE_SYNC_CHECK note=surface_enumeration skipped (no X11 display)\n");
+        return;
+    }
+    xcb_connection_t* connection = xcb_connect(NULL, NULL);
+    if (xcb_connection_has_error(connection)) {
+        printf("CABOOSE_SYNC_CHECK note=surface_enumeration skipped (no X11 connection)\n");
+        return;
+    }
+    const xcb_setup_t* setup = xcb_get_setup(connection);
+    xcb_screen_t* screen = xcb_setup_roots_iterator(setup).data;
+    PFN_vkGetPhysicalDeviceSurfaceFormats2KHR formats2 =
+        (PFN_vkGetPhysicalDeviceSurfaceFormats2KHR)vkGetInstanceProcAddr(instance, "vkGetPhysicalDeviceSurfaceFormats2KHR");
+    int bad = 0, enumerations = 0;
+    char first[96] = "";
+    for (int round = 0; round < 5; ++round) {
+        xcb_window_t window = xcb_generate_id(connection);
+        xcb_create_window(connection, XCB_COPY_FROM_PARENT, window, screen->root, 0, 0, 320, 240, 0,
+                          XCB_WINDOW_CLASS_INPUT_OUTPUT, screen->root_visual, 0, NULL);
+        xcb_map_window(connection, window);
+        xcb_flush(connection);
+        VkXcbSurfaceCreateInfoKHR surfaceInfo = {VK_STRUCTURE_TYPE_XCB_SURFACE_CREATE_INFO_KHR};
+        surfaceInfo.connection = connection;
+        surfaceInfo.window = window;
+        VkSurfaceKHR surface;
+        CHECK(vkCreateXcbSurfaceKHR(instance, &surfaceInfo, NULL, &surface));
+        for (int i = 0; i < 40; ++i) {
+            uint32_t count = 0, filled;
+            VkResult result = vkGetPhysicalDeviceSurfaceFormatsKHR(physical, surface, &count, NULL);
+            VkSurfaceFormatKHR formats[64];
+            filled = count < 64 ? count : 64;
+            VkResult fill = result == VK_SUCCESS ? vkGetPhysicalDeviceSurfaceFormatsKHR(physical, surface, &filled, formats) : result;
+            ++enumerations;
+            if (result != VK_SUCCESS || fill != VK_SUCCESS || filled != count) {
+                if (!bad++) snprintf(first, sizeof(first), "formats round=%d i=%d count=%u filled=%u result=%d", round, i, count, filled, fill);
+            }
+            if (formats2) {
+                VkPhysicalDeviceSurfaceInfo2KHR info = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SURFACE_INFO_2_KHR};
+                info.surface = surface;
+                count = 0;
+                result = formats2(physical, &info, &count, NULL);
+                VkSurfaceFormat2KHR formats2Out[64];
+                for (int k = 0; k < 64; ++k) {
+                    formats2Out[k].sType = VK_STRUCTURE_TYPE_SURFACE_FORMAT_2_KHR;
+                    formats2Out[k].pNext = NULL;
+                }
+                filled = count < 64 ? count : 64;
+                fill = result == VK_SUCCESS ? formats2(physical, &info, &filled, formats2Out) : result;
+                ++enumerations;
+                if (result != VK_SUCCESS || fill != VK_SUCCESS || filled != count) {
+                    if (!bad++) snprintf(first, sizeof(first), "formats2 round=%d i=%d count=%u filled=%u result=%d", round, i, count, filled, fill);
+                }
+            }
+            count = 0;
+            result = vkGetPhysicalDeviceSurfacePresentModesKHR(physical, surface, &count, NULL);
+            VkPresentModeKHR modes[16];
+            filled = count < 16 ? count : 16;
+            fill = result == VK_SUCCESS ? vkGetPhysicalDeviceSurfacePresentModesKHR(physical, surface, &filled, modes) : result;
+            ++enumerations;
+            if (result != VK_SUCCESS || fill != VK_SUCCESS || filled != count) {
+                if (!bad++) snprintf(first, sizeof(first), "modes round=%d i=%d count=%u filled=%u result=%d", round, i, count, filled, fill);
+            }
+            if (i < 10) {
+                struct timespec pause = {0, 20 * 1000 * 1000};  // span the window's bind
+                nanosleep(&pause, NULL);
+            }
+        }
+        vkDestroySurfaceKHR(instance, surface, NULL);
+        xcb_destroy_window(connection, window);
+        xcb_flush(connection);
+    }
+    xcb_disconnect(connection);
+    report("surface_enumeration", bad == 0, "enumerations=%d inconsistent=%d%s%s", enumerations, bad, bad ? " first: " : "",
+           first);
+}
+
 // Calls that must not wait for the phone: each is timed; a round trip takes milliseconds.
 static void callsCase(void) {
     const int n = 40;
@@ -459,6 +544,25 @@ int main(int argc, char** argv) {
     app.apiVersion = VK_API_VERSION_1_3;
     VkInstanceCreateInfo instanceInfo = {VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
     instanceInfo.pApplicationInfo = &app;
+    // Surfaces need an X11 display and the driver's XCB surfaces.
+    const char* surfaceExtensions[] = {VK_KHR_SURFACE_EXTENSION_NAME, VK_KHR_XCB_SURFACE_EXTENSION_NAME,
+                                       VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME};
+    if (getenv("DISPLAY")) {
+        uint32_t available = 0;
+        vkEnumerateInstanceExtensionProperties(NULL, &available, NULL);
+        VkExtensionProperties properties[256];
+        if (available > 256) available = 256;
+        vkEnumerateInstanceExtensionProperties(NULL, &available, properties);
+        int found = 0;
+        for (uint32_t i = 0; i < available; ++i)
+            for (int k = 0; k < 3; ++k)
+                if (!strcmp(properties[i].extensionName, surfaceExtensions[k])) ++found;
+        if (found == 3) {
+            instanceInfo.enabledExtensionCount = 3;
+            instanceInfo.ppEnabledExtensionNames = surfaceExtensions;
+            surfaces = 1;
+        }
+    }
     CHECK(vkCreateInstance(&instanceInfo, NULL, &instance));
     uint32_t count = 1;
     VkResult enumerated = vkEnumeratePhysicalDevices(instance, &count, &physical);
@@ -515,6 +619,7 @@ int main(int argc, char** argv) {
     RUN("event_set1_fence", eventCase(2));
     RUN("query_timestamp", queryCase(VK_QUERY_TYPE_TIMESTAMP));
     RUN("query_occlusion", queryCase(VK_QUERY_TYPE_OCCLUSION));
+    RUN("surface_enumeration", surfaceCase());
     RUN("free_after_wait", freeCase());
     RUN("completion_after_gpu", completionCase());
     RUN("calls", callsCase());
