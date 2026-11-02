@@ -10,10 +10,12 @@ struct SwitchyardTests {
 
     /// An iPhone 17 Pro Max held upright, beside nothing.
     let phone = YardMetrics(size: CGSize(width: 440, height: 800))
-    /// An iPhone Duo opened out.
-    let duo = YardMetrics(size: CGSize(width: 760, height: 640))
+    /// An iPhone Duo opened out and held upright, above its dock.
+    let duo = YardMetrics(size: CGSize(width: 669, height: 880))
     /// An iPad Pro 13″ on its side.
     let pad = YardMetrics(size: CGSize(width: 1376, height: 960))
+    /// An iPad Pro 13″ held upright.
+    let tall = YardMetrics(size: CGSize(width: 1032, height: 1300))
 
     private func layout(_ windows: [Int], in metrics: YardMetrics) -> YardLayout {
         var layout = YardLayout()
@@ -24,16 +26,15 @@ struct SwitchyardTests {
     // MARK: Metrics
 
     @Test func presetsFollowTheScreen() {
-        #expect(phone.presets == [1])
-        #expect(duo.presets == [0.5, twoThirds, 1])
-        #expect(pad.presets == YardMetrics.fractions)
-        #expect(phone.columnsInView == 1 && duo.columnsInView == 2 && pad.columnsInView == 3)
+        // Too narrow for two usable columns: full width only.
+        #expect(phone.presets == [1] && duo.presets == [1] && tall.presets == [1])
+        #expect(pad.presets == [0.5, twoThirds, 1])
+        #expect(phone.columnsInView == 1 && duo.columnsInView == 1 && pad.columnsInView == 2)
         #expect(phone.gap == 3 && pad.gap == 4)
-        // A Duo opened out on its side, beside its vertical bar: two halves fit.
-        let openDuo = YardMetrics(size: CGSize(width: 610, height: 460))
-        #expect(openDuo.presets == [0.5, twoThirds, 1])
-        // A phone on its side still offers no column too narrow to share the screen.
-        #expect(YardMetrics(size: CGSize(width: 540, height: 400)).presets == [1])
+        // A Duo opened out on its side: two columns would each be narrower than a window.
+        #expect(YardMetrics(size: CGSize(width: 951, height: 600)).presets == [1])
+        // A TV adds thirds.
+        #expect(YardMetrics(size: CGSize(width: 1920, height: 1000)).presets == YardMetrics.fractions)
     }
 
     @Test func outerMarginsAreIndependentOfResizeGaps() {
@@ -63,22 +64,26 @@ struct SwitchyardTests {
 
     @Test func aWidthTooNarrowForTheScreenBecomesTheNarrowestThatFits() {
         #expect(phone.effectiveFraction(0.5) == 1)
-        #expect(duo.effectiveFraction(third) == 0.5)
-        #expect(pad.effectiveFraction(third) == third)
+        #expect(duo.effectiveFraction(third) == 1)
+        #expect(pad.effectiveFraction(third) == 0.5)
     }
 
     // MARK: Sharing the screen
 
-    @Test func newWindowsShareTheScreenUntilItIsFullThenScroll() {
+    @Test func newWindowsShareTheScreenWhileTheyFitThenScroll() {
         var layout = layout([1], in: pad)
         #expect(layout.columns.map(\.width) == [1])
         layout.insert(2, in: pad)
-        #expect(layout.columns.map(\.width) == [0.5, 0.5])
+        #expect(layout.columns.map(\.windows) == [[1], [2]])
+        #expect(layout.columns.allSatisfy { abs($0.width - 0.5) < 0.0001 })
         layout.insert(3, in: pad)
-        #expect(layout.columns.map(\.width) == [third, third, third])
+        // One large beside two stacked; then a two by two grid.
+        #expect(layout.columns.map(\.windows) == [[1], [2, 3]])
         layout.insert(4, in: pad)
-        // A fourth third does not fit: the track grows past the screen and scrolls.
-        #expect(layout.columns.map(\.width) == [third, third, third, third])
+        #expect(layout.columns.map(\.windows) == [[1, 2], [3, 4]])
+        #expect(layout.maximumScroll(in: pad) == 0)
+        // A fifth would make tiles too small: the track grows past the screen and scrolls.
+        layout.insert(5, in: pad)
         #expect(layout.maximumScroll(in: pad) > 0)
         #expect(layout.trackWidth(in: pad) > pad.size.width)
     }
@@ -99,11 +104,16 @@ struct SwitchyardTests {
     }
 
     @Test func aPinnedWidthIsKeptAndTheRestShare() {
-        var layout = layout([1, 2], in: pad)
-        layout.setWidth(twoThirds, column: layout.columns[0].id, in: pad)
-        layout.insert(3, in: pad)
+        let tv = YardMetrics(size: CGSize(width: 1920, height: 1000))
+        var layout = layout([1, 2], in: tv)
+        layout.setWidth(twoThirds, column: layout.columns[0].id, in: tv)
+        #expect(layout.columns[0].width == twoThirds && layout.columns[0].pinned)
+        #expect(abs(layout.columns[1].width - third) < 0.0001)
+        layout.insert(3, in: tv)
+        // The third window shares the rest of the screen with the second.
+        #expect(layout.columns.map(\.windows) == [[1], [2, 3]])
+        #expect(abs(layout.columns[1].width - third) < 0.0001)
         #expect(layout.columns[0].width == twoThirds)
-        #expect(layout.columns[1].width == third && layout.columns[2].width == third)
     }
 
     @Test func insertingOpensBesideTheFocusedColumn() {
@@ -118,7 +128,8 @@ struct SwitchyardTests {
         var layout = layout([1], in: pad)
         layout.insert(2, width: twoThirds, in: pad)
         #expect(layout.columns[1].pinned && layout.columns[1].width == twoThirds)
-        #expect(layout.columns[0].width == third)
+        // The third left beside it is too narrow for the first: it keeps a screen of its own.
+        #expect(layout.columns[0].width == 1)
     }
 
     // MARK: Stacks
@@ -137,28 +148,34 @@ struct SwitchyardTests {
         #expect(layout.focused == 2)
     }
 
-    @Test func aPhoneStacksTwoAndNoMore() {
+    @Test func aStackNeverMakesATileTooShort() {
         var layout = layout([1], in: phone)
-        let ok2 = layout.insert(2, below: 1, in: phone)
-        #expect(ok2)
-        let ok3 = layout.insert(3, below: 2, in: phone)
-        #expect(!ok3)
-        #expect(!layout.contains(3))
+        let onPhone = layout.insert(2, below: 1, in: phone)
+        #expect(!onPhone && !layout.contains(2))
+        var upright = self.layout([1], in: tall)
+        let second = upright.insert(2, below: 1, in: tall)
+        let third = upright.insert(3, below: 2, in: tall)
+        let fourth = upright.insert(4, below: 3, in: tall)
+        #expect(second && third && !fourth)
+        #expect(upright.columns[0].kept == true)
     }
 
     @Test func dragsMoveTheSplitAndKeepBothTilesUsable() {
-        var layout = layout([1], in: duo)
-        layout.insert(2, below: 1, in: duo)
+        var layout = layout([1], in: tall)
+        layout.insert(2, below: 1, in: tall)
         let id = layout.columns[0].id
-        layout.dragSplit(column: id, below: 0, by: 120, in: duo)
-        let frames = layout.frames(in: duo)
+        layout.dragSplit(column: id, below: 0, by: 120, in: tall)
+        let frames = layout.frames(in: tall)
         #expect(frames[1]!.height > frames[2]!.height)
-        layout.dragSplit(column: id, below: 0, by: 5000, in: duo)
-        #expect(layout.frames(in: duo)[2]!.height >= YardMetrics.minimumTile.height - 1)
+        layout.dragSplit(column: id, below: 0, by: 5000, in: tall)
+        #expect(layout.frames(in: tall)[2]!.height >= YardMetrics.minimumTile.height - 1)
         // Released near a third, it settles on it.
-        layout.dragSplit(column: id, below: 0, by: -5000, in: duo)
-        layout.dragSplit(column: id, below: 0, by: duo.columnHeight / 3 - YardMetrics.minimumTile.height + 6, in: duo)
-        layout.snapSplit(column: id, below: 0, in: duo)
+        layout.dragSplit(column: id, below: 0, by: -5000, in: tall)
+        layout.dragSplit(column: id, below: 0, by: tall.columnHeight / 3 - YardMetrics.minimumTile.height + 6, in: tall)
+        layout.snapSplit(column: id, below: 0, in: tall)
+        #expect(abs(layout.columns[0].heights[0] - third) < 0.0001)
+        // The split the person chose survives laying the track out again.
+        layout.arrange(in: tall)
         #expect(abs(layout.columns[0].heights[0] - third) < 0.0001)
     }
 
@@ -181,30 +198,31 @@ struct SwitchyardTests {
         var layout = layout([1, 2, 3], in: pad)
         let id = layout.columns[0].id
         layout.cycleWidth(column: id, in: pad)
-        #expect(layout.columns[0].width == 0.5)
-        layout.cycleWidth(column: id, in: pad)
+        #expect(layout.columns[0].width == twoThirds)
         layout.cycleWidth(column: id, in: pad)
         #expect(layout.columns[0].width == 1)
         layout.cycleWidth(column: id, in: pad)
-        #expect(layout.columns[0].width == third)
+        #expect(layout.columns[0].width == 0.5)
     }
 
     @Test func fullWidthTogglesBackToSharing() {
-        var layout = layout([1, 2], in: duo)
+        var layout = layout([1, 2], in: pad)
         let id = layout.columns[0].id
-        layout.toggleFullWidth(column: id, in: duo)
+        layout.toggleFullWidth(column: id, in: pad)
         #expect(layout.columns[0].width == 1 && layout.columns[0].pinned)
-        layout.toggleFullWidth(column: id, in: duo)
-        #expect(layout.columns[0].width == 0.5 && !layout.columns[0].pinned)
+        layout.toggleFullWidth(column: id, in: pad)
+        #expect(abs(layout.columns[0].width - 0.5) < 0.0001 && !layout.columns[0].pinned)
     }
 
-    @Test func foldingKeepsTheColumnsAndUnfoldingRestoresTheirWidths() {
+    @Test func foldingAndUnfoldingRestoresTheLayout() {
         var layout = layout([1, 2], in: duo)
-        let ids = layout.columns.map(\.id)
-        let folded = YardMetrics(size: CGSize(width: 400, height: 760))
-        #expect(layout.columns.map(\.id) == ids)
+        let frames = layout.frames(in: duo)
+        let folded = YardMetrics(size: CGSize(width: 402, height: 780))
+        layout.arrange(in: folded)
         #expect(layout.frames(in: folded)[1]!.width == folded.size.width - 2 * folded.outerGap)
-        #expect(layout.frames(in: duo)[1]!.width == duo.points(forFraction: 0.5))
+        #expect(layout.frames(in: folded)[2]!.minX > folded.size.width)
+        layout.arrange(in: duo)
+        #expect(layout.frames(in: duo) == frames)
     }
 
     // MARK: Focus
@@ -226,14 +244,13 @@ struct SwitchyardTests {
     // MARK: Moving
 
     @Test func movingLeftAndRightSwapsColumns() {
-        var layout = layout([1, 2, 3], in: pad)
-        layout.focus(3)
+        var layout = layout([1, 2], in: pad)
+        layout.focus(2)
         let ok4 = layout.moveFocused(.left, in: pad)
         #expect(ok4)
-        #expect(layout.windows == [1, 3, 2])
+        #expect(layout.columns.map(\.windows) == [[2], [1]])
         let ok5 = layout.moveFocused(.down, in: pad)
         #expect(!ok5)
-        layout.focus(1)
         let ok6 = layout.moveFocused(.left, in: pad)
         #expect(!ok6)
     }
@@ -249,20 +266,28 @@ struct SwitchyardTests {
 
     @Test func dropsStackSwapAndSplitOffColumns() {
         var layout = layout([1, 2, 3], in: pad)
-        let ok8 = layout.move(3, to: .stack(column: 0, position: 1), in: pad)
-        #expect(ok8)
+        let stacked = layout.move(3, to: .stack(column: 0, position: 1), in: pad)
+        #expect(stacked)
         #expect(layout.columns.map(\.windows) == [[1, 3], [2]])
-        let ok9 = layout.move(2, to: .swap(1), in: pad)
-        #expect(ok9)
+        #expect(layout.columns[0].kept == true)
+        let swapped = layout.move(2, to: .swap(1), in: pad)
+        #expect(swapped)
         #expect(layout.columns.map(\.windows) == [[2, 3], [1]])
-        let ok10 = layout.move(3, to: .column(2), in: pad)
-        #expect(ok10)
-        #expect(layout.columns.map(\.windows) == [[2], [1], [3]])
-        let ok11 = layout.move(3, to: .column(3), in: pad)
-        #expect(!ok11)
-        let ok12 = layout.move(3, to: .column(0), in: pad)
-        #expect(ok12)
+        let split = layout.move(3, to: .column(2), in: pad)
+        #expect(split)
+        #expect(layout.windows == [2, 1, 3])
+        #expect(!layout.columns.contains { $0.windows.contains(2) && $0.windows.contains(3) })
+        let first = layout.move(3, to: .column(0), in: pad)
+        #expect(first)
         #expect(layout.windows == [3, 2, 1])
+        for metrics in [pad, duo, phone] {
+            var after = layout
+            after.arrange(in: metrics)
+            let obeys = after.frames(in: metrics).allSatisfy {
+                TilePolicy.allows($0.value.size, required: metrics.required($0.key), in: metrics.area)
+            }
+            #expect(obeys)
+        }
     }
 
     @Test func aFullStackTakesNoMore() {
@@ -273,7 +298,7 @@ struct SwitchyardTests {
     }
 
     @Test func dropTargetsFollowThePoint() {
-        let layout = layout([1, 2, 3], in: pad)
+        let layout = layout([1, 2], in: pad)
         let frames = layout.frames(in: pad)
         let middle = frames[2]!
         // Middle of another tile: trade places.
@@ -284,6 +309,11 @@ struct SwitchyardTests {
         #expect(layout.drop(for: 1, at: CGPoint(x: middle.midX, y: middle.maxY - 20), in: pad) == .stack(column: 1, position: 1))
         // Its right edge: a column of its own after it.
         #expect(layout.drop(for: 1, at: CGPoint(x: middle.maxX - 10, y: middle.midY), in: pad) == .column(2))
+        // On a screen too short for a stack, the edges of a tile trade places instead.
+        let wide = YardMetrics(size: CGSize(width: 1376, height: 700))
+        let short = self.layout([1, 2], in: wide)
+        let other = short.frames(in: wide)[2]!
+        #expect(short.drop(for: 1, at: CGPoint(x: other.midX, y: other.minY + 20), in: wide) == .swap(2))
         // Beside itself: nothing to do.
         #expect(layout.drop(for: 1, at: CGPoint(x: frames[1]!.midX, y: frames[1]!.midY), in: pad) == nil)
         #expect(layout.drop(for: 1, at: CGPoint(x: middle.minX + 4, y: middle.midY), in: pad) == nil)
@@ -299,14 +329,15 @@ struct SwitchyardTests {
     // MARK: Scrolling
 
     @Test func revealingAColumnScrollsTheLeastNeeded() {
-        let layout = layout([1, 2, 3, 4], in: pad)
+        let layout = layout([1, 2, 3, 4, 5, 6], in: pad)
+        #expect(layout.columns.map(\.windows) == [[1, 2], [3, 4], [5], [6]])
         let frames = layout.columnFrames(in: pad)
-        let fourth = frames[layout.columns[3].id]!
-        let scroll = layout.scroll(revealing: 4, from: 0, in: pad)
-        #expect(scroll == fourth.maxX + pad.outerGap - pad.size.width)
-        #expect(layout.scroll(revealing: 2, from: scroll, in: pad) == scroll)
+        let last = frames[layout.columns[3].id]!
+        let scroll = layout.scroll(revealing: 6, from: 0, in: pad)
+        #expect(scroll == last.maxX + pad.outerGap - pad.size.width)
+        #expect(layout.scroll(revealing: 5, from: scroll, in: pad) == scroll)
         #expect(layout.scroll(revealing: 1, from: scroll, in: pad) == 0)
-        #expect(layout.visibleColumns(at: scroll, in: pad) == layout.columns.dropFirst().map(\.id))
+        #expect(layout.visibleColumns(at: scroll, in: pad) == layout.columns.suffix(2).map(\.id))
     }
 
     @Test func aFlickRestsOnAColumnEdge() {
@@ -317,15 +348,17 @@ struct SwitchyardTests {
     }
 
     @Test func handlesSitInTheGaps() {
-        var layout = layout([1, 2], in: duo)
-        layout.insert(3, below: 2, in: duo)
-        let handles = layout.handles(in: duo)
+        var layout = layout([1, 2], in: pad)
+        layout.insert(3, below: 2, in: pad)
+        // The stack made by hand stays beside the first window.
+        #expect(layout.columns.map(\.windows) == [[1], [2, 3]])
+        let handles = layout.handles(in: pad)
         #expect(handles.count == 3)
-        let frames = layout.frames(in: duo)
+        let frames = layout.frames(in: pad)
         let split = handles.first { if case .split = $0.kind { true } else { false } }!
         #expect(split.rect.minY == frames[2]!.maxY && split.rect.maxY == frames[3]!.minY)
         let width = handles.first!
-        #expect(width.rect.minX == frames[1]!.maxX && width.rect.width == duo.gap)
+        #expect(width.rect.minX == frames[1]!.maxX && width.rect.width == pad.gap)
     }
 
     // MARK: Memory
@@ -387,7 +420,8 @@ struct SwitchyardTests {
 }
 
 struct YardSnapTests {
-    private let metrics = YardMetrics(size: CGSize(width: 1024, height: 768))
+    /// A large monitor, where every palette slot is a usable tile.
+    private let metrics = YardMetrics(size: CGSize(width: 2400, height: 1300))
 
     @Test func everyPaletteRegionProducesAnOrdinaryYardWithoutMutatingTheSource() throws {
         var original = YardLayout()
@@ -419,8 +453,10 @@ struct YardSnapTests {
         #expect(yard.snapping(1, to: .bottomRight, layout: slots, in: metrics) != nil)
         yard.insert(4, in: metrics)
         #expect(yard.snapping(1, to: .bottomRight, layout: slots, in: metrics) != nil)
+        // A phone has no room for halves side by side: the palette does not offer them.
         let phone = YardMetrics(size: CGSize(width: 390, height: 700))
-        #expect(yard.snapping(1, to: .left, layout: [.left, .right], in: phone) != nil)
+        #expect(yard.snapping(1, to: .left, layout: [.left, .right], in: phone) == nil)
+        #expect(yard.snapping(1, to: .maximized, layout: [.maximized], in: phone) != nil)
     }
 
     @Test func repeatedThirdChoicesRetainTheirOwnCompanionLayout() throws {
@@ -474,15 +510,12 @@ extension YardSnapTests {
         }
     }
 
-    @Test func sparseQuarterAcceptsAStackAndKeepsItsSlotOnNarrowRotation() throws {
+    @Test func sparseQuarterAcceptsAStackAndReturnsToTheAutomaticLayoutOnAPhone() throws {
         var yard = YardLayout()
         yard.insert(1, in: metrics)
         var snapped = try #require(yard.snapping(1, to: .bottomRight,
             layout: [.topLeft, .topRight, .bottomLeft, .bottomRight], in: metrics))
-        let phone = YardMetrics(size: CGSize(width: 390, height: 700))
-        #expect(snapped.frames(in: phone)[1]?.width == phone.points(forFraction: 0.5))
-        #expect(snapped.frames(in: phone)[1]?.minX == (phone.size.width + phone.gap) / 2)
-        #expect(snapped.trackWidth(in: phone) == 390)
+        #expect(snapped.trackWidth(in: metrics) == metrics.size.width)
         let inserted = snapped.insert(2, below: 1, in: metrics)
         #expect(inserted)
         #expect(snapped.columns[0].halfSlot == nil)
@@ -490,6 +523,12 @@ extension YardSnapTests {
         #expect(frames[1]?.minY == 0)
         #expect(frames[2]?.maxY == metrics.size.height)
         #expect(!frames[1]!.intersects(frames[2]!))
+        // A quarter of a phone is no usable tile: on one, the windows are laid out afresh.
+        let phone = YardMetrics(size: CGSize(width: 390, height: 700))
+        snapped.arrange(in: phone)
+        let automatic = snapped.columns.allSatisfy { $0.isAutomatic }
+        #expect(automatic)
+        #expect(snapped.frames(in: phone)[1]?.size == phone.area)
     }
 }
 
@@ -507,9 +546,8 @@ extension YardSnapTests {
                 for id in 1...count { yard.insert(id, in: metrics) }
                 let palette = FreeDesktopLayout.SnapPalette(in: CGRect(origin: .zero, size: size),
                     allows: { snap, slots in yard.snapping(1, to: snap, layout: slots, in: metrics) != nil })
-                #expect(palette.regions.count == 14)
-                for region in palette.regions {
-                    #expect(region.enabled)
+                #expect(palette.regions.isEmpty || palette.regions.contains { $0.snap == .maximized && $0.enabled })
+                for region in palette.regions where region.enabled {
                     #expect(palette.frame.contains(region.frame))
                     // The view draws two points inside these authoritative hit rectangles.
                     let visible = region.frame.insetBy(dx: 2, dy: 2)
@@ -542,5 +580,60 @@ extension YardSnapTests {
                 }
             }
         }
+    }
+}
+
+/// Snap assist and shared dividers in Switchyard: the same model as the floating desktop.
+extension YardSnapTests {
+    @Test func oneOtherWindowFillsTheOtherHalfAtOnce() throws {
+        var yard = YardLayout()
+        for id in 1...2 { yard.insert(id, in: metrics) }
+        let plan = yard.snapAssist(2, to: .left, layout: [.left, .right], in: metrics)
+        #expect(plan.assigned == [.left: 2, .right: 1] && plan.choices.isEmpty)
+        let result = try #require(yard.snapping(2, to: .left, layout: [.left, .right], assigned: plan.assigned, in: metrics))
+        let frames = result.frames(in: metrics)
+        #expect(frames[2]!.minX == 0 && frames[2]!.maxX + metrics.gap == frames[1]!.minX)
+        #expect(abs(frames[1]!.maxX - metrics.size.width) < 0.5)
+    }
+
+    @Test func moreWindowsAreOfferedForTheOtherHalf() throws {
+        var yard = YardLayout()
+        for id in 1...3 { yard.insert(id, in: metrics) }
+        var plan = yard.snapAssist(1, to: .left, layout: [.left, .right], in: metrics)
+        #expect(plan.assigned == [.left: 1] && plan.open == [.right] && plan.choices == [2, 3])
+        // Until a choice, the other half stays free.
+        let waiting = try #require(yard.snapping(1, to: .left, layout: [.left, .right], assigned: plan.assigned, in: metrics))
+        #expect(waiting.frames(in: metrics)[1]!.width == metrics.points(forFraction: 0.5))
+        #expect(waiting.columns.first { $0.windows == [1] }?.trailingVacancy == 0.5)
+        plan = SnapAssist.choose(3, for: .right, in: plan) { id, slot in yard.slot(slot, accepts: id, in: self.metrics) }
+        let chosen = try #require(yard.snapping(1, to: .left, layout: [.left, .right], assigned: plan.assigned, in: metrics))
+        let frames = chosen.frames(in: metrics)
+        #expect(frames[1]!.maxX + metrics.gap == frames[3]!.minX)
+        #expect(Set(chosen.windows) == [1, 2, 3])
+    }
+
+    @Test func theEdgeBetweenSnappedWindowsResizesBoth() throws {
+        var yard = YardLayout()
+        for id in 1...2 { yard.insert(id, in: metrics) }
+        var snapped = try #require(yard.snapping(1, to: .left, layout: [.left, .right], in: metrics))
+        let left = try #require(snapped.columns.first { $0.windows == [1] })
+        snapped.drag(column: left.id, toWidth: 1500, in: metrics)
+        var frames = snapped.frames(in: metrics)
+        #expect(abs(frames[1]!.width - 1500) < 0.5)
+        #expect(frames[1]!.maxX + metrics.gap == frames[2]!.minX && abs(frames[2]!.maxX - metrics.size.width) < 0.5)
+        // Not past what the other window needs; letting go keeps it where it is.
+        snapped.drag(column: left.id, toWidth: 2390, in: metrics)
+        snapped.snapWidth(column: left.id, in: metrics)
+        frames = snapped.frames(in: metrics)
+        #expect(frames[2]!.width >= TilePolicy.floor.width - 0.5)
+        #expect(abs(frames[2]!.maxX - metrics.size.width) < 0.5)
+    }
+
+    @Test func closingASnappedWindowLetsTheRestCloseUp() throws {
+        var yard = YardLayout()
+        for id in 1...2 { yard.insert(id, in: metrics) }
+        var snapped = try #require(yard.snapping(1, to: .left, layout: [.left, .right], in: metrics))
+        snapped.prune(keeping: [1], in: metrics)
+        #expect(snapped.frames(in: metrics)[1]!.size == metrics.area)
     }
 }

@@ -115,6 +115,16 @@ struct SwitchyardView: View {
             }
             handles
             edges
+            // The free slot snap assist is offering windows for.
+            if yard.menu.isOpen, yard.carry == nil, let slot = yard.assistSlot {
+                RoundedRectangle(cornerRadius: yard.metrics.cornerRadius, style: .continuous)
+                    .fill(.white.opacity(0.1))
+                    .strokeBorder(Brand.amber.opacity(0.9), lineWidth: 1.5)
+                    .frame(width: slot.width, height: slot.height)
+                    .offset(x: slot.minX, y: slot.minY)
+                    .transition(.opacity)
+                    .allowsHitTesting(false)
+            }
             if let carry = yard.carry, let preview = carry.preview {
                 RoundedRectangle(cornerRadius: yard.metrics.cornerRadius, style: .continuous)
                     .fill(.white.opacity(0.1))

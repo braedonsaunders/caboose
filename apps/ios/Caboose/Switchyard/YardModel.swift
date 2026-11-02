@@ -36,14 +36,31 @@ final class YardModel {
         var regionFrame: CGRect?
         /// Where it would land, on screen.
         var preview: CGRect?
+        /// Snap assist for the slot it is over, when windows are left to choose from.
+        var assist: Assist?
     }
+
+    /// Snap assist after a snap (`SnapAssist`): the layout the snap was made from, the
+    /// arrangement, and the plan so far. Each choice lays the arrangement out again from
+    /// `base`, so the windows offered stay where they were until chosen.
+    struct Assist: Equatable {
+        let base: YardLayout
+        let window: Int
+        let snap: FreeDesktopLayout.Snap
+        let slots: [FreeDesktopLayout.Snap]
+        var plan: SnapAssist.Plan
+    }
+    private var assist: Assist?
+    /// The free slot snap assist is offering windows for, on screen, while its menu is open.
+    private(set) var assistSlot: CGRect?
     private(set) var carry: Carry?
     private var carryScroll: CGFloat?
     private var carryCancelled = false
     var snapPalette: FreeDesktopLayout.SnapPalette? {
         guard let carry else { return nil }
         return FreeDesktopLayout.SnapPalette(in: CGRect(origin: .zero, size: metrics.size), allows: { snap, slots in
-            self.layout.snapping(carry.window, to: snap, layout: slots, in: self.metrics) != nil
+            let plan = self.layout.snapAssist(carry.window, to: snap, layout: slots, in: self.metrics)
+            return self.layout.snapping(carry.window, to: snap, layout: slots, assigned: plan.assigned, in: self.metrics) != nil
         })
     }
     func cancelCarry() {
@@ -71,6 +88,8 @@ final class YardModel {
         didSet {
             guard storageKey != oldValue else { return }
             memory = YardMemory.decoded(from: storageKey.flatMap { UserDefaults.standard.data(forKey: $0) })
+            // A kept track, perhaps from another screen or an older layout, obeys the policy here.
+            memory.layout.arrange(in: metrics)
             scroll = 0
             zoomed = nil
             coverProgress = 0
@@ -107,12 +126,31 @@ final class YardModel {
 
     // MARK: Screen
 
+    /// A new screen size (rotation, folding, Split View, the keyboard): the track is laid
+    /// out again for its shape (`TilePolicy`), and the focused window stays in view.
     func resize(to size: CGSize) {
         guard size.width > 0, size.height > 0, size != metrics.size else { return }
         cancelCarry()
-        metrics = YardMetrics(size: size)
+        endAssist()
+        metrics = YardMetrics(size: size, minimums: metrics.minimums)
+        rearrange()
         scroll = layout.focused.map { layout.scroll(revealing: $0, from: scroll, in: metrics) } ?? min(scroll, layout.maximumScroll(in: metrics))
         apply()
+    }
+
+    /// Lays the track out again for the current screen and windows, keeping the result.
+    private func rearrange() {
+        let before = layout
+        memory.layout.arrange(in: metrics)
+        if layout != before { save() }
+    }
+
+    /// Each tiled window's own minimum size, in points, for `TilePolicy`.
+    private func minimums(of windows: [RemoteWindow]) -> [Int: CGSize] {
+        let scale = max(1, pixelsPerPoint)
+        return Dictionary(uniqueKeysWithValues: windows.compactMap { window in
+            window.minimumSize.map { (window.id, CGSize(width: $0.width / scale, height: $0.height / scale)) }
+        })
     }
 
     /// Each window's tile on screen, scroll applied.
@@ -152,8 +190,14 @@ final class YardModel {
         if let carry, windows[carry.window] == nil { cancelCarry() }
         let tiled = windows.values.filter { !$0.isAuxiliary }
         let before = layout
-        // Tiles make way for a new window, and close over a gone one, in one movement.
+        // Tiles make way for a new window, and close over a gone one, in one movement. A
+        // window whose minimum size arrived or changed is laid out again by it.
         withAnimation(.smooth(duration: 0.42, extraBounce: 0.06)) {
+            let minimums = minimums(of: tiled)
+            if minimums != metrics.minimums {
+                metrics.minimums = minimums
+                memory.layout.arrange(in: metrics)
+            }
             memory.layout.prune(keeping: Set(tiled.map(\.id)), in: metrics)
             for window in tiled.sorted(by: { $0.raisedAt < $1.raisedAt }) where !layout.contains(window.id) {
                 memory.layout.insert(window.id, width: memory.width(for: appClass(window)), in: metrics)
@@ -169,6 +213,7 @@ final class YardModel {
         placedDialogs.formIntersection(windows.keys)
         if layout != before {
             cancelCarry()
+            endAssist()
             if let focused = layout.focused, layout.focused != before.focused { reveal(focused) }
             scroll = min(scroll, layout.maximumScroll(in: metrics))
             save()
@@ -243,20 +288,17 @@ final class YardModel {
         placedDialogs.removeAll()
     }
 
-    /// A dialog sits centred over its window's tile, made smaller if the screen is.
+    /// A dialog is never tiled: it floats at its own size, centred over its window's tile,
+    /// made smaller only if the screen is (`TilePolicy.dialogFrame`).
     private func fitDialog(_ dialog: RemoteWindow, parent: RemoteWindow?) {
         guard let session else { return }
         let scale = pixelsPerPoint
         let available = coverWindow == nil || screenSize == .zero ? metrics.size : screenSize
         let bounds = CGRect(origin: .zero, size: available)
-        let around = parent.flatMap { $0.id == coverWindow ? bounds : contents[$0.id] } ?? bounds
-        let margin: CGFloat = 12
-        let width = min(dialog.frame.width / scale, max(1, available.width - 2 * margin))
-        let height = min(dialog.frame.height / scale, max(1, available.height - 2 * margin))
-        var origin = CGPoint(x: around.midX - width / 2, y: around.midY - height / 2)
-        origin.x = min(max(margin, origin.x), available.width - margin - width)
-        origin.y = min(max(margin, origin.y), available.height - margin - height)
-        let target = CGRect(x: origin.x * scale, y: origin.y * scale, width: width * scale, height: height * scale).integral
+        let around = parent.flatMap { $0.id == coverWindow ? bounds : contents[$0.id] }
+        let frame = TilePolicy.dialogFrame(natural: CGSize(width: dialog.frame.width / scale, height: dialog.frame.height / scale),
+                                           parent: around, in: bounds)
+        let target = CGRect(x: frame.minX * scale, y: frame.minY * scale, width: frame.width * scale, height: frame.height * scale).integral
         if dialog.frame != target { session.configure(dialog, frame: target) }
         session.focus(dialog)
     }
@@ -391,7 +433,7 @@ final class YardModel {
         guard let start = handleStart else { return }
         switch handle {
         case .width(let column):
-            memory.layout.drag(column: column, toWidth: max(YardMetrics.minimumTile.width, start.width + translation.width), in: metrics)
+            memory.layout.drag(column: column, toWidth: max(metrics.points(forFraction: metrics.minimumFraction), start.width + translation.width), in: metrics)
             // A tick as the width passes each preset.
             if let width = layout.column(id: column)?.width,
                let detent = metrics.presets.first(where: { abs($0 - width) < 0.012 }), detent != lastDetent {
@@ -445,8 +487,12 @@ final class YardModel {
         if carry == nil { carry = Carry(window: window, origin: start, rect: rect) }
         let palette = snapPalette
         let region = palette?.regions.first { $0.enabled && $0.frame.contains(point) }
+        let plan = region.map { layout.snapAssist(window, to: $0.snap, layout: $0.layout, in: metrics) }
         let proposal = region.flatMap { layout.snapping(window, to: $0.snap, layout: $0.layout,
-                                                        in: metrics) }
+                                                        assigned: plan?.assigned, in: metrics) }
+        let assist = region.flatMap { region in
+            plan.flatMap { $0.choices.isEmpty ? nil : Assist(base: layout, window: window, snap: region.snap, slots: region.layout, plan: $0) }
+        }
         // Palette gaps and disabled choices never fall through to the underlying tiles.
         let overPalette = palette?.frame.contains(point) == true
         if !overPalette {
@@ -470,7 +516,8 @@ final class YardModel {
         let preview = after?.frames(in: metrics)[window].map { $0.offsetBy(dx: -(landingScroll ?? scroll), dy: 0) }
         if preview != carry?.preview, preview != nil { UISelectionFeedbackGenerator().selectionChanged() }
         carry = Carry(window: window, origin: start, rect: rect, drop: drop, proposal: after,
-                      proposedScroll: landingScroll, snap: region?.snap, regionFrame: region?.frame, preview: preview)
+                      proposedScroll: landingScroll, snap: region?.snap, regionFrame: region?.frame, preview: preview,
+                      assist: proposal == nil ? nil : assist)
     }
 
     private func nudge(by delta: CGFloat) {
@@ -495,6 +542,56 @@ final class YardModel {
         if let remote = session?.windows[carry.window] { session?.focus(remote) }
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
         committed()
+        assist = carry.assist
+        offerAssist()
+    }
+
+    // MARK: Snap assist
+
+    private var assistAccepts: (Int, FreeDesktopLayout.Snap) -> Bool {
+        { [base = assist?.base ?? layout, metrics] id, slot in base.slot(slot, accepts: id, in: metrics) }
+    }
+
+    /// Snap assist's menu over the free slot it is filling: the windows that suit it, and
+    /// leaving it free.
+    private func offerAssist() {
+        let accepts = assistAccepts
+        guard let assist, Set(assist.base.windows) == Set(layout.windows), let slot = assist.plan.offering(accepts: accepts),
+              let tile = tiles[assist.window] else { endAssist(); return }
+        let unit = { FreeDesktopLayout.rect(for: $0, in: CGRect(x: 0, y: 0, width: 6, height: 6)) }
+        let stride = metrics.size.width - 2 * metrics.outerGap + metrics.gap
+        let left = tile.minX - unit(assist.snap).minX / 6 * stride
+        let free = unit(slot)
+        let half = (metrics.columnHeight - metrics.gap) / 2
+        let rect = CGRect(x: left + free.minX / 6 * stride,
+                          y: metrics.outerGap + (free.minY == 0 ? 0 : half + metrics.gap),
+                          width: metrics.points(forFraction: free.width / 6),
+                          height: free.height == 6 ? metrics.columnHeight : half)
+        let items: [SceneMenuItem] = assist.plan.choices.filter { accepts($0, slot) }.compactMap { id in
+            guard let window = session?.windows[id] else { return nil }
+            let title = window.title.isEmpty ? (window.appClass?.name ?? "Window") : window.title
+            return SceneMenuItem(title: title, systemImage: "macwindow") { [weak self] in self?.chooseAssist(id, for: slot) }
+        } + [SceneMenuItem(title: "Leave Empty", systemImage: "rectangle.dashed", dividerBefore: true) { [weak self] in
+            self?.endAssist()
+        }]
+        assistSlot = rect
+        menu.show(items, at: CGPoint(x: rect.minX + 16, y: rect.minY + 16))
+    }
+
+    private func chooseAssist(_ window: Int, for slot: FreeDesktopLayout.Snap) {
+        guard var assist else { return }
+        assist.plan = SnapAssist.choose(window, for: slot, in: assist.plan, accepts: assistAccepts)
+        guard let proposal = assist.base.snapping(assist.window, to: assist.snap, layout: assist.slots,
+                                                  assigned: assist.plan.assigned, in: metrics) else { endAssist(); return }
+        withAnimation(.smooth(duration: 0.42, extraBounce: 0.1)) { memory.layout = proposal }
+        self.assist = assist
+        committed()
+        offerAssist()
+    }
+
+    private func endAssist() {
+        assist = nil
+        assistSlot = nil
     }
 
     // MARK: Scrolling

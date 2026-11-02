@@ -33,6 +33,8 @@ final class DesktopModel {
         /// A row of the open pointer menu, and the rest of the menu.
         case menuItem(Int)
         case menuStay
+        /// The shared edge between snapped windows: dragging it resizes both.
+        case divider(SnapGroup.Divider)
     }
 
     typealias MenuItem = SceneMenuItem
@@ -156,6 +158,15 @@ final class DesktopModel {
     private(set) var snapPreview: CGRect?
     private(set) var snapPalette: FreeDesktopLayout.SnapPalette?
     private(set) var pendingSnap: FreeDesktopLayout.Snap?
+    /// The arrangement the pending snap belongs to: the palette region's, or the snap's own.
+    private var pendingLayout: [FreeDesktopLayout.Snap]?
+    /// Snap assist under way: the arrangement being filled and what it still offers.
+    private var assist: (layout: [FreeDesktopLayout.Snap], plan: SnapAssist.Plan)?
+    /// The free slot snap assist is offering windows for, highlighted while its menu is open.
+    private(set) var assistSlot: CGRect?
+    /// The session the desktop last followed, for changes that start without one at hand
+    /// (a window minimized or brought back), so snapped windows close up or make room.
+    @ObservationIgnored private weak var currentSession: (any DisplaySession)?
 
     /// A window's whole frame (title bar and content) in desktop points, as Linux pixels.
     func linuxFrame(_ chrome: CGRect) -> CGRect {
@@ -182,15 +193,32 @@ final class DesktopModel {
     /// Whether the window can take the snap. Laptop shows a snapped window fitted into its
     /// snap, so there a resizable window held larger than the snap by its minimum size takes
     /// it too: laid out at the snap's shape grown to that minimum, and shown scaled down.
+    /// A snap is also a tile, so it obeys `TilePolicy` at this desktop's scale: no snap is
+    /// offered that would make the window smaller than a usable window or a bad shape.
     func canSnap(_ snap: FreeDesktopLayout.Snap, _ window: RemoteWindow) -> Bool {
         let limits = contentLimits(window)
         return FreeDesktopLayout.accepts(snap, in: workArea, titleBar: titleBarHeight, minimum: limits.minimum,
                                          maximum: limits.maximum, scaled: detachedChrome)
+            && TilePolicy.allows(FreeDesktopLayout.rect(for: snap, in: workArea).size, required: tileMinimum(window),
+                                 in: workArea.size)
+    }
+
+    /// The least a snapped window is given, title bar included (`TilePolicy.required`).
+    func tileMinimum(_ window: RemoteWindow) -> CGSize {
+        let floor = CGSize(width: TilePolicy.floor.width * ui, height: TilePolicy.floor.height * ui)
+        return TilePolicy.required(minimum: contentLimits(window).minimum, titleBar: titleBarHeight,
+                                   in: workArea.size, floor: floor)
     }
 
     /// Where the window belongs on this desktop by its place, in Linux pixels, if it has one.
+    /// A snap kept from a larger screen grows to a usable tile on a smaller one.
     func placedFrame(_ window: RemoteWindow) -> CGRect? {
-        layout.frame(for: window.id, app: app(window), in: workArea, minimum: minimumChrome(window)).map(linuxFrame)
+        var minimum = minimumChrome(window)
+        if layout.snap(of: window.id) != nil {
+            let tile = tileMinimum(window)
+            minimum = CGSize(width: max(minimum.width, tile.width), height: max(minimum.height, tile.height))
+        }
+        return layout.frame(for: window.id, app: app(window), in: workArea, minimum: minimum).map(linuxFrame)
     }
 
     /// Configures a window this session has not placed yet at its place. One that has no
@@ -315,11 +343,15 @@ final class DesktopModel {
         }
         minimized.formIntersection(ids)
         guard let session, case .ready = session.state else { return }
+        currentSession = session
         let identity = ObjectIdentifier(session)
         if let live = liveWindows, live.session == identity {
             let closed = live.ids.subtracting(ids)
+            let snapped = layout.group.map { !Set($0.windows).isDisjoint(with: closed) } ?? false
             for id in closed { layout.remove(id) }
             if !closed.isEmpty { save() }
+            // The rest of a snapped arrangement closes up over a closed window.
+            if snapped { reflow([], session) }
         }
         liveWindows = (identity, ids)
     }
@@ -388,6 +420,8 @@ final class DesktopModel {
         let before = layout
         layout.setMinimized(id, value)
         if layout != before { save() }
+        // Snapped windows close up around a minimized one, and make room when it returns.
+        if layout.group?.contains(id) == true, let session = currentSession { reflow([], session) }
     }
 
     func isVisible(_ id: Int) -> Bool { !minimized.contains(id) && !detached.contains(id) }
@@ -482,6 +516,7 @@ final class DesktopModel {
             guard let window = windows[id], let content = surfaces[id] else { continue }
             let chrome = presentedChrome(window, surface: content)
             guard chrome.contains(point) else { continue }
+            if layout.group?.contains(id) == true, let divider = divider(at: point) { return .divider(divider) }
             if content.contains(point) {
                 if !detachedChrome, !window.isAuxiliary, !window.isFullscreen,
                    point.x > content.maxX - 18 * ui, point.y > content.maxY - 18 * ui { return .resize(id) }
@@ -636,8 +671,12 @@ final class DesktopModel {
         case .close(let id): if let window = session.windows[id] { session.closeDiagnosed(window, context: .init(cursor: cursor)) }
         case .minimize(let id): minimize(id)
         case .zoom(let id): toggleZoom(id, session)
+        case .titleBar(let id) where button == 3:
+            raise(id)
+            focus(id, session)
+            _ = openPointerMenu(snapMenu(id, session))
         case .titleBar(let id), .resize(let id): raise(id); focus(id, session)
-        case .switchItem, .switchStay, .menuItem, .menuStay:
+        case .switchItem, .switchStay, .menuItem, .menuStay, .divider:
             break
         case .content(let id, let local):
             laptopDockPinned = false
@@ -661,6 +700,8 @@ final class DesktopModel {
             guard let window = session.windows[id] else { return }
             raise(id)
             drag = (hit, cursor, chromeRect(window))
+        case .divider:
+            drag = (hit, cursor, .zero)
         case .content(let id, let local):
             guard let window = session.windows[id] else { return }
             raise(id)
@@ -677,13 +718,16 @@ final class DesktopModel {
         guard let drag else { return }
         switch drag.hit {
         case .titleBar, .resize:
-            self.drag = nil; dragged = nil; snapPalette = nil; snapPreview = nil; pendingSnap = nil
+            self.drag = nil; dragged = nil; snapPalette = nil; snapPreview = nil; pendingSnap = nil; pendingLayout = nil
+        case .divider:
+            self.drag = nil
+            save()
         default: break
         }
     }
 
     func endDrag(session: (any DisplaySession)?) {
-        defer { drag = nil; snapPalette = nil; snapPreview = nil; pendingSnap = nil; dragged = nil }
+        defer { drag = nil; snapPalette = nil; snapPreview = nil; pendingSnap = nil; pendingLayout = nil; dragged = nil }
         guard let drag, let session else { return }
         switch drag.hit {
         case .content(let id, let pressedPoint):
@@ -696,11 +740,11 @@ final class DesktopModel {
             guard let window = session.windows[id], let frame = dragged else { return }
             // Where it was let go is where it returns to from a snap.
             layout.setPreferred(id, frame: frame, in: workArea, app: app(window))
-            if let snap = pendingSnap, canSnap(snap, window) {
-                layout.setSnap(id, snap, current: frame, in: workArea, app: app(window))
-                applyPlace(window, session, always: true)
+            if let snap = pendingSnap, self.snap(id, snap, session, layout: pendingLayout) {
                 UIImpactFeedbackGenerator(style: .medium).impactOccurred()
             }
+            save()
+        case .divider:
             save()
         default:
             break
@@ -726,7 +770,9 @@ final class DesktopModel {
             var start = drag
             // A snapped window pulled away takes back its own size, under the finger.
             if layout.snap(of: id) != nil, hypot(dx, dy) > 6 * ui {
+                let snapped = layout.group?.contains(id) == true
                 layout.setSnap(id, nil, current: drag.chrome, in: area, app: app(window))
+                if snapped { reflow([], session) }
                 let size = layout.frame(for: id, app: app(window), in: area, minimum: minimumChrome(window))?.size ?? drag.chrome.size
                 start.chrome = FreeDesktopLayout.unsnapped(size: size, from: drag.chrome, grab: drag.start, in: area)
                 self.drag = start
@@ -739,8 +785,11 @@ final class DesktopModel {
             }
             let zone: FreeDesktopLayout.Snap?
             if let palette = snapPalette, palette.frame.contains(cursor) {
-                zone = palette.selection(at: cursor)
+                let region = palette.regions.first { $0.enabled && $0.frame.contains(cursor) }
+                zone = region?.snap
+                pendingLayout = region?.layout
             } else {
+                pendingLayout = nil
                 zone = FreeDesktopLayout.zone(at: cursor, in: area, edge: (directTouch ? 20 : 12) * ui)
                     .flatMap { canSnap($0, window) ? $0 : nil }
             }
@@ -761,7 +810,11 @@ final class DesktopModel {
             session.configure(window, frame: linuxFrame(frame), state: ["maximized": false])
         case .resize(let id):
             guard let window = session.windows[id] else { return }
-            if layout.snap(of: id) != nil { layout.setSnap(id, nil, current: drag.chrome, in: area, app: app(window)) }
+            if layout.snap(of: id) != nil {
+                let snapped = layout.group?.contains(id) == true
+                layout.setSnap(id, nil, current: drag.chrome, in: area, app: app(window))
+                if snapped { reflow([], session) }
+            }
             let minimum = minimumChrome(window)
             let frame = CGRect(x: drag.chrome.minX, y: drag.chrome.minY,
                                width: max(max(minimum.width, 120 * ui), drag.chrome.width + dx),
@@ -774,6 +827,16 @@ final class DesktopModel {
             if let local = surfacePoint(cursor, window: window, windows: session.windows, captured: true) {
                 session.pointerMove(in: window, to: local)
             }
+        case .divider(let divider):
+            guard var group = layout.group else { return }
+            let position: CGFloat
+            switch divider {
+            case .columns: position = cursor.x
+            case .cells: position = cursor.y
+            }
+            group.drag(divider, to: position, in: area, required: required(session))
+            layout.updateGroup(group)
+            reflow([], session)
         default:
             break
         }
@@ -832,19 +895,141 @@ final class DesktopModel {
         snap(id, isZoomed(id) ? nil : .maximized, session)
     }
 
-    /// Snaps a window to a side, a corner or the whole work area, or (nil) back to its own
-    /// frame, and focuses it.
+    /// Snaps a window to a side, a corner, a third or the whole work area, or (nil) back to its
+    /// own frame, and focuses it. A side, corner or third joins an arrangement (`layout`, else
+    /// the snap's own, `FreeDesktopLayout.arrangement(for:)`) that snap assist fills: by the
+    /// title-bar drag, the keyboard and the window's menu alike.
     @discardableResult
-    func snap(_ id: Int, _ snap: FreeDesktopLayout.Snap?, _ session: any DisplaySession) -> Bool {
+    func snap(_ id: Int, _ snap: FreeDesktopLayout.Snap?, _ session: any DisplaySession,
+              layout slots: [FreeDesktopLayout.Snap]? = nil) -> Bool {
         guard let window = session.windows[id], !window.isAuxiliary, !detached.contains(id), app(window) != nil,
               size.width > 0, size.height > 0 else { return false }
         if let snap, !canSnap(snap, window) { return false }
         raise(id)
         focus(id, session)
-        layout.setSnap(id, snap, current: chromeRect(window), in: workArea, app: app(window))
-        save()
-        applyPlace(window, session, always: true)
+        let members = layout.group?.windows ?? []
+        if let snap, snap != .maximized {
+            arrange(id, at: snap, layout: slots ?? FreeDesktopLayout.arrangement(for: snap), session: session)
+        } else {
+            layout.setSnap(id, snap, current: chromeRect(window), in: workArea, app: app(window))
+            save()
+            applyPlace(window, session, always: true)
+            reflow(members, session)
+        }
         return placedFrame(window) != nil
+    }
+
+    // MARK: Snapped arrangements
+
+    /// A title bar's menu: every snap this window can take here, and back to its own frame.
+    private func snapMenu(_ id: Int, _ session: any DisplaySession) -> [MenuItem] {
+        guard let window = session.windows[id], !window.isAuxiliary else { return [] }
+        let names: [(FreeDesktopLayout.Snap, String, String)] = [
+            (.maximized, "Fill Desktop", "rectangle.fill"),
+            (.left, "Left Half", "rectangle.lefthalf.filled"), (.right, "Right Half", "rectangle.righthalf.filled"),
+            (.topLeft, "Top Left Quarter", "rectangle.split.2x2"), (.topRight, "Top Right Quarter", "rectangle.split.2x2"),
+            (.bottomLeft, "Bottom Left Quarter", "rectangle.split.2x2"), (.bottomRight, "Bottom Right Quarter", "rectangle.split.2x2"),
+            (.leftThird, "Left Third", "rectangle.split.3x1"), (.centerThird, "Center Third", "rectangle.split.3x1"),
+            (.rightThird, "Right Third", "rectangle.split.3x1"),
+            (.leftTwoThirds, "Left Two Thirds", "rectangle.split.3x1"), (.rightTwoThirds, "Right Two Thirds", "rectangle.split.3x1"),
+        ]
+        var items = names.filter { canSnap($0.0, window) }.map { snap, title, image in
+            MenuItem(title: title, systemImage: image, selected: layout.snap(of: id) == snap) { [weak self] in
+                guard let self, let session = self.currentSession else { return }
+                self.snap(id, snap, session)
+            }
+        }
+        if layout.snap(of: id) != nil {
+            items.append(MenuItem(title: "Restore", systemImage: "macwindow", dividerBefore: true) { [weak self] in
+                guard let self, let session = self.currentSession else { return }
+                self.snap(id, nil, session)
+            })
+        }
+        return items
+    }
+
+    /// What a window needs from a slot (`tileMinimum`), and for nil what a free slot keeps.
+    private func required(_ session: any DisplaySession) -> (Int?) -> CGSize {
+        { [self] id in
+            if let window = id.flatMap({ session.windows[$0] }) { return tileMinimum(window) }
+            let floor = CGSize(width: TilePolicy.floor.width * ui, height: TilePolicy.floor.height * ui)
+            return TilePolicy.required(minimum: nil, titleBar: titleBarHeight, in: workArea.size, floor: floor)
+        }
+    }
+
+    private func accepts(_ session: any DisplaySession) -> (Int, FreeDesktopLayout.Snap) -> Bool {
+        { [self] id, snap in session.windows[id].map { canSnap(snap, $0) } ?? false }
+    }
+
+    /// The divider at `point`, if it is on one: a strip along each shared edge.
+    private func divider(at point: CGPoint) -> SnapGroup.Divider? {
+        layout.group?.dividers(in: workArea, thickness: (directTouch ? 16 : 10) * ui).first { $0.rect.contains(point) }?.divider
+    }
+
+    /// `id` takes `snap` in the arrangement `slots`; snap assist fills the other slots with
+    /// the other windows, or offers them.
+    private func arrange(_ id: Int, at snap: FreeDesktopLayout.Snap, layout slots: [FreeDesktopLayout.Snap],
+                         session: any DisplaySession) {
+        let others = stacking.reversed().filter { other in
+            guard other != id, isVisible(other), let window = session.windows[other] else { return false }
+            return !window.isAuxiliary && !window.isFullscreen && app(window) != nil
+        }
+        commit(SnapAssist.plan(id, snap: snap, layout: slots, others: others, accepts: accepts(session)),
+               layout: slots, front: id, session: session)
+    }
+
+    private func commit(_ plan: SnapAssist.Plan, layout slots: [FreeDesktopLayout.Snap], front: Int,
+                        session: any DisplaySession) {
+        guard let group = SnapGroup(layout: slots, assigned: plan.assigned) else { return }
+        let before = layout.group?.windows ?? []
+        var current: [Int: CGRect] = [:]
+        for id in group.windows { if let window = session.windows[id] { current[id] = chromeRect(window) } }
+        layout.setGroup(group, current: current, in: workArea) { [self] id in session.windows[id].flatMap(app) }
+        save()
+        // The arrangement comes forward together, `front` in front.
+        for id in group.windows where id != front { raise(id) }
+        raise(front)
+        reflow(before, session)
+        assist = plan.choices.isEmpty ? nil : (slots, plan)
+        offerAssist(session)
+    }
+
+    /// Snap assist's menu over the free slot it is filling: the windows that suit it, and
+    /// leaving it free.
+    private func offerAssist(_ session: any DisplaySession) {
+        let accepts = accepts(session)
+        guard let assist, let slot = assist.plan.offering(accepts: accepts), let group = layout.group,
+              let free = group.openSlots.first(where: { group.cell($0)?.snap == slot }),
+              let frame = group.slotFrames(in: workArea)[free] else {
+            self.assist = nil
+            assistSlot = nil
+            return
+        }
+        let items: [MenuItem] = assist.plan.choices.filter { accepts($0, slot) }.compactMap { id in
+            guard let window = session.windows[id] else { return nil }
+            let title = window.title.isEmpty ? (window.appClass?.name ?? "Window") : window.title
+            return MenuItem(title: title, systemImage: "macwindow") { [weak self] in self?.chooseAssist(id, for: slot) }
+        } + [MenuItem(title: "Leave Empty", systemImage: "rectangle.dashed", dividerBefore: true) { [weak self] in
+            self?.assist = nil
+            self?.assistSlot = nil
+        }]
+        assistSlot = frame
+        menu.show(items, at: CGPoint(x: frame.minX + 16 * ui, y: frame.minY + 16 * ui))
+    }
+
+    private func chooseAssist(_ id: Int, for slot: FreeDesktopLayout.Snap) {
+        guard let session = currentSession, let assist else { return }
+        commit(SnapAssist.choose(id, for: slot, in: assist.plan, accepts: accepts(session)), layout: assist.layout,
+               front: id, session: session)
+    }
+
+    /// Lays out the snapped arrangement's windows, and `others` (windows that left it), where
+    /// they now belong.
+    private func reflow(_ others: [Int], _ session: any DisplaySession) {
+        for id in Set(others).union(layout.group?.windows ?? []) {
+            guard isVisible(id), let window = session.windows[id], !window.isAuxiliary, !window.isFullscreen else { continue }
+            applyPlace(window, session, always: true)
+        }
     }
 
     /// Laptop's upper screen shows one app at a time, like a laptop's maximized windows: every
@@ -910,6 +1095,12 @@ final class DesktopModel {
     /// laid out again from the place the owner chose, so nothing drifts or leaves the desktop.
     func relayout(session: (any DisplaySession)?) {
         guard let session else { return }
+        currentSession = session
+        // Snapped windows that no longer fit their slots here return to their own frames.
+        if let group = layout.group, !group.obeys(in: workArea, required: required(session)) {
+            layout.setGroup(nil, current: [:], in: workArea) { [self] id in session.windows[id].flatMap(app) }
+            save()
+        }
         for window in session.windows.values where !window.isAuxiliary && !window.isFullscreen && !detached.contains(window.id) {
             applyPlace(window, session)
         }

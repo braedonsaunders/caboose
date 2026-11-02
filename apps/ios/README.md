@@ -172,6 +172,86 @@ Run `swift test --jobs 1 --filter SwitchyardTests` in CabooseKit for edge partit
 scroll geometry. Run `sh scripts/check-desktop.sh` for the native corner/device checks.
 A screenshot alone does not establish that a physical display corner leaves controls visible.
 
+## Window layout
+
+Every window Caboose tiles, on every screen, follows one policy: `TilePolicy` in
+`CabooseKit/Switchyard`, applied by `YardLayout.arrange(in:)` whenever the screen, the
+windows or a window's minimum size changes. The rules:
+
+- **No tile is smaller than a usable window.** A tile, title bar included, is at least
+  560 × 400 points, or the window's own minimum content size plus its title bar, whichever
+  is larger. A screen smaller than that in either direction gives the window the whole
+  screen in that direction; a window whose minimum is larger than the screen fills it and is
+  shown whole, scaled to fit.
+- **No tile is a bad shape.** A tile that shares the screen is between 0.55 and 4 times as
+  wide as it is high. A window alone on the screen takes the screen's own shape.
+- **Splits follow the screen's shape.** Every way of placing the windows that share a screen
+  in columns and stacks (one column, side by side, stacked, a grid, a large window beside a
+  stack; at most four columns of three) is checked against the two rules above; of those
+  that pass, the one whose tiles are closest to an ordinary window's shape (1.4 wide to 1
+  high) wins. A tall screen stacks, a wide one sits side by side, and a grid appears only
+  where every cell passes. Shared columns are as even as the windows' minimums allow.
+- **Extras go to the next screen, never squeezed.** A screen takes as many windows as can
+  share it. The rest continue on further screens of Switchyard's track, reached by swiping,
+  the dock, Overview and Quick Switch.
+- **Stable through rotation, folding, opening and closing.** The windows that share a
+  screen form a group. A new window joins the group beside the focused window when they all
+  still fit on one screen, and starts the next group otherwise. On a smaller screen a group
+  continues across more screens; on a larger one neighbouring groups that now fit together
+  merge. Turning or folding the device and back gives the same layout. Closing a window
+  re-arranges only its own group (and lets the neighbouring group close up into it when the
+  two now fit together).
+- **The person's choices are kept within the rules.** A width picked by dragging a gap, the
+  width menu or ⌘⌥R, a stack built by dropping a tile on another's top or bottom, and a split
+  dragged between two stacked tiles are kept, and the other windows are arranged around them.
+  The width presets and stack drops on offer are only those that obey the rules on this
+  screen. A picked width too narrow for a smaller screen is widened there; a stack or snap
+  arrangement that cannot obey the rules on a new screen returns to the automatic layout.
+- **Dialogs float, full screen covers.** Dialogs, menus, popups and other windows that
+  belong to another are never tiled: they float at their own size, centred over their
+  parent's tile, made smaller only when the screen is (`TilePolicy.dialogFrame`). A window
+  in full screen, asked for by the app or chosen with the green button, covers the
+  workspace instead of its tile.
+
+No rule names an application.
+
+### Snapping
+
+Snapping a window to a half, a quarter or a third (dragging its title bar to an edge, a
+corner or the snap palette, ⌘⌥⇧←/→, or, on the floating desktop, the title bar's menu from a
+secondary click or two-finger tap) puts it in an arrangement:
+the palette's layout, or the snap's own (`FreeDesktopLayout.arrangement(for:)`). The same
+model serves Switchyard and the floating desktop (iPad set to Free, a TV, Laptop):
+
+- **Snap assist** (`SnapAssist`). When the other windows can fill the remaining slots with
+  none left over (one other window beside a half), they fill them at once, most recently
+  used (or, in Switchyard, nearest) first, each in the first slot that obeys the rules for
+  it. With more windows than slots, a menu over the next free slot offers the windows that
+  suit it, one slot at a time; Leave Empty leaves the slot free.
+- **Shared edges.** On the floating desktop the arrangement (`SnapGroup`) tiles the work
+  area: every edge is computed once and shared, so snapped windows meet exactly, with no
+  overlap and no gap, whatever their minimum sizes. In Switchyard they are ordinary columns
+  separated by the resize gap.
+- **A shared divider.** Dragging the edge between two snapped windows resizes both, never
+  below what either needs.
+- **Reflow.** Closing a snapped window, pulling it out by its title bar, or minimizing it
+  lets the others fill its space; bringing a minimized one back returns it to its slot.
+- **The rules hold.** A slot is offered only to a window it obeys the window layout rules
+  for, at the desktop's scale. An arrangement that no longer obeys them after a rotation or
+  a new screen ends, and its windows return to their own frames (on the floating desktop) or
+  to the automatic layout (in Switchyard).
+
+`swift test --filter TilePolicyTests` in `CabooseKit` sweeps every iPhone size, the iPhone
+Duo's inner and outer screens, iPads, a 1080p and a 4K TV, each upright and on its side,
+whole and above a dock, plus thousands of seeded random screens, against one to six windows
+of mixed minimum sizes (`SnapGroupTests` and `YardSnapTests` cover snapping). It asserts that no tile breaks a rule, no tiles overlap, automatic
+screens are filled exactly, each screen holds as many windows as fit, laying out again
+changes nothing, turning or folding and back restores every tile, and closing a window
+leaves other groups alone. The hosted check `CabooseGeometryTests/SwitchyardLayoutTests` runs the
+app's own `YardModel` in the Simulator against the same screens; with
+`TEST_RUNNER_CABOOSE_LAYOUT_SHOTS=<directory>` set for `xcodebuild test`, it draws every
+layout there as a PNG.
+
 ## Switchyard drag placement
 
 Title-bar carries and the workspace fullscreen pull-tab show the native desktop snap
@@ -179,10 +259,12 @@ palette. Its hit regions select a proposed `YardLayout`; the visible destination
 release use that same layout and scroll position. Nearby windows fill its columns and
 stacks, while other windows remain on the track. A single window can occupy any slot;
 unfilled slots reserve space in the existing columns, without synthetic windows.
-Explicit slots retain their selected fractions across rotation. App minimum sizes
-constrain the guest content through `WindowSizePolicy.fitting`; the native surface
-fits that valid content into the slot with matching input coordinates. Only slots
-without space for native chrome and positive content are disabled. The carried
+Explicit slots retain their selected fractions across rotation while they obey the
+window layout rules above; one that does not on a new screen returns to the automatic
+layout. App minimum sizes larger than a slot constrain the guest content through
+`WindowSizePolicy.fitting`; the native surface fits that valid content into the slot
+with matching input coordinates. Slots that would break the window layout rules for the
+carried window are disabled. The carried
 window remains above the chooser and placement highlight. Outside the palette, existing column/stack/swap drops remain available.
 Cancellation restores the track without changing the guest or exiting fullscreen;
 rotation, connection invalidation and leaving Desktop cancel an active carry.
@@ -198,11 +280,16 @@ Run `sh scripts/check-desktop.sh` for the real-device checks, including external
 maximizing, browser controls and app-card toolbars on Duo and ordinary iPhones. The gestures
 and picture need a device with the computer awake. On the Desktop tab, with three apps open:
 
-1. Upright iPhone: one full-width column; the side edges and Overview move between
-   columns, and the lit car follows. Drag a title bar to the bottom quarter of another tile: they stack.
-2. Open a Duo, or turn a large phone on its side: two halves. Drag the gap: it ticks at ½ and ⅔ and settles
-   on release; the apps redraw at the new width without a seam.
-3. iPad: thirds, the Tiled/Free choice in the toolbar, and ⌘⌥←/→, ⌘⌥⇧←/→, ⌘⌥R, ⌘⌥O on a
+1. Upright iPhone: one window a screen; the side edges and Overview move between
+   them, and the lit car follows.
+2. Open a Duo and hold it upright: two windows stack, full width; a third is on the next
+   screen. Turn it on its side: one window a screen. Turn it back, fold and unfold: the
+   same two share the screen again.
+3. iPad on its side: two side by side, three as one beside two stacked, four as a grid.
+   Drag the gap: it ticks at ½ and ⅔ and settles on release; the apps redraw at the new
+   width without a seam. Drag a title bar to the bottom quarter of another tile: they
+   stack, where both still fit. Upright, the same windows stack. The Tiled/Free choice in
+   the toolbar, and ⌘⌥←/→, ⌘⌥⇧←/→, ⌘⌥R, ⌘⌥O on a
    hardware keyboard (hold ⌘ to see them listed). Plain ⌘C still copies in the app.
 4. Open a menu and a dialog in a tile: both appear over that tile. Park and wake: the same
    columns come back. Open a fixed-size dialog (such as a keyring prompt) as an app card:

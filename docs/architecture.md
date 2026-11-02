@@ -2908,11 +2908,17 @@ the app card, and a detached view releases its layers.
   workspaces and four elsewhere. Columns and scroll stops use the same outer-margin
   geometry, so the leading and trailing edges settle flush with the workspace.
   Windows sit in columns on a horizontal track that scrolls; a column holds one window or
-  a stack (two on an upright phone, three elsewhere). Column widths are ⅓, ½, ⅔ or full,
-  offered only where a tile is at least 280 points wide and two halves fit, so an upright
-  iPhone shows one full-width column, a Duo opened out or a large phone on its side two,
-  an iPad three. New windows open beside the focused one and share the screen evenly until
-  it is full, then take columns of their own. A tile is a title bar above its window: Close and
+  a stack. Every tile follows the window layout policy (`TilePolicy`, rules in
+  `apps/ios/README.md`): at least 560 × 400 points or the window's own minimum plus its
+  title bar, capped at the screen; between 0.55 and 4 times as wide as high when it shares
+  the screen; split by the screen's shape (stacked on a tall screen such as an upright Duo,
+  side by side on a wide one, a grid only where every cell passes); and windows that do not
+  fit continue on the next screen of the track rather than being squeezed. The windows
+  sharing a screen form a group that survives rotation and folding: a group too large for
+  a smaller screen continues across more, and neighbouring groups merge where they fit
+  together. New windows open beside the focused one. Picked widths (⅓, ½, ⅔ or full,
+  offered only where they obey the policy) and hand-built stacks are kept within the
+  policy; one that cannot obey it on a new screen returns to the automatic layout. A tile is a title bar above its window: Close and
   Full Screen as small coloured circles at its leading edge, each answering across its slice of
   the bar's full height, the title, and an options button; there is no Minimize, because a tiled
   window has no minimized state. The bar never covers the app. The tile's rect below the bar is
@@ -2926,14 +2932,22 @@ the app card, and a detached view releases its layers.
   places the carried window in ordinary Yard columns and stacks, with nearby real
   windows filling the other slots. Unfilled slots reserve space in those columns;
   they create no synthetic windows. Explicit snap slots keep their selected fractions
-  in portrait and landscape, independently of the ordinary column-width presets.
-  App minimum sizes constrain the guest content request through `WindowSizePolicy.fitting`,
-  not the slot: larger content fits into the slot with the same transform for rendering
-  and input. Only slots without space for native chrome and positive content are disabled.
+  in portrait and landscape, independently of the ordinary column-width presets, wherever
+  they obey the window layout policy.
+  App minimum sizes larger than a slot constrain the guest content request through
+  `WindowSizePolicy.fitting`: larger content fits into the slot with the same transform
+  for rendering and input. Slots that would break the window layout policy are disabled.
   The palette's region rectangles are also its hit targets. The highlighted destination
   comes from the proposed Yard layout and scroll position that release commits, above
   the existing tiles. The carried window stays above both the highlight and chooser;
   selection uses the drag position, so these overlays do not intercept the gesture. Palette gaps and disabled regions do not select tiles beneath them.
+  A snap joins an arrangement that snap assist fills (`SnapAssist`): the other windows
+  fill the remaining slots at once when they fit them with none left over, and are offered
+  slot by slot in a menu over the free slot when there are more. On the floating desktop
+  the arrangement (`SnapGroup`, kept in `FreeDesktopLayout`) tiles the work area with
+  shared edges, so snapped windows never overlap or leave a gap; dragging a shared edge
+  resizes both sides within their minimums, and closing, minimizing or pulling out a
+  snapped window lets the rest fill its space. Rules are in `apps/ios/README.md`.
   Hover changes neither the saved layout nor guest geometry; cancellation restores the
   track position and leaves fullscreen intact. A tap gives the tile the keyboard, and a double tap opens the same
   full-screen app card as Apps. The green button, the Desktop toolbar's trailing Full
