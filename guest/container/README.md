@@ -174,9 +174,8 @@ With the computer running, from the repository root:
 docker exec -u root caboose-owner bash -s < guest/container/check.sh
 ```
 
-It waits for the owner's display, lists the encoders `caboose-display --list-encoders`
-reports and requires H.264 (and NVENC HEVC on `nvidia`, or on `wsl` with an NVIDIA GPU), and
-checks that the owner display's PulseAudio answers `pactl info`. It does not restart or park
+It waits for the owner's display and checks that the owner display's PulseAudio answers
+`pactl info`. It does not restart or park
 the computer.
 
 Other checks for this image:
