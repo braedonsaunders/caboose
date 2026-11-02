@@ -472,7 +472,7 @@ impl State {
         self.reconnect_for_gpu_epoch();
         self.schedule_gpu_restart();
         // Whatever executor the renderer was on is gone with the broker.
-        self.rebuild_gpu();
+        self.rebuild_gpu_after_loss();
     }
 
     fn schedule_gpu_restart(&mut self) {
@@ -642,7 +642,7 @@ impl State {
                         }
                         self.reconnect_for_gpu_epoch();
                         // The phone's GPU is gone: render on the computer until it returns.
-                        self.rebuild_gpu();
+                        self.rebuild_gpu_after_loss();
                     }
                     6 => {
                         if grants.retired(executor, generation).is_err() { self.gpu_control_failed(); }
