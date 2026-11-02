@@ -398,6 +398,8 @@ fn run(config: Config) -> Result<(), String> {
     };
 
     let compositor = CompositorState::new::<State>(&dh);
+    // wp_presentation clock: CLOCK_MONOTONIC, the clock every seat time uses.
+    let presentation = smithay::wayland::presentation::PresentationState::new::<State>(&dh, 1);
     let xdg_shell = XdgShellState::new::<State>(&dh);
     let shm = ShmState::new::<State>(&dh, vec![]);
     let mut dmabuf = DmabufState::new();
@@ -602,6 +604,8 @@ fn run(config: Config) -> Result<(), String> {
         stats: Default::default(),
         input_trace: Default::default(),
         latency: Default::default(),
+        presentation,
+        present_seq: 0,
         next_input_id: 0,
         cursor: None,
     };

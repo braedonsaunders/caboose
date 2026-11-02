@@ -246,6 +246,10 @@ pub struct State {
     pub input_trace: crate::frame_trace::Ring<crate::frame_trace::Input>,
     /// Per-input latency correlation (frame_trace::LatencyTrace).
     pub latency: crate::frame_trace::LatencyTrace,
+    /// wp_presentation: clients ask when their frames reached the screen.
+    pub presentation: smithay::wayland::presentation::PresentationState,
+    /// Presentation sequence counter, one per released frame.
+    pub present_seq: u64,
     pub next_input_id: u64,
     /// The cursor last sent, so it is re-sent to a new client.
     pub cursor: Option<proto::Message>,
@@ -841,9 +845,21 @@ impl State {
     /// Sends the frame callbacks of a window's surfaces.
     pub fn release_frame_callbacks(&mut self, id: u64) {
         let time = self.now_ms();
-        let Some(w) = self.windows.get_mut(id) else { return };
-        w.picture.callbacks_pending = false;
-        let Some(root) = w.surface.wl_surface() else { return };
+        let (root, display, commit_us) = {
+            let Some(w) = self.windows.get_mut(id) else { return };
+            w.picture.callbacks_pending = false;
+            let Some(root) = w.surface.wl_surface() else { return };
+            (root, w.display, w.picture.commit_us)
+        };
+        // Releasing the frame callbacks is the seat's present of that commit:
+        // it completes the latency entry of the input it answered.
+        self.latency.present(id, commit_us, self.now_us());
+        let output = self.displays.resolve(Some(display)).output.clone();
+        let refresh_hz = self.displays.resolve(Some(display)).info.refresh_hz;
+        self.present_seq += 1;
+        let seq = self.present_seq;
+        let refresh = smithay::wayland::presentation::Refresh::fixed(std::time::Duration::from_secs_f64(1.0 / refresh_hz.max(1.0)));
+        let presented = std::time::Duration::from_micros(self.now_us());
         with_surface_tree_downward(
             &root,
             (),
@@ -851,6 +867,17 @@ impl State {
             |_, states, _| {
                 for callback in states.cached_state.get::<SurfaceAttributes>().current().frame_callbacks.drain(..) {
                     callback.done(time);
+                }
+                for feedback in std::mem::take(
+                    &mut states.cached_state.get::<smithay::wayland::presentation::PresentationFeedbackCachedState>().current().callbacks,
+                ) {
+                    feedback.presented(
+                        &output,
+                        presented,
+                        refresh,
+                        seq,
+                        smithay::reexports::wayland_protocols::wp::presentation_time::server::wp_presentation_feedback::Kind::Vsync,
+                    );
                 }
             },
             |_, _, _| true,
@@ -1499,6 +1526,7 @@ impl XWaylandShellHandler for State {
 impl smithay::wayland::tablet_manager::TabletSeatHandler for State {}
 
 smithay::delegate_compositor!(State);
+smithay::delegate_presentation!(State);
 smithay::delegate_shm!(State);
 smithay::delegate_dmabuf!(State);
 smithay::delegate_xdg_shell!(State);
