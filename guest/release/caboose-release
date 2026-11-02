@@ -6,7 +6,7 @@ usage: caboose-release new ID [--from ID]          start a release, a copy of an
        caboose-release capture ID COMPUTER PATH... files as COMPUTER has them now
        caboose-release deb ID DEB                  a package installed with dpkg
        caboose-release remove ID PATH              a path deleted on install
-       caboose-release seal ID NOTE...             write the SBOM and MANIFEST and sign it; final
+       caboose-release seal ID NOTE...             check the driver, write the SBOM and MANIFEST, sign; final
        caboose-release sign ID                     sign a sealed release's MANIFEST again
        caboose-release install ID [--wait S] [COMPUTER...]   every running computer by default
        caboose-release status                      what each running computer runs
@@ -15,7 +15,8 @@ usage: caboose-release new ID [--from ID]          start a release, a copy of an
 Run as root on the host. Releases live in $CABOOSE_RELEASES (default /root/caboose-release).
 The signing key is $CABOOSE_RELEASE_KEY (default /root/.config/caboose-release/release-ed25519.key.pem);
 installs verify with $CABOOSE_RELEASE_PUB (default caboose-release.pub.pem beside this program,
-then /usr/local/share/caboose-release/caboose-release.pub.pem)."""
+then /usr/local/share/caboose-release/caboose-release.pub.pem). Sealing runs the Linux
+executor check configured in $CABOOSE_RELEASE_CHECK (default /root/.config/caboose-release/check.conf)."""
 import base64
 import datetime
 import hashlib
@@ -37,6 +38,11 @@ KEY = Path(os.environ.get("CABOOSE_RELEASE_KEY", "/root/.config/caboose-release/
 PUBLIC_NAME = "caboose-release.pub.pem"
 # Written by seal, outside the MANIFEST it signs.
 UNLISTED = ("MANIFEST", "MANIFEST.sig")
+CHECK_CONF = Path(os.environ.get("CABOOSE_RELEASE_CHECK", "/root/.config/caboose-release/check.conf"))
+# The release's 64-bit guest driver, which the check runs.
+DRIVER = "usr/local/lib/caboose-gpu-live/libvulkan_gfxstream.so"
+CHECK_SCRIPT = "apps/ios/GPUStream/gfxstream/linux-executor/check.sh"
+CHECK_KEYS = ("repo", "image", "work", "sync_check")
 
 
 class Failure(Exception):
@@ -116,6 +122,52 @@ def verify_signature(directory):
     except (OSError, ValueError):
         raise Failure(f"{directory.name} is not signed")
     check_signature(directory, signature)
+
+
+def check_settings(path=None):
+    """The check's settings, `key=value` lines: repo (a checkout whose broker and check
+    script run), image (the computer image), work (the Linux executor's build directory)
+    and sync_check (the synchronization probe binary)."""
+    path = path or CHECK_CONF
+    try:
+        text = path.read_text()
+    except OSError:
+        raise Failure(f"no executor check settings at {path} ({', '.join(CHECK_KEYS)})")
+    settings = {}
+    for line in text.splitlines():
+        key, sep, value = line.partition("=")
+        if sep and not line.lstrip().startswith("#"):
+            settings[key.strip()] = value.strip()
+    missing = [k for k in CHECK_KEYS if not settings.get(k)]
+    if missing:
+        raise Failure(f"{path} lacks {', '.join(missing)}")
+    return settings
+
+
+def run_check(directory, settings):
+    """Runs the Linux executor check (the synchronization probe, then vkcube's frames)
+    against the release's driver; its logs go to check/ in the release. The exit status and
+    the check's summary lines."""
+    driver = directory / "files" / DRIVER
+    if not driver.is_file():
+        raise Failure(f"{directory.name} has no driver at /{DRIVER}")
+    out = directory / "check"
+    shutil.rmtree(out, ignore_errors=True)
+    out.mkdir()
+    result = subprocess.run(["sh", str(Path(settings["repo"]) / CHECK_SCRIPT), settings["image"], settings["work"],
+                             str(driver), settings["sync_check"], str(out)],
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    return result.returncode, result.stdout.decode(errors="replace")
+
+
+def check(directory, run=None):
+    """The executor check of the release's driver; raises, keeping the logs, unless it
+    passed. check/result records the summary."""
+    status, summary = (run or run_check)(directory, check_settings())
+    (directory / "check").mkdir(exist_ok=True)
+    (directory / "check" / "result").write_text(f"{'PASS' if status == 0 else 'FAIL'}\n{summary}")
+    if status != 0:
+        raise Failure(f"the executor check failed; {directory.name} stays open (logs in {directory / 'check'}):\n{summary.strip()}")
 
 
 def deb_fields(deb):
@@ -295,6 +347,7 @@ def main(argv):
             shutil.copytree(base, directory, symlinks=False)
             for name in ("MANIFEST", "MANIFEST.sig", "notes", "sbom.spdx.json"):
                 (directory / name).unlink(missing_ok=True)
+            shutil.rmtree(directory / "check", ignore_errors=True)
         elif len(args) == 1:
             directory.mkdir(parents=True)
         else:
@@ -325,6 +378,7 @@ def main(argv):
         directory = writable(args[0])
         if not KEY.is_file():
             raise Failure(f"no signing key at {KEY}")
+        check(directory)
         (directory / "notes").write_text(" ".join(args[1:]) + "\n")
         (directory / "sbom.spdx.json").write_text(sbom(directory))
         (directory / "MANIFEST").write_text("".join(f"{l}\n" for l in manifest_lines(directory)))

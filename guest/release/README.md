@@ -17,16 +17,33 @@ keeps releases in `/root/caboose-release` (`CABOOSE_RELEASES` overrides it).
 | `capture ID COMPUTER PATH...` | Adds files as computer `COMPUTER` (its container name) has them now, with their modes |
 | `deb ID DEB` | Adds a package installed with `dpkg -i` |
 | `remove ID PATH` | Adds a path deleted on install |
-| `seal ID NOTE...` | Writes `notes`, the SBOM and `MANIFEST`, and signs it; a sealed release never changes |
+| `seal ID NOTE...` | Runs the executor check, writes `notes`, the SBOM and `MANIFEST`, and signs it; a sealed release never changes |
 | `sign ID` | Signs a sealed release's `MANIFEST` again (with a new key, or one sealed before signing) |
 | `install ID [--wait S] [COMPUTER...]` | Installs on every running computer (or those named) |
 | `status` | Each running computer's release, and whether a game runs there |
 | `list` | The releases, sealed or open, with their notes |
 
 A release is a directory: `files/` mirrors the paths installed in a computer, `debs/`,
-`remove`, `notes`, `sbom.spdx.json`, `MANIFEST` and `MANIFEST.sig`. The manifest lists every
+`remove`, `notes`, `check/`, `sbom.spdx.json`, `MANIFEST` and `MANIFEST.sig`. The manifest lists every
 other file's SHA-256, its mode and its path, and an install refuses a release that does not
 match it.
+
+## The executor check
+
+Sealing first checks the release's 64-bit driver against the
+[Linux executor](../../apps/ios/GPUStream/gfxstream/linux-executor/README.md), which stands
+in for the phone: its `check.sh` runs the synchronization probe, then vkcube presenting 300
+frames, in disposable containers. A release whose check fails is not sealed and stays open.
+The check's logs and `check/result` (`PASS` or `FAIL`, then the check's summary lines) stay
+in the release, and the manifest covers them. The settings are `key=value` lines in
+`/root/.config/caboose-release/check.conf` (`CABOOSE_RELEASE_CHECK` overrides the path):
+
+| Key | Is |
+| --- | --- |
+| `repo` | A checkout whose `check.sh` and broker run |
+| `image` | The computer image the broker runs in |
+| `work` | The directory the Linux executor's `build.sh` built in |
+| `sync_check` | The synchronization probe ([sync-check](../gpu/gfxstream/driver/sync-check/README.md)), built |
 
 ## Signatures and the SBOM
 
@@ -62,4 +79,4 @@ packages applied, Steam asked to quit if it runs, the owner's display restarted 
 release id, the manifest's SHA-256 and the notes.
 
 Run `python3 -m unittest guest/release/test_release.py` for the release format, signature
-and SBOM tests. They need OpenSSL with Ed25519 (1.1.1 or later), and no Docker or root.
+and SBOM tests, and the executor check's, with the check itself stood in. They need OpenSSL with Ed25519 (1.1.1 or later), and no Docker or root.

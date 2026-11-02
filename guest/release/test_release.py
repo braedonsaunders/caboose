@@ -14,6 +14,7 @@ loader = importlib.machinery.SourceFileLoader("caboose_release", str(HERE / "cab
 spec = importlib.util.spec_from_loader("caboose_release", loader)
 release = importlib.util.module_from_spec(spec)
 loader.exec_module(release)
+RUN_CHECK = release.run_check  # the real check, before the tests stand in for it
 
 
 def keypair(directory, name):
@@ -32,6 +33,16 @@ class Releases(unittest.TestCase):
         self.source.write_bytes(b"driver")
         release.KEY, public = keypair(self.tmp.name, "release")
         os.environ["CABOOSE_RELEASE_PUB"] = str(public)
+        release.CHECK_CONF = Path(self.tmp.name) / "check.conf"
+        release.CHECK_CONF.write_text("repo=/r\nimage=caboose-computer:x\nwork=/w\n# a comment\nsync_check=/s\n")
+        self.checked = []
+        release.run_check = self.passing_check
+
+    def passing_check(self, directory, settings):
+        self.checked.append((directory.name, settings))
+        (directory / "check").mkdir(exist_ok=True)
+        (directory / "check" / "vkcube.log").write_text("frames\n")
+        return 0, "PASS sync-check: 12 cases\nPASS vkcube: frames=300\n"
 
     def tearDown(self):
         os.environ.pop("CABOOSE_RELEASE_PUB", None)
@@ -55,6 +66,44 @@ class Releases(unittest.TestCase):
         with self.assertRaises(release.Failure):
             release.verify(directory)
 
+    def test_sealing_runs_the_executor_check_and_keeps_its_result(self):
+        release.main(["new", "r1"])
+        release.main(["add", "r1", str(self.source), "/" + release.DRIVER, "755"])
+        release.main(["seal", "r1", "first"])
+        directory = release.ROOT / "r1"
+        self.assertEqual(self.checked, [("r1", {"repo": "/r", "image": "caboose-computer:x", "work": "/w", "sync_check": "/s"})])
+        self.assertEqual((directory / "check/result").read_text(), "PASS\nPASS sync-check: 12 cases\nPASS vkcube: frames=300\n")
+        manifest = (directory / "MANIFEST").read_text()
+        self.assertIn("check/result", manifest)
+        self.assertIn("check/vkcube.log", manifest)
+
+    def test_a_failed_check_leaves_the_release_open_with_its_logs(self):
+        release.main(["new", "r1"])
+        release.run_check = lambda directory, settings: (1, "FAIL vkcube: no swapchain retired\n")
+        with self.assertRaises(release.Failure) as raised:
+            release.main(["seal", "r1", "first"])
+        self.assertIn("FAIL vkcube", str(raised.exception))
+        directory = release.ROOT / "r1"
+        self.assertFalse(release.sealed(directory))
+        self.assertTrue((directory / "check/result").read_text().startswith("FAIL\n"))
+        release.CHECK_CONF.write_text("repo=/r\n")
+        with self.assertRaises(release.Failure):
+            release.check_settings()
+
+    def test_the_check_runs_the_release_driver(self):
+        release.main(["new", "r1"])
+        with self.assertRaises(release.Failure):
+            RUN_CHECK(release.ROOT / "r1", release.check_settings())
+        release.main(["add", "r1", str(self.source), "/" + release.DRIVER, "755"])
+        script = Path(self.tmp.name) / "repo" / release.CHECK_SCRIPT
+        script.parent.mkdir(parents=True)
+        script.write_text('echo "args $1 $2 $3 $4"; echo log > "$5/sync-check.log"; exit 3\n')
+        status, summary = RUN_CHECK(release.ROOT / "r1", {"repo": str(Path(self.tmp.name) / "repo"), "image": "i",
+                                                          "work": "w", "sync_check": "s"})
+        self.assertEqual(status, 3)
+        self.assertEqual(summary, f"args i w {release.ROOT / 'r1' / 'files' / release.DRIVER} s\n")
+        self.assertTrue((release.ROOT / "r1/check/sync-check.log").is_file())
+
     def test_a_sealed_release_is_final_and_a_new_one_starts_from_it(self):
         release.main(["new", "r1"])
         release.main(["add", "r1", str(self.source), "/usr/local/bin/x"])
@@ -64,7 +113,7 @@ class Releases(unittest.TestCase):
         release.main(["new", "r2", "--from", "r1"])
         directory = release.ROOT / "r2"
         self.assertTrue((directory / "files/usr/local/bin/x").is_file())
-        for name in ("MANIFEST", "MANIFEST.sig", "notes", "sbom.spdx.json"):
+        for name in ("MANIFEST", "MANIFEST.sig", "notes", "sbom.spdx.json", "check"):
             self.assertFalse((directory / name).exists(), name)
 
     def test_paths_must_be_absolute_and_ids_plain(self):
