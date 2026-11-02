@@ -156,8 +156,8 @@ final class LiveGPUResumableTransport: LiveGPUTransport, LiveGPUReceiveFlow, @un
         self.policy = policy; self.connect = connect
     }
 
-    convenience init(hostURL: URL, phoneToken: String) throws {
-        let request = try LiveGPUConnection.makeRequest(hostURL: hostURL, phoneToken: phoneToken)
+    convenience init(hostURL: URL, phoneToken: String, route: ComputerRoute = .unscoped) throws {
+        let request = try LiveGPUConnection.makeRequest(hostURL: hostURL, phoneToken: phoneToken, route: route)
         self.init { credential in LiveGPUConnection(request: request, resumeCredential: credential) }
     }
 

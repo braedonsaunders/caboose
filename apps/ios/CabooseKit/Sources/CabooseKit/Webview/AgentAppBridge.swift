@@ -33,7 +33,7 @@ final class AgentAppBridge: NSObject, WKScriptMessageHandlerWithReply {
         guard !ended, let game, let descriptor = game.webview, let host = game.host else {
             throw URLError(.notConnectedToInternet)
         }
-        let url = host.baseURL.appendingPathComponent("v1/webview/\(descriptor.bridge)/bridge")
+        let url = host.url("/v1/webview/" + ComputerRoute.segment(descriptor.bridge) + "/bridge")
         let operation = payload["operation"] as? String
         var request = URLRequest(url: url, timeoutInterval: operation == "call" ? 660 : 5)
         request.httpMethod = "POST"

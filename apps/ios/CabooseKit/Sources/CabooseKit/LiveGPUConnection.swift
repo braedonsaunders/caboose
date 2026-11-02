@@ -236,8 +236,8 @@ public final class LiveGPUConnection: NSObject, LiveGPUResumeSocket, URLSessionW
 
     /// Only the existing phone credential goes to the host. Executor and runtime identity
     /// are host authority and are deliberately absent from this API.
-    public init(hostURL: URL, phoneToken: String) throws {
-        request = try Self.makeRequest(hostURL: hostURL, phoneToken: phoneToken)
+    public init(hostURL: URL, phoneToken: String, route: ComputerRoute = .unscoped) throws {
+        request = try Self.makeRequest(hostURL: hostURL, phoneToken: phoneToken, route: route)
     }
 
     /// A socket for a validated request, resuming the host's executor when given its credential.
@@ -257,7 +257,8 @@ public final class LiveGPUConnection: NSObject, LiveGPUResumeSocket, URLSessionW
         }
     }
 
-    static func makeRequest(hostURL: URL, phoneToken: String) throws -> URLRequest {
+    /// The `/v1/gpu` upgrade, at the computer's scoped route for a host sign-in.
+    static func makeRequest(hostURL: URL, phoneToken: String, route: ComputerRoute = .unscoped) throws -> URLRequest {
         guard var url = URLComponents(url: hostURL, resolvingAgainstBaseURL: false),
               url.host != nil, url.user == nil, url.password == nil,
               url.query == nil, url.fragment == nil,
@@ -266,7 +267,7 @@ public final class LiveGPUConnection: NSObject, LiveGPUResumeSocket, URLSessionW
             throw LiveGPUError.invalidEndpoint
         }
         url.scheme = ["https", "wss"].contains(url.scheme!) ? "wss" : "ws"
-        url.path = "/v1/gpu"
+        url.path = route.path("/v1/gpu")
         guard let endpoint = url.url else { throw LiveGPUError.invalidEndpoint }
         var request = URLRequest(url: endpoint, timeoutInterval: 20)
         request.setValue("Bearer \(phoneToken)", forHTTPHeaderField: "Authorization")

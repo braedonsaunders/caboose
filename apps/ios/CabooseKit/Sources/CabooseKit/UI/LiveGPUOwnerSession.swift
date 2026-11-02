@@ -2,7 +2,7 @@
 import Foundation
 import OSLog
 
-/// The app creates this explicitly for its owner computer. It is never created
+/// The app creates this explicitly for the computer whose display it has open. It is never created
 /// by CabooseDisplaySession, so agent, thumbnail and auxiliary connections cannot
 /// accidentally become a GPU executor. One instance is one executor; a new one replaces it once it ends.
 @MainActor
@@ -34,8 +34,9 @@ public final class LiveGPUOwnerSession {
     private final class Reference { weak var owner: LiveGPUOwnerSession? }
 
     /// `pairing` names the computer's persistent GPU caches (LiveGPUCacheRoot); without it,
-    /// or if they cannot be created, the computer sends every shader in full.
-    public init(hostURL: URL, phoneToken: String, pairing: String? = nil,
+    /// or if they cannot be created, the computer sends every shader in full. `route` scopes
+    /// the GPU socket to one computer for a host sign-in.
+    public init(hostURL: URL, phoneToken: String, route: ComputerRoute = .unscoped, pairing: String? = nil,
                 onEnd: @escaping @MainActor (Error?, Error?) -> Void) throws {
         let reference = Reference()
         let owners = LiveGPUPresentationOwners { [reference] identity in
@@ -44,7 +45,7 @@ public final class LiveGPUOwnerSession {
         let cacheRoot = pairing.flatMap { try? LiveGPUCacheRoot.directory(pairing: $0) }
         let binding = try LiveGPUNativeBinding(presentationOwners: owners, cacheRoot: cacheRoot)
         // The transport resumes this executor across a lost socket when the computer offers it.
-        executor = try LiveGPUSession(transport: LiveGPUResumableTransport(hostURL: hostURL, phoneToken: phoneToken),
+        executor = try LiveGPUSession(transport: LiveGPUResumableTransport(hostURL: hostURL, phoneToken: phoneToken, route: route),
                                       nativeBinding: binding)
         presentationOwners = owners; self.onEnd = onEnd
         reference.owner = self

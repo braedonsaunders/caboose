@@ -8,20 +8,26 @@ public struct GameHostAccess: Equatable, Sendable {
     /// `https://host[:port][/prefix]`, without a trailing slash.
     public var baseURL: URL
     public var token: String
+    /// The computer's routes on the host: scoped to it for a host sign-in.
+    public var route: ComputerRoute
     /// Names this computer in the game cache: a digest of the token, which only this
-    /// computer's routes accept, so it stays the same over every address the host has.
+    /// computer's routes accept, so it stays the same over every address the host has. A host
+    /// sign-in's token reaches every computer, so the computer it is scoped to is included.
     public var computerKey: String
     public var webviewComputerKey: String
 
-    public init(baseURL: URL, token: String, computerIdentity: String? = nil) {
+    public init(baseURL: URL, token: String, route: ComputerRoute = .unscoped, computerIdentity: String? = nil) {
         self.baseURL = baseURL
         self.token = token
-        computerKey = SHA256.hash(data: Data("caboose-game-cache\u{0}\(token)".utf8)).map { String(format: "%02x", $0) }.joined()
+        self.route = route
+        let scope = route.computer.map { "\u{0}computer\u{0}" + $0 } ?? ""
+        computerKey = SHA256.hash(data: Data("caboose-game-cache\u{0}\(token)\(scope)".utf8)).map { String(format: "%02x", $0) }.joined()
         webviewComputerKey = computerIdentity ?? computerKey
     }
 
-    /// The host behind a display WebSocket: `wss` → `https`, `ws` → `http`, and the path up to
-    /// its `/v1/` route dropped (a prefix the host is served under stays). Nil for any other scheme.
+    /// The host behind a display WebSocket: `wss` → `https`, `ws` → `http`, and the path from
+    /// its `/v1/` route dropped (a prefix the host is served under stays). A scoped display
+    /// (`/v1/computers/<id>/display`) keeps its computer. Nil for any other scheme.
     public init?(displayURL: URL, token: String, computerIdentity: String? = nil) {
         guard var components = URLComponents(url: displayURL, resolvingAgainstBaseURL: false) else { return nil }
         switch components.scheme?.lowercased() {
@@ -29,18 +35,21 @@ public struct GameHostAccess: Equatable, Sendable {
         case "ws", "http": components.scheme = "http"
         default: return nil
         }
-        let path = components.path
-        let prefix = path.range(of: "/v1/", options: .backwards).map { String(path[..<$0.lowerBound]) } ?? ""
-        components.path = prefix.hasSuffix("/") ? String(prefix.dropLast()) : prefix
+        let split = ComputerRoute.split(components.percentEncodedPath)
+        let prefix = split?.prefix ?? ""
+        components.percentEncodedPath = prefix.hasSuffix("/") ? String(prefix.dropLast()) : prefix
         components.query = nil
         components.fragment = nil
         guard let url = components.url else { return nil }
-        self.init(baseURL: url, token: token, computerIdentity: computerIdentity)
+        self.init(baseURL: url, token: token, route: split?.route ?? .unscoped, computerIdentity: computerIdentity)
     }
+
+    /// A computer route's address on the host, such as `/v1/fs/stat`.
+    public func url(_ path: String) -> URL { route.url(base: baseURL, path) }
 
     /// `<base>/v1/fs/<operation>?path=<path>`.
     public func fileURL(_ operation: String, path: String) -> URL {
-        var components = URLComponents(url: baseURL.appendingPathComponent("v1/fs/" + operation), resolvingAgainstBaseURL: false)!
+        var components = URLComponents(url: url("/v1/fs/" + operation), resolvingAgainstBaseURL: false)!
         components.queryItems = [URLQueryItem(name: "path", value: path)]
         return components.url!
     }

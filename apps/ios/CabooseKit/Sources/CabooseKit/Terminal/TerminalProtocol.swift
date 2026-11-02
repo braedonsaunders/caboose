@@ -9,10 +9,10 @@ public enum TerminalProtocol {
     /// The WebSocket URL for a new session (`session == nil`) or a reattach.
     ///
     /// `offset` is how much of the session's output this client already holds; the host then
-    /// sends only what follows it. `wake` lets the request wake a parked computer.
-    public static func url(base: URL, columns: Int, rows: Int, session: String?, offset: Int?, wake: Bool) -> URL {
-        var components = URLComponents(url: base.appendingPathComponent("v1/terminal"), resolvingAgainstBaseURL: false)!
-        components.scheme = base.scheme == "https" ? "wss" : "ws"
+    /// sends only what follows it. `wake` lets the request wake a parked computer. `route`
+    /// scopes it to one computer for a host sign-in.
+    public static func url(base: URL, route: ComputerRoute = .unscoped, columns: Int, rows: Int, session: String?, offset: Int?, wake: Bool) -> URL {
+        var components = URLComponents(url: route.socketURL(base: base, "/v1/terminal"), resolvingAgainstBaseURL: false)!
         var query = [URLQueryItem(name: "cols", value: String(clamp(columns, maxColumns))),
                      URLQueryItem(name: "rows", value: String(clamp(rows, maxRows)))]
         if let session, isSessionID(session) {
