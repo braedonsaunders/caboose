@@ -34,6 +34,8 @@ const FENCE_POLL: Duration = Duration::from_millis(1);
 const FENCE_LIMIT: Duration = Duration::from_secs(5);
 /// The shortest time between two remakes of the renderer after failed renders.
 const RECOVERY_INTERVAL: Duration = Duration::from_secs(10);
+/// How long after the executor leaves the next renderer is made (`rebuild_gpu_after_loss`).
+const LOSS_SETTLE: Duration = Duration::from_secs(3);
 
 /// The render scale of a window's root surface: buffer pixels per logical pixel, clamped
 /// to [1, display scale]. A window's picture keeps its buffer's own density, so its pixels
@@ -59,6 +61,26 @@ pub fn picture_size(w: i32, h: i32, scale: f64) -> (i32, i32) {
 }
 
 impl State {
+    /// The executor is gone: drops the renderer at once and makes the next one on the
+    /// computer's device only after `LOSS_SETTLE`. Until the broker has taken the lost
+    /// executor's socket away, a new renderer would reach that executor again, and Zink
+    /// does not survive objects the lost device fails to create. Nothing renders meanwhile;
+    /// a ready executor makes its renderer at once.
+    pub fn rebuild_gpu_after_loss(&mut self) {
+        self.gpu_generation += 1;
+        self.gpu = None;
+        for w in self.windows.iter_mut() {
+            w.picture.repaint();
+        }
+        let generation = self.gpu_generation;
+        let _ = self.handle.insert_source(Timer::from_duration(LOSS_SETTLE), move |_, _, state: &mut State| {
+            if state.gpu.is_none() && state.gpu_generation == generation {
+                state.rebuild_gpu();
+            }
+            TimeoutAction::Drop
+        });
+    }
+
     /// Makes the renderer, again after the executor changed: the phone's GPU when one is
     /// ready, else the computer's. Every window is drawn again.
     pub fn rebuild_gpu(&mut self) {
@@ -186,14 +208,17 @@ impl State {
 
     /// A render failed. Its device may be lost (the phone abandons a GPU that stops
     /// responding, while its executor stays), and then every later render fails too: the
-    /// renderer is made again, which draws every window again, at most once per
-    /// `RECOVERY_INTERVAL`.
+    /// renderer is dropped at once and made again after `LOSS_SETTLE`, at most once per
+    /// `RECOVERY_INTERVAL`, which draws every window again.
     fn renderer_failed(&mut self) {
         if self.gpu_recovery_pending {
             return;
         }
-        let wait = self.gpu_recovered_at.map_or(Duration::ZERO, |at| RECOVERY_INTERVAL.saturating_sub(at.elapsed()));
+        let wait = self.gpu_recovered_at.map_or(LOSS_SETTLE, |at| RECOVERY_INTERVAL.saturating_sub(at.elapsed()).max(LOSS_SETTLE));
         self.gpu_recovery_pending = true;
+        // Nothing more is drawn on a device that may be lost.
+        self.gpu_generation += 1;
+        self.gpu = None;
         let recover = |state: &mut State| {
             state.gpu_recovery_pending = false;
             state.gpu_recovered_at = Some(Instant::now());
