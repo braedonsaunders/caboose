@@ -116,13 +116,11 @@ lived and worked. Here it's the computer that comes along wherever your phone go
   you allow your LAN.
 - **Caboose Display.** Caboose's own display server ([guest/display](guest/display),
   [docs/display.md](docs/display.md)): a headless Wayland compositor with Xwayland that
-  streams each window on its own, paced by the phone's screen. Nothing runs while nothing
-  changes. Window pictures stay lossless, scrolls go as exact copies, still text sharpens once,
-  and the computer's sound goes as Opus in step with the pictures. Touch and the iOS
-  keyboard (autocorrect, dictation, CJK) arrive as native Wayland input, and the
-  clipboard works across the phone, Wayland and X11 apps. Players that decode through
-  VA-API hand their compressed video straight to the phone ([guest/vaapi](guest/vaapi)).
-  It encodes with NVENC where the host has an NVIDIA GPU, otherwise with x264.
+  renders each window on the phone's own GPU, into a buffer the phone shows as that
+  window's layer, paced by the phone's screen. Nothing runs while nothing changes, and the
+  computer's sound goes as Opus. Touch and the iOS keyboard (autocorrect, dictation, CJK)
+  arrive as native Wayland input, and the clipboard works across the phone, Wayland and X11
+  apps. Players that decode through VA-API decode on the phone ([guest/vaapi](guest/vaapi)).
 - **Two seats.** The owner's display and the agent seat are separate Caboose Display
   instances, each with its own Wayland and X11 displays and its own D-Bus session. The
   phone's on-device agent and the computer's agents read and drive them through the

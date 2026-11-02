@@ -3067,9 +3067,8 @@ changes to that window geometry still revoke the owner lease. GPU retirement and
 finish before decoder process cleanup, as specified in [gpu-live.md](gpu-live.md).
 Layout does not rewrite buffer dimensions during native extent configuration;
 an uncertain mutation leaves the layer quarantined rather than restoring old dimensions.
-Release builds never activate this private executor.
-Debug builds, unless launched with `CABOOSE_PRIVATE_GPU_INDEXED=0`, connect the owner AppModel to the
-authenticated host GPU endpoint. Each session selects the paired computer's GPU caches
+The owner AppModel connects every owner computer's display to the authenticated host GPU
+endpoint: it is the only way window pictures reach the phone. Each session selects the paired computer's GPU caches
 (`LiveGPUCacheRoot`, [gpu-live.md](gpu-live.md#shader-cache)) before its first process;
 signing out removes them. Backgrounding suspends it in place when the computer resumes
 executors ([gpu-live.md](gpu-live.md#suspending-an-executor)) and drains it otherwise;
@@ -3089,14 +3088,8 @@ prefix, without a batching delay. The outbound budget includes the temporary
 concatenation buffer and keeps in-flight permits until send completion; the
 record and byte limits are specified in [gpu-live.md](gpu-live.md).
 
-The isolated live-transport source in `guest/gpu/gfxstream`, `guest/gpu/broker`, and
-`apps/ios/GPUStream/gfxstream` is not connected to this display handshake or player.
-The separate private diagnostic
-executes the unchanged Vulkan compute/CPU/indirect-draw acceptance fixture on an
-Apple A20 Pro GPU and passes its independent offscreen pixel oracle. This uses
-explicit non-coherent memory transfers and is not a general driver or on-screen
-game presentation. The bounded live envelope codec is specified in
-[gpu-live.md](gpu-live.md); it is separate from the display protocol.
+The bounded live envelope codec is specified in [gpu-live.md](gpu-live.md); it is separate
+from the display protocol.
 The indexed broker can explicitly negotiate independent, bounded DEFLATE records
 for complete DATA envelopes. The phone reserves their expanded memory before
 queuing and validates exact decoding before passing the unchanged command bytes
@@ -3106,9 +3099,7 @@ The indexed app adapter links the native creation, mapping, acquisition and
 presentation APIs under exact version-4 negotiation. It separates actual
 acquisition from source release and preserves provider results separately from
 local cancellation. Independent acquire observers release signal leases without
-waiting behind surface work. The private Mesa swapchain path and physical
-presentation validation remain incomplete; default app sessions do not activate
-this driver.
+waiting behind surface work.
 
 Private GPU bind failures retain their authenticated grant identity until matching
 retirement, including failures that created no native surface. The app rejects
@@ -3492,9 +3483,11 @@ and `TerminalConnection`, which tracks the output offset); the app holds the vie
   `ANTHROPIC_API_KEY`) or OpenAI (`codex-acp`, `OPENAI_API_KEY`). The app installs the
   agent, sets its environment with `PUT /v1/agents/:id/env`, and makes it the default; the
   host learns nothing new.
-- **Agent seat.** The Agent space watches the seat with a second `CabooseDisplaySession`
+- **Agent seat.** The Agent space follows the seat with a second `CabooseDisplaySession`
   on `/v1/display?seat=agent` that plays no sound, so there is one stream of sound: the
-  owner's display. Take Over and Hand Back pause and resume tasks.
+  owner's display. The agent seat has no phone GPU, so its windows render on the computer
+  and none is presented: the session carries their list, titles and the owner's input,
+  without pictures. Take Over and Hand Back pause and resume tasks.
 - **Settings › Agents** lists the registry (installed agents first): install or update,
   sign in on the computer's screen, add or remove environment variables such as an API key,
   and choose the default agent. Registry icons are SVG, which iOS does not draw, so agents
@@ -3936,7 +3929,6 @@ Docker logical layer sizes separately; shared/reflink bytes are never attributed
 unique physical cost. See [capacity and usage](capacity.md) for authorization,
 measurement definitions, collection bounds and supported runtime limitations.
 
-Surface Atlas phone acceptance is explicitly enabled with `CABOOSE_SURFACE_ATLAS=1` at app launch. The normal display-session constructor leaves atlas and scene negotiation off and omits video passthrough decoders. The acceptance mode logs bounded numeric counts of received atlas batches, window video frames and passthrough frames; these counts do not establish pixel correctness.
 The private GPU owner layer uses the authenticated display window’s server pixel
 size for its actual Metal drawable. UIKit fitting and phone screen scale do not
 change that Vulkan extent. A server pixel-size change revokes the generation and

@@ -621,11 +621,9 @@ fills a full-screen window and otherwise fits the window with the picture's aspe
 centred, with black where it does not reach. A changed display epoch or window object,
 or invalid/zero server geometry, requests revocation of only the affected surface
 (`SURFACE_REVOKE_REQUEST`). Background or computer
-replacement drains the entire executor. This path is not enabled
-by default. Debug builds opt in with `CABOOSE_PRIVATE_GPU_INDEXED=1`; the owner
-AppModel then opens the existing authenticated host endpoint and updates the
-registry from its ordinary display. Agent and thumbnail sessions never create an
-executor. Native presentation runtime remains unvalidated.
+replacement drains the entire executor. The owner AppModel opens the authenticated host
+endpoint for every owner computer and updates the registry from its ordinary display.
+Agent and thumbnail sessions never create an executor.
 Neither a WebSocket send, a queue-submit return nor a local cleanup callback means
 an image was displayed.
 
