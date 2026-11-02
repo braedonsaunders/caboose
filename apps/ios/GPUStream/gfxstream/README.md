@@ -235,7 +235,7 @@ input-to-glass latency. Without the variable, device creation and presents are u
 
 A plain present whose image is not the bound window's size (a compositor buffer, an
 application that keeps its own resolution after its window changed size) is placed by
-`presentation_placement.h`: a window's overscan (the image lengthened along one axis)
+`presentation_placement.h`: a window image lengthened along one axis
 shows its top-left part unscaled; any other size is scaled by the GPU's sampler
 (`vkCmdBlitImage`, linear) to fit the window with its aspect ratio, centred, with black
 where it does not reach. The placement rule has a portable fixture:

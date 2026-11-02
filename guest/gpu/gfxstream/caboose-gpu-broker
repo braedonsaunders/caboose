@@ -1042,7 +1042,7 @@ class Session:
         identity = key[0] + key[1] + struct.pack('<Q', key[2])
         try:
             # No extent: the phone binds the window at its view's own size, and a buffer of
-            # another size (one with overscan) shows its top-left part.
+            # another size (one lengthened along an axis) shows its top-left part.
             self.send(Kind.SURFACE_BIND, window.process, payload=identity +
                       struct.pack('<QQII', window.window, image.instance, 0, 0))
             surface['bind_sent'] = True

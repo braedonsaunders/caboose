@@ -256,9 +256,8 @@ It needs `XDG_RUNTIME_DIR`. It creates the Wayland socket (`--socket`), starts X
 `--env-file` in sh syntax: `WAYLAND_DISPLAY`, `DISPLAY`, `XAUTHORITY`, `XDG_RUNTIME_DIR`,
 toolkit backends (Wayland first), `CABOOSE_DISPLAY_CONTROL` (its control socket),
 `PULSE_SERVER` when it plays sound, `CABOOSE_GAME_SOCKET` when it hands games off,
-`LIBVA_DRIVER_NAME=caboose`,
-`GST_VA_ALL_DRIVERS=1` and `CABOOSE_VIDEO_SOCKET` when the passthrough driver is
-installed, and the GPU variables it was started with (`GALLIUM_DRIVER`,
+`LIBVA_DRIVER_NAME=caboose` and
+`GST_VA_ALL_DRIVERS=1` when the VA-API driver is installed, and the GPU variables it was started with (`GALLIUM_DRIVER`,
 `MESA_D3D12_DEFAULT_ADAPTER_NAME`, `LIBVA_DRIVER_NAME`). Started with the private GPU
 sockets and with the phone's driver installed, it routes applications to the phone's GPU
 instead: `VK_ADD_DRIVER_FILES`, `CABOOSE_GFXSTREAM_SOCKET`,
