@@ -81,6 +81,19 @@ public:
         std::lock_guard<std::mutex> lock(mutex_);
         recorded_.erase(commandBuffer);
     }
+    void commandBufferExecutes(uint64_t primary, const uint64_t* secondaries, uint32_t count) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (uint32_t i = 0; i < count; ++i) {
+            auto found = recorded_.find(secondaries[i]);
+            if (found == recorded_.end()) continue;
+            const auto resets = found->second;
+            auto& into = recorded_[primary];
+            for (const auto& r : resets) {
+                if (into.size() < kMaxRecorded) into.push_back(r);
+                else into.back() = {r.pool, 0, UINT32_MAX};
+            }
+        }
+    }
     void submitted(uint64_t commandBuffer) {
         std::lock_guard<std::mutex> lock(mutex_);
         auto found = recorded_.find(commandBuffer);

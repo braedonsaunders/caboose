@@ -196,5 +196,36 @@ int main() {
         bool pending = false;
         assert(qr.take({0x100, 0, 1, 8, 8, 0}, &pending) == nullptr && pending);
     }
+
+    // Reusing a command buffer across >kMaxRecorded frames with commandBufferBegun clears old
+    // recorded resets instead of overflowing to a whole-pool wipe, and secondary command buffer
+    // resets propagate via commandBufferExecutes.
+    {
+        QueryResults qr;
+        const uint64_t pool = 0x200, primary = 0xCB01, secondary = 0xCB02;
+        for (uint32_t frame = 0; frame < 1500; ++frame) {
+            qr.commandBufferBegun(primary);
+            qr.recordReset(primary, pool, frame % 16, 1);
+            qr.submitted(primary);
+        }
+        auto live = std::make_shared<QueryReply>();
+        live->done.store(true, std::memory_order_relaxed);
+        qr.requested({pool, 100, 1, 8, 8, 0}, live);
+        qr.commandBufferBegun(primary);
+        qr.recordReset(primary, pool, 0, 1);
+        qr.submitted(primary);
+        bool pending = false;
+        assert(qr.take({pool, 100, 1, 8, 8, 0}, &pending) == live);
+
+        auto secReply = std::make_shared<QueryReply>();
+        secReply->done.store(true, std::memory_order_relaxed);
+        qr.requested({pool, 200, 1, 8, 8, 0}, secReply);
+        qr.commandBufferBegun(secondary);
+        qr.recordReset(secondary, pool, 200, 1);
+        qr.commandBufferBegun(primary);
+        qr.commandBufferExecutes(primary, &secondary, 1);
+        qr.submitted(primary);
+        assert(qr.take({pool, 200, 1, 8, 8, 0}, &pending) == nullptr && !pending);
+    }
     return 0;
 }
