@@ -38,9 +38,10 @@ async function fixture(acceptProtocol = GPU_PROTOCOL, headless = false) {
   const directory = await mkdtemp(join(tmpdir(), 'caboose-gpu-route-'))
   const computers = await ComputerRegistry.open(directory)
   const phones = PhoneTokens.memory()
-  const app = createCabooseServer({ token: 'owner-token', settings, controller,
+  const record = await computers.create()
+  const app = createCabooseServer({ token: 'owner-token',
     fleet: { computers, phones, defaults: { memoryMb: 2048, vcpus: 2, idleMs: 60_000 },
-      maxRunning: 1, open: async () => ({ settings, controller }) } })
+      maxRunning: 1, open: async () => ({ settings, controller }), existing: [{ record, pieces: { settings, controller } }] } })
   app.server.listen(0, '127.0.0.1')
   await once(app.server, 'listening')
   const base = `http://127.0.0.1:${(app.server.address() as AddressInfo).port}`
@@ -64,7 +65,7 @@ async function fixture(acceptProtocol = GPU_PROTOCOL, headless = false) {
     clients.push(client)
     return client
   }
-  return { app, base, upstream, requests, connect, park, shutdown, phones, promote, controller }
+  return { id: record.id, app, base, upstream, requests, connect, park, shutdown, phones, promote, controller }
 }
 
 async function refused(client: WebSocket): Promise<number> {
@@ -92,7 +93,7 @@ it('authenticates GPU upgrades and sends only trusted identities and the guest t
   const request = f.requests[0]!
   expect(request.url).toBe('/gpu')
   expect(request.headers.authorization).toBe('Bearer guest-per-wake')
-  expect(request.headers['x-caboose-gpu-computer']).toBe('owner')
+  expect(request.headers['x-caboose-gpu-computer']).toBe(f.id)
   expect(request.headers['x-caboose-gpu-executor']).toMatch(/^[a-f0-9-]{36}$/)
   expect(request.headers.origin).toBeUndefined()
   expect(request.headers['sec-websocket-extensions']).toBeUndefined()
@@ -162,14 +163,14 @@ it('drops executor connections during normal host shutdown', async () => {
 
 it('fences a paired phone to its computer and closes its live GPU connection on revocation', async () => {
   const f = await fixture()
-  const { phone, token } = await f.phones.mint('owner', 'Synthetic phone')
+  const { phone, token } = await f.phones.mint(f.id, 'Synthetic phone')
   const headers = { authorization: `Bearer ${token}` }
-  expect(await refused(f.connect('/v1/computers/owner/gpu', GPU_PROTOCOL, headers))).toBe(403)
+  expect(await refused(f.connect(`/v1/computers/${f.id}/gpu`, GPU_PROTOCOL, headers))).toBe(403)
   const client = f.connect('/v1/gpu', GPU_PROTOCOL, headers)
   await once(client, 'open')
   const reply = once(client, 'message'); client.send(Buffer.from([1])); await reply
   const closed = once(client, 'close')
-  const response = await fetch(`${f.base}/v1/computers/owner/phones/${phone.id}`, {
+  const response = await fetch(`${f.base}/v1/computers/${f.id}/phones/${phone.id}`, {
     method: 'DELETE', headers: { authorization: 'Bearer owner-token' },
   })
   expect(response.status).toBe(200)
@@ -180,7 +181,7 @@ it('fences a paired phone to its computer and closes its live GPU connection on 
 
 it('revokes a phone while its executor upgrade is waiting for interactive readiness', async () => {
   const f = await fixture(GPU_PROTOCOL, true)
-  const { phone, token } = await f.phones.mint('owner', 'Synthetic phone')
+  const { phone, token } = await f.phones.mint(f.id, 'Synthetic phone')
   let ready!: () => void
   const waiting = new Promise<void>(resolve => { ready = resolve })
   f.promote.mockImplementationOnce(async () => { await waiting; return f.controller.wake() })
@@ -189,7 +190,7 @@ it('revokes a phone while its executor upgrade is waiting for interactive readin
   try {
     await vi.waitFor(() => expect(f.promote).toHaveBeenCalledOnce())
     expect(await refused(f.connect())).toBe(409)
-    const response = await fetch(`${f.base}/v1/computers/owner/phones/${phone.id}`, {
+    const response = await fetch(`${f.base}/v1/computers/${f.id}/phones/${phone.id}`, {
       method: 'DELETE', headers: { authorization: 'Bearer owner-token' },
     })
     expect(response.status).toBe(200)

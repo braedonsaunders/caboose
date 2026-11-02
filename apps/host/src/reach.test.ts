@@ -4,7 +4,7 @@ import type { AddressInfo } from 'node:net'
 import { tmpdir, type NetworkInterfaceInfo } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, expect, it } from 'vitest'
-import { ComputerRegistry, OWNER_COMPUTER, PhoneTokens } from './computers.js'
+import { ComputerRegistry, PhoneTokens } from './computers.js'
 import { config } from './config.js'
 import { hostId, lanAddresses, lanInterfaces, publicUrl, ReachService, Tailscale, tailscaleCommand, type Advertiser, type Run } from './reach.js'
 import { createCabooseServer, type Controller } from './server.js'
@@ -189,7 +189,8 @@ it('serves reachability to the owner only', async () => {
   const settings = new SettingsStore({ name: 'Caboose', memoryMb: 2048, vcpus: 2, idleMs: 600_000, defaultAgent: null }, settingsLimits(), { load: async () => undefined, save: async () => {} })
   const { tailscale } = fakeTailscale()
   const reach = new ReachService({ bind: '0.0.0.0', port: 7310, publicUrl: null, mdns: false, id: '0123456789abcdef', name: () => 'Caboose', tailscale, interfaces: () => machine })
-  const app = createCabooseServer({ token: 'owner', settings, controller, reach, fleet: { computers, phones, open: async () => { throw new Error('unused') }, defaults: { memoryMb: 2048, vcpus: 2, idleMs: 600_000 }, maxRunning: 4 } })
+  const record = await computers.create()
+  const app = createCabooseServer({ token: 'owner', reach, fleet: { computers, phones, open: async () => { throw new Error('unused') }, existing: [{ record, pieces: { settings, controller } }], defaults: { memoryMb: 2048, vcpus: 2, idleMs: 600_000 }, maxRunning: 4 } })
   app.server.listen(0, '127.0.0.1')
   await once(app.server, 'listening')
   close.push(() => new Promise(resolve => app.server.close(() => resolve())))
@@ -202,7 +203,7 @@ it('serves reachability to the owner only', async () => {
   const reply = await call('/v1/host/reach', 'owner')
   expect(reply.status).toBe(200)
   expect(await reply.json()).toMatchObject({ addresses: [{ kind: 'lan', url: 'http://192.168.1.20:7310' }, {}, {}], mdns: { enabled: false }, tailscale: { installed: true, serving: false } })
-  const { token: phone } = await phones.mint(OWNER_COMPUTER, 'iPhone')
+  const { token: phone } = await phones.mint(record.id, 'iPhone')
   expect((await call('/v1/host/reach', phone)).status).toBe(403)
   expect((await call('/v1/host/reach/tailscale', phone, { method: 'PUT', body: { enabled: true } })).status).toBe(403)
   expect((await call('/v1/host/reach', 'wrong')).status).toBe(401)

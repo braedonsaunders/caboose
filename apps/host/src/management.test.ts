@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { WebSocket } from 'ws'
 import { afterEach, expect, it, vi } from 'vitest'
-import { createCabooseServer, type Controller, type Session } from './server.js'
+import { createCabooseServer, STANDALONE_COMPUTER, type Controller, type Session } from './server.js'
 import { openSettings } from './settings.js'
 import { ServiceMemory } from './running-apps.js'
 import { ContainerSpecStore } from './container-spec.js'
@@ -260,18 +260,18 @@ it('keeps a container computer’s image, folders and devices for the operator, 
     controller.existingContainerSpec = async () => existing
     controller.containerSpecApplied = async () => JSON.stringify(containerSpec.get()) === JSON.stringify(existing)
   }, { containerSpec })
-  expect(await (await request('/v1/computers/owner/container')).json()).toEqual({ spec: {}, applied: false })
-  expect(await (await request('/v1/computers/owner/container/import', 'POST')).json()).toEqual({ spec: existing, applied: true })
-  const put = await request('/v1/computers/owner/container', 'PUT', { ...existing, image: 'caboose-owner:steam-ready-5051b68' })
+  expect(await (await request(`/v1/computers/${STANDALONE_COMPUTER}/container`)).json()).toEqual({ spec: {}, applied: false })
+  expect(await (await request(`/v1/computers/${STANDALONE_COMPUTER}/container/import`, 'POST')).json()).toEqual({ spec: existing, applied: true })
+  const put = await request(`/v1/computers/${STANDALONE_COMPUTER}/container`, 'PUT', { ...existing, image: 'caboose-owner:steam-ready-5051b68' })
   expect(await put.json()).toEqual({ spec: { ...existing, image: 'caboose-owner:steam-ready-5051b68' }, applied: false })
-  expect((await request('/v1/computers/owner/container', 'PUT', { mounts: [{ source: '/', target: '/home/caboose', readOnly: false }] })).status).toBe(400)
+  expect((await request(`/v1/computers/${STANDALONE_COMPUTER}/container`, 'PUT', { mounts: [{ source: '/', target: '/home/caboose', readOnly: false }] })).status).toBe(400)
   expect(containerSpec.get().image).toBe('caboose-owner:steam-ready-5051b68')
   expect((await request('/v1/computers/nope/container')).status).toBe(404)
 })
 
 it('has no container settings for a microVM computer', async () => {
   const { request } = await fixture()
-  expect((await request('/v1/computers/owner/container')).status).toBe(409)
+  expect((await request(`/v1/computers/${STANDALONE_COMPUTER}/container`)).status).toBe(409)
 })
 
 it('leaves a busy container running when the host stops, and the next host adopts it', async () => {

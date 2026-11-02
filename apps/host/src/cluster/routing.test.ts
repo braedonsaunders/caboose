@@ -1,5 +1,5 @@
 import { expect, it, vi } from 'vitest'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { once } from 'node:events'
@@ -13,6 +13,8 @@ import { CommandStore, ComputerCommands } from '../commands.js'
 
 it('refuses stale execution routes while exposing location only to authorized identities', async () => {
   const root = await mkdtemp(join(tmpdir(),'cluster-routes-'))
+  // A host from before computers were equal: its computer keeps the id `owner`.
+  await writeFile(join(root,'computers.json'),JSON.stringify({computers:[]}))
   const computers = await ComputerRegistry.open(root), phones = PhoneTokens.memory()
   const phone = await phones.mint('owner','phone')
   const settings = new SettingsStore({name:'Test',defaultAgent:null,memoryMb:512,vcpus:1,idleMs:30000},settingsLimits(),{load:async()=>undefined,save:async()=>{}})
@@ -24,7 +26,7 @@ it('refuses stale execution routes while exposing location only to authorized id
     authorize:async()=>{throw new OwnershipError('Computer is owned by https://b.example.invalid')},
   } as unknown as ClusterRuntime
   const pieces = {settings,controller}
-  const app = createCabooseServer({token:'operator',...pieces,cluster,fleet:{computers,phones,maxRunning:4,defaults:{memoryMb:512,vcpus:1,idleMs:30000},open:async()=>pieces}})
+  const app = createCabooseServer({token:'operator',cluster,fleet:{computers,phones,maxRunning:4,defaults:{memoryMb:512,vcpus:1,idleMs:30000},open:async()=>pieces,existing:[{record:computers.get('owner')!,pieces}]}})
   try {
     app.server.listen(0,'127.0.0.1'); await once(app.server,'listening')
     const base=`http://127.0.0.1:${(app.server.address() as AddressInfo).port}`
@@ -46,6 +48,7 @@ it('keeps unrelated HTTP work concurrent while checkpoint cancels and drains onl
   function deferred() { let resolve!: () => void; const promise = new Promise<void>(done => { resolve = done }); return { promise, resolve } }
   const saving = deferred(), allowSave = deferred(), capturing = deferred(), allowCapture = deferred()
   const root = await mkdtemp(join(tmpdir(), 'cluster-admission-'))
+  await writeFile(join(root,'computers.json'),JSON.stringify({computers:[]}))
   const computers = await ComputerRegistry.open(root), phones = PhoneTokens.memory()
   const other = await computers.create()
   let heldSave = true
@@ -61,7 +64,7 @@ it('keeps unrelated HTTP work concurrent while checkpoint cancels and drains onl
     coordinator:{assertHost:async()=>{},lookup:async()=>({generation:'1',host_id:'a',expired:false}),pool:{query:async()=>({rows:[{endpoint:'https://a.example.invalid'}]})}},
     authorize:async()=>{},roots:new Map([['owner',root]]),root,owned:new Map([['owner',{generation:'1'}]]),recovery:{capture},
   } as unknown as ClusterRuntime
-  const app = createCabooseServer({ token:'operator',...pieces('owner'),cluster,fleet:{ computers,phones,maxRunning:4,defaults:{memoryMb:512,vcpus:1,idleMs:30000},open:async record=>pieces(record.id),existing:[{record:other,pieces:pieces(other.id)}] } })
+  const app = createCabooseServer({ token:'operator',cluster,fleet:{ computers,phones,maxRunning:4,defaults:{memoryMb:512,vcpus:1,idleMs:30000},open:async record=>pieces(record.id),existing:[{record:computers.get('owner')!,pieces:pieces('owner')},{record:other,pieces:pieces(other.id)}] } })
   let slowPair: ReturnType<typeof httpRequest> | undefined
   let mutation: Promise<unknown> | undefined, checkpoint: Promise<Response> | undefined
   try {

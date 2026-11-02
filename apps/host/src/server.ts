@@ -52,7 +52,9 @@ import { networkBusy, readNetworkActivity, type NetworkServer } from './network-
 import { appsBusy } from './busy.js'
 import type { ComputerNetwork } from './tailnet.js'
 import { ContainerSpecError, type ContainerSpec, type ContainerSpecStore } from './container-spec.js'
-import { ComputerCapacityError, OWNER_COMPUTER, PairingCodes, PairingRateLimitError, personName, phoneName, type ComputerAssignment, type ComputerRecord, type ComputerRegistry, type PhoneTokens } from './computers.js'
+import { BootProgress, type Boot, type BootReport } from './boot.js'
+import { HostSettings } from './host-settings.js'
+import { ComputerCapacityError, PairingCodes, PairingRateLimitError, personName, phoneName, type ComputerAssignment, type ComputerRecord, type ComputerRegistry, type PhoneTokens } from './computers.js'
 import { toNodeHandler } from 'better-auth/node'
 import { IdentityConflictError, IdentityInputError, IdentityNotFoundError, type AdminPrincipal, type Identity } from './identity/service.js'
 import { SignInThrottle, administers, isSignInAttempt, tenancyRoute, tenantUsage, webHeaders, type TenancyContext } from './identity/routes.js'
@@ -140,12 +142,13 @@ const FILE_BODY_LIMIT = 16 * 1024 * 1024
 /** Who a request is from: the owner (the host's own token), or a phone signed in to one computer. */
 /** Who a request is from: the owner token, an administrator signed in to the console, or a phone signed in to one computer. */
 export type Principal =
-  | { kind: 'owner'; phoneId?: undefined }
+  /** The owner token, or a host phone (`phoneId`), which may remember the person who paired it. */
+  | { kind: 'owner'; phoneId?: string; personId?: string | null }
   | (AdminPrincipal & { phoneId?: undefined })
   | { kind: 'phone'; phoneId: string; computerId: string }
 
 /** What one computer is made of: its settings, its runtime, and the notifications its phones get. */
-export interface ComputerPieces { /** A container computer's image, folders, devices and options (container-spec.ts). */ containerSpec?: ContainerSpecStore; /** Phone backups and shared storage (storage.ts). */ storage?: ComputerStorage; /** Commands' results, kept in the host's state (commands/). */ commands?: CommandStore; snapshotPath?: string; snapshotTier?: SnapshotTierOptions; /** The computer's MCP Library record (mcp-library.json), private to the host. */ mcpLibraryFile?: string; /** Whether the computer has autostart services (running-apps.ts). */ serviceMemory?: ServiceMemory; prepareKeyring?: () => Promise<void>; /** How long a launch waits for keyring preparation (KEYRING_WAIT_MS). */ keyringWaitMs?: number; settings: SettingsStore; controller: Controller; push?: PushService; activities?: ActivityService; profiles?: AgentProfiles; openRoutines?: (options: RoutineOptions) => Promise<AgentRoutines>; openToolJournal?: (dispatch: ToolDispatcher) => Promise<AgentToolJournal> }
+export interface ComputerPieces { /** A container computer's image, folders, devices and options (container-spec.ts). */ containerSpec?: ContainerSpecStore; /** Phone backups and shared storage (storage.ts). */ storage?: ComputerStorage; /** Commands' results, kept in the host's state (commands/). */ commands?: CommandStore; snapshotPath?: string; snapshotTier?: SnapshotTierOptions; /** The computer's MCP Library record (mcp-library.json), private to the host. */ mcpLibraryFile?: string; /** Whether the computer has autostart services (running-apps.ts). */ serviceMemory?: ServiceMemory; prepareKeyring?: () => Promise<void>; /** How long a launch waits for keyring preparation (KEYRING_WAIT_MS). */ keyringWaitMs?: number; settings: SettingsStore; controller: Controller; push?: PushService; activities?: ActivityService; profiles?: AgentProfiles; openRoutines?: (options: RoutineOptions) => Promise<AgentRoutines>; openToolJournal?: (dispatch: ToolDispatcher) => Promise<AgentToolJournal>; /** The steps of the computer's start, reported by its controller (boot.ts). */ boot?: BootProgress; /** Waits for the computer's image, reporting the download; resolves at once when it is present. */ ensureImage?: (report: BootReport) => Promise<void> }
 
 
 /**
@@ -188,6 +191,7 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
   const tiered = tiering?.controller ?? pieces.controller
   const controller = admit ? withAdmission(tiered, () => admit(id)) : tiered
   const computer = new ComputerLifecycle(controller, settings.get().idleMs, shared.freezeParkMs)
+  const boot = pieces.boot ?? new BootProgress()
   controller.bindParkedFilesGuard?.(() => computer.parkingGenerationGuard())
   tiering?.attach(computer)
   pieces.storage?.attach(computer)
@@ -527,6 +531,7 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
       routines: { error: routineError },
       agentTools: { error: toolsError },
       lastError: computer.lastError ?? controller.lastError?.() ?? null,
+      boot: boot.get(),
       network: { ...controller.network?.(), ...(reachable() ? { servers: servers.list } : {}) },
     }
   }
@@ -573,10 +578,30 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
     response.once('close', () => abort.abort())
     return abort.signal
   }
+  boot.subscribe(value => broadcast({ type: 'computer.boot', boot: value }))
+  /**
+   * Starts the computer for someone waiting to use it (docs/architecture.md, "Starting a
+   * computer"): waits for its image while it downloads, then wakes it with its display.
+   * Progress and failure are in `boot`, not thrown.
+   */
+  async function startBoot(): Promise<void> {
+    if (boot.get()?.state === 'running') return
+    boot.begin()
+    try {
+      await pieces.ensureImage?.(boot.report)
+      await computer.wake('interactive')
+      boot.succeed()
+    } catch (error) {
+      boot.fail(error instanceof Error ? error.message : String(error))
+    }
+  }
   let previousState = computer.state
   computer.subscribe(state => {
     const resumed = state === 'running' && previousState === 'frozen'
     previousState = state
+    if (state === 'waking') boot.begin()
+    if (state === 'running') boot.succeed()
+    if (state === 'error') boot.fail(computer.lastError ?? 'The computer could not start')
     if (state === 'parking') closeSockets()
     broadcast({ type: 'computer.state', state })
     if (state !== 'running' && state !== 'frozen') { keyringGeneration++; keyring = null }
@@ -797,6 +822,12 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
       return json(response, 200, { removed: true })
     }
     if (request.method === 'GET' && path === '/v1/computer') { refreshServers(); return json(response, 200, managementStatus()) }
+    if (path === '/v1/boot') {
+      if (request.method === 'POST') { void startBoot(); return json(response, 202, { boot: boot.get() }) }
+      if (request.method !== 'GET') return json(response, 405, { error: 'method not allowed' })
+      if (!request.headers.accept?.includes('text/event-stream')) return json(response, 200, { boot: boot.get() })
+      return streamBoot(response, boot)
+    }
     if (request.method === 'PATCH' && path === '/v1/computer/settings') {
       const rawInput = await readJson(request)
       await shared.validateSize(rawInput)
@@ -1441,7 +1472,7 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
     })
   }
 
-  return { quiesceForCheckpoint: () => commands.quiesceForCheckpoint(), disconnectAll: closeSockets, id, controller: pieces.controller, containerSpec: pieces.containerSpec, computer, settings, push, activities, managementStatus, handle, connect, disconnectPhone, shutdown, destroy,
+  return { quiesceForCheckpoint: () => commands.quiesceForCheckpoint(), disconnectAll: closeSockets, id, controller: pieces.controller, containerSpec: pieces.containerSpec, computer, settings, push, activities, managementStatus, handle, connect, disconnectPhone, shutdown, destroy, startBoot,
     /**
      * What the running computer serves (services and listening ports), for the park decision;
      * null when it is not running or tracks no services. Never wakes it.
@@ -1459,9 +1490,34 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
 
 type ComputerRuntime = ReturnType<typeof createComputerRuntime>
 
+/** The id of the one computer a host without a fleet serves (tests). */
+export const STANDALONE_COMPUTER = 'c-0000000000'
+/** What the routes without a computer in their path answer an owner-level caller when the host has no default computer. */
+const NO_COMPUTER = { error: 'This host has no computer yet; create one', code: 'no-computer' }
+
 /**
- * How a host makes and keeps computers beyond the owner's. Without one, a host serves only
- * the owner's computer (as the tests do) and cannot make more.
+ * `GET /v1/boot` as Server-Sent Events: the boot now, then every change, ending after the
+ * boot succeeds or fails. A comment every 15 s keeps proxies from closing a quiet stream.
+ */
+function streamBoot(response: ServerResponse, boot: BootProgress): void {
+  response.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-store', 'x-accel-buffering': 'no' })
+  let open = true
+  const keepalive = setInterval(() => { if (open) response.write(': keepalive\n\n') }, 15_000)
+  keepalive.unref()
+  const close = () => { open = false; clearInterval(keepalive); unsubscribe() }
+  const send = (value: Boot | null) => {
+    if (!open) return
+    response.write(`event: boot\ndata: ${JSON.stringify({ boot: value })}\n\n`)
+    if (value && value.state !== 'running') { close(); response.end() }
+  }
+  const unsubscribe = boot.subscribe(send)
+  response.once('close', close)
+  send(boot.get())
+}
+
+/**
+ * How a host makes and keeps its computers. Without one, a host serves only the one computer
+ * it is given (as the tests do) and cannot make more.
  */
 export interface Fleet {
   computers: ComputerRegistry
@@ -1470,7 +1526,7 @@ export interface Fleet {
   defaults: Pick<ComputerSettings, 'memoryMb' | 'vcpus' | 'idleMs'>
   /** The pieces of a computer, new (with its initial settings) or existing. */
   open(record: ComputerRecord, initial?: ComputerSettings): Promise<ComputerPieces>
-  /** Computers other than the owner's that already exist, opened at startup. */
+  /** The computers that already exist, opened at startup. */
   existing?: Array<{ record: ComputerRecord; pieces: ComputerPieces }>
   /** How many may run at once, or null when the runtime sets no limit. */
   maxRunning: number | null
@@ -1478,8 +1534,14 @@ export interface Fleet {
   diskBytes?(record: ComputerRecord): Promise<number | null>
 }
 
-export function createCabooseServer(options: ComputerPieces & {
+export function createCabooseServer(options: Partial<ComputerPieces> & {
   cluster?: ClusterRuntime
+  /** The host's name and default computer (host-settings.ts). */
+  hostSettings?: HostSettings
+  /** The name phones list the host by: its name, or one made from the machine's. */
+  displayName?: () => string
+  /** What the runtime reports about the host itself, for `GET /v1/health`. */
+  hostStats?: () => object
   token: string; webRoot?: string
   /** The ACP agent registry; defaults to the public registry, cached in memory only. */
   registry?: AgentRegistry
@@ -1530,9 +1592,22 @@ export function createCabooseServer(options: ComputerPieces & {
     ...(options.freezeParkMs !== undefined ? { freezeParkMs: options.freezeParkMs } : {}),
     ...(identity ? { admit: (id: string, next?: Pick<ComputerSettings, 'memoryMb' | 'vcpus'>) => admit(id, next, !next) } : {}),
   }
-  const owner = createComputerRuntime(OWNER_COMPUTER, options, shared)
-  const runtimes = new Map<string, ComputerRuntime>([[OWNER_COMPUTER, owner]])
+  const runtimes = new Map<string, ComputerRuntime>()
+  // Without a fleet, the host serves the one computer it is given (as the tests do).
+  const standalone = !options.fleet && options.controller && options.settings ? createComputerRuntime(STANDALONE_COMPUTER, options as ComputerPieces, shared) : undefined
+  if (standalone) runtimes.set(standalone.id, standalone)
   for (const { record, pieces } of options.fleet?.existing ?? []) runtimes.set(record.id, createComputerRuntime(record.id, pieces, shared))
+  const hostSettings = options.hostSettings ?? HostSettings.memory({ defaultComputer: [...runtimes.keys()][0] ?? null })
+  /** The computer the routes without one in their path serve to the owner, operator and host phones. */
+  const defaultRuntime = (): ComputerRuntime | undefined => {
+    const id = hostSettings.get().defaultComputer
+    const runtime = id ? runtimes.get(id) : undefined
+    return runtime && !deleting.has(runtime.id) ? runtime : undefined
+  }
+  const hostView = () => {
+    const value = hostSettings.get()
+    return { ...value, displayName: options.displayName?.() ?? value.name ?? 'Caboose' }
+  }
   // After the host starts, it adopts a computer still running from before (a container
   // outlives the host), and wakes one whose services start with it. Both are then headless
   // and park only once idle.
@@ -1547,7 +1622,7 @@ export function createCabooseServer(options: ComputerPieces & {
     }
   }, options.autostartDelayMs ?? 5000)
   autostart.unref()
-  const records = (): ComputerRecord[] => options.fleet?.computers.list() ?? [{ id: OWNER_COMPUTER, slot: 0, createdAt: null, tenantId: null, person: null }]
+  const records = (): ComputerRecord[] => options.fleet?.computers.list() ?? (standalone ? [{ id: standalone.id, slot: 1, createdAt: null, tenantId: null, person: null }] : [])
   const recordOf = (id: string) => records().find(c => c.id === id)
   const describe = (runtime: ComputerRuntime) => {
     const record = recordOf(runtime.id)
@@ -1642,7 +1717,9 @@ export function createCabooseServer(options: ComputerPieces & {
     const header = request.headers.authorization
     if (header?.startsWith('Bearer ') && options.fleet) {
       const phone = options.fleet.phones.resolve(header.slice(7))
-      return phone && runtimes.has(phone.computerId) ? { kind: 'phone', ...phone } : undefined
+      if (!phone) return undefined
+      if (phone.computerId === null) return { kind: 'owner', phoneId: phone.phoneId, personId: phone.personId }
+      return runtimes.has(phone.computerId) ? { kind: 'phone', phoneId: phone.phoneId, computerId: phone.computerId } : undefined
     }
     return identity && !header ? identity.principal(webHeaders(request)) : undefined
   }
@@ -1655,10 +1732,11 @@ export function createCabooseServer(options: ComputerPieces & {
 
   /**
    * The computer a path names (`/v1/computers/<id>/…`, for whoever manages it) or the
-   * principal's own, with the path it serves. The routes without an id serve the owner's
-   * computer to the owner token and the operator, and a phone's computer to that phone.
+   * principal's own, with the path it serves. The routes without an id serve the host's
+   * default computer to the owner token, the operator and host phones (`no-computer` when it
+   * has none), and a phone's computer to that phone.
    */
-  function target(path: string, principal: Principal): { runtime: ComputerRuntime; path: string } | 'forbidden' | undefined {
+  function target(path: string, principal: Principal): { runtime: ComputerRuntime; path: string } | 'forbidden' | 'no-computer' | undefined {
     const scoped = /^\/v1\/computers\/([^/]+)(\/.+)$/.exec(path)
     if (scoped) {
       if (principal.kind === 'phone') return 'forbidden'
@@ -1666,14 +1744,28 @@ export function createCabooseServer(options: ComputerPieces & {
       return runtime && !deleting.has(runtime.id) && manages(principal, runtime.id) ? { runtime, path: `/v1${scoped[2]}` } : undefined
     }
     if (principal.kind === 'admin' && !principal.operator) return 'forbidden'
-    const runtime = runtimes.get(principal.kind === 'phone' ? principal.computerId : OWNER_COMPUTER)
-    return runtime ? { runtime, path } : undefined
+    if (principal.kind === 'phone') {
+      const runtime = runtimes.get(principal.computerId)
+      return runtime ? { runtime, path } : undefined
+    }
+    const runtime = defaultRuntime()
+    return runtime ? { runtime, path } : 'no-computer'
+  }
+
+  /** The person a principal is: who paired a host phone, or an administrator's own; null for the owner token. */
+  async function ownPerson(principal: Principal): Promise<{ id: string; tenantId: string } | null> {
+    if (!identity) return null
+    if (principal.kind === 'owner' && principal.personId) return identity.person(principal.personId).catch(() => null)
+    if (principal.kind === 'admin') return identity.personOfUser(principal.userId)
+    return null
   }
 
   async function createComputer(input: Record<string, unknown>, principal: Principal): Promise<ComputerRuntime> {
     const fleet = options.fleet
     if (!fleet) throw new ComputerConflictError('This host serves one computer')
-    const { tenantId: requestedTenant, person: requestedPerson, personId: requestedPersonId, ...rawSettings } = input
+    const { tenantId: givenTenant, person: requestedPerson, personId: givenPersonId, start, ...rawSettings } = input
+    if (start !== undefined && typeof start !== 'boolean') throw new SettingsInputError('start must be true or false')
+    let requestedTenant = givenTenant, requestedPersonId = givenPersonId
     await shared.validateSize(rawSettings)
     const settingsInput = expandSize(rawSettings, shared.gpuEnabled)
     if (!('name' in settingsInput)) throw new SettingsInputError('name is required')
@@ -1684,6 +1776,11 @@ export function createCabooseServer(options: ComputerPieces & {
     let tenantId: string | null = null
     if (identity) {
       if (!await identity.claimed()) throw new ComputerConflictError('Complete host setup first')
+      if (requestedTenant === undefined && requestedPersonId === undefined && person === null) {
+        // A computer made without a person is the caller's own.
+        const own = await ownPerson(principal)
+        if (own) { requestedTenant = own.tenantId; requestedPersonId = own.id }
+      }
       if (typeof requestedTenant !== 'string') throw new SettingsInputError('tenantId is required')
       if (principal.kind === 'phone' || !administers(principal, requestedTenant)) throw new SettingsInputError('tenant not found')
       await identity.tenant(requestedTenant)
@@ -1702,6 +1799,8 @@ export function createCabooseServer(options: ComputerPieces & {
     try {
       const runtime = createComputerRuntime(record.id, await fleet.open(record, initial), shared)
       runtimes.set(record.id, runtime)
+      await hostSettings.adopt(record.id)
+      if (start) void runtime.startBoot()
       return runtime
     } catch (error) {
       await fleet.computers.remove(record.id).catch(() => {})
@@ -1711,7 +1810,7 @@ export function createCabooseServer(options: ComputerPieces & {
 
   async function deleteComputer(runtime: ComputerRuntime): Promise<void> {
     const fleet = options.fleet
-    if (runtime.id === OWNER_COMPUTER || !fleet) throw new ComputerConflictError("The owner's computer cannot be deleted")
+    if (!fleet) throw new ComputerConflictError('This host serves one computer')
     if (deleting.has(runtime.id)) throw new ComputerConflictError('Computer is already being deleted')
     const operation = runtime.operation()
     if (operation) throw new ComputerConflictError(`${operation}; delete it when that finishes`)
@@ -1725,6 +1824,7 @@ export function createCabooseServer(options: ComputerPieces & {
       await options.library?.depot?.forget(runtime.id)
       await rm(fleet.computers.dataDir(runtime.id), { recursive: true, force: true })
       runtimes.delete(runtime.id)
+      await hostSettings.forget(runtime.id, records().sort((a, b) => a.slot - b.slot).find(record => runtimes.has(record.id))?.id ?? null)
       await usage.save([...runtimes.keys()]).catch(() => console.error('Deleted usage history could not be persisted'))
     } finally { deleting.delete(runtime.id) }
   }
@@ -1782,13 +1882,17 @@ export function createCabooseServer(options: ComputerPieces & {
         const deviceName = phoneName(input.deviceName)
         const fleet = options.fleet
         if (!fleet) throw new ComputerConflictError('This host has no phone sign-ins')
-        const id = pairing.redeem(input.code)
-        const runtime = id ? runtimes.get(id) : undefined
+        const grant = pairing.redeem(input.code)
+        if (grant && grant.computerId === null) {
+          const { token } = await fleet.phones.mint(null, deviceName, new Date(), grant.personId)
+          return json(response, 201, { token, scope: 'host', computer: null })
+        }
+        const runtime = grant?.computerId ? runtimes.get(grant.computerId) : undefined
         if (!runtime || deleting.has(runtime.id)) return json(response, 404, { error: 'pairing code not found or expired' })
         admitRequest(runtime.id)
         await options.cluster?.authorize(runtime.id)
         const { token } = await fleet.phones.mint(runtime.id, deviceName)
-        return json(response, 201, { token, computer: { id: runtime.id, name: runtime.settings.get().name } })
+        return json(response, 201, { token, scope: 'computer', computer: { id: runtime.id, name: runtime.settings.get().name } })
       }
       const principal = await principalOf(request)
       // A session cookie proves who the browser is, not which page sent the request.
@@ -1796,7 +1900,8 @@ export function createCabooseServer(options: ComputerPieces & {
       const locationRoute = /^\/v1\/computers\/([^/]+)\/location$/.exec(path)
       if (options.cluster && request.method === 'GET' && (path === '/v1/location' || locationRoute)) {
         if (!principal) return json(response, 401, { error: 'unauthorized' })
-        const id = locationRoute?.[1] ?? (principal.kind === 'phone' ? principal.computerId : OWNER_COMPUTER)
+        const id = locationRoute?.[1] ?? (principal.kind === 'phone' ? principal.computerId : defaultRuntime()?.id)
+        if (!id) return json(response, 404, NO_COMPUTER)
         if (principal.kind === 'phone' ? principal.computerId !== id : !manages(principal, id)) return json(response, 404, { error: 'computer not found' })
         const row = await options.cluster.coordinator.lookup(id)
         const host = row?.host_id && (await options.cluster.coordinator.pool.query('SELECT endpoint FROM caboose_cluster_hosts WHERE id=$1 AND NOT revoked', [row.host_id])).rows[0]
@@ -1840,7 +1945,7 @@ export function createCabooseServer(options: ComputerPieces & {
           usage: id => usage.get(id),
           computers: () => [...runtimes.values()].filter(r => !deleting.has(r.id)).map(describe),
           quotas: async id => { if (!identity) throw new AgentNotFoundError('tenant not found'); return (await identity.tenant(id)).quotas },
-          queued: () => { const stats = options.controller.stats() as { desk?: { queued?: number } }; return stats.desk?.queued ?? null },
+          queued: () => { const stats = (options.hostStats?.() ?? {}) as { desk?: { queued?: number } }; return stats.desk?.queued ?? null },
         }, principal, capacityTenant?.[1])
         response.setHeader('cache-control', 'no-store')
         return json(response, result.status, result.body)
@@ -1871,9 +1976,31 @@ export function createCabooseServer(options: ComputerPieces & {
       if (principal.kind === 'phone' && (fleetRoute || path === '/v1/health' || path === '/v1/host' || path.startsWith('/v1/host/'))) return json(response, 403, { error: 'forbidden' })
       if ((path === '/v1/health' || path === '/v1/host' || path.startsWith('/v1/host/')) && !administers(principal, null)) return json(response, 403, { error: 'Only the operator sees the host' })
       if (request.method === 'GET' && path === '/v1/health') {
-        return json(response, 200, { ...(options.controller.stats() as object), ...(options.machine ? { machine: await options.machine() } : {}), ...(options.sharedStorage ? { sharedStorage: options.sharedStorage() } : {}) })
+        const live = [...runtimes.values()].filter(runtime => !deleting.has(runtime.id))
+        return json(response, 200, { ...(options.hostStats?.() ?? {}), computers: { running: live.filter(runtime => runtime.computer.state === 'running').length, total: live.length }, ...(options.machine ? { machine: await options.machine() } : {}), ...(options.sharedStorage ? { sharedStorage: options.sharedStorage() } : {}) })
       }
       if (request.method === 'GET' && path === '/v1/host' && options.host) return json(response, 200, options.host)
+      if (path === '/v1/host/settings' && request.method === 'GET') return json(response, 200, hostView())
+      if (path === '/v1/host/settings' && request.method === 'PATCH') {
+        await hostSettings.update(await readJson(request), id => runtimes.has(id) && !deleting.has(id))
+        return json(response, 200, hostView())
+      }
+      if (path === '/v1/host/pairing' && request.method === 'POST') {
+        if (!options.fleet) throw new ComputerConflictError('This host has no phone sign-ins')
+        return json(response, 201, pairing.issue(null, (await ownPerson(principal))?.id ?? null))
+      }
+      if (path === '/v1/host/phones' && request.method === 'GET') return json(response, 200, { phones: options.fleet?.phones.list(null) ?? [] })
+      const hostPhone = /^\/v1\/host\/phones\/([^/]+)$/.exec(path)
+      if (hostPhone && request.method === 'DELETE') {
+        const phoneId = decodeURIComponent(hostPhone[1]!)
+        if (!options.fleet || !await options.fleet.phones.revoke(null, phoneId)) throw new AgentNotFoundError('phone not found')
+        for (const runtime of runtimes.values()) {
+          runtime.disconnectPhone(phoneId)
+          await runtime.push?.devices.removeByPhone(phoneId)
+          await runtime.activities?.store.removeByPhone(phoneId)
+        }
+        return json(response, 200, { revoked: true })
+      }
       if (path === '/v1/host/reach' && request.method === 'GET' && options.reach) return json(response, 200, await options.reach.status())
       if (path === '/v1/host/reach/tailscale' && request.method === 'PUT' && options.reach) {
         const input = await readJson(request)
@@ -1884,6 +2011,7 @@ export function createCabooseServer(options: ComputerPieces & {
         return json(response, 200, {
           computers: [...runtimes.values()].filter(r => !deleting.has(r.id) && manages(principal, r.id)).map(describe),
           canCreate: !!options.fleet && (!identity || await identity.claimed()), limits: { computers: options.fleet ? MAX_SLOTS : 1, running: options.fleet?.maxRunning ?? null },
+          defaultComputer: defaultRuntime()?.id ?? null, sizes: computerSizes(shared.gpuEnabled),
         })
       }
       if (path === '/v1/computers' && request.method === 'POST') return json(response, 201, describe(await createComputer(await readJson(request), principal)))
@@ -1966,6 +2094,7 @@ export function createCabooseServer(options: ComputerPieces & {
       }
       const routed = target(path, principal)
       if (routed === 'forbidden') return json(response, 403, { error: 'forbidden' })
+      if (routed === 'no-computer') return json(response, 404, NO_COMPUTER)
       if (!routed) return json(response, 404, { error: 'computer not found' })
       admitRequest(routed.runtime.id)
       await options.cluster?.authorize(routed.runtime.id)
@@ -2003,7 +2132,7 @@ export function createCabooseServer(options: ComputerPieces & {
       if (crossSite(request, principal, { trustedProxies, publicUrl: options.publicUrl, upgrade: true })) { socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n'); return }
       const routed = target(url.pathname, principal)
       if (routed === 'forbidden') { socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n'); return }
-      if (!routed || (routed.path !== '/v1/display' && routed.path !== '/v1/control' && routed.path !== '/v1/terminal' && routed.path !== '/v1/gpu' && routed.path !== '/v1/ai')) { socket.end('HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n'); return }
+      if (!routed || routed === 'no-computer' || (routed.path !== '/v1/display' && routed.path !== '/v1/control' && routed.path !== '/v1/terminal' && routed.path !== '/v1/gpu' && routed.path !== '/v1/ai')) { socket.end('HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n'); return }
       if (options.cluster) {
         const release = clusterAdmission.enter(routed.runtime.id, () => socket.destroy())
         let workDone = false, transportDone = socket.destroyed
@@ -2044,5 +2173,13 @@ export function createCabooseServer(options: ComputerPieces & {
     await Promise.all([...runtimes.values()].map(runtime => runtime.shutdown().catch(error => console.error(`Computer ${runtime.id} did not park:`, error))))
     await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()))
   }
-  return { server, computer: owner.computer, shutdown, recoverExpired }
+  return {
+    server, shutdown, recoverExpired,
+    /** The lifecycle of the computer the routes without one in their path serve (tests). */
+    get computer() {
+      const runtime = defaultRuntime()
+      if (!runtime) throw new Error('This host has no default computer')
+      return runtime.computer
+    },
+  }
 }

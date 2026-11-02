@@ -11,7 +11,7 @@ const script = fileURLToPath(new URL('./check-computers.mjs', import.meta.url))
 // Exercise the real command in a child process, including its cleanup after failed HTTP calls.
 async function run({ legacy = false, fail = null } = {}) {
   const requests = []
-  const owner = { id: 'owner', state: 'running', settings: { name: 'Owner' } }
+  const mine = { id: 'c-aaaaaaaaaa', state: 'running', settings: { name: 'Mine' } }
   let tenant = false
   let computer = false
   let revoked = false
@@ -32,7 +32,7 @@ async function run({ legacy = false, fail = null } = {}) {
     if (key === 'GET /v1/tenants') return reply(legacy ? 404 : 200, legacy ? { error: 'not found' } : { tenants: [] })
     if (key === 'POST /v1/tenants') { tenant = true; return reply(201, { id: 'test-tenant' }) }
     if (key === 'GET /v1/computers' && request.headers.authorization === 'Bearer phone-token') return reply(403)
-    if (key === 'GET /v1/computers') return reply(200, { computers: [owner, ...(computer ? [made()] : [])], canCreate: true })
+    if (key === 'GET /v1/computers') return reply(200, { computers: [mine, ...(computer ? [made()] : [])], canCreate: true, defaultComputer: mine.id })
     if (key === 'POST /v1/computers') {
       if (fail === 'create') return reply(500)
       if (!legacy && (!tenant || body.tenantId !== 'test-tenant')) return reply(400)
@@ -51,7 +51,7 @@ async function run({ legacy = false, fail = null } = {}) {
       return reply(201, { token: 'phone-token', computer: { id: 'c-0123456789' } })
     }
     if (key === 'GET /v1/computer') return reply(revoked ? 401 : 200, { settings: { name: 'Caboose check' } })
-    if (key === 'GET /v1/health' || key === 'GET /v1/computers/owner/computer') return reply(403)
+    if (key === 'GET /v1/health' || key === 'GET /v1/computers/c-0123456789/computer') return reply(403)
     if (key === 'GET /v1/computers/c-0123456789/phones') return reply(200, { phones: [{ id: 'test-phone', name: 'Caboose check' }] })
     if (key === 'DELETE /v1/computers/c-0123456789/phones/test-phone') { revoked = true; return reply(200) }
     if (key === 'GET /v1/computers/c-0123456789') {

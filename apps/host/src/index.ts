@@ -18,7 +18,9 @@ import { config } from './config.js'
 import { createStorageFromEnv } from '@braedonsaunders/appkit-storage/env'
 import { snapshotTierKey } from './snapshot-tier-config.js'
 import { startSnapshotGc } from './snapshot-tier-gc.js'
-import { ComputerRegistry, OWNER_COMPUTER, PhoneTokens, type ComputerRecord } from './computers.js'
+import { ComputerRegistry, PhoneTokens, type ComputerRecord } from './computers.js'
+import { HostSettings, settleLegacyComputer } from './host-settings.js'
+import { BOOT_STEPS, BootProgress, formatBytes, type BootReport } from './boot.js'
 import { ContainerSpecStore } from './container-spec.js'
 import { createContainerController, DEPOT_VOLUME, securityArgs } from './container-driver.js'
 import { containerDepotRunner, RuntimeDepot } from './depot.js'
@@ -101,6 +103,9 @@ const identity = Identity.create({
 const apns = await apnsFromEnvironment(process.env)
 const sender = apns ? new APNsSender(apns) : undefined
 const computers = await ComputerRegistry.open(deployment.imageRoot, identityDatabase)
+// A host from before computers were equal keeps its built-in computer as an ordinary one.
+await settleLegacyComputer(deployment.imageRoot, computers)
+const hostSettings = await HostSettings.open(join(deployment.imageRoot, 'host.json'))
 const phones = await PhoneTokens.open(join(deployment.imageRoot, 'phones.json'), clustered ? identityDatabase.pool : undefined)
 const portable = clustered ? await openPortableStorage(process.env, deployment.runtime) : undefined
 let cluster: ClusterRuntime | undefined
@@ -140,28 +145,29 @@ async function open(record: ComputerRecord, initial?: ComputerSettings): Promise
     const saved = JSON.parse(await readFile(join(dir, 'computer.json'), 'utf8'))
     if (!existsSync(join(dir, 'caboose.json'))) initial = saved.settings
   }
-  const settings = await openSettings(join(dir, 'caboose.json'), initial ?? { name: record.id === OWNER_COMPUTER ? 'Caboose' : 'Computer', defaultAgent: null, ...defaults })
+  const settings = await openSettings(join(dir, 'caboose.json'), initial ?? { name: 'Computer', defaultAgent: null, ...defaults })
   // A new computer's choices are saved at once, so a host restart keeps them.
   if (initial) await settings.update({ name: initial.name, memoryMb: initial.memoryMb, vcpus: initial.vcpus, idleMs: initial.idleMs })
   const push = sender ? new PushService(await PushDevices.open(join(dir, 'push-devices.json')), sender) : undefined
   const activities = apns && sender ? new ActivityService(await ActivityStore.open(join(dir, 'activities.json')), message => sender.send(message), apns.topic) : undefined
   const identity = { id: record.id, slot: record.slot }
+  const boot = new BootProgress(BOOT_STEPS[deployment.runtime])
   const containerSpec = deployment.runtime === 'container' ? await ContainerSpecStore.open(join(dir, 'container.json')) : undefined
   const controller = deployment.runtime === 'container'
-    ? createContainerController(deployment, { identity, settings: () => settings.get(), spec: () => containerSpec!.get() })
-    : createController(runtimeConfig, { identity, splitImage, depotPath: vmDepot, parkedFilesEnabled: deployment.parkedFiles, ...(desks ? { desks } : {}), settings: () => settings.get() })
+    ? createContainerController(deployment, { identity, settings: () => settings.get(), spec: () => containerSpec!.get(), progress: boot.report })
+    : createController(runtimeConfig, { identity, splitImage, progress: boot.report, depotPath: vmDepot, parkedFilesEnabled: deployment.parkedFiles, ...(desks ? { desks } : {}), settings: () => settings.get() })
   const profiles = await AgentProfiles.open(join(dir, 'agent-profiles.json'))
   const serviceMemory = deployment.runtime === 'container' ? await ServiceMemory.open(join(dir, 'services.json')) : undefined
   const commands = await CommandStore.open(join(dir, 'commands'))
   const paths = vmPaths(runtimeRoot, record.id, deployment.vmTemplate)
   const snapshotPath = paths.snapshot
+  const useSplit = deployment.runtime === 'microvm' ? () => usesSystemImage(join(deployment.imageRoot, 'overlays', `${record.id}.system-image.json`), paths.disk, snapshotPath, splitImage) : undefined
   const computerStorage = cluster ? undefined : storage.forComputer(record.id, controller, phoneId => phones.list(record.id).find(phone => phone.id === phoneId)?.name)
-  return { ...(computerStorage ? { storage: computerStorage } : {}), ...(deployment.runtime === 'microvm' ? { snapshotPath, ...(!cluster && tierStore && tierKey ? { snapshotTier: { store: tierStore, key: tierKey, delayMs: 4 * 60 * 60_000 } } : {}) } : {}), settings, profiles, commands, mcpLibraryFile: join(dir, 'mcp-library.json'), ...(serviceMemory ? { serviceMemory } : {}), ...(containerSpec ? { containerSpec } : {}), prepareKeyring: () => prepareKeyring(join(dir, 'keyring-secret'), controller.fileService!()), openToolJournal: dispatch => AgentToolJournal.open(join(dir, 'agent-tool-receipts.json'), dispatch), openRoutines: options => AgentRoutines.open(join(dir, 'agent-routines.json'), options), controller: cluster ? cluster.wrap(record.id, controller) : withImage(controller, image, deployment.runtime === 'microvm' ? () => usesSystemImage(join(deployment.imageRoot, 'overlays', `${record.id}.system-image.json`), paths.disk, snapshotPath, splitImage) : undefined), ...(push ? { push } : {}), ...(activities ? { activities } : {}) }
+  return { ...(computerStorage ? { storage: computerStorage } : {}), ...(deployment.runtime === 'microvm' ? { snapshotPath, ...(!cluster && tierStore && tierKey ? { snapshotTier: { store: tierStore, key: tierKey, delayMs: 4 * 60 * 60_000 } } : {}) } : {}), settings, profiles, commands, mcpLibraryFile: join(dir, 'mcp-library.json'), ...(serviceMemory ? { serviceMemory } : {}), ...(containerSpec ? { containerSpec } : {}), prepareKeyring: () => prepareKeyring(join(dir, 'keyring-secret'), controller.fileService!()), openToolJournal: dispatch => AgentToolJournal.open(join(dir, 'agent-tool-receipts.json'), dispatch), openRoutines: options => AgentRoutines.open(join(dir, 'agent-routines.json'), options), controller: cluster ? cluster.wrap(record.id, controller) : withImage(controller, image, useSplit), boot, ensureImage: report => waitForImage(image, report, useSplit), ...(push ? { push } : {}), ...(activities ? { activities } : {}) }
 }
 
-const ownerComputer = await open(computers.get(OWNER_COMPUTER)!)
 const existing = []
-for (const record of computers.list().filter(c => c.id !== OWNER_COMPUTER)) existing.push({ record, pieces: await open(record) })
+for (const record of computers.list()) existing.push({ record, pieces: await open(record) })
 const guestArchitecture = process.arch === 'arm64' ? 'arm64' : 'amd64'
 const registry = new AgentRegistry({ platform: guestArchitecture === 'arm64' ? 'linux-aarch64' : 'linux-x86_64', url: deployment.agentRegistryUrl, cachePath: join(deployment.imageRoot, 'agent-registry.json') })
 const webRoot = process.env.CABOOSE_WEB_ROOT ? resolve(process.env.CABOOSE_WEB_ROOT) : fileURLToPath(new URL('../../web/dist', import.meta.url))
@@ -170,10 +176,7 @@ const reach = new ReachService({
   bind: deployment.host, port: deployment.port, publicUrl: deployment.publicUrl, mdns: deployment.mdns,
   id: thisHost,
   // Phones list hosts by name, so an unnamed host is told apart by its machine's name.
-  name: () => {
-    const name = ownerComputer.settings.get().name
-    return name === 'Caboose' ? `Caboose on ${machineName()}` : name
-  },
+  name: () => hostSettings.get().name ?? `Caboose on ${machineName()}`,
 })
 // The Library's host-wide parts: Flathub's index, the Craft releases, the shared runtimes and
 // the architecture that picks a game's native build.
@@ -194,7 +197,7 @@ const library = {
 void library.flathub.ready().catch(error => console.error('Flathub index unavailable:', error instanceof Error ? error.message : error))
 const host = describeHost(deployment, process.env, { push: !!sender, liveActivities: !!(apns && sender) })
 const app = createCabooseServer({
-  token: owner.token, ...ownerComputer, registry, library, host, agentIdleMs: deployment.agentIdleMs, freezeParkMs: deployment.freezeParkMs, webRoot,
+  token: owner.token, hostSettings, displayName: () => hostSettings.get().name ?? `Caboose on ${machineName()}`, hostStats, registry, library, host, agentIdleMs: deployment.agentIdleMs, freezeParkMs: deployment.freezeParkMs, webRoot,
   capacityRoot: deployment.imageRoot,
   usageHistoryFile: join(deployment.imageRoot, 'usage-history.json'),
   machine: () => machineResources(deployment.imageRoot), reach, sharedStorage: () => storage.sharedStorage(),
@@ -244,6 +247,32 @@ function withImage(controller: Controller, provisioner: ImageProvisioner, useSpl
   }
   gated.stats = () => ({ ...(controller.stats() as object), image: provisioner.status() })
   return gated
+}
+
+/** The host's own runtime facts for `GET /v1/health`: its hypervisor or GPU, and the computers' image. */
+function hostStats(): object {
+  if (desks) return { host: 'caboose-host', hypervisor: process.platform === 'darwin' ? 'virtualization' : 'cloud-hypervisor', kvm: existsSync('/dev/kvm'), desk: desks.stats(), image: image.status() }
+  return { host: 'caboose-host', runtime: deployment.runtime, gpu: host.gpu, image: image.status() }
+}
+
+/**
+ * Waits for the computers' image for a computer being started, reporting the download as the
+ * boot's image step. Resolves at once when the image is present or the computer boots from a
+ * system image of its own.
+ */
+async function waitForImage(provisioner: ImageProvisioner, report: BootReport, useSplit?: () => Promise<boolean>): Promise<void> {
+  if (await useSplit?.()) return
+  const ensured = provisioner.ensure()
+  const show = () => {
+    const status = provisioner.status()
+    if (status.state !== 'fetching') return
+    const total = status.totalBytes || null
+    report('image', { detail: total ? `${formatBytes(status.receivedBytes ?? 0)} of ${formatBytes(total)}` : null, progress: total ? { completed: status.receivedBytes ?? 0, total } : null })
+  }
+  show()
+  const timer = setInterval(show, 500)
+  try { await ensured } finally { clearInterval(timer) }
+  if (provisioner.status().state === 'missing') throw new ComputerConflictError(missingImage())
 }
 
 /** What an owner does when the computer's image is absent and the host has none to fetch. */

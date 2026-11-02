@@ -2,7 +2,7 @@
 // Run against a real configured host. Makes a throwaway computer, wakes it, pairs a phone with
 // it, checks the phone reaches only that computer, signs the phone out and deletes the
 // computer with its disk. Hosts with accounts also get a throwaway tenant, deleted last.
-// No accounts are created, and the owner's computer is only read. --fence also checks, as root or
+// No accounts are created, and the host's other computers are only read. --fence also checks, as root or
 // through `sudo -n`, that the host's fence rejects traffic between computers.
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
@@ -26,9 +26,8 @@ async function call(path, { method = 'GET', body, bearer = token, expect = 200 }
 }
 
 const before = await call('/v1/computers')
-assert.equal(before.computers[0].id, 'owner')
 assert.equal(before.canCreate, true, 'This host was started without room for more computers')
-const owner = before.computers[0]
+const states = computers => Object.fromEntries(computers.map(computer => [computer.id, computer.state === 'running']))
 
 let tenant
 let made
@@ -50,7 +49,7 @@ try {
   assert.equal(session.computer.name, 'Caboose check')
   const listed = await call('/v1/computers')
   assert.equal(listed.computers.find(computer => computer.id === made.id)?.state, 'running')
-  assert.equal(listed.computers.find(computer => computer.id === 'owner')?.settings.name, owner.settings.name)
+  for (const other of before.computers) assert.equal(listed.computers.find(computer => computer.id === other.id)?.settings.name, other.settings.name)
   console.log('The new computer woke on its own disk and network.')
 
   if (args.includes('--fence')) {
@@ -70,7 +69,7 @@ try {
   await call('/v1/pair', { method: 'POST', bearer: null, body: { code, deviceName: 'Again' }, expect: 404 })
   const phone = paired.token
   assert.equal((await call('/v1/computer', { bearer: phone })).settings.name, 'Caboose check')
-  for (const path of ['/v1/health', '/v1/computers', '/v1/computers/owner/computer']) await call(path, { bearer: phone, expect: 403 })
+  for (const path of ['/v1/health', '/v1/computers', `/v1/computers/${made.id}/computer`]) await call(path, { bearer: phone, expect: 403 })
   const { phones } = await call(`/v1/computers/${made.id}/phones`)
   const signedIn = phones.find(entry => entry.name === 'Caboose check')
   assert.ok(signedIn, 'The paired phone is listed')
@@ -107,5 +106,6 @@ if (failures.length === 1) throw failures[0]
 if (failures.length > 1) throw new AggregateError(failures, 'The computer check or its cleanup failed')
 const after = await call('/v1/computers')
 assert.deepEqual(after.computers.map(computer => computer.id), before.computers.map(computer => computer.id))
-assert.equal(after.computers[0].state === 'running', owner.state === 'running', "The owner's computer was left as it was")
+assert.deepEqual(states(after.computers), states(before.computers), 'The host\'s other computers were left as they were')
+assert.equal(after.defaultComputer ?? null, before.defaultComputer ?? null, 'The host\'s default computer was left as it was')
 console.log('Computers check passed.')

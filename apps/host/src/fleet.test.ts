@@ -6,9 +6,9 @@ import { join } from 'node:path'
 import type { AddressInfo } from 'node:net'
 import { WebSocket, WebSocketServer } from 'ws'
 import { afterEach, expect, it, vi } from 'vitest'
-import { ComputerRegistry, OWNER_COMPUTER, PhoneTokens, type ComputerRecord } from './computers.js'
+import { ComputerRegistry, PhoneTokens, type ComputerRecord } from './computers.js'
 import { PushDevices, PushService } from './push.js'
-import { createCabooseServer, type ComputerPieces, type Controller } from './server.js'
+import { createCabooseServer, STANDALONE_COMPUTER, type ComputerPieces, type Controller } from './server.js'
 import { SettingsStore, settingsLimits, type ComputerSettings } from './settings.js'
 
 const close: Array<() => Promise<void>> = []
@@ -32,7 +32,8 @@ function memorySettings(value: ComputerSettings): SettingsStore {
   return new SettingsStore(value, settingsLimits(), { load: async () => undefined, save: async () => {} })
 }
 
-async function startHost(gpu = false, small = false) {
+/** A host with one computer already made (`first`), or none when `empty`. */
+async function startHost(gpu = false, small = false, empty = false) {
   const root = await mkdtemp(join(tmpdir(), 'caboose-fleet-'))
   close.push(() => rm(root, { recursive: true, force: true }))
   const echo = new WebSocketServer({ port: 0 })
@@ -53,8 +54,12 @@ async function startHost(gpu = false, small = false) {
     const push = new PushService(await PushDevices.open(join(computers.dataDir(record.id), 'push-devices.json')), sender)
     return { settings: memorySettings(initial ?? { name: 'Caboose', memoryMb: 2048, vcpus: 2, idleMs: 600_000, defaultAgent: null }), controller: fake.controller, push }
   }
-  const owner = await open(computers.get(OWNER_COMPUTER)!)
-  const app = createCabooseServer({ token: 'owner', ...owner, ...(small ? { machine: async () => ({ memoryMb: 2048, availableMemoryMb: 1024, cpus: 2, disk: null }) } : {}), ...(gpu ? { host: { version: 'test', node: 'test', runtime: 'container' as const, gpu: 'dri' as const, image: 'test', push: false, liveActivities: false, settings: [] } } : {}), fleet: { computers, phones, open, defaults: { memoryMb: 4096, vcpus: 2, idleMs: 600_000 }, maxRunning: 4 } })
+  const existing: Array<{ record: ComputerRecord; pieces: ComputerPieces }> = []
+  if (!empty) {
+    const record = await computers.create()
+    existing.push({ record, pieces: await open(record) })
+  }
+  const app = createCabooseServer({ token: 'owner', ...(small ? { machine: async () => ({ memoryMb: 2048, availableMemoryMb: 1024, cpus: 2, disk: null }) } : {}), ...(gpu ? { host: { version: 'test', node: 'test', runtime: 'container' as const, gpu: 'dri' as const, image: 'test', push: false, liveActivities: false, settings: [] } } : {}), fleet: { computers, phones, open, existing, defaults: { memoryMb: 4096, vcpus: 2, idleMs: 600_000 }, maxRunning: 4 } })
   app.server.listen(0, '127.0.0.1')
   await once(app.server, 'listening')
   close.push(() => new Promise(resolve => app.server.close(() => resolve())))
@@ -64,13 +69,13 @@ async function startHost(gpu = false, small = false) {
     headers: { authorization: `Bearer ${init.token ?? 'owner'}`, ...(init.body !== undefined ? { 'content-type': 'application/json' } : {}) },
     body: init.body === undefined ? undefined : JSON.stringify(init.body),
   })
-  return { root, base, call, made, computers, phones, sent }
+  return { root, base, call, made, computers, phones, sent, first: existing[0]?.record.id as string }
 }
 
 it('lists, makes and serves several computers, each through its own routes', async () => {
   const host = await startHost()
   const listed = await (await host.call('/v1/computers')).json()
-  expect(listed).toMatchObject({ canCreate: true, limits: { computers: 32832, running: 4 }, computers: [{ id: 'owner', state: 'parked', settings: { name: 'Caboose' } }] })
+  expect(listed).toMatchObject({ canCreate: true, limits: { computers: 32832, running: 4 }, defaultComputer: host.first, computers: [{ id: host.first, state: 'parked', settings: { name: 'Caboose' } }] })
 
   expect((await host.call('/v1/computers', { method: 'POST', body: { memoryMb: 2048 } })).status).toBe(400)
   expect((await host.call('/v1/computers', { method: 'POST', body: { name: 'Kids', defaultAgent: 'claude' } })).status).toBe(400)
@@ -83,16 +88,16 @@ it('lists, makes and serves several computers, each through its own routes', asy
 
   expect((await host.call(`/v1/computers/${kids.id}/session`, { method: 'POST' })).status).toBe(200)
   expect(host.made.get(kids.id)!.calls).toEqual(['wake'])
-  expect(host.made.get(OWNER_COMPUTER)!.calls).toEqual([])
+  expect(host.made.get(host.first)!.calls).toEqual([])
   expect(await (await host.call(`/v1/computers/${kids.id}/apps`)).json()).toEqual([expect.objectContaining({ id: `${kids.id}.desktop` })])
   expect((await (await host.call(`/v1/computers/${kids.id}`)).json()).state).toBe('running')
-  // The routes without a computer stay the owner's computer's.
+  // The routes without a computer stay the default computer's.
   expect((await (await host.call('/v1/computer')).json()).state).toBe('parked')
   expect((await host.call('/v1/computers/c-ffffffffff/computer')).status).toBe(404)
   expect((await host.call('/v1/computers/c-ffffffffff')).status).toBe(404)
 
   const after = await (await host.call('/v1/computers')).json()
-  expect(after.computers.map((c: { id: string }) => c.id)).toEqual(['owner', kids.id])
+  expect(after.computers.map((c: { id: string }) => c.id)).toEqual([host.first, kids.id])
 })
 
 it('applies presets through creation and settings without changing custom machines', async () => {
@@ -137,7 +142,7 @@ it('signs a phone in to one computer only, and signing it out closes what it has
   const paired = await pair({ code: ` ${issued.code.slice(0, 4).toLowerCase()}-${issued.code.slice(4)} `, deviceName: 'iPad' })
   expect(paired.status).toBe(201)
   const minted = await paired.json()
-  expect(minted).toEqual({ token: expect.stringMatching(/^cbp_/), computer: { id: kids.id, name: 'Kids' } })
+  expect(minted).toEqual({ token: expect.stringMatching(/^cbp_/), scope: 'computer', computer: { id: kids.id, name: 'Kids' } })
   // A code pairs one phone, once.
   expect((await pair({ code: issued.code, deviceName: 'Another' })).status).toBe(404)
   const phone = minted.token as string
@@ -145,14 +150,14 @@ it('signs a phone in to one computer only, and signing it out closes what it has
   // The phone's own routes are its computer's; host and fleet routes are the owner's alone.
   expect((await host.call('/v1/session', { method: 'POST', token: phone })).status).toBe(200)
   expect(host.made.get(kids.id)!.calls).toEqual(['wake'])
-  expect(host.made.get(OWNER_COMPUTER)!.calls).toEqual([])
-  for (const path of ['/v1/health', '/v1/computers', `/v1/computers/${kids.id}`, `/v1/computers/${kids.id}/phones`, `/v1/computers/${kids.id}/pairing`, `/v1/computers/${OWNER_COMPUTER}/computer`]) {
+  expect(host.made.get(host.first)!.calls).toEqual([])
+  for (const path of ['/v1/health', '/v1/computers', `/v1/computers/${kids.id}`, `/v1/computers/${kids.id}/phones`, `/v1/computers/${kids.id}/pairing`, `/v1/computers/${host.first}/computer`]) {
     expect((await host.call(path, { token: phone })).status, path).toBe(403)
   }
   expect((await host.call('/v1/computer', { token: 'cbp_not-a-token' })).status).toBe(401)
   const chat = '11111111-1111-4111-8111-111111111111'
-  expect((await host.call(`/v1/computers/${OWNER_COMPUTER}/agent/tasks/${chat}`, { method: 'DELETE', token: phone, body: { stop: true } })).status).toBe(403)
-  expect(host.made.get(OWNER_COMPUTER)!.calls).toEqual([])
+  expect((await host.call(`/v1/computers/${host.first}/agent/tasks/${chat}`, { method: 'DELETE', token: phone, body: { stop: true } })).status).toBe(403)
+  expect(host.made.get(host.first)!.calls).toEqual([])
 
 
   // Notifications it registers are its computer's, and go when it is signed out.
@@ -168,7 +173,7 @@ it('signs a phone in to one computer only, and signing it out closes what it has
   const listed = await (await host.call(`/v1/computers/${kids.id}/phones`)).json()
   expect(listed.phones).toEqual([expect.objectContaining({ name: 'iPad', lastUsedAt: expect.any(String) })])
   const phoneId = listed.phones[0].id as string
-  expect((await host.call(`/v1/computers/${OWNER_COMPUTER}/phones/${phoneId}`, { method: 'DELETE' })).status).toBe(404)
+  expect((await host.call(`/v1/computers/${host.first}/phones/${phoneId}`, { method: 'DELETE' })).status).toBe(404)
   const closed = once(socket, 'close')
   expect((await host.call(`/v1/computers/${kids.id}/phones/${phoneId}`, { method: 'DELETE' })).status).toBe(200)
   await closed
@@ -176,7 +181,7 @@ it('signs a phone in to one computer only, and signing it out closes what it has
   expect((await (await host.call(`/v1/computers/${kids.id}/devices/push`)).json()).devices).toHaveLength(0)
 })
 
-it("deletes a computer with its disk, files and phones, but never the owner's", async () => {
+it('deletes any computer with its disk, files and phones, and moves the default to the next', async () => {
   const host = await startHost()
   const kids = await (await host.call('/v1/computers', { method: 'POST', body: { name: 'Kids' } })).json()
   const { token } = await host.phones.mint(kids.id, 'iPad')
@@ -184,7 +189,6 @@ it("deletes a computer with its disk, files and phones, but never the owner's", 
   const dir = host.computers.dataDir(kids.id)
   expect(existsSync(join(dir, 'caboose.json'))).toBe(true)
 
-  expect((await host.call(`/v1/computers/${OWNER_COMPUTER}`, { method: 'DELETE', body: { confirm: true } })).status).toBe(409)
   expect((await host.call(`/v1/computers/${kids.id}`, { method: 'DELETE', body: {} })).status).toBe(400)
   const deleted = await host.call(`/v1/computers/${kids.id}`, { method: 'DELETE', body: { confirm: true } })
   expect(deleted.status).toBe(200)
@@ -194,22 +198,117 @@ it("deletes a computer with its disk, files and phones, but never the owner's", 
   expect((await host.call(`/v1/computers/${kids.id}`)).status).toBe(404)
   expect((await host.call('/v1/computer', { token })).status).toBe(401)
   expect((await fetch(`${host.base}/v1/pair`, { method: 'POST', body: JSON.stringify({ code, deviceName: 'Late' }) })).status).toBe(404)
-  expect((await (await host.call('/v1/computers')).json()).computers.map((c: { id: string }) => c.id)).toEqual(['owner'])
-  expect(host.made.get(OWNER_COMPUTER)!.calls).toEqual([])
+  expect((await (await host.call('/v1/computers')).json()).computers.map((c: { id: string }) => c.id)).toEqual([host.first])
+  expect(host.made.get(host.first)!.calls).toEqual([])
+
+  // The first computer is nothing special: deleting the default hands it to the next one.
+  const next = await (await host.call('/v1/computers', { method: 'POST', body: { name: 'Next' } })).json()
+  expect((await host.call(`/v1/computers/${host.first}`, { method: 'DELETE', body: { confirm: true } })).status).toBe(200)
+  expect(await (await host.call('/v1/host/settings')).json()).toMatchObject({ defaultComputer: next.id })
+  expect((await (await host.call('/v1/computer')).json()).settings.name).toBe('Next')
+  expect((await host.call(`/v1/computers/${next.id}`, { method: 'DELETE', body: { confirm: true } })).status).toBe(200)
+  expect(await (await host.call('/v1/host/settings')).json()).toMatchObject({ defaultComputer: null })
+  expect(await (await host.call('/v1/computer')).json()).toEqual({ error: 'This host has no computer yet; create one', code: 'no-computer' })
 })
 
-it('serves only the owner computer without a fleet', async () => {
-  const { controller } = fakeController('owner')
+it('serves a host with no computers, and makes its first computer the default', async () => {
+  const host = await startHost(false, false, true)
+  expect(await (await host.call('/v1/computers')).json()).toMatchObject({ computers: [], canCreate: true, defaultComputer: null, sizes: expect.arrayContaining([expect.objectContaining({ id: 'micro' })]) })
+  for (const path of ['/v1/computer', '/v1/session', '/v1/boot']) {
+    const response = await host.call(path, { method: path === '/v1/computer' ? 'GET' : 'POST' })
+    expect(response.status, path).toBe(404)
+    expect((await response.json()).code, path).toBe('no-computer')
+  }
+  const socket = new WebSocket(`${host.base.replace('http:', 'ws:')}/v1/display`, 'binary', { headers: { authorization: 'Bearer owner' } })
+  expect((await once(socket, 'unexpected-response'))[1].statusCode).toBe(404)
+  expect((await (await host.call('/v1/health')).json()).computers).toEqual({ running: 0, total: 0 })
+
+  const first = await (await host.call('/v1/computers', { method: 'POST', body: { name: 'Mine' } })).json()
+  expect(await (await host.call('/v1/host/settings')).json()).toEqual({ name: null, displayName: 'Caboose', defaultComputer: first.id })
+  expect((await (await host.call('/v1/computer')).json()).settings.name).toBe('Mine')
+  // A second computer leaves the default alone until the owner moves it.
+  const second = await (await host.call('/v1/computers', { method: 'POST', body: { name: 'Other' } })).json()
+  expect((await (await host.call('/v1/computers')).json()).defaultComputer).toBe(first.id)
+  expect((await host.call('/v1/host/settings', { method: 'PATCH', body: { defaultComputer: 'c-ffffffffff' } })).status).toBe(400)
+  expect((await host.call('/v1/host/settings', { method: 'PATCH', body: { color: 'red' } })).status).toBe(400)
+  expect(await (await host.call('/v1/host/settings', { method: 'PATCH', body: { name: ' Den ', defaultComputer: second.id } })).json()).toEqual({ name: 'Den', displayName: 'Den', defaultComputer: second.id })
+  expect((await (await host.call('/v1/computer')).json()).settings.name).toBe('Other')
+})
+
+it('pairs a host phone that reaches every computer as the owner, and signs it out', async () => {
+  const host = await startHost(false, false, true)
+  const issued = await (await host.call('/v1/host/pairing', { method: 'POST' })).json()
+  const pair = (body: unknown) => fetch(`${host.base}/v1/pair`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+  const minted = await (await pair({ code: issued.code, deviceName: 'Owner iPhone' })).json()
+  expect(minted).toEqual({ token: expect.stringMatching(/^cbp_/), scope: 'host', computer: null })
+  const phone = minted.token as string
+  expect((await (await host.call('/v1/host/phones')).json()).phones).toEqual([expect.objectContaining({ name: 'Owner iPhone' })])
+
+  // With no computer yet, the phone sees the empty host and makes the first one.
+  expect((await (await host.call('/v1/computers', { token: phone })).json()).computers).toEqual([])
+  const made = await host.call('/v1/computers', { method: 'POST', token: phone, body: { name: 'First', size: 'micro' } })
+  expect(made.status).toBe(201)
+  const first = await made.json()
+  expect((await host.call(`/v1/computers/${first.id}/session`, { method: 'POST', token: phone })).status).toBe(200)
+  const socket = new WebSocket(`${host.base.replace('http:', 'ws:')}/v1/computers/${first.id}/display`, 'binary', { headers: { authorization: `Bearer ${phone}` } })
+  await once(socket, 'open')
+  expect((await host.call('/v1/host/settings', { token: phone })).status).toBe(200)
+  // Host routes are the operator's; a computer phone has none of them.
+  const computerPhone = (await host.phones.mint(first.id, 'Kid iPad')).token
+  expect((await host.call('/v1/host/phones', { token: computerPhone })).status).toBe(403)
+  expect((await host.call('/v1/host/pairing', { method: 'POST', token: computerPhone })).status).toBe(403)
+
+  const phoneId = (await (await host.call('/v1/host/phones')).json()).phones[0].id as string
+  expect((await host.call(`/v1/computers/${first.id}/phones/${phoneId}`, { method: 'DELETE' })).status).toBe(404)
+  const closed = once(socket, 'close')
+  expect(await (await host.call(`/v1/host/phones/${phoneId}`, { method: 'DELETE' })).json()).toEqual({ revoked: true })
+  await closed
+  expect((await host.call('/v1/computers', { token: phone })).status).toBe(401)
+  expect((await host.call(`/v1/host/phones/${phoneId}`, { method: 'DELETE' })).status).toBe(404)
+})
+
+it('starts a new computer and streams each step of its boot until it runs', async () => {
+  const host = await startHost(false, false, true)
+  const made = await (await host.call('/v1/computers', { method: 'POST', body: { name: 'First', start: true } })).json()
+  expect(made.boot).toMatchObject({ state: 'running' })
+  await vi.waitFor(async () => expect((await (await host.call(`/v1/computers/${made.id}/boot`)).json()).boot.state).toBe('succeeded'))
+  const { boot } = await (await host.call(`/v1/computers/${made.id}/boot`)).json()
+  expect(boot.error).toBeNull()
+  expect(boot.finishedAt).toEqual(expect.any(String))
+  expect(host.made.get(made.id)!.calls).toEqual(['wake'])
+  expect((await host.call('/v1/computers', { method: 'POST', body: { name: 'Bad', start: 'yes' } })).status).toBe(400)
+
+  // A failing start says so, at the step it failed, and the same route retries it.
+  const second = await (await host.call('/v1/computers', { method: 'POST', body: { name: 'Second' } })).json()
+  const fake = host.made.get(second.id)!
+  let fail = true
+  const wake = fake.controller.wake
+  fake.controller.wake = async mode => { if (fail) throw new Error('No space left on device'); return wake(mode) }
+  const events = await fetch(`${host.base}/v1/computers/${second.id}/boot`, { headers: { authorization: 'Bearer owner', accept: 'text/event-stream' } })
+  expect(events.headers.get('content-type')).toMatch(/^text\/event-stream/)
+  expect((await host.call(`/v1/computers/${second.id}/boot`, { method: 'POST' })).status).toBe(202)
+  const stream = await events.text()
+  const frames = stream.split('\n\n').filter(frame => frame.startsWith('event: boot')).map(frame => JSON.parse(frame.split('\ndata: ')[1]!).boot)
+  expect(frames[0]).toBeNull()
+  expect(frames.at(-1)).toMatchObject({ state: 'failed', error: 'No space left on device' })
+  fail = false
+  expect((await host.call(`/v1/computers/${second.id}/boot`, { method: 'POST' })).status).toBe(202)
+  await vi.waitFor(async () => expect((await (await host.call(`/v1/computers/${second.id}/boot`)).json()).boot.state).toBe('succeeded'))
+})
+
+it('serves the one computer it is given without a fleet', async () => {
+  const { controller } = fakeController('solo')
   const app = createCabooseServer({ token: 'owner', settings: memorySettings({ name: 'Solo', memoryMb: 2048, vcpus: 2, idleMs: 600_000, defaultAgent: null }), controller })
   app.server.listen(0, '127.0.0.1')
   await once(app.server, 'listening')
   close.push(() => new Promise(resolve => app.server.close(() => resolve())))
   const base = `http://127.0.0.1:${(app.server.address() as AddressInfo).port}`
   const headers = { authorization: 'Bearer owner', 'content-type': 'application/json' }
-  expect(await (await fetch(`${base}/v1/computers`, { headers })).json()).toMatchObject({ canCreate: false, computers: [{ id: 'owner', createdAt: null }] })
+  expect(await (await fetch(`${base}/v1/computers`, { headers })).json()).toMatchObject({ canCreate: false, computers: [{ id: STANDALONE_COMPUTER, createdAt: null }] })
   expect((await fetch(`${base}/v1/computers`, { method: 'POST', headers, body: JSON.stringify({ name: 'More' }) })).status).toBe(409)
-  expect((await fetch(`${base}/v1/computers/owner/pairing`, { method: 'POST', headers })).status).toBe(409)
-  expect((await fetch(`${base}/v1/computers/owner/computer`, { headers })).status).toBe(200)
+  expect((await fetch(`${base}/v1/computers/${STANDALONE_COMPUTER}/pairing`, { method: 'POST', headers })).status).toBe(409)
+  expect((await fetch(`${base}/v1/computers/${STANDALONE_COMPUTER}/computer`, { headers })).status).toBe(200)
+  expect((await fetch(`${base}/v1/computers/${STANDALONE_COMPUTER}`, { method: 'DELETE', headers, body: JSON.stringify({ confirm: true }) })).status).toBe(409)
 })
 
 it('deletes a computer whose first-wake components upgrade is still running, once the upgrade is done', async () => {

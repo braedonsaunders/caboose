@@ -17,6 +17,7 @@ it('manages durable profile memory while parked and isolates phone access to its
   const root = await mkdtemp(join(tmpdir(), 'caboose-profile-api-'))
   cleanups.push(() => rm(root, { recursive: true, force: true }))
   const computers = await ComputerRegistry.open(root)
+  const first = await computers.create()
   const second = await computers.create()
   const phones = PhoneTokens.memory()
   const wake = vi.fn(async () => { throw new Error('Profile management must not wake the guest') })
@@ -34,10 +35,10 @@ it('manages durable profile memory while parked and isolates phone access to its
       profiles: await AgentProfiles.open(join(computers.dataDir(id), 'agent-profiles.json')),
     }
   }
-  const owner = await open('owner')
+  const own = await open(first.id)
   const other = await open(second.id)
-  const app = createCabooseServer({ token: 'owner-token', ...owner,
-    fleet: { computers, phones, defaults, maxRunning: null, open: record => open(record.id), existing: [{ record: second, pieces: other }] },
+  const app = createCabooseServer({ token: 'owner-token',
+    fleet: { computers, phones, defaults, maxRunning: null, open: record => open(record.id), existing: [{ record: first, pieces: own }, { record: second, pieces: other }] },
   })
   app.server.listen(0, '127.0.0.1')
   await once(app.server, 'listening')
@@ -57,12 +58,12 @@ it('manages durable profile memory while parked and isolates phone access to its
   const phone = await phones.mint(second.id, 'Other phone')
   expect(await (await call('/v1/agent/profiles', 'GET', undefined, phone.token)).json()).toEqual({ profiles: [] })
   expect((await call(`/v1/agent/profiles/${profile.id}`, 'GET', undefined, phone.token)).status).toBe(404)
-  expect((await call('/v1/computers/owner/agent/profiles', 'GET', undefined, phone.token)).status).toBe(403)
+  expect((await call(`/v1/computers/${first.id}/agent/profiles`, 'GET', undefined, phone.token)).status).toBe(403)
   expect((await call(`/v1/agent/profiles/${profile.id}`, 'PATCH', { workspace: '/etc' })).status).toBe(400)
   expect((await call('/v1/agent/tasks', 'POST', { prompt: 'Override', workspace: '/etc' })).status).toBe(400)
   expect((await call(`/v1/agent/profiles/${profile.id}`, 'PATCH', { archived: true })).status).toBe(200)
   expect((await call('/v1/agent/tasks', 'POST', { profileId: profile.id, prompt: 'Must not run' })).status).toBe(409)
-  const saved = await AgentProfiles.open(join(root, 'agent-profiles.json'))
+  const saved = await AgentProfiles.open(join(computers.dataDir(first.id), 'agent-profiles.json'))
   expect(saved.get(profile.id).memories).toMatchObject([{ title: 'Timezone', content: 'America/Toronto' }])
   expect(wake).not.toHaveBeenCalled()
 })

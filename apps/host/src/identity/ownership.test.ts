@@ -14,6 +14,8 @@ beforeAll(async () => {
   root = await mkdtemp(join(tmpdir(), 'caboose-ownership-'))
   database = await openIdentityDatabase({ dataDir: join(root, 'identity') })
   identity = Identity.create({ database, baseURL: 'http://localhost:7310', secret: 'x'.repeat(40), setupCodePath: join(root, 'setup-code') })
+  // A host from before computers were equal, whose built-in computer setup gives to its first person.
+  await writeFile(join(root, 'computers.json'), JSON.stringify({ computers: [] }))
   registry = await ComputerRegistry.open(root, database)
 }, 60_000)
 afterAll(async () => { await database.close(); await rm(root, { recursive: true, force: true }) })
@@ -92,4 +94,34 @@ it('imports legacy slots and named people atomically without guessing identities
     expect((await ComputerRegistry.open(legacyRoot, legacyDatabase)).get('c-123456789a')).toBeUndefined()
     expect(Number((await legacyDatabase.pool.query('SELECT count(*) n FROM caboose_people')).rows[0].n)).toBe(2)
   } finally { await legacyDatabase.close(); await rm(legacyRoot, { recursive: true, force: true }) }
+}, 60_000)
+
+it('starts a new host with no computers and never brings back a deleted one from old files', async () => {
+  const freshRoot = await mkdtemp(join(tmpdir(), 'caboose-fresh-ownership-'))
+  const freshDatabase = await openIdentityDatabase({ dataDir: join(freshRoot, 'identity') })
+  try {
+    const fresh = await ComputerRegistry.open(freshRoot, freshDatabase)
+    expect(fresh.list()).toEqual([])
+    const made = await fresh.create()
+    expect(made.slot).toBe(1)
+    await fresh.remove(made.id)
+    // Files an older host would have left must not resurrect a computer once the database has been set up.
+    await writeFile(join(freshRoot, 'caboose.json'), JSON.stringify({ name: 'Stale' }))
+    await writeFile(join(freshRoot, 'computers.json'), JSON.stringify({ computers: [{ id: 'c-123456789a', slot: 1, createdAt: '2026-01-01T00:00:00Z' }] }))
+    expect((await ComputerRegistry.open(freshRoot, freshDatabase)).list()).toEqual([])
+  } finally { await freshDatabase.close(); await rm(freshRoot, { recursive: true, force: true }) }
+}, 60_000)
+
+it('keeps a database host\'s built-in computer as an ordinary computer that can be deleted', async () => {
+  const oldRoot = await mkdtemp(join(tmpdir(), 'caboose-old-ownership-'))
+  const oldDatabase = await openIdentityDatabase({ dataDir: join(oldRoot, 'identity') })
+  try {
+    // As a host before this release left it: the built-in computer's row, imported long ago.
+    await oldDatabase.pool.query("INSERT INTO caboose_computers(id, slot, assignment_pending) VALUES ('owner', 0, true), ('c-123456789a', 1, true)")
+    const registry = await ComputerRegistry.open(oldRoot, oldDatabase)
+    expect(registry.list().map(record => [record.id, record.slot])).toEqual([['owner', 0], ['c-123456789a', 1]])
+    await registry.remove('owner')
+    expect((await registry.create()).slot).toBe(2)
+    expect((await ComputerRegistry.open(oldRoot, oldDatabase)).get('owner')).toBeUndefined()
+  } finally { await oldDatabase.close(); await rm(oldRoot, { recursive: true, force: true }) }
 }, 60_000)

@@ -6,12 +6,17 @@ import { SettingsInputError } from '../settings.js'
 export class ComputerStore {
   constructor(private pool: Pool) {}
 
-  async initialize(legacy: ComputerRecord[]): Promise<ComputerRecord[]> {
+  /**
+   * Imports the computers a host kept before its database, once: `caboose_registry_state`
+   * records the import, so a host whose computers were all deleted stays empty.
+   */
+  async initialize(legacy: () => Promise<ComputerRecord[]>): Promise<ComputerRecord[]> {
     await this.transaction(async client => {
       // One host owns a state directory. The lock also makes first-open imports atomic.
       await client.query('LOCK TABLE caboose_computers IN EXCLUSIVE MODE')
-      if ((await client.query('SELECT id FROM caboose_computers LIMIT 1')).rowCount) return
-      for (const record of legacy) {
+      if ((await client.query('SELECT id FROM caboose_registry_state')).rowCount) return
+      const present = (await client.query('SELECT id FROM caboose_computers LIMIT 1')).rowCount
+      for (const record of present ? [] : await legacy()) {
         let personId: string | null = null
         if (record.tenantId && record.person) {
           // A name is not an identity: never collapse different legacy people by name.
@@ -20,6 +25,7 @@ export class ComputerStore {
         }
         await this.upsert(client, { ...record, personId })
       }
+      await client.query('INSERT INTO caboose_registry_state (id) VALUES (1)')
     })
     return this.load()
   }

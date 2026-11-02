@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import type { AddressInfo } from 'node:net'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { WebSocket } from 'ws'
-import { ComputerRegistry, OWNER_COMPUTER, PhoneTokens, type ComputerRecord } from './computers.js'
+import { ComputerRegistry, LEGACY_COMPUTER, PhoneTokens, type ComputerRecord } from './computers.js'
 import { openIdentityDatabase, type IdentityDatabase } from './identity/database.js'
 import { Identity } from './identity/service.js'
 import { createCabooseServer, type ComputerPieces, type Controller } from './server.js'
@@ -35,6 +35,8 @@ beforeAll(async () => {
   root = await mkdtemp(join(tmpdir(), 'caboose-tenancy-'))
   database = await openIdentityDatabase({ dataDir: join(root, 'identity') })
   const identity = Identity.create({ database, baseURL: 'http://127.0.0.1:7310', secret: 's'.repeat(40), setupCodePath: join(root, 'setup-code') })
+  // A host from before computers were equal: setup gives its built-in computer to the first person.
+  await writeFile(join(root, 'computers.json'), JSON.stringify({ computers: [] }))
   computers = await ComputerRegistry.open(root, database)
   async function open(record: ComputerRecord, initial?: ComputerSettings): Promise<ComputerPieces> {
     await mkdir(computers.dataDir(record.id), { recursive: true })
@@ -42,14 +44,14 @@ beforeAll(async () => {
     const settings = new SettingsStore(initial ?? { name: 'Caboose', memoryMb: 2048, vcpus: 2, idleMs: 600_000, defaultAgent: null }, settingsLimits(), { load: async () => undefined, save: async () => {} })
     return { settings, controller: fakeController(record.id) }
   }
-  const owner = await open(computers.get(OWNER_COMPUTER)!)
+  const legacy = computers.get(LEGACY_COMPUTER)!
   const webRoot = join(root, 'web')
   await mkdir(webRoot)
   await writeFile(join(webRoot, 'index.html'), '<!doctype html><title>Caboose</title>')
   const app = createCabooseServer({
-    token: 'owner-token-for-tests', ...owner, identity, webRoot, publicUrl: 'https://caboose.example.com',
+    token: 'owner-token-for-tests', identity, webRoot, publicUrl: 'https://caboose.example.com',
     reach: new ReachService({ bind: '127.0.0.1', port: 7310, publicUrl: 'https://caboose.example.com', mdns: false, id: 'test-host', name: () => 'Caboose', tailscale: new Tailscale(7310, null) }),
-    fleet: { computers, phones: PhoneTokens.memory(), open, defaults: { memoryMb: 2048, vcpus: 2, idleMs: 600_000 }, maxRunning: 4, diskBytes: async record => disks.get(record.id) ?? 0 },
+    fleet: { computers, phones: PhoneTokens.memory(), open, existing: [{ record: legacy, pieces: await open(legacy) }], defaults: { memoryMb: 2048, vcpus: 2, idleMs: 600_000 }, maxRunning: 4, diskBytes: async record => disks.get(record.id) ?? 0 },
   })
   app.server.listen(0, '127.0.0.1')
   await once(app.server, 'listening')
@@ -116,10 +118,10 @@ describe('a host with accounts and tenants', () => {
     const me = await (await operator('/v1/me')).json()
     expect(me).toMatchObject({ kind: 'admin', operator: true, user: { name: 'Braedon', email: 'owner@example.com' }, tenants: [{ name: 'Home' }] })
     home = me.tenants[0].id
-    expect(computers.get(OWNER_COMPUTER)?.tenantId).toBe(home)
+    expect(computers.get(LEGACY_COMPUTER)?.tenantId).toBe(home)
     const persons = (await (await operator(`/v1/tenants/${home}/people`)).json()).people
     expect(persons).toEqual([expect.objectContaining({ name: 'Braedon', userId: me.user.id, tenantId: home })])
-    expect(computers.get(OWNER_COMPUTER)?.personId).toBe(persons[0].id)
+    expect(computers.get(LEGACY_COMPUTER)?.personId).toBe(persons[0].id)
     expect((await operator('/v1/setup/link', { method: 'POST' })).status).toBe(403)
     const listed = await (await operator('/v1/computers')).json()
     expect(listed.computers).toEqual([expect.objectContaining({ id: 'owner', tenantId: home })])
@@ -144,7 +146,13 @@ describe('a host with accounts and tenants', () => {
     const made = await (await operator('/v1/tenants', { method: 'POST', body: { name: 'Family', quotas: { memoryMb: 4096, vcpus: 4, diskGb: 1 } } })).json()
     expect(made).toMatchObject({ name: 'Family', quotas: { memoryMb: 4096, vcpus: 4, diskGb: 1 }, usage: { computers: 0, memoryMb: 0, vcpus: 0, diskBytes: 0 } })
     const family = made.id as string
-    expect((await operator('/v1/computers', { method: 'POST', body: { name: 'Sam' } })).status).toBe(400)
+    // A computer the operator makes without choosing a person is the operator's own.
+    const mine = await operator('/v1/computers', { method: 'POST', body: { name: 'Mine' } })
+    expect(mine.status).toBe(201)
+    const own = await mine.json()
+    expect(own).toMatchObject({ tenantId: computers.get(LEGACY_COMPUTER)!.tenantId, personId: computers.get(LEGACY_COMPUTER)!.personId })
+    expect((await operator(`/v1/computers/${own.id}`, { method: 'DELETE', body: { confirm: true } })).status).toBe(200)
+    expect((await operator('/v1/computers', { method: 'POST', body: { name: 'Sam', person: 'Sam' } })).status).toBe(400)
     const sam = await (await operator('/v1/computers', { method: 'POST', body: { name: 'Sam', tenantId: family, person: 'Sam', memoryMb: 2048, vcpus: 2 } })).json()
     expect(sam).toMatchObject({ tenantId: family, person: 'Sam', settings: { memoryMb: 2048 } })
     const over = await operator('/v1/computers', { method: 'POST', body: { name: 'Alex', person: 'Alex', tenantId: family, memoryMb: 4096, vcpus: 2 } })
@@ -181,20 +189,20 @@ describe('a host with accounts and tenants', () => {
     const theirs = (await (await parent('/v1/computers')).json()).computers as Array<{ id: string; tenantId: string }>
     expect(theirs.map(computer => computer.tenantId)).toEqual([family])
     expect((await parent(`/v1/computers/${theirs[0]!.id}/recovery`)).status).toBe(200)
-    expect((await operator(`/v1/computers/${OWNER_COMPUTER}/recovery`)).status).toBe(200)
+    expect((await operator(`/v1/computers/${LEGACY_COMPUTER}/recovery`)).status).toBe(200)
     for (const [suffix, method] of [['recovery', 'GET'], ['recovery/capture', 'POST'], ['recovery/captures/00000000-0000-4000-8000-000000000000/restore', 'POST']]) {
-      expect((await parent(`/v1/computers/${OWNER_COMPUTER}/${suffix}`, { method })).status).toBe(404)
+      expect((await parent(`/v1/computers/${LEGACY_COMPUTER}/${suffix}`, { method })).status).toBe(404)
     }
     expect((await parent('/v1/recovery')).status).toBe(403)
 
-    expect((await parent(`/v1/computers/${OWNER_COMPUTER}`)).status).toBe(404)
-    expect((await parent(`/v1/computers/${OWNER_COMPUTER}/computer`)).status).toBe(404)
+    expect((await parent(`/v1/computers/${LEGACY_COMPUTER}`)).status).toBe(404)
+    expect((await parent(`/v1/computers/${LEGACY_COMPUTER}/computer`)).status).toBe(404)
     expect((await parent('/v1/computer')).status).toBe(403)
     expect((await parent('/v1/health')).status).toBe(403)
     expect((await parent('/v1/host')).status).toBe(403)
     const beforeCapacity = woken.length
     for (const [suffix, method] of [['usage', 'GET'], ['usage/storage', 'POST']]) {
-      expect((await parent(`/v1/computers/${OWNER_COMPUTER}/${suffix}`, { method })).status).toBe(404)
+      expect((await parent(`/v1/computers/${LEGACY_COMPUTER}/${suffix}`, { method })).status).toBe(404)
       const response = await parent(`/v1/computers/${theirs[0]!.id}/${suffix}`, { method })
       expect(response.status).toBe(200)
       expect(response.headers.get('cache-control')).toBe('no-store')
@@ -331,11 +339,11 @@ it('fences the former tenant socket on a move and admits the destination adminis
   const ownerHeaders = { authorization: 'Bearer owner-token-for-tests', origin: base, 'content-type': 'application/json' }
   const records = (await (await fetch(`${base}/v1/computers`, { headers: ownerHeaders })).json()).computers as Array<{ id: string; tenantId: string; personId: string }>
   // Earlier tests rename the tenant. Ownership IDs remain the fixture identity.
-  const owned = records.filter(record => record.id !== OWNER_COMPUTER)
+  const owned = records.filter(record => record.id !== LEGACY_COMPUTER)
   expect(owned).toHaveLength(1)
   const target = owned[0]!
   const family = { id: target.tenantId }
-  const home = { id: records.find(record => record.id === OWNER_COMPUTER)!.tenantId }
+  const home = { id: records.find(record => record.id === LEGACY_COMPUTER)!.tenantId }
   const homePerson = (await (await fetch(`${base}/v1/tenants/${home.id}/people`, { headers: ownerHeaders })).json()).people[0]
   const signedIn = await fetch(`${base}/v1/auth/sign-in/email`, { method: 'POST', headers: { origin: base, 'content-type': 'application/json' }, body: JSON.stringify({ email: 'parent@example.com', password: 'parent password' }) })
   expect(signedIn.status).toBe(200)

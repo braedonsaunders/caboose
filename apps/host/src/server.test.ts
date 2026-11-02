@@ -10,7 +10,7 @@ import { WebSocket, WebSocketServer } from 'ws'
 import { afterEach, expect, it, vi } from 'vitest'
 import { AgentNotFoundError, START_SCRIPT, REPLY_SCRIPT } from './agents.js'
 import { AgentRegistry } from './registry.js'
-import { createCabooseServer, type Controller } from './server.js'
+import { createCabooseServer, STANDALONE_COMPUTER, type Controller } from './server.js'
 import { SettingsStore, settingsLimits } from './settings.js'
 import { describeHost } from './host-info.js'
 import { config } from './config.js'
@@ -28,13 +28,13 @@ it('authenticates routes and relays binary websocket messages while holding a le
   const controller: Controller = { wake, park, activeResources: () => null, hasSavedState: () => false, stats: () => ({ ok: true }), apps: async () => [], launch: async () => {}, displayUrl: `ws://127.0.0.1:${(upstream.address() as AddressInfo).port}`, agentDisplayUrl: 'ws://127.0.0.1:1', ensureAgentSeat: async () => {}, guest: () => undefined }
   const settings = new SettingsStore({ name: 'Caboose', memoryMb: 2048, vcpus: 2, idleMs: 50, defaultAgent: null }, settingsLimits(), { load: async () => undefined, save: async () => {} })
   const machine = { memoryMb: 32768, availableMemoryMb: 20480, cpus: 16, disk: null }
-  const app = createCabooseServer({ token: 'owner', settings, controller, machine: async () => machine })
+  const app = createCabooseServer({ token: 'owner', settings, controller, machine: async () => machine, hostStats: () => ({ ok: true }) })
   app.server.listen(0, '127.0.0.1')
   await once(app.server, 'listening')
   close.push(() => new Promise(resolve => app.server.close(() => resolve())))
   const base = `http://127.0.0.1:${(app.server.address() as AddressInfo).port}`
   expect((await fetch(`${base}/v1/health`)).status).toBe(401)
-  expect(await (await fetch(`${base}/v1/health`, { headers: { authorization: 'Bearer owner' } })).json()).toEqual({ ok: true, machine })
+  expect(await (await fetch(`${base}/v1/health`, { headers: { authorization: 'Bearer owner' } })).json()).toEqual({ ok: true, computers: { running: 0, total: 1 }, machine })
   expect((await fetch(`${base}/v1/session`, { method: 'POST', headers: { authorization: 'Bearer owner' } })).status).toBe(200)
   const client = new WebSocket(base.replace('http:', 'ws:') + '/v1/display', 'binary', { headers: { authorization: 'Bearer owner' } })
   await once(client, 'open')
@@ -131,7 +131,7 @@ it('routes agent replies, approvals, files and links with the right status codes
   expect(launch).toHaveBeenCalledWith('ai.storyteller.photocraft.desktop', 'Documents/a.psd')
   expect((await post('/v1/fs/open', { path: '../bad', app: 'a.desktop' })).status).toBe(400)
   // The operator's computer-scoped route reaches the same files relay.
-  expect((await fetch(base + '/v1/computers/owner/fs/content?path=a.txt', { method: 'PUT', headers: { authorization: 'Bearer owner', 'if-none-match': '*' }, body: 'hi' })).status).toBe(201)
+  expect((await fetch(base + `/v1/computers/${STANDALONE_COMPUTER}/fs/content?path=a.txt`, { method: 'PUT', headers: { authorization: 'Bearer owner', 'if-none-match': '*' }, body: 'hi' })).status).toBe(201)
   expect((await post('/v1/fs/open', { path: 'a', app: '../bad.desktop' })).status).toBe(400)
   expect((await fetch(base + '/v1/apps/firefox.desktop/desktop-shortcut', { method: 'POST' })).status).toBe(401)
   const shortcut = await post('/v1/apps/firefox.desktop/desktop-shortcut', {})

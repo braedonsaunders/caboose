@@ -370,6 +370,12 @@ export class Identity {
     return { ...row, createdAt: row.createdAt.toISOString() }
   }
 
+  /** The person an account is, in the first tenant it joined; null when it is no one's. */
+  async personOfUser(userId: string): Promise<Person | null> {
+    const [row] = await this.db.select().from(people).where(eq(people.userId, userId)).orderBy(asc(people.createdAt)).limit(1)
+    return row ? { ...row, createdAt: row.createdAt.toISOString() } : null
+  }
+
   async createPerson(tenantId: string, input: Record<string, unknown>): Promise<Person> {
     for (const key of Object.keys(input)) if (key !== 'name') throw new IdentityInputError(`Unknown field: ${key}`)
     await this.tenant(tenantId)
