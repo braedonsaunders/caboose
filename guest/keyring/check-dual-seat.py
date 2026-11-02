@@ -162,11 +162,12 @@ def inside(phase, check_id):
     browser_logs = []
     try:
         def launch(seat):
-            command = '/usr/bin/chromium' if seat == 'owner' else '/usr/local/libexec/caboose-agent-seat-bin/chromium'
+            # The agent seat starts applications in its profile, as desktop MCP's launch does.
+            command = ['/usr/bin/chromium'] if seat == 'owner' else ['/usr/bin/python3', '/opt/caboose/agent-profile.py', 'exec', '/usr/bin/chromium']
             envfile = '/run/caboose/' + ('display.env' if seat == 'owner' else 'agent-display.env')
             args = ['runuser', '-u', 'caboose', '--', 'env', 'HOME=/home/caboose',
                 'DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/' + ('bus' if seat == 'owner' else 'agent-bus'),
-                '/bin/sh', '-c', 'set -a; . "$1"; shift; exec "$@"', 'seat-check', envfile, command,
+                '/bin/sh', '-c', 'set -a; . "$1"; shift; exec "$@"', 'seat-check', envfile, *command,
                 '--no-first-run', '--no-default-browser-check', '--disable-background-networking',
                 '--remote-debugging-port=' + ('18992' if seat == 'owner' else '18993'),
                 '--new-window', 'http://127.0.0.1:18991/' + seat]

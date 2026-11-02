@@ -47,14 +47,6 @@ class Profiles(unittest.TestCase):
                 str(root / '.init.lock')], check=True, timeout=5)
             self.assertEqual(profile.environment(directory), env)
 
-    def test_gui_command_rejects_profile_redirection_and_preserves_arguments(self):
-        for app in profile.GUI_APPS:
-            self.assertEqual(profile.gui_command(app, ['https://example.test/a b']),
-                             ['/usr/bin/' + app, 'https://example.test/a b'])
-            for args in [['--user-data-dir=/synthetic-owner'], ['-P', 'owner'], ['--profile', '/owner']]:
-                with self.assertRaises(RuntimeError):
-                    profile.gui_command(app, args)
-
     def test_runner_keeps_cli_auth_home_after_gui_environment(self):
         source = (Path(__file__).resolve().parents[2] / 'apps/host/src/agents.ts').read_text()
         launch = source.split('const LAUNCH = [', 1)[1].split('\n]', 1)[0]
@@ -69,7 +61,7 @@ class Profiles(unittest.TestCase):
         self.assertNotIn('XDG_CONFIG_HOME', values)
         self.assertNotIn('XDG_DATA_HOME', values)
         self.assertNotIn('CABOOSE_SEAT', values)
-        self.assertTrue(values['PATH'].startswith('/usr/local/libexec/caboose-agent-seat-bin:'))
+        self.assertNotIn('caboose-agent-seat-bin', values['PATH'])
 
     def test_unknown_version_and_symlinks_fail_without_rewriting(self):
         with tempfile.TemporaryDirectory() as directory:

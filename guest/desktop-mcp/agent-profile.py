@@ -6,7 +6,6 @@ from pathlib import Path
 import stat
 import sys
 import tempfile
-import subprocess
 
 
 def private_dir(path):
@@ -45,39 +44,15 @@ def environment(owner_home):
         return dict(HOME=str(home), XDG_CONFIG_HOME=str(home / '.config'),
                     XDG_DATA_HOME=str(home / '.local/share'), XDG_CACHE_HOME=str(home / '.cache'),
                     XDG_STATE_HOME=str(home / '.local/state'), CABOOSE_SEAT='agent',
-                    MOZ_NO_REMOTE='1', VSCODE_IPC_HOOK_CLI='', VSCODE_PORTABLE='',
-                    CHROME_CONFIG_HOME=str(home / '.config'), CHROME_USER_DATA_DIR='',
-                    DBUS_SESSION_BUS_ADDRESS='unix:path=/run/user/1000/agent-bus',
-                    PATH=':'.join(['/usr/local/libexec/caboose-agent-seat-bin'] + [part for part in
-                        os.environ.get('PATH', '/usr/local/bin:/usr/bin:/bin').split(':')
-                        if part != '/usr/local/libexec/caboose-agent-seat-bin']))
+                    DBUS_SESSION_BUS_ADDRESS='unix:path=/run/user/1000/agent-bus')
     finally:
         os.close(fd)
 
 
-GUI_APPS = {'chromium', 'google-chrome', 'google-chrome-stable', 'firefox', 'firefox-esr', 'code'}
-PROFILE_FLAGS = {'--user-data-dir', '--profile', '-profile', '-P', '--profile-directory', '--extensions-dir'}
-
-
-def gui_command(app, args):
-    if app not in GUI_APPS or any(arg.split('=', 1)[0] in PROFILE_FLAGS for arg in args):
-        raise RuntimeError('Agent GUI launch does not accept an alternate application profile')
-    return ['/usr/bin/' + app, *args]
-
-
 def main():
-    app = Path(sys.argv[0]).name
-    if app in GUI_APPS:
-        command = gui_command(app, sys.argv[1:])
-        subprocess.run(['sudo', '-n', '/usr/local/libexec/caboose-agent-seat'], check=True)
-        os.execv('/bin/sh', ['sh', '-c',
-            'set -a; . /run/caboose/agent-display.env; exec /usr/bin/python3 /opt/caboose/agent-profile.py exec "$@"',
-            'caboose-agent-app', *command])
     values = environment('/home/caboose')
     if sys.argv[1:2] == ['exec'] and len(sys.argv) > 2:
         os.environ.update(values)
-        # Inherited editor CLI IPC must never reach the owner instance.
-        os.environ.pop('VSCODE_IPC_HOOK_CLI', None)
         os.execvp(sys.argv[2], sys.argv[2:])
     else:
         raise RuntimeError('expected exec COMMAND')

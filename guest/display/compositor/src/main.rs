@@ -175,18 +175,13 @@ fn launch_env(config: &Config, x_display: Option<u32>, xauthority: Option<&std::
             "XDG_CACHE_HOME",
             "XDG_STATE_HOME",
             "CABOOSE_SEAT",
-            "MOZ_NO_REMOTE",
             "DBUS_SESSION_BUS_ADDRESS",
-            "VSCODE_PORTABLE",
-            "CHROME_CONFIG_HOME",
-            "CHROME_USER_DATA_DIR",
             "PATH",
         ] {
             if let Ok(value) = std::env::var(key) {
                 env.push((key.into(), value));
             }
         }
-        env.push(("VSCODE_IPC_HOOK_CLI".into(), String::new()));
     }
     env.extend(TOOLKIT_ENV.iter().map(|(k, v)| (k.to_string(), v.to_string())));
     // Without udev (a container computer), SDL finds gamepads by watching /dev/input, as

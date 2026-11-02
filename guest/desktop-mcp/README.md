@@ -312,7 +312,7 @@ display (default `:101`) and `CABOOSE_DISPLAY_CONTROL` the seat.
 
 Agent GUI launches use a private home at
 `/home/caboose/.local/share/caboose/agent-seat/home`, with private XDG config, data,
-cache and state directories. Firefox's HOME-based state and Chromium/Code's XDG-based
+cache and state directories. Applications' HOME- and XDG-based state and
 singleton locations therefore belong to the agent seat. The initializer serializes
 concurrent starts with a kernel file lock and atomically records its format version.
 A crash releases the lock; browser-owned locks are never removed. Existing version-1
@@ -321,12 +321,10 @@ No owner profiles, SQLite databases, WAL files, cookies or extensions are copied
 Agent sign-ins persist in the agent profile; owner browser sign-ins are not imported.
 
 The task runner retains its existing owner HOME and CLI authentication configuration.
-Its PATH starts with GUI wrappers for Chromium, Chrome, Firefox and Code. These start
-and read the agent seat, reject alternate profile arguments, clear inherited editor IPC,
-and launch the application with the isolated GUI environment. Desktop MCP applies this
-same environment before launching shell commands. Absolute application paths with their
-default profiles also inherit it inside desktop MCP. This is application routing under
-one Unix user, not a sandbox against arbitrary shell commands or explicit owner paths.
+Applications an agent starts with desktop MCP's `launch` run on the agent seat in that
+private profile, whatever the application; a program the runner starts itself keeps the
+owner's home. This is profile routing under one Unix user, not a sandbox against arbitrary
+shell commands or explicit owner paths.
 
 Run `python3 guest/desktop-mcp/test_agent_profile.py` for synthetic concurrent startup,
 profile persistence, crash-lock release, unknown-version and redirection checks. The tests

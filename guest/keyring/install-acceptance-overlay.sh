@@ -27,10 +27,6 @@ install -Dm755 "$src/guest/desktop-mcp/caboose-desktop-mcp.mjs" /opt/caboose/des
 install -Dm644 "$src/guest/desktop-mcp/ensure-agent-seat.mjs" /opt/caboose/ensure-agent-seat.mjs
 install -Dm644 "$src/guest/desktop-mcp/ensure-agent-seat.mjs" /opt/caboose/desktop-mcp/ensure-agent-seat.mjs
 install -Dm755 "$src/guest/apps/apps-mcp.mjs" /opt/caboose/apps/apps-mcp.mjs
-install -d -m755 /usr/local/libexec/caboose-agent-seat-bin
-for app in chromium google-chrome google-chrome-stable firefox firefox-esr code; do
-  ln -sf /opt/caboose/agent-profile.py "/usr/local/libexec/caboose-agent-seat-bin/$app"
-done
 sh "$src/guest/keyring/install.sh"
 install -Dm644 "$src/guest/notifications/caboose-agent-bus.service" /etc/systemd/system/caboose-agent-bus.service
 install -Dm644 "$src/guest/display/systemd/caboose-display-agent.service" /etc/systemd/system/caboose-display-agent.service
