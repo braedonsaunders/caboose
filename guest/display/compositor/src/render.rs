@@ -37,13 +37,13 @@ use smithay::backend::renderer::gles::{ffi, GlesRenderer, GlesTexture};
 use smithay::backend::renderer::sync::SyncPoint;
 use smithay::backend::renderer::utils::{CommitCounter, RendererSurfaceStateUserData};
 use smithay::backend::renderer::{
-    Bind, Color32F, ExportMem, Offscreen, Renderer as _, Texture as _, TextureFilter,
+    Bind, Color32F, Offscreen, Renderer as _, Texture as _, TextureFilter,
 };
 use smithay::reexports::wayland_server::backend::ObjectId;
 use smithay::reexports::wayland_server::protocol::wl_buffer::WlBuffer;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::{Resource, Weak};
-use smithay::utils::{Logical, Physical, Point, Rectangle, Size, Transform};
+use smithay::utils::{Logical, Physical, Point, Size, Transform};
 use smithay::wayland::compositor::{with_surface_tree_downward, SurfaceData, TraversalAction};
 use std::collections::HashMap;
 
@@ -328,16 +328,35 @@ impl Gpu {
             .sync
             .wait()
             .map_err(|_| "the picture's rendering was interrupted".to_string())?;
-        let mapping = self
-            .renderer
-            .copy_framebuffer(&target, Rectangle::from_size(buffer_size), Fourcc::Abgr8888)
-            .map_err(|e| format!("read the picture: {e}"))?;
         drop(target);
-        // Smithay draws offscreen targets top row first, as it does a dma-buf for scanout,
-        // so the rows read back are already top to bottom.
-        let bytes = self.renderer.map_texture(&mapping).map_err(|e| format!("map the picture: {e}"))?;
+        // Read straight into memory: the renderer's own readback goes through a pixel pack
+        // buffer, which its OpenGL ES 2 context does not have. Smithay draws offscreen
+        // targets top row first, as it does a dma-buf for scanout, so the rows read back
+        // are already top to bottom.
         let len = size.w as usize * 4 * size.h as usize;
-        bytes.get(..len).map(<[u8]>::to_vec).ok_or_else(|| "short picture".into())
+        let mut rgba = vec![0u8; len];
+        let tex = texture.tex_id();
+        let complete = self
+            .renderer
+            .with_context(|gl| unsafe {
+                let mut fbo = 0;
+                gl.GenFramebuffers(1, &mut fbo);
+                gl.BindFramebuffer(ffi::FRAMEBUFFER, fbo);
+                gl.FramebufferTexture2D(ffi::FRAMEBUFFER, ffi::COLOR_ATTACHMENT0, ffi::TEXTURE_2D, tex, 0);
+                let complete = gl.CheckFramebufferStatus(ffi::FRAMEBUFFER) == ffi::FRAMEBUFFER_COMPLETE;
+                if complete {
+                    gl.PixelStorei(ffi::PACK_ALIGNMENT, 4);
+                    gl.ReadPixels(0, 0, size.w, size.h, ffi::RGBA, ffi::UNSIGNED_BYTE, rgba.as_mut_ptr().cast());
+                }
+                gl.BindFramebuffer(ffi::FRAMEBUFFER, 0);
+                gl.DeleteFramebuffers(1, &fbo);
+                complete
+            })
+            .map_err(|e| format!("read the picture: {e}"))?;
+        if !complete {
+            return Err("read the picture: its framebuffer is incomplete".into());
+        }
+        Ok(rgba)
     }
 
     /// The elements of a surface tree, topmost first, with the window geometry origin at
