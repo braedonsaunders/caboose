@@ -1,6 +1,8 @@
 import SwiftUI
 
-/// Saved pairings only. The phone bearer cannot enumerate the host's computers.
+/// The saved sign-ins, and for a host sign-in the host's own computers: switch between
+/// them, make another, or sign in to more. A sign-in paired to one computer cannot list the
+/// host's others.
 struct ComputerSwitcher<Content: View>: View {
     @Environment(AppModel.self) private var model
     @Environment(\.openURL) private var openURL
@@ -10,16 +12,38 @@ struct ComputerSwitcher<Content: View>: View {
     var body: some View {
         @Bindable var model = model
         Menu {
+            if let credentials = model.credentials, credentials.isHostSignIn, let list = model.hostComputers, !list.computers.isEmpty {
+                Section("On \(credentials.hostName)") {
+                    ForEach(list.computers) { computer in
+                        Button {
+                            model.openHostComputer(id: computer.id, name: computer.name)
+                        } label: {
+                            Label(computer.name, systemImage: computer.id == credentials.computerID ? "checkmark.circle.fill" : "desktopcomputer")
+                            Text(computer.stateTitle)
+                        }
+                        .disabled(model.pairing)
+                    }
+                }
+            }
             Section("Paired Computers") {
                 ForEach(model.savedComputers) { computer in
                     Button {
                         model.switchComputer(computer)
                     } label: {
-                        Label(computer.displayName, systemImage: computer.id == model.credentials?.id ? "checkmark.circle.fill" : "desktopcomputer")
-                        Text(computer.hostURL.host ?? "")
+                        if computer.isHostSignIn {
+                            Label(computer.hostName, systemImage: computer.id == model.credentials?.id ? "checkmark.circle.fill" : "server.rack")
+                            Text(computer.computerName.map { "Host · \($0)" } ?? "Host · every computer")
+                        } else {
+                            Label(computer.displayName, systemImage: computer.id == model.credentials?.id ? "checkmark.circle.fill" : "desktopcomputer")
+                            Text(computer.hostName)
+                        }
                     }
                     .disabled(model.pairing)
                 }
+            }
+            if model.credentials?.isHostSignIn == true, model.phase != .noComputer, model.hostComputers?.allowsCreating == true {
+                Button("Create a Computer", systemImage: "plus.rectangle.on.rectangle") { model.beginCreatingComputer(presented: true) }
+                    .disabled(model.pairing)
             }
             Button("Add Computer", systemImage: "plus") { model.addingComputer = true }
             if model.credentials?.consoleURL != nil {
@@ -36,7 +60,29 @@ struct ComputerSwitcher<Content: View>: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Computer: \(model.credentials?.displayName ?? "Caboose")")
-        .accessibilityHint("Switch between paired computers or add a computer")
+        .accessibilityHint("Switch between computers, create one or add one")
+        .task(id: model.credentials?.id) { await model.refreshHostComputers() }
+        .sheet(isPresented: Binding(get: { model.creatingComputer }, set: { if !$0 { model.endCreatingComputer() } })) {
+            NavigationStack {
+                ZStack {
+                    Backdrop()
+                    if let creation = model.creation {
+                        ComputerCreationFlow(creation: creation)
+                    }
+                }
+                .navigationTitle("New Computer")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button(model.creation?.stage == .starting ? "Close" : "Cancel") { model.endCreatingComputer() }
+                            .disabled(model.creation?.stage == .creating)
+                    }
+                }
+            }
+            .environment(model)
+            .preferredColorScheme(.dark)
+            .interactiveDismissDisabled(model.creation?.stage == .creating)
+        }
         .sheet(isPresented: $model.addingComputer) {
             NavigationStack {
                 ScrollView {

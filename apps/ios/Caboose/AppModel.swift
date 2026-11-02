@@ -21,6 +21,8 @@ final class AppModel {
         case failed(String)
         /// Another device took the display over; it stays there until the person asks for it back.
         case displayElsewhere
+        /// The host has no computer yet: the owner is guided to make the first one.
+        case noComputer
     }
 
     private(set) var phase: Phase
@@ -63,10 +65,18 @@ final class AppModel {
     private(set) var savedComputers: [Credentials] = []
     private var connectionRevision = 0
     var addingComputer = false
-    /// The owner's display.
+    /// The host's computers, for a host sign-in (and an owner token on a host with none):
+    /// what the computer switcher lists and what a new computer can be.
+    private(set) var hostComputers: HostComputerList?
+    /// A computer being made and started: the first one on a host with none, or another
+    /// from the computer switcher.
+    private(set) var creation: ComputerCreation?
+    /// The switcher's Create a Computer sheet is showing `creation`.
+    var creatingComputer = false
+    /// The display of the computer this phone has open.
     private(set) var session: (any DisplaySession)?
-    /// The GPU executor every window's picture comes through (docs/gpu-live.md): one per
-    /// owner computer, over the same authenticated host.
+    /// The GPU executor every window's picture comes through (docs/gpu-live.md): one for the
+    /// computer this phone has open, over the same authenticated host.
     private var liveGPUOwner: LiveGPUOwnerSession?
     private var liveGPUIdentity: String?
     private var liveGPUGeneration = UUID()
@@ -231,7 +241,7 @@ final class AppModel {
         devices.permissions = DeviceSettings.permissions(for: credentials?.fileDomainIdentifier)
     }
 
-    var host: HostClient? { credentials.map { HostClient(baseURL: activeHostURL ?? $0.hostURL, token: $0.token) } }
+    var host: HostClient? { credentials.map { HostClient(credentials: $0, baseURL: activeHostURL ?? $0.hostURL) } }
     /// The host address this wake reached — the LAN or the VPN one — chosen at each wake.
     private(set) var activeHostURL: URL?
     /// Reached through another of the host's addresses (a VPN, away from home).
@@ -300,7 +310,9 @@ final class AppModel {
         let saved: Credentials
         do { saved = try credentials.save() }
         catch { pairingFailure = error.localizedDescription; return }
+        let sameSignIn = self.credentials?.id == saved.id
         resetConnection()
+        if !sameSignIn { hostComputers = nil }
         self.credentials = saved
         savedComputers = (try? Credentials.loadCollection().computers) ?? savedComputers
         shortcuts = Self.loadShortcuts(for: saved)
@@ -314,6 +326,62 @@ final class AppModel {
     func switchComputer(_ computer: Credentials) {
         guard !pairing, computer.id != credentials?.id else { return }
         connect(with: computer)
+    }
+
+    /// Opens another of the host's computers with this host sign-in, kept as the one it opens
+    /// from now on.
+    func openHostComputer(id: String, name: String?) {
+        guard !pairing, let credentials, credentials.isHostSignIn,
+              id != credentials.computerID || phase == .noComputer else { return }
+        connect(with: credentials.opening(computer: id, name: name))
+    }
+
+    /// Reads the host's computers again, for the switcher and the first-computer screen.
+    func refreshHostComputers() async {
+        guard let credentials, credentials.isHostSignIn || phase == .noComputer else { return }
+        let revision = connectionRevision
+        let client = HostClient(credentials: credentials, baseURL: activeHostURL ?? credentials.hostURL)
+        guard let list = try? await client.computers(), revision == connectionRevision else { return }
+        hostComputers = list
+    }
+
+    /// Begins making a computer: in place on the first-computer screen, or in the switcher's
+    /// sheet (`presented`).
+    func beginCreatingComputer(presented: Bool) {
+        guard let credentials, !pairing else { return }
+        if creation == nil {
+            let client = HostClient(credentials: credentials, baseURL: activeHostURL ?? credentials.hostURL)
+            let revision = connectionRevision
+            creation = ComputerCreation(host: client, list: hostComputers, deviceName: UIDevice.current.name) { [weak self] created in
+                guard let self, self.connectionRevision == revision else { return }
+                self.computerCreated(created)
+            }
+        }
+        if presented { creatingComputer = true }
+        if hostComputers == nil, let creation { Task { await creation.loadList() } }
+    }
+
+    /// The owner closed the sheet: a computer still starting goes on starting on the host.
+    func endCreatingComputer() {
+        creatingComputer = false
+        creation?.stop()
+        creation = nil
+        Task { await refreshHostComputers() }
+    }
+
+    /// A new computer finished starting: open it as any computer opens.
+    private func computerCreated(_ created: ComputerCreation.Created) {
+        creatingComputer = false
+        creation = nil
+        guard let credentials else { return }
+        if credentials.isHostSignIn {
+            connect(with: credentials.opening(computer: created.id, name: created.name))
+        } else {
+            // The owner token's unscoped routes serve the host's default computer, which the
+            // first computer made on a host becomes.
+            phase = .waking
+            Task { await wake() }
+        }
     }
 
     /// Stop every connection owner before another identity becomes visible to its callbacks.
@@ -369,6 +437,9 @@ final class AppModel {
         filesRegistrationError = nil
         activeHostURL = nil
         parking = false
+        creation?.stop()
+        creation = nil
+        creatingComputer = false
     }
 
     /// Change reachability without replacing the phone token or its Files identity.
@@ -392,6 +463,7 @@ final class AppModel {
         AgentAppPages.shared.endAll()
         resetConnection()
         credentials = nil
+        hostComputers = nil
         savedComputers = (try? Credentials.loadCollection().computers) ?? []
         shortcuts = AppShortcuts()
         phase = .needsSetup
@@ -437,9 +509,10 @@ final class AppModel {
         }
     }
 
-    /// The paired computer a wake is for: its primary address and this phone's token.
+    /// The paired computer a wake is for: its primary address, this phone's token, and for a
+    /// host sign-in the computer it has open.
     private static func identity(_ credentials: Credentials) -> String {
-        credentials.hostURL.absoluteString + " " + credentials.token
+        credentials.hostURL.absoluteString + " " + credentials.token + (credentials.routeComputer.map { " " + $0 } ?? "")
     }
 
     /// Every change after a suspension first checks `ticket`: a wake for a computer the app
@@ -448,7 +521,26 @@ final class AppModel {
         let reached = await credentials.reachableURL()
         guard wakes.isCurrent(ticket) else { return }
         if reached != activeHostURL { activeHostURL = reached }
-        let host = HostClient(baseURL: reached, token: credentials.token)
+        let host = HostClient(credentials: credentials, baseURL: reached)
+        // A host sign-in with no computer open opens the host's default, else its first; on a
+        // host with none, the owner makes one.
+        if credentials.isHostSignIn, credentials.computerID == nil {
+            if !quiet, phase != .noComputer { phase = .waking }
+            do {
+                let list = try await host.computers()
+                guard wakes.isCurrent(ticket) else { return }
+                hostComputers = list
+                if let chosen = list.preferred(selected: nil) {
+                    connect(with: credentials.opening(computer: chosen.id, name: chosen.name))
+                } else {
+                    enterNoComputer()
+                }
+            } catch {
+                guard wakes.isCurrent(ticket) else { return }
+                wakeFailed(error, quiet: quiet)
+            }
+            return
+        }
         let identity = Self.identity(credentials)
         // Only this computer's own display counts as up or opening; another's is replaced.
         switch WakePlan.plan(for: identity, owner: sessionIdentity, state: session?.state, phaseReady: phase == .ready) {
@@ -478,10 +570,36 @@ final class AppModel {
             Task { await refreshApps() }
             refreshFileSearch()
             Task { try? await refreshComputer() }
+            if credentials.isHostSignIn { Task { await refreshHostComputers() } }
+        } catch HostClient.Failure.noComputer {
+            // An owner-level sign-in on the unscoped routes, on a host with no computer.
+            guard wakes.isCurrent(ticket) else { return }
+            hostComputers = try? await host.computers()
+            guard wakes.isCurrent(ticket) else { return }
+            enterNoComputer()
+        } catch HostClient.Failure.server(404, let message) where credentials.routeComputer != nil {
+            // The computer this host sign-in had open may have been deleted: open another.
+            guard wakes.isCurrent(ticket) else { return }
+            let list = try? await host.computers()
+            guard wakes.isCurrent(ticket) else { return }
+            if let list, !list.computers.contains(where: { $0.id == credentials.computerID }) {
+                hostComputers = list
+                connect(with: credentials.opening(computer: nil, name: nil))
+            } else {
+                wakeFailed(HostClient.Failure.server(404, message), quiet: quiet)
+            }
         } catch {
             guard wakes.isCurrent(ticket) else { return }
             wakeFailed(error, quiet: quiet)
         }
+    }
+
+    /// The host has no computer: nothing reconnects, and the owner is asked to make one.
+    private func enterNoComputer() {
+        link.stop()
+        computer = nil
+        computerStatus = nil
+        phase = .noComputer
     }
 
     /// A host that cannot be reached is tried again on the link's schedule; one that answers
@@ -537,6 +655,12 @@ final class AppModel {
         Task { await desktopFiles.refresh(model: self) }
         showSharedDocumentIfAvailable()
         guard phase != .displayElsewhere else { return }
+        if phase == .noComputer {
+            // Another device may have made a computer meanwhile; a computer being made here
+            // is followed by its own screen.
+            if creation == nil || creation?.stage == .choosing { Task { await wake(quiet: true) } }
+            return
+        }
         // A connection kept through the background for its sound shows pictures again: GPU
         // rendering moves back onto this phone.
         if let display = session as? CabooseDisplaySession, display.state == .ready {
@@ -1148,7 +1272,7 @@ final class AppModel {
         return true
     }
 
-    /// Starts the GPU executor for the owner's ready display, in the foreground: every
+    /// Starts the GPU executor for the open computer's ready display, in the foreground: every
     /// window's picture comes through it. The computer's display then advertises
     /// `gpu_live_epoch` in its next hello, which matches its surfaces to windows.
     /// READY-induced display reconnects retain this independent executor. A new
@@ -1169,7 +1293,8 @@ final class AppModel {
         let generation = UUID()
         do {
             let owner = try LiveGPUOwnerSession(hostURL: activeHostURL ?? credentials.hostURL,
-                phoneToken: credentials.token, pairing: credentials.fileDomainIdentifier) { [weak self] _, _ in
+                phoneToken: credentials.token, route: ComputerRoute(computer: credentials.routeComputer),
+                pairing: credentials.fileDomainIdentifier) { [weak self] _, _ in
                     guard let self, self.liveGPUGeneration == generation else { return }
                     self.endLiveGPUBackgroundTime()
                     // Even after failed native cleanup (a lost device) the GPU comes back.

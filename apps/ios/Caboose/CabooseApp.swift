@@ -58,11 +58,15 @@ struct RootView: View {
             Backdrop()
             if model.phase == .needsSetup {
                 SetupView()
+            } else if model.phase == .noComputer {
+                FirstComputerView()
+                    .transition(.opacity)
             } else {
                 MainTabs()
             }
         }
         .animation(.smooth(duration: 0.35), value: model.phase == .needsSetup)
+        .animation(.smooth(duration: 0.45), value: model.phase == .noComputer)
         .overlay(alignment: .top) {
             // Home and Agents answer approvals in place; the other tabs get the banner.
             if model.phase == .ready, !model.externalDisplayActive, [.desktop, .apps].contains(model.selectedTab) { ApprovalBanner() }

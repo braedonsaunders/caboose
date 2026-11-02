@@ -20,7 +20,7 @@ struct TerminalScreen: View {
     /// computer the owner parked or is restarting shows its state instead.
     private var computerAvailable: Bool {
         switch model.phase {
-        case .parked, .restarting, .needsSetup: false
+        case .parked, .restarting, .needsSetup, .noComputer: false
         case .waking, .connecting, .ready, .failed, .displayElsewhere: true
         }
     }
@@ -61,7 +61,7 @@ struct TerminalScreen: View {
             default: break
             }
         }
-        .onChange(of: model.host?.baseURL) { _, _ in if onScreen, computerAvailable { attach() } }
+        .onChange(of: model.host) { _, _ in if onScreen, computerAvailable { attach() } }
     }
 
     private var terminalEdges: Edge.Set {

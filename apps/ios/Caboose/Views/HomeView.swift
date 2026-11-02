@@ -216,6 +216,7 @@ struct TodayHeader: View {
         case .failed(let message): return HostMessage.clipped(message, maxLines: 2, maxCharacters: 140)
         case .displayElsewhere: return "Showing on another device"
         case .needsSetup: return ""
+        case .noComputer: return "No computer yet"
         }
     }
 

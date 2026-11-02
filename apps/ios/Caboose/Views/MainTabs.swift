@@ -106,7 +106,7 @@ struct ComputerStateView: View {
             case .parked: ParkedView()
             case .failed(let message): FailureView(message: message)
             case .displayElsewhere: ElsewhereView()
-            case .needsSetup: EmptyView()
+            case .needsSetup, .noComputer: EmptyView()
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -184,6 +184,7 @@ struct LifecycleMenu: View {
         case .failed: return ("Out of Reach", "exclamationmark.triangle", .orange, false)
         case .displayElsewhere: return ("On Another Device", "rectangle.on.rectangle", .secondary, false)
         case .needsSetup: return ("Not Set Up", "power", .secondary, false)
+        case .noComputer: return ("No Computer", "desktopcomputer", .secondary, false)
         }
     }
 }
@@ -251,7 +252,7 @@ struct ComputerLifecycleActions: View {
                         selected()
                         Task { try? await model.parkComputer() }
                     }
-                case .waking, .connecting, .restarting, .needsSetup:
+                case .waking, .connecting, .restarting, .needsSetup, .noComputer:
                     Text(statusTitle).foregroundStyle(.secondary)
                 }
         }
