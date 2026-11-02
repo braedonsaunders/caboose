@@ -741,9 +741,6 @@ its tools; remove a server; disconnect and see the servers go.
   phone after confirmation; Thunar's **Share to iPhone** and `caboose-share FILE` hand a file
   to the share sheet; the **iPhone** printer sends a PDF to the print dialog (10 MiB limit;
   requests wait up to 24 hours and are delivered at most once).
-- **Play on iPhone or Apple TV.** When the computer's Chromium plays a video, its window's
-  `…` menu moves playback to AVKit (with AirPlay), or to Safari's in-app browser for a
-  stream the page builds itself; **Back to Computer** continues the computer's copy.
 - **Shortcuts, Siri and Spotlight.** Shortcuts wake or park the computer, open a Linux app
   or URL, start an agent task, open, get or save computer files, run the Craft apps'
   conversions, and run a Bash script on the computer (**Run Command on Computer**: input

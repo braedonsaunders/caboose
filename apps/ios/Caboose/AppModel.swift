@@ -230,7 +230,6 @@ final class AppModel {
             return NativeBridge.Computer(host: host, id: credentials.fileDomainIdentifier, documents: self.documents)
         }, window: { SoftwareKeyboard.shared.window })
         bridge.setActive(sceneActive)
-        bridge.nowPlayingSuspended = false
         agents.onControlClosed = { [weak self] in
             guard let self, self.connectionRevision == revision else { return }
             self.bridge.controlClosed()

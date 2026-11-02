@@ -223,7 +223,6 @@ loopback, so run it on a host you trust. The GPU container runtime for WSL2 and 
 | [`guest/files`](guest/files) | The file service behind the Files app extension and the console |
 | [`guest/notifications`](guest/notifications) | The owner's desktop notifications, forwarded to the phone |
 | [`guest/phone`](guest/phone) | Opening, sharing and printing from the computer to the phone |
-| [`guest/media-handoff`](guest/media-handoff) | Play on iPhone / Apple TV for video playing in the computer's Chromium |
 | [`docs`](docs) | The architecture, and the Caboose Display design and protocol |
 | [`deploy`](deploy) | Native Mac and Linux installers, Windows networking for WSL, and the HTTPS server deployment |
 

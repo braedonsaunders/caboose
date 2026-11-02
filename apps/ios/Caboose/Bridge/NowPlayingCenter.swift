@@ -6,16 +6,10 @@ import UIKit
 
 /// The computer's media in the system's Now Playing: Control Center, the Lock Screen,
 /// AirPods and keyboard media keys control the Linux player. It publishes metadata and
-/// handles commands only while it shows a track and is not suspended; the app's audio
-/// session is configured where the sound plays.
+/// handles commands only while it shows a track; the app's audio session is configured where
+/// the sound plays.
 @MainActor
 final class NowPlayingCenter {
-    var suspended = false {
-        didSet {
-            guard suspended != oldValue else { return }
-            if suspended { release() } else if let shown { publish(shown.state) }
-        }
-    }
     /// The track shown and the host it came from: commands go to that computer only.
     private var shown: (state: BridgeNowPlaying, host: HostClient)?
     private var artwork: (url: URL, image: MPMediaItemArtwork)?
@@ -25,7 +19,6 @@ final class NowPlayingCenter {
 
     func show(_ state: BridgeNowPlaying, host: HostClient) {
         shown = (state, host)
-        guard !suspended else { return }
         publish(state)
     }
 
@@ -82,7 +75,7 @@ final class NowPlayingCenter {
             loader.load(url) { [weak self] image in
                 guard let self, let image, self.shown?.state.artwork == url else { return }
                 self.artwork = (url, MPMediaItemArtwork(boundsSize: image.size) { _ in image })
-                if !self.suspended, let shown = self.shown { self.publish(shown.state) }
+                if let shown = self.shown { self.publish(shown.state) }
             }
         }
     }
@@ -92,7 +85,7 @@ final class NowPlayingCenter {
         let commands = MPRemoteCommandCenter.shared()
         let send = { [weak self] (action: String, position: Double?) -> MPRemoteCommandHandlerStatus in
             // The track and computer shown now; a command never reaches another computer.
-            guard let self, !self.suspended, let (state, host) = self.shown else { return .noActionableNowPlayingItem }
+            guard let self, let (state, host) = self.shown else { return .noActionableNowPlayingItem }
             Task { try? await host.nowPlayingControl(state.id, action: action, position: position) }
             return .success
         }

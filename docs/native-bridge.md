@@ -241,7 +241,8 @@ asks. `DELETE` and 30 minutes without an update remove the file.
 
 `apps/host/src/now-playing.ts` receives changed `now-playing.json` snapshots through Files while the
 computer is running and a display client is connected, ignoring a file whose daemon is not
-running, and extrapolates `position` as media handoff does. It broadcasts
+running. It sends `position` extrapolated to the moment it is sent while playing (capped at
+the duration), with `updatedAt` set to that moment on the host's clock. It broadcasts
 `now-playing.changed { nowPlaying }` on every change and `now-playing.stopped { id }`.
 Control writes `now-playing-command.json` with a millisecond-based `seq`.
 
@@ -253,8 +254,7 @@ The app answers `bridge.request` while it is in the foreground. The shell suppli
 window for presentations and appearance; an external display is never chosen. Requests
 retain their original computer and generation through picking, uploading and answering.
 Changing computers, losing the control connection or entering the background dismisses
-pending dialogs and invalidates their callbacks. Native media handoff suspends the bridge’s
-Now Playing metadata and commands until playback returns to the computer.
+pending dialogs and invalidates their callbacks.
 
 
 - **Open** (files, not a folder) first asks where the file comes from, in a sheet that

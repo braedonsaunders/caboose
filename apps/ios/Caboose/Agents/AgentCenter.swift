@@ -94,7 +94,7 @@ final class AgentCenter {
 
     /// The computer's management status, whenever the host reports a change on the control socket.
     var onComputer: ((HostClient.ComputerStatus) -> Void)?
-    /// Other control-socket events (`media.*`), for whoever handles them.
+    /// Other control-socket events, for whoever handles them.
     var onEvent: ((String, [String: Any]) -> Void)?
     /// The control connection closed: failed, or detached. Its next connection starts with
     /// `computer.state` again.

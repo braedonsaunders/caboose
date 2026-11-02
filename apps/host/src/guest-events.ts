@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto'
 
-export const EVENT_CHANNELS = ['bridge.request', 'bridge.cancel', 'phone', 'notification', 'now-playing', 'media', 'agent.tick', 'agent.mailbox', 'fs'] as const
+export const EVENT_CHANNELS = ['bridge.request', 'bridge.cancel', 'phone', 'notification', 'now-playing', 'agent.tick', 'agent.mailbox', 'fs'] as const
 export type EventChannel = typeof EVENT_CHANNELS[number]
 export type SubscribeEvents = (channel: EventChannel, accept: (record: unknown) => void | Promise<void>) => () => void
 export interface EventTask { id: string; offset: number; turn?: number }

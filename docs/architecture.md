@@ -29,7 +29,7 @@ Each component has its own README with how to build, run and test it.
  │  ├ CabooseKit                │  /v1/display  │  ├ Display relay: WS ⇄ guest WS (bytes)    │
  │  │  ├ CabooseDisplaySession  │  /v1/control  │  ├ Files relay: HTTP ⇄ guest file service  │
  │  │  ├ TerminalConnection     │  /v1/terminal │  ├ Terminal relay: WS ⇄ guest terminal     │
- │  │  ├ VideoToolbox, Metal    │               │  ├ Agents, catalog, media, phone handoff   │
+ │  │  ├ VideoToolbox, Metal    │               │  ├ Agents, catalog, phone handoff          │
  │  │  └ Touch, trackpad,       │               │  └ APNs: alerts and Live Activities        │
  │  │    keyboard, clipboard    │               │        │ guest agent (exec)                │
  │  ├ Agent space               │               │        │ TCP 14600 / 14601 / 14700 / 14701 │
@@ -43,7 +43,7 @@ Each component has its own README with how to build, run and test it.
                                                 │ │  ├ caboose-terminal       :14701     │   │
                                                 │ │  ├ caboose-ai :14702, localhost:11434│   │
                                                 │ │  ├ caboose-agentd (ACP runner)       │   │
-                                                │ │  ├ notifications, phone, media       │   │
+                                                │ │  ├ notifications, phone              │   │
                                                 │ │  └ apps: Chromium, VS Code, terminal,│   │
                                                 │ │     LibreOffice, agents, catalog …   │   │
                                                 │ └──────────────────────────────────────┘   │
@@ -139,8 +139,8 @@ The image contains:
   (`/opt/caboose/desktop-mcp.mjs`, `/opt/caboose/a11y.py`). See [Agents](#5-agents).
 - **Agent apps.** `caboose-app` and WebKitGTK 4.1, which run the web apps agents make as
   applications of their own ([Agent apps](#agent-apps)).
-- **Services.** The file service, the notification endpoints, phone handoff
-  (`caboose-open`, `caboose-share`, an `iPhone` print queue) and media handoff.
+- **Services.** The file service, the notification endpoints and phone handoff
+  (`caboose-open`, `caboose-share`, an `iPhone` print queue).
 - **Guest agent.** The appkit-desk guest agent (vsock 5252), which runs as root with
   root's home.
 
@@ -581,7 +581,7 @@ response; the host relays display bytes without inspecting them.
 `Authorization: Bearer <display token>` on every request. The host starts it at each wake
 before the owner's display, and waits up to 60 s for it to listen; a computer without the
 service still wakes. The protocol is in [Files](#files). Its private bounded `POST /events` long poll
-combines queue deliveries, media snapshots, active task output and filesystem change
+combines queue deliveries, Now Playing snapshots, active task output and filesystem change
 anchors; [guest events](guest-events.md) defines acceptance and reconnect behavior.
 
 **Terminal service.** `guest/terminal/caboose-terminal.py` (`/opt/caboose/terminal/`,
@@ -657,10 +657,6 @@ calls from the phone: the FileChooser and Settings portals (`caboose-portal`, wi
 appearance. `caboose-scan` asks the phone to scan a document and prints where the scan was
 saved, failing at once without the phone. GeoClue's static source serves a shared
 location. See [native-bridge.md](native-bridge.md).
-
-**Media handoff.** `guest/media-handoff` installs a Chromium extension, ID
-`cklinclacpchpdgickgonlhnldfmkhbh` (fixed by the public key in its manifest), and its native
-messaging host `com.caboose.media`. See [Media handoff](#media-handoff).
 
 **App scopes.** `guest/scopes` (`caboose-scopes`, root, container computers) places every app
 the owner runs in a cgroup v2 scope of its own, so an app's whole process tree (helpers,
@@ -1413,7 +1409,7 @@ does the other. Each client connection gets its own guest connection.
 ### Control socket events
 
 On connect the host sends `computer.state`, then `computer.settings`, then
-`media.playing` if a video is being offered. Afterwards it broadcasts:
+`now-playing.changed` if the computer's player has a current track. Afterwards it broadcasts:
 
 | Event | Payload | When |
 | --- | --- | --- |
@@ -1427,7 +1423,6 @@ On connect the host sends `computer.state`, then `computer.settings`, then
 | `catalog.changed` | `{ id? }` | After each application in an operation, and once when the operation ends |
 | `job.progress` | `{ job: { id, kind, title, status, detail } }` | A Craft job (`kind: "craft"`) or command (`kind: "command"`, see [Commands](#commands)) starts, is still running after 10 s (commands only), or ends |
 | `agent.task.*` | see [Agents](#tasks) | Agent task activity |
-| `media.playing`, `media.stopped` | see [Media handoff](#media-handoff) | |
 | `phone.open`, `phone.share`, `phone.print` | see [Phone handoff](#phone-handoff) | Only to sockets opened with `?phone=1` |
 | `bridge.request`, `bridge.cancel` | see [native bridge](native-bridge.md#host) | A Linux application's file request or `caboose-scan`'s scan, and its withdrawal. Only to sockets opened with `?phone=1`; a scan only to those also opened with `?scan=1` |
 | `now-playing.changed`, `now-playing.stopped` | see [native bridge](native-bridge.md#now-playing-relay) | The computer's media player for Now Playing, while a display client is connected |
@@ -2009,74 +2004,6 @@ the connection to its computer.
 | Method | Path | Purpose |
 | --- | --- | --- |
 | `GET` | `/v1/phone/files/:id` | `{ data: base64 }`: the staged file, read in 48 KiB chunks through the guest channel. Never takes a guest-supplied path and never wakes the computer |
-
-### Media handoff
-
-The extension watches every `<video>` in every http(s) page and frame and offers the most
-recently started playing video (or, if none plays, the most recently started one). The
-native host keeps `/home/caboose/.cache/caboose/media.json` equal to it (atomically
-replaced, removed when nothing is offered or the browser closes), records its pid in
-`media-host.pid`, and applies commands from `media-command.json`.
-
-| Offered as | When | Played on the phone from |
-| --- | --- | --- |
-| `kind: "hls"`, `src` | `currentSrc` is http(s) and its path ends in `.m3u8` | `src`, natively |
-| `kind: "video"`, `src` | any other http(s) `currentSrc` | `src`, natively |
-| `kind: "page"` | `currentSrc` is a `blob:` the page assembled (MediaSource) | the page, in the phone's browser; the position does not carry over |
-
-Not offered: DRM (EME) playback, `data:` and MediaStream sources (calls, cameras), muted
-looping videos (page decoration), videos inside shadow roots, and other browsers. `src` is
-the page's own URL for the media; cookies, headers and short-lived signed URLs may not work
-off the computer, which the phone reports as a playback failure.
-
-The media state, in the guest file and as the host sends it:
-
-```ts
-{
-  id: string,              // /^[A-Za-z0-9._-]{1,64}$/, "<tab>.<frame>.<nonce>-<n>"; stable for one
-                           // tab, frame, element and source; a new source is a new id
-  page: string,            // the tab's http(s) URL
-  title: string,           // media session title, else the document or tab title; "" if none
-  src?: string,            // http(s) only, never blob:; present for "hls" and "video", absent for "page"
-  kind: "page" | "hls" | "video",
-  position: number,        // seconds
-  duration: number | null, // seconds; null for live or not yet known
-  paused: boolean,
-  updatedAt: number        // ms since the epoch: when `position` holds (see below)
-}
-```
-
-The extension reports on `play`, `playing`, `pause`, `seeked`, `ended` and `emptied`, and
-every 5 seconds while playing. In the guest file `updatedAt` is the guest-clock sample
-time. The Files event receiver sends changed snapshots with the guest's clock so skew does not
-matter, only while the computer is running and at least one display client is
-connected. Reads go straight to the guest: they never wake the computer, hold a lease or
-delay parking. A file whose native host is no longer running is ignored. What the host
-sends has `position` extrapolated to the moment it is sent while playing (capped at
-`duration`) and `updatedAt` set to that moment on the host's clock.
-
-| Method | Path | Purpose |
-| --- | --- | --- |
-| `GET` | `/v1/media` | `{ media: <state> \| null }`; null unless the computer is running. Never wakes or leases |
-| `POST` | `/v1/media/:id/control` | `{ action: "pause" \| "play", position?: number }` → `{ sent: true }` |
-
-Control validates strictly (400): the raw `:id` path segment must match
-`/^[A-Za-z0-9._-]{1,64}$/`, the body may contain only `action` and `position`, and
-`position` (seconds, 0–10⁷) is allowed only with `play`, which seeks there and plays. A
-computer that is not running answers 409; control does not wake it. The host writes
-`{ seq, id, action, position? }` to `/home/caboose/.cache/caboose/media-command.json` as
-`caboose`, with `seq` increasing and millisecond-based so it keeps increasing across host
-restarts. `sent` means the command reached the computer; an id the browser no longer has
-is ignored there, and the next state shows the result.
-
-Control-socket events: `media.playing { media }` on every change of the state (including
-each 5-second report while playing, and once when observation starts), and
-`media.stopped { id }` when that video stops being offered (it ended, its tab closed, the
-browser closed, another video replaced it, or the computer stopped running).
-
-The handoff on the phone: on `media.playing`, offer the video; to hand off, play it natively
-from `position`, then `POST …/control { action: "pause" }`; when the phone stops,
-`POST …/control { action: "play", position: <phone position> }`.
 
 ### Native bridge
 
@@ -3864,7 +3791,7 @@ it can enable Tailscale HTTPS and can continue to the console without pairing.
   private, link-local, CGNAT or reserved ranges. Display, file and terminal ports are
   reachable only from the host: over the TAP device on Linux, or through loopback relays on macOS and containers.
 - **Guest input.** The host treats the guest as able to produce malformed data. Phone
-  events, media state, notification records, task transcripts and approval requests are
+  events, Now Playing state, notification records, task transcripts and approval requests are
   validated and bounded, and the host never relays a guest-supplied file path.
 - **Guest commands.** The host passes arguments, never shell strings built from client
   input; Craft jobs and catalog operations run fixed argument vectors, and catalog MCP

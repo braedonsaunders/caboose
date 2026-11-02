@@ -4,8 +4,8 @@ import SwiftUI
 /// The page in Safari's in-app browser, with its AirPlay and full-screen controls.
 struct WebPage: UIViewControllerRepresentable {
     let url: URL
-    /// The controls' tint: white over a video, or the system's over an ordinary page.
-    var tint: UIColor? = .white
+    /// The controls' tint; nil for the system's.
+    var tint: UIColor? = nil
     let done: () -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator(done: done) }

@@ -10,8 +10,8 @@ exec fallback.
 The request contains `session` (32 lowercase hex digits), a nonnegative `generation`,
 `cursor`, `channels`, `tasks: [{id, offset, turn}]`, `phone` and `acks`. Task IDs are UUIDs,
 offsets are nonnegative safe integers, and at most 256 tasks are admitted. Channels are
-`bridge.request`, `bridge.cancel`, `phone`, `notification`, `now-playing`, `media`,
-`agent.tick`, `agent.mailbox` and `fs`. Request bodies are bounded to 256 KiB. Responses
+`bridge.request`, `bridge.cancel`, `phone`, `notification`, `now-playing`, `agent.tick`,
+`agent.mailbox` and `fs`. Request bodies are bounded to 256 KiB. Responses
 contain an opaque cursor and at most 128 `{channel, record, receipt?}` records. The guest
 bounds serialized output to 1 MiB; the host independently bounds the body to 2 MiB and
 validates envelopes before dispatch. Agent records may occupy 1 MiB; other channel

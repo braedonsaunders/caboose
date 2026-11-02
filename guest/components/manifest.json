@@ -13,7 +13,6 @@
   "desktop-mcp/seat.py",
   "desktop-mcp/ensure-agent-seat.mjs",
   "desktop-mcp/caboose-agent-seat",
-  "components/chromium-extensions",
   "container/caboose-session",
   "scopes/install.sh",
   "scopes/caboose-scopes",

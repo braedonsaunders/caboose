@@ -66,12 +66,8 @@ install -Dm644 "$root/desktop-mcp/ensure-agent-seat.mjs" /opt/caboose/ensure-age
 install -Dm644 "$root/desktop-mcp/ensure-agent-seat.mjs" /opt/caboose/desktop-mcp/ensure-agent-seat.mjs
 install -Dm755 "$root/desktop-mcp/caboose-agent-seat" /usr/local/libexec/caboose-agent-seat
 install -Dm755 "$root/desktop-mcp/agent-profile.py" /opt/caboose/agent-profile.py
-install -Dm644 "$root/components/chromium-extensions" /etc/chromium.d/zz-caboose-extensions
-# A Chromium extension whose target is gone opens an error dialog at every launch.
-for link in /usr/share/chromium/extensions/*; do
-  if [ -L "$link" ] && [ ! -e "$link" ]; then rm -f "$link"; fi
-done
-rm -f /etc/chromium.d/caboose-scroll
+rm -rf /opt/caboose/media-handoff
+rm -f /etc/chromium.d/caboose-scroll /etc/chromium.d/zz-caboose-extensions /usr/share/chromium/extensions/caboose-media-handoff /etc/chromium/native-messaging-hosts/com.caboose.media.json
 sh "$root/notifications/install.sh"
 bash "$root/phone/install.sh"
 sh "$root/bridge/install.sh"

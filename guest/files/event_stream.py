@@ -20,7 +20,7 @@ import time
 
 UUID = re.compile(r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\Z')
 HEX = re.compile(r'[0-9a-f]{32}\Z')
-CHANNELS = frozenset(('bridge.request', 'bridge.cancel', 'phone', 'notification', 'now-playing', 'media', 'agent.tick', 'agent.mailbox', 'fs'))
+CHANNELS = frozenset(('bridge.request', 'bridge.cancel', 'phone', 'notification', 'now-playing', 'agent.tick', 'agent.mailbox', 'fs'))
 QUEUES = {'bridge.request': ('.cache/caboose/bridge/claimed', 65536),
           'bridge.cancel': ('.cache/caboose/bridge/cancels', 1),
           'phone': ('.cache/caboose/phone/queue', 16384),
@@ -186,18 +186,17 @@ class Store:
                     if receipt in self.accepted_bridge: continue
                     if not emit(channel, record, receipt): break
                 except (OSError, ValueError): continue
-        for channel in channels & {'now-playing', 'media'}:
+        if 'now-playing' in channels:
             try:
-                pidpath, process = ('bridge/daemon.pid', b'caboose-bridge') if channel == 'now-playing' else ('media-host.pid', b'caboose-media-host')
-                pid = self.optional('.cache/caboose/' + pidpath, 32).strip()
+                pid = self.optional('.cache/caboose/bridge/daemon.pid', 32).strip()
                 alive = False
                 if pid.isdigit() and 0 < int(pid) < 2**31:
                     try:
-                        with open('/proc/%d/cmdline' % int(pid), 'rb') as f: alive = process in f.read(65536)
+                        with open('/proc/%d/cmdline' % int(pid), 'rb') as f: alive = b'caboose-bridge' in f.read(65536)
                     except OSError: pass
-                state = json.loads(self.optional('.cache/caboose/' + channel + '.json', 65536)) if alive else None
+                state = json.loads(self.optional('.cache/caboose/now-playing.json', 65536)) if alive else None
             except ValueError: state = None
-            emit(channel, {'state': state, 'guestClockMs': int(time.time()*1000)})
+            emit('now-playing', {'state': state, 'guestClockMs': int(time.time()*1000)})
         budget = min(65536, 262144 // max(1, len(value.get('tasks', []))))
         tasks = value.get('tasks', [])
         task_scope = tuple(task['id'] for task in tasks)
@@ -295,7 +294,7 @@ class Watch:
             if hasattr(os, 'pidfd_open'):
                 store = Store(directory)
                 pidpaths = ['Agents/' + t['id'] + '/pid' for t in tasks]
-                pidpaths += ['.cache/caboose/bridge/daemon.pid', '.cache/caboose/media-host.pid']
+                pidpaths += ['.cache/caboose/bridge/daemon.pid']
                 for path in pidpaths:
                     pid = store.optional(path, 32).strip()
                     if process_running(pid):

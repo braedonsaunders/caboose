@@ -121,10 +121,6 @@ it (see [Updating a running computer](#updating-a-running-computer)).
   JetBrains Mono as the default fonts with Noto CJK and colour emoji as fallbacks, and
   `QT_QPA_PLATFORMTHEME=gtk3`.
 
-The builder does not copy [`guest/media-handoff`](../media-handoff/README.md), so images
-built by `build.sh` do not include media handoff; install it on a running computer with
-`guest/media-handoff/install.sh` (see [Updating a running computer](#updating-a-running-computer)).
-
 ## Apps
 
 `apps.sh` installs the lineup in a Debian 13 amd64 or arm64 guest or chroot. It is idempotent, and
@@ -176,10 +172,9 @@ A computer keeps its own disk, so packages and components change from inside it.
 checkout copied into the computer, as root:
 
 ```sh
-bash guest/image/apps.sh                   # the app lineup; also installs media handoff from the checkout
+bash guest/image/apps.sh                   # the app lineup
 sh guest/desktop-mcp/install.sh
 sh guest/agentd/install.sh
-sh guest/media-handoff/install.sh
 ```
 
 None of these reboots the computer. The agent runner, file service, notifications, phone handoff and `caboose-game-run` are
@@ -217,8 +212,7 @@ Against a deployed host (see [`apps/host`](../../apps/host/README.md#real-host-c
 
 The components have their own checks: `guest/desktop-mcp/check-a11y.sh` (Docker),
 `guest/notifications/check.sh` and `check-container.sh`, `guest/phone/check.sh`,
-`guest/game/check.sh`, `guest/media-handoff/check.sh`, `guest/files/check-service.py` and
-`guest/terminal/check-service.py`.
+`guest/game/check.sh`, `guest/files/check-service.py` and `guest/terminal/check-service.py`.
 
 ## Building an EROFS system image
 

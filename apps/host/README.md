@@ -28,7 +28,7 @@ WebSocket, and runs apps, agent tasks, file operations and catalog installs insi
 | `src/screen.ts` | `/v1/screen/*`, the owner's display through its accessibility tree. |
 | `src/app-catalog*.ts`, `src/craft-jobs.ts` | The optional application catalog and Craft CLI jobs. |
 | `src/commands.ts`, `src/guest-command.py` | `/v1/commands`: owner scripts run detached in the computer, their supervisor, and their results in the host state. |
-| `src/media.ts`, `src/phone.ts`, `src/desktop-notifications.ts` | Media handoff, iOS handoff, and desktop notifications from the guest. |
+| `src/phone.ts`, `src/desktop-notifications.ts` | iOS handoff and desktop notifications from the guest. |
 | `src/push.ts`, `src/apns.ts`, `src/activities.ts` | APNs push and Live Activities. |
 | `src/shared-storage.ts`, `src/backup.ts`, `src/restore-journal.ts`, `src/storage.ts` | Shared storage across parked microVM disks, phone backups and journaled restores, through `disk/`. |
 | `disk/` | `caboose-disk`, the Rust helper that shares blocks between disks, describes backups and deallocates zeros ([its README](disk/README.md)). |
@@ -505,19 +505,6 @@ address.
 ([`guest/desktop-mcp`](../../guest/desktop-mcp/README.md)) as `caboose` with the owner
 display's launch environment, which names its control socket.
 
-## Media handoff
-
-`src/media.ts` reads the video playing in the computer's Chromium from
-`/home/caboose/.cache/caboose/media.json` (written by
-[`guest/media-handoff`](../../guest/media-handoff/README.md)) through the private Files event receiver, only
-while the computer is running and a display client is connected, and broadcasts
-`media.playing` and `media.stopped` on `/v1/control`. `GET /v1/media` returns the current
-state (null unless running; it never wakes or leases the computer).
-`POST /v1/media/:id/control` with `{ "action": "pause" }` or
-`{ "action": "play", "position": 42.5 }` writes a command for the guest as `caboose` and
-returns `{ "sent": true }`, or 409 while the computer is not running. The contract is in
-`docs/architecture.md` § Media handoff.
-
 ## Notifications and Live Activities
 
 Desktop notifications from the owner's session (see
@@ -663,8 +650,7 @@ Debian 13 container where the real `caboose-agentd`, installed by its own `insta
 drives a stand-in ACP agent.
 
 `guest/desktop-mcp/check-a11y.sh` covers the accessibility helper behind the screen routes,
-`guest/media-handoff/check.sh` the media handoff guest, `guest/files/check-service.py` the
-file service, and `guest/terminal/check-service.py` the terminal service; see their READMEs.
+`guest/files/check-service.py` the file service, and `guest/terminal/check-service.py` the terminal service; see their READMEs.
 
 Agent profiles are private per-computer records in `agent-profiles.json`, with identity,
 provider, instructions, approval default and owner-editable memories. Profile APIs remain
@@ -808,7 +794,7 @@ or child memory inode while a VMM may still map it.
 
 `src/guest-events.ts` owns one authenticated bounded Files long poll per running
 computer. It dispatches validated channel envelopes to the existing bridge, phone,
-media, notification and task adapters, then acknowledges accepted queue records.
+Now Playing, notification and task adapters, then acknowledges accepted queue records.
 It stops on freeze, park, shutdown and deletion; reconnects request an authoritative
 snapshot. It does not fall back to idle guest exec polling on old components.
 The guest components must include the event endpoint. See [the contract](../../docs/guest-events.md).

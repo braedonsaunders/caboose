@@ -84,12 +84,6 @@ final class NativeBridge {
         location.stop()
     }
 
-    /// While the phone plays a handed-off video itself, its player owns Now Playing.
-    var nowPlayingSuspended: Bool {
-        get { nowPlaying.suspended }
-        set { nowPlaying.suspended = newValue }
-    }
-
     func handle(_ type: String, _ event: [String: Any]) {
         switch type {
         case "computer.state":

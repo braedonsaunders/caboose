@@ -41,7 +41,6 @@ import { openUrl, openOnDisplay, decodeBase64, sanitizeFileName, splitName, DOWN
 import { ComputerConflictError, ComputerLifecycle, type ComputerDriver } from './lifecycle.js'
 import { tieredController, type SnapshotTierOptions } from './snapshot-tier-controller.js'
 import { HomeOwnership } from './home.js'
-import { MediaHandoff, MediaInputError, parseMediaCommand } from './media.js'
 import { BridgeInputError, BridgeRateLimitError, BridgeRelay, LocationShare, parseAppearance, parseLocation, type BridgeEvent } from './bridge.js'
 import { NowPlaying, NowPlayingInputError, parseNowPlayingCommand } from './now-playing.js'
 import { AgentRegistry } from './registry.js'
@@ -153,7 +152,7 @@ export interface ComputerPieces { /** A container computer's image, folders, dev
 
 /**
  * Everything one computer serves: its lifecycle and leases, sockets and display relay, agents,
- * catalog, files, media, and the push and Live Activity registrations of its phones.
+ * catalog, files, Now Playing, and the push and Live Activity registrations of its phones.
  */
 /** Checks a computer may run, or be given these resources, before it does; throws when not. */
 type Admission = (id: string, next?: Pick<ComputerSettings, 'memoryMb' | 'vcpus'>) => Promise<void>
@@ -332,7 +331,6 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
   })
   let craftBusy = 0
   const craftJobs = new Set<string>()
-  const media = new MediaHandoff(() => controller.guest(), broadcast, 1000, Date.now, guestEvents.subscribe)
   let fileAnchor: string | undefined
   let stopFiles: (() => void) | undefined
   function syncFiles(): void {
@@ -432,10 +430,9 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
   }, 10_000)
   networkPoll.unref()
   const nowPlaying = new NowPlaying(() => controller.guest(), broadcast, 1000, Date.now, guestEvents.subscribe)
-  /** Media is polled only while the computer is already running and someone is watching it. */
+  /** Now Playing is polled only while the computer is already running and someone is watching it. */
   function syncMedia(): void {
     const watching = computer.state === 'running' && sockets.size - controls.size - terminals.size > 0
-    media.setActive(watching)
     nowPlaying.setActive(watching)
     const phones = computer.state === 'running' && [...phoneControls].some(socket => !backgroundControls.has(socket))
     guestEvents.setPhone(phones)
@@ -621,7 +618,7 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
     ai.setRunning(state === 'running')
     if (state === 'running') { agents.resume(); commands.resume(); if (!resumed) bridgeWake() }
     else if (state === 'frozen') { agents.pause(); commands.pause() }
-    else { agents.pause(); commands.pause(); media.computerStopped(); nowPlaying.computerStopped(); bridge.computerStopped(); location.computerStopped() }
+    else { agents.pause(); commands.pause(); nowPlaying.computerStopped(); bridge.computerStopped(); location.computerStopped() }
     syncMedia()
     syncFiles()
     desktopNotifications.setActive(state === 'running')
@@ -1107,15 +1104,6 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
       const id = hold[1]
       return json(response, 200, await computer.run(async () => hold[2] === 'pause' ? { paused: await agents.pauseTask(id) } : { resumed: await agents.resumeTask(id) }))
     }
-    if (request.method === 'GET' && path === '/v1/media') {
-      return json(response, 200, { media: await media.read(computer.state === 'running') })
-    }
-    const control = /^\/v1\/media\/([^/]+)\/control$/.exec(path)
-    if (request.method === 'POST' && control?.[1]) {
-      const command = parseMediaCommand(control[1], await readJson(request))
-      await computer.run(() => media.send(command))
-      return json(response, 200, { sent: true })
-    }
     if (request.method === 'GET' && path === '/v1/now-playing') {
       return json(response, 200, { nowPlaying: await nowPlaying.read(computer.state === 'running') })
     }
@@ -1403,8 +1391,6 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
         if (path === '/v1/control') {
           client.send(JSON.stringify({ type: 'computer.state', state: computer.state }))
           client.send(JSON.stringify({ type: 'computer.settings', computer: managementStatus() }))
-          const playing = media.watched()
-          if (playing) client.send(JSON.stringify({ type: 'media.playing', media: playing }))
           const track = nowPlaying.watched()
           if (track) client.send(JSON.stringify({ type: 'now-playing.changed', nowPlaying: track }))
           return
@@ -2105,7 +2091,7 @@ export function createCabooseServer(options: Partial<ComputerPieces> & {
     })().catch(error => {
       if (response.destroyed) return
       if (error instanceof OwnershipError) return json(response, 409, { error: error.message })
-      if (error instanceof AgentInputError || error instanceof SettingsInputError || error instanceof ContainerSpecError || error instanceof MediaInputError || error instanceof BridgeInputError || error instanceof NowPlayingInputError || error instanceof IdentityInputError) return json(response, 400, { error: error.message })
+      if (error instanceof AgentInputError || error instanceof SettingsInputError || error instanceof ContainerSpecError || error instanceof BridgeInputError || error instanceof NowPlayingInputError || error instanceof IdentityInputError) return json(response, 400, { error: error.message })
       if (error instanceof AgentNotFoundError || error instanceof ScreenElementGoneError || error instanceof TerminalGoneError || error instanceof IdentityNotFoundError) return json(response, 404, { error: error.message })
       if (error instanceof AgentUnavailableError || error instanceof DisplayNotReadyError || error instanceof AgentConflictError || error instanceof ComputerConflictError || error instanceof ComputerCapacityError || error instanceof IdentityConflictError || error instanceof ReachUnavailableError) return json(response, 409, { error: error.message })
       if (error instanceof RequestTooLargeError) return json(response, 413, { error: error.message })

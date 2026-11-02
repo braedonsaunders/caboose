@@ -138,15 +138,3 @@ if id caboose >/dev/null 2>&1; then usermod -aG docker caboose; fi
 systemctl enable docker.service
 if [[ -d /run/systemd/system ]]; then systemctl start docker.service; fi
 command -v update-desktop-database >/dev/null && update-desktop-database /usr/local/share/applications || true
-# Media handoff: the Chromium extension and native host that offer a playing video to the
-# phone. It lives beside this script's directory in the repository, or beside this script in
-# the microVM build (guest/image/build-inside.sh); guest/container/Dockerfile copies this
-# script on its own and runs that installer itself.
-here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-media_handoff=$here/../media-handoff/install.sh
-[[ -f $media_handoff ]] || media_handoff=$here/media-handoff/install.sh
-if [[ -f $media_handoff ]]; then
-  sh "$media_handoff"
-else
-  echo "Media handoff not installed: run guest/media-handoff/install.sh as root" >&2
-fi
