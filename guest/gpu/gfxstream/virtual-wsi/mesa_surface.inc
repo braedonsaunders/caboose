@@ -65,6 +65,12 @@ struct Surface {
     Bytes caps;
     uint64_t capsPhysical=0;
     std::chrono::steady_clock::time_point capsTime{};
+    // The formats and present modes a count query reported, which the next query that fills
+    // an array reports again: the answers can change in between (the window binds and the
+    // phone's replace the local defaults), and the two calls of an enumeration must agree.
+    std::vector<std::array<uint32_t,2>> countedFormats;
+    std::vector<uint32_t> countedModes;
+    bool formatsCounted=false, modesCounted=false;
     Client client;
 };
 static std::mutex mutex;
@@ -447,10 +453,20 @@ static VkResult VKAPI_CALL formats(VkPhysicalDevice physical, VkSurfaceKHR surfa
     uint32_t* count, VkSurfaceFormatKHR* out) {
     return guarded([&]() -> VkResult {
         if (!count) return VK_ERROR_INITIALIZATION_FAILED;
-        Bytes b; auto result=query(physical,surface,b); if (result!=VK_SUCCESS) return result;
-        // Only formats the phone can create a swapchain with: an application that picked
-        // another would never present.
-        const auto values=presentableFormats(providerCaps(b));
+        auto retained=lookup(surface);
+        if (!retained) return VK_ERROR_SURFACE_LOST_KHR;
+        std::lock_guard<std::recursive_mutex> lock(retained->operationMutex);
+        std::vector<std::array<uint32_t,2>> values;
+        if (out && retained->formatsCounted) {
+            values=std::move(retained->countedFormats);
+        } else {
+            Bytes b; auto result=query(physical,surface,b); if (result!=VK_SUCCESS) return result;
+            // Only formats the phone can create a swapchain with: an application that picked
+            // another would never present.
+            values=presentableFormats(providerCaps(b));
+        }
+        retained->formatsCounted=!out;
+        if (!out) retained->countedFormats=values;
         uint32_t total=values.size(), copied=out ? std::min(*count,total) : total;
         if (out) for (uint32_t i=0;i<copied;++i)
             out[i]={VkFormat(values[i][0]),VkColorSpaceKHR(values[i][1])};
@@ -461,12 +477,22 @@ static VkResult VKAPI_CALL modes(VkPhysicalDevice physical, VkSurfaceKHR surface
     uint32_t* count, VkPresentModeKHR* out) {
     return guarded([&]() -> VkResult {
         if (!count) return VK_ERROR_INITIALIZATION_FAILED;
-        Bytes b; auto result=query(physical,surface,b); if (result!=VK_SUCCESS) return result;
-        auto values=providerCaps(b).modes;
-        // Guest-owned images offer mailbox: the phone drops a frame that finds no free image.
-        if (caboose_gfxstream_guest_images==1 &&
-            std::find(values.begin(),values.end(),uint32_t(VK_PRESENT_MODE_MAILBOX_KHR))==values.end())
-            values.push_back(VK_PRESENT_MODE_MAILBOX_KHR);
+        auto retained=lookup(surface);
+        if (!retained) return VK_ERROR_SURFACE_LOST_KHR;
+        std::lock_guard<std::recursive_mutex> lock(retained->operationMutex);
+        std::vector<uint32_t> values;
+        if (out && retained->modesCounted) {
+            values=std::move(retained->countedModes);
+        } else {
+            Bytes b; auto result=query(physical,surface,b); if (result!=VK_SUCCESS) return result;
+            values=providerCaps(b).modes;
+            // Guest-owned images offer mailbox: the phone drops a frame that finds no free image.
+            if (caboose_gfxstream_guest_images==1 &&
+                std::find(values.begin(),values.end(),uint32_t(VK_PRESENT_MODE_MAILBOX_KHR))==values.end())
+                values.push_back(VK_PRESENT_MODE_MAILBOX_KHR);
+        }
+        retained->modesCounted=!out;
+        if (!out) retained->countedModes=values;
         uint32_t total=values.size(), copied=out ? std::min(*count,total) : total;
         if (out) for (uint32_t i=0;i<copied;++i) out[i]=VkPresentModeKHR(values[i]);
         *count=copied; return copied<total ? VK_INCOMPLETE : VK_SUCCESS;
