@@ -211,6 +211,15 @@ the runtime from the pinned commit. Its static link includes the real framebuffe
 Vulkan decoder; GL readback remains unsupported. The [source audit](apple-source-audit.md)
 describes these boundaries.
 
+## Presentation surfaces
+
+`presentation_api.cpp` is the presenter behind the presentation drafts. Apple builds compile
+it as Objective-C++ and attach each surface to its owner view's `CAMetalLayer`
+(`metal_surface_internal.mm`); elsewhere it attaches a `VK_EXT_headless_surface`
+(`headless_surface_internal.cpp`) and presents offscreen, which is how the
+[Linux executor](linux-executor/README.md) runs the same runtime without a phone.
+`presentation_platform_surface.h` is the boundary between the two.
+
 ## Presented-picture captures
 
 `caboose_gpu_surface_set_capture` copies presents into three capture images on the

@@ -133,6 +133,21 @@ int caboose_gpu_surface_retire(caboose_gpu_surface* surface);
 }
 #endif
 
+#if !defined(__APPLE__)
+#ifdef __cplusplus
+extern "C" {
+#endif
+// The Linux executor: the surface presents offscreen into a headless surface of its
+// decoder instance (VK_EXT_headless_surface). Attach after prepare, on any thread.
+int caboose_gpu_surface_attach_headless(caboose_gpu_surface* surface);
+// After retirement succeeds. Destroys the headless surface, releases the instance lease,
+// removes the reservation and consumes the surface pointer; failure retains ownership.
+int caboose_gpu_surface_detach_headless(caboose_gpu_surface** surface);
+#ifdef __cplusplus
+}
+#endif
+#endif
+
 #ifdef __OBJC__
 @class CAMetalLayer;
 #ifdef __cplusplus

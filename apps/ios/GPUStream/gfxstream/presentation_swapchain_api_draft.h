@@ -165,6 +165,20 @@ int caboose_gpu_virtual_swapchain_retire(caboose_gpu_virtual_swapchain** swapcha
 }
 #endif
 
+#if !defined(__APPLE__)
+#ifdef __cplusplus
+extern "C" {
+#endif
+// The Linux executor's configure_extent: after a successful variable-extent query and
+// before CREATE, with the full bound identity, under the same conditions as on Apple
+// platforms. A headless surface has no layer; the swapchain created next takes the extent.
+int caboose_gpu_surface_configure_extent_headless(caboose_gpu_surface* surface,
+    const caboose_gpu_surface_identity* identity, uint32_t width, uint32_t height);
+#ifdef __cplusplus
+}
+#endif
+#endif
+
 #ifdef __OBJC__
 @class CAMetalLayer;
 #ifdef __cplusplus

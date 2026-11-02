@@ -1,10 +1,13 @@
 // Copyright 2026 Caboose contributors. SPDX-License-Identifier: Apache-2.0
 // Experimental private presenter. No production route may call this until the
 // wire, provider, ownership, and physical-device checks have all passed.
-#import <Foundation/Foundation.h>
+// Apple builds compile this file as Objective-C++ and present into a CAMetalLayer; the
+// Linux executor presents into a headless surface (presentation_platform_surface.h).
+#include "presentation_platform_surface.h"
+#ifdef __OBJC__
 #import <QuartzCore/CAMetalLayer.h>
+#endif
 #include "presentation_api_draft.h"
-#include "metal_surface_internal.h"
 #include "presentation_copy_internal.h"
 #include "framelab_timing.h"
 #include "presentation_capture_internal.h"
@@ -154,7 +157,7 @@ struct caboose_gpu_surface {
     std::mutex operations;
     caboose_gpu_surface_bind_info bind{};
     std::unique_ptr<CaboosePresentationInstance> instance;
-    MetalSurface* metal = nullptr;
+    PlatformSurface* platform = nullptr;
     bool attached = false, revoked = false, retired = false;
     uint64_t physicalBox = 0, lastSerial = 0;
     VkPhysicalDevice physical = VK_NULL_HANDLE;
@@ -523,19 +526,34 @@ extern "C" int caboose_gpu_surface_prepare(const caboose_gpu_surface_bind_info* 
         return 0;
     } catch (const std::bad_alloc&) { return ENOMEM; }
 }
+#ifdef __OBJC__
 extern "C" int caboose_gpu_surface_attach(caboose_gpu_surface* surface, CAMetalLayer* layer) {
-    if (!surface || !layer || ![NSThread isMainThread]) return EINVAL;
+    if (!surface || !layer || !onMainThread()) return EINVAL;
     std::unique_lock<std::mutex> operation(surface->operations, std::try_to_lock);
     if (!operation.owns_lock()) return EBUSY;
     std::lock_guard<std::mutex> lock(surface->mutex);
     if (surface->revoked || surface->attached) return EBUSY;
     VkResult r = VK_SUCCESS;
     const int result = createMetalSurface(surface->instance->instance, (__bridge void*)layer,
-                                           &surface->metal, &r);
+                                           &surface->platform, &r);
     if (result) return result;
     surface->attached = true;
     return 0;
 }
+#else
+extern "C" int caboose_gpu_surface_attach_headless(caboose_gpu_surface* surface) {
+    if (!surface) return EINVAL;
+    std::unique_lock<std::mutex> operation(surface->operations, std::try_to_lock);
+    if (!operation.owns_lock()) return EBUSY;
+    std::lock_guard<std::mutex> lock(surface->mutex);
+    if (surface->revoked || surface->attached) return EBUSY;
+    VkResult r = VK_SUCCESS;
+    const int result = createHeadlessSurface(surface->instance->instance, &surface->platform, &r);
+    if (result) return result;
+    surface->attached = true;
+    return 0;
+}
+#endif
 extern "C" int caboose_gpu_surface_query(caboose_gpu_surface* surface, uint64_t boxedPhysical,
                                            caboose_gpu_surface_capabilities** out,
                                            caboose_gpu_query_status* status) {
@@ -558,7 +576,7 @@ extern "C" int caboose_gpu_surface_query(caboose_gpu_surface* surface, uint64_t 
         if (r != VK_SUCCESS) return fail(errorFor(r));
         PresentationSurfaceCapabilities raw{};
         PresentationQueryStatus queryStatus{};
-        r = queryPresentationSurface(*physical, metalSurfaceHandle(surface->metal), &raw, &queryStatus);
+        r = queryPresentationSurface(*physical, platformSurfaceHandle(surface->platform), &raw, &queryStatus);
         if (r != VK_SUCCESS) {
             if (queryStatus.hasDriverResult) {
                 status->has_vulkan_result = 1;
@@ -647,7 +665,7 @@ extern "C" caboose_gpu_submit_result caboose_gpu_surface_present(
             s->device = std::move(device);
             s->boxedDevice = p->boxed_device; s->boxedQueue = p->boxed_queue;
             s->queueFamily = p->queue_family; s->format = static_cast<VkFormat>(p->vk_format);
-            r = createPresentationSwapchain(*s->device, metalSurfaceHandle(s->metal), s->format,
+            r = createPresentationSwapchain(*s->device, platformSurfaceHandle(s->platform), s->format,
                                             s->bind.width, s->bind.height, &s->swapchain, &s->images, &provider);
             if (r != VK_SUCCESS) { s->device.reset(); return operationResult(CABOOSE_GPU_SUBMIT_REJECTED, r, provider); }
         }
@@ -702,7 +720,7 @@ extern "C" caboose_gpu_submit_result caboose_gpu_surface_present(
 }
 
 extern "C" int caboose_gpu_surface_retire(caboose_gpu_surface* s) {
-    if (!s || [NSThread isMainThread]) return EINVAL;
+    if (!s || onMainThread()) return EINVAL;
     std::lock_guard<std::mutex> operation(s->operations);
     {
         std::lock_guard<std::mutex> lock(s->mutex);
@@ -729,16 +747,21 @@ extern "C" int caboose_gpu_surface_retire(caboose_gpu_surface* s) {
     return 0;
 }
 
+#ifdef __OBJC__
 extern "C" int caboose_gpu_surface_detach(caboose_gpu_surface** ptr) {
-    if (!ptr || !*ptr || ![NSThread isMainThread]) return EINVAL;
+    if (!ptr || !*ptr || !onMainThread()) return EINVAL;
+#else
+extern "C" int caboose_gpu_surface_detach_headless(caboose_gpu_surface** ptr) {
+    if (!ptr || !*ptr) return EINVAL;
+#endif
     caboose_gpu_surface* s = *ptr;
     std::unique_lock<std::mutex> operation(s->operations, std::try_to_lock);
     if (!operation.owns_lock()) return EBUSY;
     {
         std::lock_guard<std::mutex> lock(s->mutex);
         if (!s->retired) return EBUSY;
-        if (s->metal) {
-            int result = destroyMetalSurface(&s->metal);
+        if (s->platform) {
+            int result = destroyPlatformSurface(&s->platform);
             if (result) return result;
         }
     }
@@ -834,7 +857,7 @@ extern "C" int caboose_gpu_surface_query_variable_extent(caboose_gpu_surface* su
     auto fail = [status](int error) { *status = {}; status->native_error = error; return error; };
     if (!out) return fail(EINVAL);
     *out = nullptr;
-    if (!surface || [NSThread isMainThread]) return fail(EINVAL);
+    if (!surface || onMainThread()) return fail(EINVAL);
     caboose_gpu_surface_capabilities* raw = nullptr;
     int result = caboose_gpu_surface_query_indexed(surface, physical, &raw, status);
     if (result) return result;
@@ -856,9 +879,10 @@ extern "C" int caboose_gpu_surface_query_variable_extent(caboose_gpu_surface* su
     return 0;
 }
 
+#ifdef __OBJC__
 extern "C" int caboose_gpu_surface_configure_extent(caboose_gpu_surface* surface,
     const caboose_gpu_surface_identity* identity, CAMetalLayer* layer, uint32_t width, uint32_t height) {
-    if (!surface || !identity || !layer || ![NSThread isMainThread] ||
+    if (!surface || !identity || !layer || !onMainThread() ||
         !same(surface->bind.identity, *identity)) return EINVAL;
     std::unique_lock<std::mutex> operation(surface->operations, std::try_to_lock);
     if (!operation.owns_lock()) return EBUSY;
@@ -866,15 +890,32 @@ extern "C" int caboose_gpu_surface_configure_extent(caboose_gpu_surface* surface
     if (!lock.owns_lock()) return EBUSY;
     if (!surface->attached || surface->revoked || surface->retired || !surface->physical ||
         surface->swapchain || surface->indexed || !surface->frames.empty()) return EBUSY;
-    if (!metalSurfaceMatchesLayer(surface->metal, (__bridge void*)layer) ||
+    if (!metalSurfaceMatchesLayer(surface->platform, (__bridge void*)layer) ||
         !surface->extent.accepts(width, height)) return EINVAL;
     if (!surface->extent.begin(width, height)) return EINVAL;
-    const int result = configureMetalSurfaceExtent(surface->metal, (__bridge void*)layer, width, height);
+    const int result = configureMetalSurfaceExtent(surface->platform, (__bridge void*)layer, width, height);
     surface->extent.complete(result == 0);
     // All validation above precedes mutation. Any subsequent failure is an
     // uncertain layer state, never a reusable EINVAL/EBUSY rejection.
     return result ? EIO : 0;
 }
+#else
+extern "C" int caboose_gpu_surface_configure_extent_headless(caboose_gpu_surface* surface,
+    const caboose_gpu_surface_identity* identity, uint32_t width, uint32_t height) {
+    if (!surface || !identity || !same(surface->bind.identity, *identity)) return EINVAL;
+    std::unique_lock<std::mutex> operation(surface->operations, std::try_to_lock);
+    if (!operation.owns_lock()) return EBUSY;
+    std::unique_lock<std::mutex> lock(surface->mutex, std::try_to_lock);
+    if (!lock.owns_lock()) return EBUSY;
+    if (!surface->attached || surface->revoked || surface->retired || !surface->physical ||
+        surface->swapchain || surface->indexed || !surface->frames.empty()) return EBUSY;
+    if (!surface->extent.accepts(width, height)) return EINVAL;
+    if (!surface->extent.begin(width, height)) return EINVAL;
+    // A headless surface has no layer: the swapchain created next takes this extent.
+    surface->extent.complete(true);
+    return 0;
+}
+#endif
 
 extern "C" int caboose_gpu_virtual_swapchain_create(caboose_gpu_surface* surface,
     const caboose_gpu_swapchain_create_info* info, caboose_gpu_virtual_swapchain** out,
@@ -913,9 +954,9 @@ extern "C" int caboose_gpu_virtual_swapchain_create(caboose_gpu_surface* surface
         if (r != VK_SUCCESS) return fail(errorFor(r));
         if (result->device->physicalDevice != surface->physical) return fail(EINVAL);
         PresentationProviderResult provider{};
-        r = createVirtualSwapchain(*result->device, metalSurfaceHandle(surface->metal), *info,
+        r = createVirtualSwapchain(*result->device, platformSurfaceHandle(surface->platform), *info,
                                    &result->handle, &result->nativeImages, &provider,
-                                   surface->extent.enabled());
+                                   surface->extent.enabled() && kPlatformSurfaceFixedExtent);
         if (r != VK_SUCCESS) {
             if (provider.present) { status->has_vulkan_result = 1; status->vulkan_result = provider.value; }
             return fail(errorFor(r));
@@ -1050,7 +1091,7 @@ extern "C" caboose_gpu_submit_result caboose_gpu_virtual_swapchain_present(
             abortReservation(); return rejected(EINVAL);
         }
         PresentationProviderResult provider{};
-        r = validateVirtualPresentQueue(*surface->device, metalSurfaceHandle(surface->metal), &provider);
+        r = validateVirtualPresentQueue(*surface->device, platformSurfaceHandle(surface->platform), &provider);
         if (r != VK_SUCCESS) { abortReservation(); return operationResult(CABOOSE_GPU_SUBMIT_REJECTED, r, provider); }
         auto frame = std::make_unique<Frame>();
         frame->indexed = swapchain; frame->source = std::move(source); frame->serial = info->present_serial;
@@ -1215,7 +1256,7 @@ static caboose_gpu_submit_result presentGuestImage(caboose_gpu_virtual_swapchain
             abortReservation(); return rejected(EINVAL);
         }
         PresentationProviderResult provider{};
-        r = validateVirtualPresentQueue(*surface->device, metalSurfaceHandle(surface->metal), &provider);
+        r = validateVirtualPresentQueue(*surface->device, platformSurfaceHandle(surface->platform), &provider);
         if (r != VK_SUCCESS) { abortReservation(); return operationResult(CABOOSE_GPU_SUBMIT_REJECTED, r, provider); }
         auto frame = std::make_unique<Frame>();
         frame->indexed = swapchain; frame->source = std::move(source); frame->serial = info->present_serial;
@@ -1419,7 +1460,7 @@ extern "C" int caboose_gpu_virtual_swapchain_retire(caboose_gpu_virtual_swapchai
     if (!status) return EINVAL;
     *status = {};
     auto fail = [status](int error) { status->native_error = error; return error; };
-    if (!ptr || !*ptr || [NSThread isMainThread]) return fail(EINVAL);
+    if (!ptr || !*ptr || onMainThread()) return fail(EINVAL);
     auto* swapchain = *ptr;
     auto* surface = swapchain->surface;
     std::unique_lock<std::mutex> surfaceOperation(surface->operations);
@@ -1486,7 +1527,7 @@ extern "C" int caboose_gpu_virtual_swapchain_retire(caboose_gpu_virtual_swapchai
         std::lock_guard<std::mutex> hostLock(*swapchain->hostMutex);
         auto* vk = swapchain->device->vk;
         vk->vkDestroySwapchainKHR(swapchain->device->device, swapchain->handle, nullptr);
-        // An owed image goes with its swapchain; MoltenVK keeps its own reference to the
+        // An owed image goes with its swapchain; the provider keeps its own reference to the
         // semaphore and fence it may still signal.
         if (swapchain->owedSemaphore) vk->vkDestroySemaphore(swapchain->device->device, swapchain->owedSemaphore, nullptr);
         if (swapchain->acquireFence) vk->vkDestroyFence(swapchain->device->device, swapchain->acquireFence, nullptr);
