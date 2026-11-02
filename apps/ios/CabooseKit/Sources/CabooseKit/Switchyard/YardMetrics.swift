@@ -2,27 +2,39 @@ import CoreGraphics
 
 /// The screen Switchyard lays out for, and the sizes that follow from it.
 ///
-/// Column widths are fractions of the screen, chosen from ⅓, ½, ⅔ and full. A preset is
-/// offered only where its column is at least `minimumTile` wide and two halves fit, so an
-/// iPhone held upright offers full width alone, a Duo opened out or a phone on its side adds
-/// halves and two thirds, and an iPad adds thirds. Resize gaps separate tiles; the outer edges meet the workspace.
+/// Column widths are fractions of the screen. A width the person picks is one of ⅓, ½, ⅔
+/// and full, offered only where a lone window in it obeys `TilePolicy` (at least the floor
+/// wide, and not too narrow for its height), so an iPhone, an iPhone Duo's inner screen
+/// held upright or an upright iPad offers full width alone, and a wide iPad or a TV adds
+/// halves, two thirds and, where they fit, thirds. Resize gaps separate tiles; the outer
+/// edges meet the workspace.
 public struct YardMetrics: Equatable, Sendable {
     /// The space for the yard, in points.
     public var size: CGSize
     public var gap: CGFloat
     public var outerGap: CGFloat
+    /// Each window's own minimum content size, in points, where it has one.
+    public var minimums: [Int: CGSize]
 
-    /// The narrowest a tile is made: about what a Linux app can lay out in at the yard's
-    /// density, and narrow enough that an iPhone Duo opened out takes two side by side.
-    public static let minimumTile = CGSize(width: 280, height: 180)
+    /// The smallest tile a window is given: `TilePolicy.floor`.
+    public static let minimumTile = TilePolicy.floor
     public var minimumTile: CGSize { Self.minimumTile }
 
     public static let fractions: [CGFloat] = [1.0 / 3, 0.5, 2.0 / 3, 1]
 
-    public init(size: CGSize, gap: CGFloat? = nil, outerGap: CGFloat = 0) {
+    public init(size: CGSize, gap: CGFloat? = nil, outerGap: CGFloat = 0, minimums: [Int: CGSize] = [:]) {
         self.size = size
         self.outerGap = max(0, outerGap)
         self.gap = gap ?? Self.gap(forWidth: size.width)
+        self.minimums = minimums
+    }
+
+    /// The tiled area: the screen inside its outer margins.
+    public var area: CGSize { CGSize(width: max(0, size.width - 2 * outerGap), height: columnHeight) }
+
+    /// The least tile `window` takes on this screen (`TilePolicy.required`).
+    public func required(_ window: Int) -> CGSize {
+        TilePolicy.required(minimum: minimums[window], titleBar: titleBar.height, in: area)
     }
 
     /// Tighter on a phone, where every point counts.
@@ -46,9 +58,6 @@ public struct YardMetrics: Equatable, Sendable {
         return CGRect(x: tile.minX, y: tile.minY + bar, width: tile.width, height: tile.height - bar)
     }
 
-    /// How many windows a column stacks: two on a phone held upright, three elsewhere.
-    public var maxStack: Int { size.height < 500 || size.width < 500 ? 2 : 3 }
-
     /// A column `fraction` of the screen wide, in points. Fractions add up: two halves and
     /// their interior gap and outer margins fill the screen exactly.
     public func points(forFraction fraction: CGFloat) -> CGFloat {
@@ -60,12 +69,15 @@ public struct YardMetrics: Equatable, Sendable {
         return (points + gap) / (size.width - 2 * outerGap + gap)
     }
 
-    /// The narrowest fraction that still makes a tile `minimumTile` wide. A screen too narrow
-    /// for two halves side by side keeps every column full width: a column that leaves too
-    /// little beside it for another only wastes the rest.
+    /// The narrowest fraction a lone window's column may take: at least the floor wide and
+    /// no narrower than `TilePolicy.aspects` allows for the column's height. A screen too
+    /// narrow for two such columns side by side keeps every column full width: a column that
+    /// leaves too little beside it for another only wastes the rest.
     public var minimumFraction: CGFloat {
-        guard points(forFraction: 0.5) >= minimumTile.width else { return 1 }
-        return min(1, fraction(forPoints: minimumTile.width))
+        let floor = TilePolicy.required(minimum: nil, titleBar: 0, in: area).width
+        let narrowest = max(floor, TilePolicy.aspects.lowerBound * columnHeight)
+        guard points(forFraction: 0.5) + TilePolicy.slack >= narrowest else { return 1 }
+        return min(1, fraction(forPoints: narrowest - TilePolicy.slack))
     }
 
     /// The widths this screen offers, narrowest first. Full width is always one.
