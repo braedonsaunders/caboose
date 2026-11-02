@@ -195,7 +195,7 @@ a turn (including the history an agent replays on `session/load`) are not writte
   - **On the display**, the agent starts with `env`, the owner display's launch environment
     from the host (its Wayland socket, Xwayland's `DISPLAY` and `XAUTHORITY`, toolkit
     hints), plus the owner's session bus, so the browser it opens is on the owner's screen;
-    a `terminal` method opens `xfce4-terminal` (else `x-terminal-emulator`) there.
+    a `terminal` method opens the computer's default terminal (`x-terminal-emulator`) there.
   - **On the phone**, the desktop's variables are removed and the attempt's `bin`
     (`xdg-open`, `x-www-browser`, `www-browser`, `sensible-browser`, `gnome-www-browser`,
     each appending the pages it is given to the attempt's `pages`) comes first on `PATH`, with

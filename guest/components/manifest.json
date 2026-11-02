@@ -1,6 +1,5 @@
 [
   "components/install.sh",
-  "components/check-steam-bootstrap.sh",
   "components/caboose-workloads.slice",
   "components/caboose-owner-run",
   "template/caboose-template.py",

@@ -1648,9 +1648,8 @@ async function runInTerminal(spec, method, env, work) {
     'if [ "$code" = 0 ]; then echo "Signed in. Press Enter to close this window."; else echo "Sign-in exited with code $code. Press Enter to close this window."; fi',
     'read _ || true',
   ].join('\n'), { mode: 0o755 })
-  const terminal = existsSync('/usr/bin/xfce4-terminal')
-    ? ['xfce4-terminal', ['--disable-server', `--title=Sign in to ${spec.name}`, '--execute', '/bin/sh', script, exitFile, command, ...args]]
-    : ['x-terminal-emulator', ['-e', '/bin/sh', script, exitFile, command, ...args]]
+  // The computer's default terminal, whichever it is (Debian's x-terminal-emulator alternative).
+  const terminal = ['x-terminal-emulator', ['-e', '/bin/sh', script, exitFile, command, ...args]]
   const child = spawn(terminal[0], terminal[1], { cwd: HOME, env: { ...process.env, ...spec.env, ...await readEnvFile(spec.id), ...env, ...methodEnv }, stdio: 'ignore' })
   const closed = new Promise(resolvePromise => { child.on('exit', () => resolvePromise()); child.on('error', () => resolvePromise()) })
   const deadline = Date.now() + SIGN_IN_TIMEOUT_MS
