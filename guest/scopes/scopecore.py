@@ -80,7 +80,7 @@ def valid_desktop_id(ident):
 
 def valid_entry_id(ident):
     """Any installed entry's id, as the dock launches it: a file name ending in `.desktop`
-    (Steam names game entries after the game, spaces and all)."""
+    (an entry may be named with spaces and all)."""
     return (isinstance(ident, str) and len('.desktop') < len(ident) <= 255 and ident.endswith('.desktop')
             and '/' not in ident and not any(ord(c) < 32 or ord(c) == 127 for c in ident))
 
@@ -174,31 +174,6 @@ def launch_marks(environ):
     return ident, int(launched) if launched and launched.isdigit() else None
 
 
-def steam_game(argv):
-    """The Steam app id a process launches, when it is Steam's game reaper
-    (`reaper SteamLaunch AppId=N -- …`), else None."""
-    if not argv or os.path.basename(argv[0]) != 'reaper' or 'SteamLaunch' not in argv:
-        return None
-    for arg in argv:
-        if arg == '--':
-            break
-        if arg.startswith('AppId='):
-            value = arg[len('AppId='):]
-            return int(value) if value.isdigit() and 0 < int(value) < 1 << 32 else None
-    return None
-
-
-def environ_game(environ):
-    """The Steam app id a process runs for, from its environment: Steam gives a game's
-    whole launch `SteamGameId` (and `SteamAppId`), and pressure-vessel and Proton pass it to
-    every process of the game, including those a portal starts in a sandbox of their own."""
-    for name in ('SteamGameId', 'SteamAppId'):
-        value = variable(environ, name)
-        if value and value.isdigit() and 0 < int(value) < 1 << 32:
-            return int(value)
-    return None
-
-
 def terminal_service(argv):
     """Whether a process is Caboose's terminal service, whose children are phone terminal
     sessions."""
@@ -262,32 +237,24 @@ def app_placement(placements):
     return 'cpu-until-relaunch' if 'cpu-until-relaunch' in values else 'phone' if 'phone' in values else None
 
 
-def acf_name(text):
-    """The game's name from a Steam appmanifest_<id>.acf."""
-    match = re.search(r'^\s*"name"\s+"((?:[^"\\]|\\.)*)"', text, re.MULTILINE)
-    return match.group(1).replace('\\"', '"').replace('\\\\', '\\')[:MAX_NAME] if match else None
-
-
 # -- Classification ------------------------------------------------------------------------
 
 class Proc:
     """One process as classification sees it."""
-    __slots__ = ('pid', 'ppid', 'uid', 'comm', 'argv', 'marks', 'tty', 'state', 'ticks', 'start', 'flatpak', 'game')
+    __slots__ = ('pid', 'ppid', 'uid', 'comm', 'argv', 'marks', 'tty', 'state', 'ticks', 'start', 'flatpak')
 
-    def __init__(self, pid, ppid, uid=1000, comm='', argv=None, marks=None, tty=0, state='S', ticks=0, start=0, flatpak=None,
-                 game=None):
+    def __init__(self, pid, ppid, uid=1000, comm='', argv=None, marks=None, tty=0, state='S', ticks=0, start=0, flatpak=None):
         self.pid, self.ppid, self.uid, self.comm, self.argv, self.marks = pid, ppid, uid, comm, argv, marks
-        self.tty, self.state, self.ticks, self.start, self.flatpak, self.game = tty, state, ticks, start, flatpak, game
+        self.tty, self.state, self.ticks, self.start, self.flatpak = tty, state, ticks, start, flatpak
 
 
 class NewScope:
     """A scope to make: its key, how it came to be, and naming hints."""
-    __slots__ = ('key', 'origin', 'desktop_id', 'app_id', 'game', 'source', 'flatpak')
+    __slots__ = ('key', 'origin', 'desktop_id', 'app_id', 'source', 'flatpak')
 
-    def __init__(self, key, origin, desktop_id=None, app_id=None, game=None, source=None, flatpak=None):
-        self.key, self.origin, self.desktop_id, self.app_id, self.game, self.source = \
-            key, origin, desktop_id, app_id, game, source
-        self.flatpak = flatpak
+    def __init__(self, key, origin, desktop_id=None, app_id=None, source=None, flatpak=None):
+        self.key, self.origin, self.desktop_id, self.app_id, self.source, self.flatpak = \
+            key, origin, desktop_id, app_id, source, flatpak
 
     def __eq__(self, other):
         return isinstance(other, NewScope) and all(getattr(self, s) == getattr(other, s) for s in self.__slots__)
@@ -325,29 +292,57 @@ def ancestors(pid, procs):
     return out
 
 
+def toplevel(window):
+    return window.get('kind') == 'toplevel' and window.get('parent') is None and isinstance(window.get('pid'), int)
+
+
+def other_application(window, toplevels, procs, membership, above):
+    """Whether a toplevel window in an app scope belongs to another application than the
+    rest of that scope, so it leaves with its process tree. Its app_id is set; the scope's
+    toplevels owned by other processes include some with other app_ids; its process owns
+    no toplevel with one of those (one process with several app_ids stays whole); and no
+    owner of one descends from its process (a launcher stays with the children whose
+    windows they are). Of a tree whose processes own windows with the same app_id, only the
+    topmost leaves (`above` is the process's ancestors in the scope), taking the rest."""
+    pid, app_id = window['pid'], window.get('app_id')
+    if not app_id:
+        return False
+    scope = membership.get(pid)
+    mine = [w for w in toplevels if membership.get(w['pid']) == scope]
+    others = [w for w in mine if w['pid'] != pid and w.get('app_id') and w['app_id'] != app_id]
+    if not others:
+        return False
+    other_ids = {w['app_id'] for w in others}
+    if any(w['pid'] == pid and w.get('app_id') in other_ids for w in mine):
+        return False
+    if any(w['pid'] in above for w in mine if w.get('app_id') == app_id):
+        return False
+    return not any(pid in ancestors(other['pid'], procs) for other in others)
+
+
 def classify(procs, membership, scopes, windows, now):
     """Which processes move where, in order. `procs` maps pid to Proc; `membership` pid to
     its scope name (SESSION or an app scope; processes outside the owner's tree are absent);
-    `scopes` scope name to its metadata (`origin`, `desktopId`, `game`, `source`,
+    `scopes` scope name to its metadata (`origin`, `desktopId`, `source`, `flatpak`,
     `createdAt`); `windows` the compositor's windows (`id`, `pid`, `parent`, `kind`,
     `app_id`, `desktop_id`). Returns [(pids, target)], target a scope name or a NewScope.
 
     The rules, first match wins for each process:
-    1. Steam's reaper for game N, outside a scope for game N: its tree becomes game N's.
-       Then any process whose environment names game N (`SteamGameId`), outside a scope for
-       game N, with the sandbox launchers that started it: game N's scope. Flatpak Steam's
-       pressure-vessel runs the game in a sandbox a portal starts, outside the reaper's tree.
-    2. A child of a scope made in the last few seconds by a split, left behind in the scope
+    1. A child of a scope made in the last few seconds by a split, left behind in the scope
        it was split from: it follows its parent.
-    3. A phone terminal session (a child of the terminal service), or an agent task's runner
+    2. A phone terminal session (a child of the terminal service), or an agent task's runner
        (`caboose-agentd.mjs run`) in the session scope: its own scope.
-    4. In the session scope, a Flatpak application's sandboxes (with the bubblewrap and
+    3. In the session scope, a Flatpak application's sandboxes (with the bubblewrap and
        flatpak processes that started them): its scope, one per application.
-    5. In the session scope, processes a launch marked: one scope per launch.
-    6. A toplevel window whose process is in the session scope or a phone terminal session's
-       scope, or in an app scope when the process runs on a terminal under a process of that
-       scope that has a window of its own and is not on that terminal (a program run from a
-       terminal app): the window's process tree becomes a scope of its own.
+    4. In the session scope, processes a launch marked: one scope per launch.
+    5. A toplevel window whose process is in the session scope or a phone terminal session's
+       scope, or in an app scope when either
+       - the process runs on a terminal under a process of that scope that has a window of
+         its own and is not on that terminal (a program run from a terminal app), or
+       - the window belongs to another application than the rest of the scope's windows
+         (`other_application`; an app another windowed app launched), taken deepest and
+         newest process first, so that of two applications side by side the later leaves,
+       the window's process tree becomes a scope of its own.
     """
     children = children_of(procs)
     taken = set()
@@ -359,35 +354,7 @@ def classify(procs, membership, scopes, windows, now):
             taken.update(pids)
             moves.append((pids, target))
 
-    # 1. Games.
-    for pid in sorted(procs):
-        game = steam_game(procs[pid].argv)
-        scope = membership.get(pid)
-        if game is None or scope is None or pid in taken:
-            continue
-        if scopes.get(scope, {}).get('game') == game:
-            continue
-        move(subtree(pid, children, membership), NewScope(f'steam_app_{game}', 'game', game=game, source=scope))
-    pending = {target.game for _, target in moves if isinstance(target, NewScope)}
-    for pid in sorted(procs):
-        game = procs[pid].game
-        scope = membership.get(pid)
-        if game is None or scope is None or pid in taken or scopes.get(scope, {}).get('game') == game:
-            continue
-        existing = sorted((m.get('createdAt', 0), name) for name, m in scopes.items() if m.get('game') == game)
-        if not existing and game in pending:
-            # The reaper's scope is made this pass; the rest joins it on the next.
-            continue
-        top = pid
-        while procs[top].ppid in procs and membership.get(procs[top].ppid) == scope and \
-                procs[procs[top].ppid].argv and os.path.basename(procs[procs[top].ppid].argv[0]) in SANDBOX_LAUNCHERS:
-            top = procs[top].ppid
-        target = existing[-1][1] if existing else NewScope(f'steam_app_{game}', 'game', game=game, source=scope)
-        move(subtree(top, children, membership), target)
-        if not existing:
-            pending.add(game)
-
-    # 2. Stragglers.
+    # 1. Stragglers.
     for pid in sorted(procs):
         parent = procs[pid].ppid
         target = membership.get(parent)
@@ -397,7 +364,7 @@ def classify(procs, membership, scopes, windows, now):
         if membership.get(pid) == meta['source']:
             move(subtree(pid, children, membership), target)
 
-    # 3. Phone terminal sessions.
+    # 2. Phone terminal sessions.
     for pid in sorted(procs):
         proc = procs[pid]
         parent = procs.get(proc.ppid)
@@ -409,7 +376,7 @@ def classify(procs, membership, scopes, windows, now):
             continue
         move(subtree(pid, children, membership), NewScope('caboose-agent', 'agent', source=SESSION))
 
-    # 4. Flatpak sandboxes in the session scope, each application into its own scope.
+    # 3. Flatpak sandboxes in the session scope, each application into its own scope.
     sandboxes = {}
     for pid in sorted(procs):
         proc = procs[pid]
@@ -431,7 +398,7 @@ def classify(procs, membership, scopes, windows, now):
         move(tree, existing[-1][1] if existing else
              NewScope(app, 'launch', desktop_id=f'{app}.desktop', source=SESSION, flatpak=app))
 
-    # 5. Launch marks in the session scope.
+    # 4. Launch marks in the session scope.
     launches = {}
     for pid in sorted(procs):
         proc = procs[pid]
@@ -444,12 +411,20 @@ def classify(procs, membership, scopes, windows, now):
             tree.extend(p for p in subtree(pid, children, membership) if p not in tree)
         move(tree, NewScope(scope_key(desktop_id), 'launch', desktop_id=desktop_id, source=SESSION))
 
-    # 6. Windows.
+    # 5. Windows.
     owners = {w['pid'] for w in windows if isinstance(w.get('pid'), int)}
-    for window in windows:
-        pid = window.get('pid')
-        if window.get('kind') != 'toplevel' or window.get('parent') is not None or not isinstance(pid, int):
-            continue
+    toplevels = [w for w in windows if toplevel(w) and w['pid'] in procs]
+
+    def split(window, scope):
+        pid = window['pid']
+        desktop_id = window.get('desktop_id') if valid_desktop_id(window.get('desktop_id')) else None
+        app_id = window.get('app_id') or None
+        key = scope_key(desktop_id) if desktop_id else (app_id or procs[pid].comm or 'app')
+        move(subtree(pid, children, membership), NewScope(key, 'window', desktop_id=desktop_id, app_id=app_id, source=scope))
+
+    in_apps = []
+    for window in toplevels:
+        pid = window['pid']
         scope = membership.get(pid)
         if pid in taken or scope is None:
             continue
@@ -457,11 +432,16 @@ def classify(procs, membership, scopes, windows, now):
             tty = procs[pid].tty
             above = [a for a in ancestors(pid, procs) if membership.get(a) == scope]
             if not tty or not any(a in owners and procs[a].tty != tty for a in above):
+                in_apps.append((window, above))
                 continue
-        desktop_id = window.get('desktop_id') if valid_desktop_id(window.get('desktop_id')) else None
-        app_id = window.get('app_id') or None
-        key = scope_key(desktop_id) if desktop_id else (app_id or procs[pid].comm or 'app')
-        move(subtree(pid, children, membership), NewScope(key, 'window', desktop_id=desktop_id, app_id=app_id, source=scope))
+        split(window, scope)
+    # Deepest and newest first, and what has left no longer counts as the rest of its scope:
+    # of two applications started side by side, the later one leaves.
+    in_apps.sort(key=lambda item: (-len(item[1]), -procs[item[0]['pid']].start, -item[0]['pid']))
+    for window, above in in_apps:
+        remaining = [w for w in toplevels if w['pid'] not in taken]
+        if window['pid'] not in taken and other_application(window, remaining, procs, membership, above):
+            split(window, membership[window['pid']])
     return moves
 
 
@@ -475,10 +455,16 @@ def rate(delta, seconds):
     return max(0, round(delta / seconds)) if seconds > 0 else 0
 
 
+# How a scope came to be, as the snapshot reports it; a scope whose saved metadata names
+# any other is reported as a window's.
+ORIGINS = ('launch', 'window', 'terminal', 'agent', 'session')
+
+
 def app_entry(name, meta, sample, previous, seconds, processes, windows, gpu):
     """One app of the snapshot. `sample` and `previous` are the scope's counters now and at
     the last sample (`cpu_usec`, `read`, `written`, `memory`); `processes` its processes,
     each with `cpu` already a percentage; `gpu` its summed GPU use or None."""
+    origin = meta.get('origin', 'session')
     cpu = sample['cpu_usec'] - previous['cpu_usec'] if previous else 0
     read = sample['read'] - previous['read'] if previous else 0
     written = sample['written'] - previous['written'] if previous else 0
@@ -488,7 +474,7 @@ def app_entry(name, meta, sample, previous, seconds, processes, windows, gpu):
         'kind': 'session' if name == SESSION else 'app',
         'desktopId': meta.get('desktopId'),
         'name': (meta.get('name') or 'App')[:MAX_NAME],
-        'origin': meta.get('origin', 'session'),
+        'origin': origin if origin in ORIGINS else 'window',
         'startedAt': int(meta.get('createdAt', 0) * 1000),
         'windows': sorted(windows),
         'cpuPercent': percent(cpu / 1e6, seconds),

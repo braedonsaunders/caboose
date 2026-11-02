@@ -86,4 +86,16 @@ import Testing
         let whole = Self.purposes.filter { TextPurposeTraits(purpose: $0).fillsWholeValue }
         #expect(whole == ["digits", "password", "pin"])
     }
+
+    /// Whether an app types code comes from its desktop entry's categories alone, the same
+    /// for every app; an app whose entry is unknown types prose.
+    @Test func codeComesFromTheEntrysCategories() {
+        #expect(TextPurposeTraits.typesCode(categories: ["System", "TerminalEmulator"]))
+        #expect(TextPurposeTraits.typesCode(categories: ["Utility", "TextEditor"]))
+        #expect(TextPurposeTraits.typesCode(categories: ["Development", "IDE"]))
+        #expect(TextPurposeTraits.typesCode(categories: ["Development"]))
+        #expect(!TextPurposeTraits.typesCode(categories: ["Network", "WebBrowser"]))
+        #expect(!TextPurposeTraits.typesCode(categories: ["Office", "WordProcessor"]))
+        #expect(!TextPurposeTraits.typesCode(categories: []))
+    }
 }

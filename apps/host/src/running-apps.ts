@@ -16,7 +16,7 @@ export const RUNNING_APP_ID = /^(?:session\.scope|app-[A-Za-z0-9:_.\\]+-[0-9]{1,
 export type RunningAppAction = 'quit' | 'force-quit' | 'kill'
 export const RUNNING_APP_ACTIONS: readonly RunningAppAction[] = ['quit', 'force-quit', 'kill']
 
-const ORIGINS = ['launch', 'window', 'game', 'terminal', 'agent', 'session'] as const
+const ORIGINS = ['launch', 'window', 'terminal', 'agent', 'session'] as const
 const STATES = ['running', 'sleeping', 'waiting', 'stopped', 'zombie', 'idle', 'other'] as const
 const MAX_APPS = 512
 const MAX_PROCESSES = 256

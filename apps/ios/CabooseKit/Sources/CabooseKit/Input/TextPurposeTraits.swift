@@ -37,7 +37,7 @@ public struct TextPurposeTraits: Equatable, Sendable {
     /// dictation or third-party keyboards.
     public var secure = false
     /// Autocorrect, capitals, spell checking and inline prediction. Nil when there is no
-    /// purpose to go by: the caller decides from the app (a terminal or code editor is not prose).
+    /// purpose to go by: the caller decides from the app's desktop entry (`typesCode(categories:)`).
     public var prose: Bool?
     /// How prose is capitalized.
     public var capitalization = Capitalization.sentences
@@ -103,6 +103,17 @@ public struct TextPurposeTraits: Equatable, Sendable {
             // normal and alpha: iOS has no letters-only keyboard that keeps every language.
             prose = true
         }
+    }
+
+    /// The freedesktop categories of an app whose text is code or commands rather than prose
+    /// (a terminal, a text editor, a development tool).
+    public static let codeCategories: Set<String> = ["TerminalEmulator", "TextEditor", "IDE", "Development"]
+
+    /// Whether an app types code, from its desktop entry's categories: then autocorrect and
+    /// automatic capitals stay off where the field reports no purpose, and Return keeps the
+    /// keyboard up. An app whose entry is unknown types prose, like any other.
+    public static func typesCode(categories: some Sequence<String>) -> Bool {
+        categories.contains { codeCategories.contains($0) }
     }
 
     /// AutoFill puts one whole value here, a password or a code, replacing the field's text.

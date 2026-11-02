@@ -67,7 +67,7 @@ public struct RunningApp: Decodable, Identifiable, Equatable, Sendable {
 
     /// How the guest placed it in its scope.
     public enum Origin: String, Sendable {
-        case launch, window, game, terminal, agent, session, other
+        case launch, window, terminal, agent, session, other
     }
 
     /// A listening socket.

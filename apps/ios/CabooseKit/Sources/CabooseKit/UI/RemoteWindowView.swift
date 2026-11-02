@@ -1087,13 +1087,15 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     public override var canBecomeFirstResponder: Bool { isInteractive }
     public override var inputAccessoryView: UIView? { isInteractive ? super.inputAccessoryView : nil }
 
-    /// Terminals and code editors, where autocorrect and automatic capitals get in the way.
+    /// The freedesktop categories of a window's desktop entry, as the app's list of the
+    /// computer's apps knows them; empty when no entry is known. Set by the app.
+    public static var windowCategories: @MainActor (RemoteWindow) -> [String] = { _ in [] }
+
+    /// A window whose app types code, by its desktop entry's categories
+    /// (`TextPurposeTraits.typesCode`): autocorrect and automatic capitals get in the way.
     public static func isCodeApp(_ window: RemoteWindow?) -> Bool {
-        guard let app = window?.appClass else { return false }
-        let name = "\(app.instance) \(app.name)".lowercased()
-        return ["term", "xterm", "kitty", "alacritty", "konsole", "foot", "tilix", "wezterm", "ghostty",
-                "code", "codium", "cursor", "zed", "vim", "emacs", "mousepad", "gedit", "kate", "sublime"]
-            .contains { name.contains($0) }
+        guard let window else { return false }
+        return TextPurposeTraits.typesCode(categories: windowCategories(window))
     }
 
     public override func send(_ edits: [TypingBuffer.Edit]) {

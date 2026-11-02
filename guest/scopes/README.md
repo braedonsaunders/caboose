@@ -2,9 +2,9 @@
 
 `caboose-scopes` gives every app the owner runs a cgroup v2 scope of its own, the way
 systemd gives each desktop launch a transient `app-*.scope`, so an app's whole process
-tree is known, accounted and ended together: Wine and its server, pressure-vessel and the
-game under it, a Flatpak's bubblewrap sandbox, helpers that double-fork away from their
-parent. It is the guest half of the task manager; the host serves it as
+tree is known, accounted and ended together: Wine and its server, a container runtime and
+the program under it, a Flatpak's bubblewrap sandbox, helpers that double-fork away from
+their parent. It is the guest half of the task manager; the host serves it as
 `/v1/running-apps` ([architecture.md](../../docs/architecture.md#running-apps)) and the
 phone shows it as the Task Manager.
 
@@ -33,8 +33,8 @@ cgroup v2):
 /services.slice/<name>.service     one service
 ```
 
-`<key>` is the desktop id without `.desktop` (`steam`), `steam_app_<id>` for a Steam game,
-a window's class for a window that arrived without a launch, `caboose-terminal` for a
+`<key>` is the desktop id without `.desktop` (`org.gnome.TextEditor`), a window's class for
+a window that got a scope of its own (below), `caboose-terminal` for a
 phone terminal session, or `caboose-agent` for an agent task; it is escaped as `systemd-escape` escapes unit names
 (`firefox-esr` becomes `firefox\x2desr`). `<n>` counts up for the daemon's lifetime and
 across its restarts. The memory, IO and pids controllers are enabled on `/` and
@@ -66,30 +66,37 @@ Once a second while someone has listed in the last 30 s, else every 3 s, it move
 owner's processes out of `init.scope` into the session scope, then classifies; the first
 matching rule wins (`scopecore.classify`):
 
-1. Steam's game reaper (`reaper SteamLaunch AppId=N --`) and its tree: a scope for game N,
-   named from `steamapps/appmanifest_N.acf`. Then every other process whose environment
-   names game N (`SteamGameId`, or `SteamAppId`), with the sandbox launchers that started
-   it, joins that scope: Flatpak Steam's pressure-vessel runs the game in a sandbox the
-   Flatpak portal starts, outside the reaper's tree, and Proton's wineserver outlives it.
-2. Children forked while a split was being made, left in the scope it came from, follow
+1. Children forked while a split was being made, left in the scope it came from, follow
    their parent for 5 s.
-3. A phone terminal session (a child of `caboose-terminal.py`), or an agent task's runner
+2. A phone terminal session (a child of `caboose-terminal.py`), or an agent task's runner
    (`caboose-agentd.mjs run`) in the session scope, with everything the agent starts: a
    scope of its own.
-4. In the session scope, a Flatpak application's sandboxes: processes whose
+3. In the session scope, a Flatpak application's sandboxes: processes whose
    `/proc/<pid>/root/.flatpak-info` names an application, with the bubblewrap and `flatpak`
    processes above them, join that application's scope (one per application, the one a dock
-   launch made if any). Steam as a Flatpak, started any way, is one app with its
-   pressure-vessel runtime.
-5. In the session scope, processes a launch marked through their environment
+   launch made if any), so a Flatpak started any way is one app with every sandbox the
+   portal starts for it.
+4. In the session scope, processes a launch marked through their environment
    (`CABOOSE_DESKTOP_ID`, else GLib's `GIO_LAUNCHED_DESKTOP_FILE`, with
    `GIO_LAUNCHED_DESKTOP_FILE_PID`): one scope per launch. This adopts apps that started
    before the daemon, and those another app launched through GLib.
-6. A toplevel window (from the owner display's control socket `windows`) whose process is
-   in the session scope or a terminal session's scope, or in an app scope when that process
-   runs on a terminal under a windowed process of the scope that is not on that terminal (a
-   program run from a terminal app): the window's process and descendants, a scope of its
-   own.
+5. A toplevel window (from the owner display's control socket `windows`): the window's
+   process and its descendants in the same scope, a scope of its own keyed by the window's
+   desktop id, else its class (`app_id`), when its process is
+   - in the session scope or a terminal session's scope;
+   - in an app scope and runs on a terminal under a windowed process of the scope that is
+     not on that terminal (a program run from a terminal app); or
+   - in an app scope, and the window belongs to another application than the rest of the
+     scope: its class is set and differs from the class of some toplevel of the scope that
+     another process owns, its process owns no toplevel with one of those other classes
+     (one process with several classes, such as LibreOffice's modules, stays whole), and no
+     process owning one descends from its process (a launcher stays with the children whose
+     windows those are). Of processes owning windows of the same class, the topmost leaves
+     with the rest under it. Candidates are taken deepest and newest first, and a window
+     that has left no longer counts as the rest of its scope, so of two applications side
+     by side the later leaves. This is how a program another windowed app launches (a game
+     a store client starts, an app a launcher opens) gets its own scope, and the same rule
+     holds for every app.
 
 A move takes a process tree within one scope, then twice more takes children of moved
 processes forked meanwhile. Dock launches need none of this: `guest-apps.py` asks for its
@@ -100,7 +107,7 @@ cgroups themselves say which scopes exist.
 Each sample reads per scope `cpu.stat` (`usage_usec`), `memory.current` less
 `memory.stat`'s `inactive_file`, and `io.stat` summed over devices, and per process
 `/proc/<pid>/stat` and `statm`. The kernel leaves memory charged to the cgroup it was
-allocated in, so an app adopted after it started (rules 1 to 6) shows only what it
+allocated in, so an app adopted after it started (rules 1 to 5) shows only what it
 allocates after the move; an app launched from the dock is born in its scope. GPU use is the private GPU broker's per-process
 `usage.json` ([gpu-live.md](../../docs/gpu-live.md#applications)) matched by pid and start
 time. An app's windows are the owner display's toplevels and dialogs whose process (the
@@ -206,7 +213,7 @@ exit 0 whatever it says, so a caller that only sees stdout on success reads why;
 caboose-scopes list
 caboose-scopes quit 'app-firefox\x2desr-3.scope'
 caboose-scopes force-quit 'app-steam-1.scope'
-caboose-scopes kill 'app-steam_app_620-4.scope'
+caboose-scopes kill 'app-org.gnome.TextEditor-4.scope'
 caboose-scopes run org.example.App.desktop -- COMMAND [ARG...]   # run something in a new scope
 ```
 
@@ -217,11 +224,12 @@ python3 -m unittest discover -s guest/scopes -p 'test_*.py'
 ```
 
 `check.sh` exercises a running container computer through `docker exec`: the hierarchy,
-a scoped process tree with a double-forked child, a fake Steam reaper split into its game's
-scope, Force Quit of a tree and of one that ignores SIGTERM, Kill, the refusal to end
+a scoped process tree with a double-forked child, Force Quit of a tree and of one that ignores SIGTERM, Kill, the refusal to end
 the session scope, and an owner service: started in its cgroup, its port in `activity`,
 restarted after being killed, stopped, logged, and a crash-looping one failed. With `--window` it also opens a GTK window on the owner's display from
-outside any app, checks it gets a scope of its own with that window, and quits it politely.
+outside any app, checks it gets a scope of its own with that window, and quits it politely;
+then runs a scoped app whose window starts a second program with a window of another class,
+and checks the second leaves for a scope of its own while the first keeps its scope.
 It cleans up what it started.
 
 ```

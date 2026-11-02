@@ -23,7 +23,7 @@ class Names(unittest.TestCase):
         self.assertEqual(core.escape('café'), 'caf\\xc3\\xa9')
 
     def test_names_round_trip(self):
-        for key in ('firefox-esr', 'steam_app_620', 'Portal 2', 'café', 'a\\b', '.x'):
+        for key in ('firefox-esr', 'org.gnome.TextEditor', 'Portal 2', 'café', 'a\\b', '.x'):
             name = core.scope_name(key, 7)
             self.assertEqual(core.parse_scope_name(name), (key, 7))
             self.assertTrue(core.valid_scope_id(name))
@@ -76,14 +76,6 @@ class Files(unittest.TestCase):
         self.assertIsNone(core.launch_marks(b'PATH=/bin\0'))
         self.assertIsNone(core.launch_marks(b'CABOOSE_DESKTOP_ID=../x\0'))
 
-    def test_steam_reaper(self):
-        reaper = ['/home/caboose/.local/share/Steam/ubuntu12_32/reaper', 'SteamLaunch', 'AppId=620', '--', '/game', 'AppId=1']
-        self.assertEqual(core.steam_game(reaper), 620)
-        self.assertIsNone(core.steam_game(['reaper', 'AppId=620']))
-        self.assertIsNone(core.steam_game(['steam', 'SteamLaunch', 'AppId=620']))
-        self.assertIsNone(core.steam_game(['reaper', 'SteamLaunch', 'AppId=x']))
-        self.assertIsNone(core.steam_game(None))
-
     def test_terminal_service(self):
         self.assertTrue(core.terminal_service(['/usr/bin/python3', '/opt/caboose/terminal/caboose-terminal.py']))
         self.assertFalse(core.terminal_service(['/usr/bin/python3', '/opt/caboose/files/caboose-files.py']))
@@ -98,20 +90,6 @@ class Files(unittest.TestCase):
             with self.assertRaises(ValueError):
                 parse('')
 
-    def test_steam_game_from_the_environment(self):
-        self.assertEqual(core.environ_game(b'HOME=/h\0SteamGameId=976730\0SteamAppId=976730\0'), 976730)
-        self.assertEqual(core.environ_game(b'SteamAppId=620\0'), 620)
-        self.assertIsNone(core.environ_game(b'SteamGameId=0\0'))
-        self.assertIsNone(core.environ_game(b'SteamGameId=abc\0'))
-        self.assertIsNone(core.environ_game(b'XSteamGameId=5\0'))
-        self.assertIsNone(core.environ_game(b''))
-
-    def test_appmanifest_name(self):
-        acf = '"AppState"\n{\n\t"appid"\t\t"620"\n\t"name"\t\t"Portal \\"2\\""\n}\n'
-        self.assertEqual(core.acf_name(acf), 'Portal "2"')
-        self.assertIsNone(core.acf_name('{}'))
-
-
 class Classify(unittest.TestCase):
     def setUp(self):
         self.now = 1000.0
@@ -121,59 +99,13 @@ class Classify(unittest.TestCase):
     def classify(self, procs, membership, windows=()):
         return core.classify({p.pid: p for p in procs}, membership, self.scopes, list(windows), self.now)
 
-    def test_a_steam_game_leaves_steam_with_its_tree(self):
-        procs = [Proc(10, 1, comm='steam'), Proc(11, 10, comm='steamwebhelper'),
-                 Proc(20, 10, comm='reaper', argv=['reaper', 'SteamLaunch', 'AppId=620', '--', 'x']),
-                 Proc(21, 20, comm='pv-adverb'), Proc(22, 21, comm='game.exe')]
-        membership = {pid: STEAM for pid in (10, 11, 20, 21, 22)}
-        moves = self.classify(procs, membership)
-        self.assertEqual(moves, [([20, 21, 22], NewScope('steam_app_620', 'game', game=620, source=STEAM))])
-
-    def test_a_flatpak_steam_game_in_a_portal_sandbox_joins_its_scope(self):
-        # Flatpak Steam: the reaper runs in Steam's sandbox, but pressure-vessel asks the
-        # Flatpak portal to start the game in a sandbox of its own, outside the reaper's
-        # tree. Every process of the game carries SteamGameId.
-        flatpak = 'app-com.valvesoftware.Steam-87.scope'
-        game = 'app-steam_app_976730-90.scope'
-        self.scopes[flatpak] = {'origin': 'launch', 'flatpak': 'com.valvesoftware.Steam', 'createdAt': 0}
-        self.scopes[game] = {'origin': 'game', 'game': 976730, 'source': flatpak, 'createdAt': 0}
-        procs = [Proc(10, 1, comm='steam', flatpak='com.valvesoftware.Steam'),
-                 Proc(20, 10, argv=['reaper', 'SteamLaunch', 'AppId=976730', '--', 'x'], game=976730),
-                 Proc(30, 1, comm='flatpak-portal', argv=['/usr/libexec/flatpak-portal']),
-                 Proc(31, 30, comm='bwrap', argv=['bwrap', '--args', '40']),
-                 Proc(32, 31, comm='bwrap', argv=['bwrap', '--args', '41'], flatpak='com.valvesoftware.Steam'),
-                 Proc(33, 32, comm='pv-adverb', argv=['pv-adverb'], game=976730, flatpak='com.valvesoftware.Steam'),
-                 Proc(34, 33, comm='MCC-Win64-Shipp', argv=['Z:\\MCC-Win64-Shipping.exe'], game=976730),
-                 Proc(35, 1, comm='wineserver', argv=['wineserver'], game=976730)]
-        membership = {10: flatpak, 20: game, 30: SESSION, 31: flatpak, 32: flatpak, 33: flatpak, 34: flatpak, 35: flatpak}
-        self.assertEqual(self.classify(procs, membership), [([31, 32, 33, 34], game), ([35], game)])
-        # Once there, nothing moves; Steam and the portal stay where they are.
-        settled = {**membership, 31: game, 32: game, 33: game, 34: game, 35: game}
-        self.assertEqual(self.classify(procs, settled), [])
-
-    def test_a_game_process_without_a_reaper_scope_gets_one(self):
-        procs = [Proc(33, 1, comm='pv-adverb', argv=['pv-adverb'], game=620), Proc(34, 33, comm='game.exe', game=620)]
-        self.assertEqual(self.classify(procs, {33: STEAM, 34: STEAM}),
-                         [([33, 34], NewScope('steam_app_620', 'game', game=620, source=STEAM))])
-
-    def test_game_processes_wait_for_the_reapers_new_scope(self):
-        procs = [Proc(10, 1, comm='steam'), Proc(20, 10, argv=['reaper', 'SteamLaunch', 'AppId=620', '--', 'x'], game=620),
-                 Proc(40, 1, comm='game.exe', game=620)]
-        moves = self.classify(procs, {10: STEAM, 20: STEAM, 40: STEAM})
-        self.assertEqual(moves, [([20], NewScope('steam_app_620', 'game', game=620, source=STEAM))])
-
-    def test_a_game_already_in_its_scope_stays(self):
-        self.scopes['app-steam_app_620-3.scope'] = {'origin': 'game', 'game': 620, 'source': STEAM, 'createdAt': 0}
-        procs = [Proc(20, 1, argv=['reaper', 'SteamLaunch', 'AppId=620'])]
-        self.assertEqual(self.classify(procs, {20: 'app-steam_app_620-3.scope'}), [])
-
     def test_stragglers_follow_a_recent_split(self):
-        game = 'app-steam_app_620-3.scope'
-        self.scopes[game] = {'origin': 'game', 'game': 620, 'source': STEAM, 'createdAt': self.now - 1}
-        procs = [Proc(20, 10, argv=['reaper', 'SteamLaunch', 'AppId=620']), Proc(21, 20), Proc(22, 21)]
-        self.assertEqual(self.classify(procs, {20: game, 21: STEAM, 22: STEAM}), [([21, 22], game)])
-        self.scopes[game]['createdAt'] = self.now - 60
-        self.assertEqual(self.classify(procs, {20: game, 21: STEAM, 22: STEAM}), [])
+        split = 'app-org.example.Game-3.scope'
+        self.scopes[split] = {'origin': 'window', 'source': STEAM, 'createdAt': self.now - 1}
+        procs = [Proc(20, 10, comm='game'), Proc(21, 20), Proc(22, 21)]
+        self.assertEqual(self.classify(procs, {20: split, 21: STEAM, 22: STEAM}), [([21, 22], split)])
+        self.scopes[split]['createdAt'] = self.now - 60
+        self.assertEqual(self.classify(procs, {20: split, 21: STEAM, 22: STEAM}), [])
 
     def test_phone_terminal_sessions_get_scopes(self):
         procs = [Proc(5, 1, argv=['/usr/bin/python3', '/opt/caboose/terminal/caboose-terminal.py']),
@@ -252,13 +184,83 @@ class Classify(unittest.TestCase):
         moves = self.classify(procs, {6: session, 7: session}, windows)
         self.assertEqual(moves, [([7], NewScope('org.xfce.mousepad', 'window', app_id='org.xfce.mousepad', source=session))])
 
-    def test_a_helper_with_windows_under_a_windowed_app_stays(self):
-        # Steam's web helper draws Steam's windows under the steam process, which may own a
-        # window too; neither runs on a terminal.
+    def test_a_helper_drawing_the_apps_windows_stays(self):
+        # A helper process that draws the app's windows under its windowed parent: one app_id.
         procs = [Proc(10, 1, comm='steam'), Proc(11, 10, comm='steamwebhelper')]
         windows = [{'id': 1, 'pid': 10, 'kind': 'toplevel', 'parent': None, 'app_id': 'steam'},
-                   {'id': 2, 'pid': 11, 'kind': 'toplevel', 'parent': None, 'app_id': 'steamwebhelper'}]
+                   {'id': 2, 'pid': 11, 'kind': 'toplevel', 'parent': None, 'app_id': 'steam'}]
         self.assertEqual(self.classify(procs, {10: STEAM, 11: STEAM}, windows), [])
+
+    def test_an_app_another_windowed_app_launched_is_split_off(self):
+        # A store client launches a game through a wrapper: the game's window has an app_id
+        # of its own, so the game's tree leaves the client's scope; the client stays.
+        procs = [Proc(10, 1, comm='steam'), Proc(11, 10, comm='steamwebhelper'),
+                 Proc(20, 10, comm='reaper'), Proc(21, 20, comm='game'), Proc(22, 21, comm='game-helper')]
+        windows = [{'id': 1, 'pid': 11, 'kind': 'toplevel', 'parent': None, 'app_id': 'steam'},
+                   {'id': 2, 'pid': 21, 'kind': 'toplevel', 'parent': None, 'app_id': 'steam_app_620'},
+                   {'id': 3, 'pid': 21, 'kind': 'dialog', 'parent': 2, 'app_id': 'steam_app_620'}]
+        membership = {pid: STEAM for pid in (10, 11, 20, 21, 22)}
+        self.assertEqual(self.classify(procs, membership, windows),
+                         [([21, 22], NewScope('steam_app_620', 'window', app_id='steam_app_620', source=STEAM))])
+        # Once split, nothing moves: each scope holds one application.
+        split = 'app-steam_app_620-3.scope'
+        self.scopes[split] = {'origin': 'window', 'appId': 'steam_app_620', 'source': STEAM, 'createdAt': 0}
+        self.assertEqual(self.classify(procs, {**membership, 21: split, 22: split}, windows), [])
+
+    def test_the_topmost_process_of_a_split_application_takes_the_rest(self):
+        procs = [Proc(10, 1, comm='launcher'), Proc(20, 10, comm='game'), Proc(21, 20, comm='game')]
+        windows = [{'id': 1, 'pid': 10, 'kind': 'toplevel', 'parent': None, 'app_id': 'org.example.Launcher'},
+                   {'id': 2, 'pid': 21, 'kind': 'toplevel', 'parent': None, 'app_id': 'org.example.Game'},
+                   {'id': 3, 'pid': 20, 'kind': 'toplevel', 'parent': None, 'app_id': 'org.example.Game'}]
+        self.assertEqual(self.classify(procs, {10: STEAM, 20: STEAM, 21: STEAM}, windows),
+                         [([20, 21], NewScope('org.example.Game', 'window', app_id='org.example.Game', source=STEAM))])
+
+    def test_one_process_with_several_app_ids_stays(self):
+        # LibreOffice: one soffice process whose windows are Writer, Calc and the Start Center.
+        scope = 'app-libreoffice-6.scope'
+        self.scopes[scope] = {'origin': 'launch', 'createdAt': 0}
+        procs = [Proc(30, 1, comm='oosplash'), Proc(31, 30, comm='soffice.bin')]
+        windows = [{'id': 1, 'pid': 31, 'kind': 'toplevel', 'parent': None, 'app_id': 'libreoffice-writer'},
+                   {'id': 2, 'pid': 31, 'kind': 'toplevel', 'parent': None, 'app_id': 'libreoffice-calc'},
+                   {'id': 3, 'pid': 31, 'kind': 'toplevel', 'parent': None, 'app_id': 'libreoffice-startcenter'}]
+        self.assertEqual(self.classify(procs, {30: scope, 31: scope}, windows), [])
+        # Nor does it leave when a helper of its own draws a window with another app_id.
+        procs.append(Proc(32, 31, comm='helper'))
+        windows.append({'id': 4, 'pid': 32, 'kind': 'toplevel', 'parent': None, 'app_id': 'libreoffice-writer'})
+        self.assertEqual(self.classify(procs, {30: scope, 31: scope, 32: scope}, windows), [])
+
+    def test_a_launcher_whose_children_own_the_other_windows_stays(self):
+        # The launcher's root has a window of its own; its children's windows have other
+        # app_ids. The children leave; the root never splits away from them.
+        scope = 'app-org.example.Launcher-7.scope'
+        self.scopes[scope] = {'origin': 'launch', 'createdAt': 0}
+        procs = [Proc(40, 1, comm='launcher'), Proc(41, 40, comm='app')]
+        windows = [{'id': 1, 'pid': 40, 'kind': 'toplevel', 'parent': None, 'app_id': 'org.example.Launcher'},
+                   {'id': 2, 'pid': 41, 'kind': 'toplevel', 'parent': None, 'app_id': 'org.example.App'}]
+        moves = self.classify(procs, {40: scope, 41: scope}, windows)
+        self.assertEqual(moves, [([41], NewScope('org.example.App', 'window', app_id='org.example.App', source=scope))])
+
+    def test_a_lone_application_or_a_window_without_an_app_id_stays(self):
+        scope = 'app-org.example.App-8.scope'
+        self.scopes[scope] = {'origin': 'launch', 'createdAt': 0}
+        procs = [Proc(50, 1, comm='app'), Proc(51, 50, comm='child')]
+        lone = [{'id': 1, 'pid': 51, 'kind': 'toplevel', 'parent': None, 'app_id': 'org.example.Other'}]
+        self.assertEqual(self.classify(procs, {50: scope, 51: scope}, lone), [])
+        unnamed = [{'id': 1, 'pid': 50, 'kind': 'toplevel', 'parent': None, 'app_id': 'org.example.App'},
+                   {'id': 2, 'pid': 51, 'kind': 'toplevel', 'parent': None, 'app_id': None}]
+        self.assertEqual(self.classify(procs, {50: scope, 51: scope}, unnamed), [])
+
+    def test_session_windows_split_whatever_their_app_ids(self):
+        # The session scope keeps its rule: every toplevel's process tree gets a scope, a
+        # process with several app_ids once, under its first window.
+        procs = [Proc(60, 1, comm='soffice.bin'), Proc(61, 60, comm='helper'), Proc(70, 1, comm='gedit')]
+        windows = [{'id': 1, 'pid': 60, 'kind': 'toplevel', 'parent': None, 'app_id': 'libreoffice-writer'},
+                   {'id': 2, 'pid': 60, 'kind': 'toplevel', 'parent': None, 'app_id': 'libreoffice-calc'},
+                   {'id': 3, 'pid': 70, 'kind': 'toplevel', 'parent': None, 'app_id': 'org.gnome.gedit'}]
+        moves = self.classify(procs, {60: SESSION, 61: SESSION, 70: SESSION}, windows)
+        self.assertEqual(moves, [
+            ([60, 61], NewScope('libreoffice-writer', 'window', app_id='libreoffice-writer', source=SESSION)),
+            ([70], NewScope('org.gnome.gedit', 'window', app_id='org.gnome.gedit', source=SESSION))])
 
     def test_an_apps_own_windows_stay(self):
         # Chromium: every window belongs to the browser process, even when it was started from
@@ -277,11 +279,11 @@ class Classify(unittest.TestCase):
         self.assertEqual(sorted(core.subtree(1, children, {1: SESSION, 2: SESSION, 3: STEAM, 4: SESSION})), [1, 2, 4])
 
     def test_each_process_moves_once(self):
-        procs = [Proc(20, 1, argv=['reaper', 'SteamLaunch', 'AppId=1'], marks=('steam.desktop', 20)), Proc(21, 20)]
-        windows = [{'id': 9, 'pid': 21, 'kind': 'toplevel', 'parent': None, 'app_id': 'steam_app_1'}]
+        procs = [Proc(20, 1, marks=('org.example.App.desktop', 20)), Proc(21, 20)]
+        windows = [{'id': 9, 'pid': 21, 'kind': 'toplevel', 'parent': None, 'app_id': 'org.example.Other'}]
         moves = self.classify(procs, {20: SESSION, 21: SESSION}, windows)
         self.assertEqual(len(moves), 1)
-        self.assertEqual(moves[0][1].origin, 'game')
+        self.assertEqual(moves[0][1].origin, 'launch')
 
 
 class Snapshot(unittest.TestCase):
@@ -305,6 +307,11 @@ class Snapshot(unittest.TestCase):
         app = core.app_entry(SESSION, {'name': 'System', 'origin': 'session'},
                              {'cpu_usec': 5, 'read': 5, 'written': 5, 'memory': 5}, None, 0, [], [], None)
         self.assertEqual((app['kind'], app['cpuPercent'], app['io']['readBytesPerSecond']), ('session', 0.0, 0))
+
+    def test_an_unknown_origin_is_reported_as_a_window(self):
+        app = core.app_entry(STEAM, {'origin': 'retired', 'name': 'X'},
+                             {'cpu_usec': 0, 'read': 0, 'written': 0, 'memory': 0}, None, 0, [], [], None)
+        self.assertEqual(app['origin'], 'window')
 
     def test_processes_are_bounded(self):
         procs = [core.process_entry(i, 1, 'x' * 100, ['y' * 1000], 'S', 0.0, 0) for i in range(300)]

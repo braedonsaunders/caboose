@@ -4,7 +4,7 @@
 #   guest/scopes/check.sh CONTAINER [--window]
 #
 # Runs on the computer's Docker host. Starts its own processes only, as the owner, and ends
-# them; --window also opens a small GTK window on the owner's display for a few seconds.
+# them; --window also opens small GTK windows on the owner's display for a few seconds.
 set -euo pipefail
 container=${1:?usage: check.sh CONTAINER [--window]}
 window=${2:-}
@@ -72,19 +72,6 @@ commands=$(app caboose-check.desktop '" ".join(p["command"] for p in app["proces
 [[ "$commands" == *'sleep 600'* && "$commands" == *'sleep 601'* ]] || fail "the double-forked child escaped: $commands"
 pass "scoped tree in $scope"
 
-# 3. A fake Steam reaper (argv[0] `reaper`, `SteamLaunch AppId=N`) under a launcher is split
-#    into its game's scope with its tree; the launcher keeps its own scope.
-owner /usr/local/bin/caboose-scopes run caboose-steam-check.desktop -- /usr/bin/python3 -c '
-import subprocess, time
-subprocess.Popen(["/tmp/reaper", "-c", "sleep 602 & wait", "SteamLaunch", "AppId=999999", "--"], executable="/bin/sh")
-time.sleep(600)' >/dev/null &
-game=$(wait_app 'Steam game 999999' 'app["id"] if app["origin"] == "game" and app["processCount"] >= 2 else ""') || fail 'the game was not split off'
-launcher=$(wait_app caboose-steam-check.desktop 'app["id"]') || fail 'the launcher lost its scope'
-started+=("$game" "$launcher")
-[ -z "$(app caboose-steam-check.desktop '" ".join(p["command"] for p in app["processes"] if p["name"] != "python3")')" ] ||
-  fail 'the game tree stayed with its launcher'
-pass "game split into $game"
-
 # 4. Force Quit ends a tree on SIGTERM.
 answer=$(scopes force-quit "$scope")
 [[ "$answer" == *'"ended":true'* && "$answer" == *'"killed":false'* ]] || fail "force quit: $answer"
@@ -102,7 +89,10 @@ answer=$(scopes force-quit "$stubborn")
 pass 'force quit (SIGKILL after the grace period)'
 
 # 6. Kill ends everything at once; the session scope cannot be ended.
-answer=$(scopes kill "$game")
+owner /usr/local/bin/caboose-scopes run caboose-kill-check.desktop -- /bin/sh -c 'sleep 602 & exec sleep 603' >/dev/null &
+killed=$(wait_app caboose-kill-check.desktop 'app["id"] if app["processCount"] >= 2 else ""') || fail 'the app to kill did not appear'
+started+=("$killed")
+answer=$(scopes kill "$killed")
 [[ "$answer" == *'"ended":true'* ]] || fail "kill: $answer"
 pass 'kill'
 answer=$(scopes kill session.scope)
@@ -133,20 +123,26 @@ wait_service caboose-check-fail 'service["state"]' failed || fail 'a crash-loopi
 pass "a crash loop fails: $(service caboose-check-fail 'service["error"]')"
 
 # 8. With --window: a window opened outside any app gets a scope; Quit closes it politely.
+#    An app that opens a window and starts a second application with a window of another
+#    class keeps its scope; the second leaves it for one of its own.
 if [ "$window" = --window ]; then
   env=$(in_guest cat /run/caboose/display.env | sed -n "s/^\(WAYLAND_DISPLAY\|DISPLAY\|XAUTHORITY\|XDG_RUNTIME_DIR\|GDK_BACKEND\)='\(.*\)'$/\1=\2/p")
   vars=()
   while IFS= read -r line; do [ -n "$line" ] && vars+=(-e "$line"); done <<< "$env"
-  docker exec -u caboose "${vars[@]}" "$container" /usr/bin/python3 -c '
-import gi
+  gtk_window='
+import sys, gi
 gi.require_version("Gtk", "3.0")
 from gi.repository import GLib, Gtk
-GLib.set_prgname("caboose-scopes-check")
+GLib.set_prgname(sys.argv[1])
 window = Gtk.Window(title="Caboose scopes check")
-window.set_wmclass("caboose-scopes-check", "caboose-scopes-check")
+window.set_wmclass(sys.argv[1], sys.argv[1])
 window.connect("delete-event", lambda *a: Gtk.main_quit())
 window.show_all()
-Gtk.main()' >/dev/null 2>&1 &
+if len(sys.argv) > 2:
+    import subprocess
+    subprocess.Popen([sys.executable, "-c", sys.argv[2], sys.argv[3]])
+Gtk.main()'
+  docker exec -u caboose "${vars[@]}" "$container" /usr/bin/python3 -c "$gtk_window" caboose-scopes-check >/dev/null 2>&1 &
   windowed=$(wait_app caboose-scopes-check 'app["id"] if app["windows"] else ""') || fail 'the window did not get a scope with its window'
   started+=("$windowed")
   answer=$(scopes quit "$windowed")
@@ -154,5 +150,14 @@ Gtk.main()' >/dev/null 2>&1 &
   for _ in $(seq 1 20); do [ -z "$(app caboose-scopes-check 'app["id"]')" ] && break; sleep 0.5; done
   [ -z "$(app caboose-scopes-check 'app["id"]')" ] || fail 'the window app did not quit'
   pass "window scope $windowed quit politely"
+
+  docker exec -u caboose "${vars[@]}" "$container" /usr/local/bin/caboose-scopes run caboose-launcher-check.desktop -- \
+    /usr/bin/python3 -c "$gtk_window" caboose-launcher-check "$gtk_window" caboose-launched-check >/dev/null 2>&1 &
+  launched=$(wait_app caboose-launched-check 'app["id"] if app["origin"] == "window" and app["windows"] else ""') ||
+    fail 'the launched application was not split off'
+  launcher=$(wait_app caboose-launcher-check.desktop 'app["id"] if app["windows"] else ""') || fail 'the launcher lost its scope'
+  started+=("$launched" "$launcher")
+  [ "$(app caboose-launcher-check.desktop 'app["processCount"]')" = 1 ] || fail 'the launched application stayed with its launcher'
+  pass "launched application split into $launched, launcher kept $launcher"
 fi
 echo 'All checks passed.'

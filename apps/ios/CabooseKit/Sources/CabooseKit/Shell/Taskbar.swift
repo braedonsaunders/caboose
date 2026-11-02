@@ -1,8 +1,8 @@
 import Foundation
 
 /// The computer's running applications, as a desktop shell's taskbar shows them: derived
-/// from the windows that exist, however they were started (a dock launch, Steam, a
-/// terminal, a script, a child process, Wine). Every top-level window belongs to exactly
+/// from the windows that exist, however they were started (a dock launch, another app, a
+/// terminal, a script, a child process). Every top-level window belongs to exactly
 /// one group. A group is a desktop entry the window matches, or, for a window no entry
 /// claims, an application of its own named and drawn from its windows. A group lasts as
 /// long as one of its windows: closing the last ends it; a minimized window still counts.
@@ -100,59 +100,37 @@ public struct Taskbar: Equatable, Sendable {
 
     /// The entry a window belongs to, as GNOME's and KDE's window trackers decide: the
     /// entry it was launched from; one declaring its class (`StartupWMClass`); one whose
-    /// id is its class; for a Steam game (`steam_app_<id>`), the entry Steam made to run
-    /// it; one whose program is named as its class; then one whose id ends with the class
-    /// or the class with the id. The earliest entry wins a tie.
+    /// id is its class; one whose program is named as its class; then one whose id ends
+    /// with the class or the class with the id. The earliest entry wins a tie.
     public static func entry(for window: Window, among entries: [Entry]) -> Int? {
         if let launched = window.desktopID?.lowercased(), let index = entries.firstIndex(where: { $0.id.lowercased() == launched }) {
             return index
         }
         let names = [window.instance, window.name].compactMap { $0?.lowercased() }.filter { !$0.isEmpty }
         guard !names.isEmpty else { return nil }
-        let game = names.lazy.compactMap(steamGame).first
         var best: (rank: Int, index: Int)?
         for (index, entry) in entries.enumerated() {
-            guard let rank = rank(entry, names: names, steamGame: game), rank < (best?.rank ?? .max) else { continue }
+            guard let rank = rank(entry, names: names), rank < (best?.rank ?? .max) else { continue }
             best = (rank, index)
             if rank == 0 { break }
         }
         return best?.index
     }
 
-    private static func rank(_ entry: Entry, names: [String], steamGame: String?) -> Int? {
+    private static func rank(_ entry: Entry, names: [String]) -> Int? {
         if let declared = entry.startupWMClass?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
            !declared.isEmpty, names.contains(declared) { return 0 }
         let id = stem(entry.id)
         guard !id.isEmpty else { return nil }
         if names.contains(id) { return 1 }
-        if let steamGame, launchesSteamGame(entry.exec, steamGame) { return 2 }
-        if let program = program(entry.exec), names.contains(program) { return 3 }
-        if names.contains(where: { id.hasSuffix($0) || $0.hasSuffix(id) }) { return 4 }
+        if let program = program(entry.exec), names.contains(program) { return 2 }
+        if names.contains(where: { id.hasSuffix($0) || $0.hasSuffix(id) }) { return 3 }
         return nil
     }
 
     private static func stem(_ id: String) -> String {
         let lowered = id.lowercased()
         return lowered.hasSuffix(".desktop") ? String(lowered.dropLast(8)) : lowered
-    }
-
-    /// The Steam app id in a Proton or Steam game's class, `steam_app_<id>`.
-    static func steamGame(_ name: String) -> String? {
-        guard name.hasPrefix("steam_app_") else { return nil }
-        let id = name.dropFirst("steam_app_".count)
-        return !id.isEmpty && id.allSatisfy { $0.isASCII && $0.isNumber } ? String(id) : nil
-    }
-
-    /// Whether an Exec line runs the Steam game `id` (`steam steam://rungameid/<id>`, as the
-    /// entries Steam writes do, through Flatpak or not).
-    static func launchesSteamGame(_ exec: String, _ id: String) -> Bool {
-        var rest = exec[...]
-        while let range = rest.range(of: "steam://rungameid/") {
-            let after = rest[range.upperBound...]
-            if after.hasPrefix(id), after.dropFirst(id.count).first.map { $0.isASCII && $0.isNumber } != true { return true }
-            rest = after
-        }
-        return false
     }
 
     /// The program an Exec line runs, lowercased, without its directory: past `env` and its
@@ -184,37 +162,38 @@ public struct Taskbar: Equatable, Sendable {
         return unlistedPrefix + "id:\(window.id)"
     }
 
-    /// The class names it, unless the class says nothing to a person (none, or a Steam
-    /// game's number): then its first window's title does.
+    /// Its class (app_id) names it; without one, its first window's title does.
     private static func unlistedName(_ windows: [Window]) -> String {
+        if let name = windows.first.flatMap({ [$0.name, $0.instance].compactMap { $0 }.first { !$0.isEmpty } }) { return name }
         let title = windows.lazy.map { $0.title.trimmingCharacters(in: .whitespacesAndNewlines) }.first { !$0.isEmpty }
-        let name = windows.first.flatMap { [$0.name, $0.instance].compactMap { $0 }.first { !$0.isEmpty } }
-        if let name, steamGame(name.lowercased()) == nil { return name }
-        return title ?? name ?? "Window"
+        return title ?? "Window"
     }
 }
 
-/// The dock's place for one kind of everyday app (a web browser, a file manager): the
-/// first of `ids` installed, else the first app of `category`. An id names its entry exactly
-/// (`thunar` is `thunar.desktop`), or a variant of it in the same category (`firefox-esr`
-/// for a browser); never another app that merely shares its prefix, such as Thunar's Bulk
-/// Rename (`thunar-bulk-rename`).
+/// The dock's places for the everyday kinds of app, by freedesktop category alone, the
+/// same for every app: one app of each category the computer has, the person's preference
+/// first (the apps they pinned, then the ones they opened most recently), else the first of
+/// the category in the computer's list. An app takes at most one place.
 public enum DockSlot {
-    public static func choose<App>(ids: [String], category: String, among apps: [App],
-                                   id: (App) -> String, categories: (App) -> [String]) -> App? {
-        func stem(_ app: App) -> String {
-            let lowered = id(app).lowercased()
-            return lowered.hasSuffix(".desktop") ? String(lowered.dropLast(8)) : lowered
+    /// The kinds of app the dock keeps a place for, in dock order.
+    public static let categories = ["WebBrowser", "FileManager", "TerminalEmulator", "IDE", "TextEditor",
+                                    "WordProcessor", "Spreadsheet", "RasterGraphics"]
+
+    public static func choose<App>(among apps: [App], preferred: [String], id: (App) -> String,
+                                   categories: (App) -> [String]) -> [App] {
+        let rank = Dictionary(preferred.enumerated().map { ($1, $0) }) { first, _ in first }
+        let ordered = apps.enumerated().sorted { a, b in
+            let ra = rank[id(a.element)] ?? .max, rb = rank[id(b.element)] ?? .max
+            return ra != rb ? ra < rb : a.offset < b.offset
+        }.map(\.element)
+        var chosen: [App] = []
+        var taken = Set<String>()
+        for category in Self.categories {
+            guard let app = ordered.first(where: { !taken.contains(id($0)) && categories($0).contains(category) }) else { continue }
+            taken.insert(id(app))
+            chosen.append(app)
         }
-        func variant(_ app: App, of wanted: String) -> Bool {
-            stem(app).hasPrefix(wanted + "-") && (category.isEmpty || categories(app).contains(category))
-        }
-        for wanted in ids {
-            if let app = apps.first(where: { stem($0) == wanted }) ?? apps.first(where: { variant($0, of: wanted) }) {
-                return app
-            }
-        }
-        return category.isEmpty ? nil : apps.first { categories($0).contains(category) }
+        return chosen
     }
 }
 

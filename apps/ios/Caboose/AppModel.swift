@@ -188,6 +188,7 @@ final class AppModel {
         phase = saved == nil ? .needsSetup : .waking
         restoreDeviceMonitor()
         guard startsConnections else { return }
+        RemoteWindowView.windowCategories = { [weak self] window in self?.categories(of: window) ?? [] }
         shortcuts = Self.loadShortcuts(for: saved)
         restoreCachedApps(for: saved)
         bindConnectionCenters()
@@ -1489,33 +1490,17 @@ final class AppModel {
         return (main, system)
     }
 
-    /// The big screen's dock, like a Mac's: one of each kind of everyday app the computer has
-    /// (by .desktop id, then by category), then any other app with a window open.
+    /// The big screen's dock, like a Mac's: one app of each everyday kind the computer has, by
+    /// freedesktop category (`DockSlot`), then any other app with a window open.
     var dockApps: [HostClient.App] {
-        let main = partitionedApps.main
-        let wanted: [(ids: [String], category: String)] = [
-            (["chromium", "google-chrome", "firefox"], "WebBrowser"),
-            (["thunar", "nautilus", "nemo", "pcmanfm"], "FileManager"),
-            (["xfce4-terminal", "ghostty", "alacritty", "kitty", "gnome-terminal"], "TerminalEmulator"),
-            (["code", "vscodium", "zed"], "IDE"),
-            (["obsidian"], ""),
-            (["opencode"], ""),
-            (["mousepad", "gedit", "gnome-text-editor"], "TextEditor"),
-            (["libreoffice-writer"], "WordProcessor"),
-            (["libreoffice-calc"], "Spreadsheet"),
-            (["gimp"], "RasterGraphics"),
-        ]
-        var dock: [HostClient.App] = []
-        for (ids, category) in wanted {
-            if let app = DockSlot.choose(ids: ids, category: category, among: main, id: \.id, categories: \.categories),
-               !dock.contains(where: { $0.id == app.id }) { dock.append(app) }
-        }
+        var dock = DockSlot.choose(among: partitionedApps.main, preferred: shortcuts.pinned + shortcuts.recent,
+                                   id: \.id, categories: \.categories)
         // Then every application with a window, however it started, in the order they opened.
         for group in taskbar.groups where !dock.contains(where: { $0.id == group.id }) {
             if let id = group.entryID, let app = apps.first(where: { $0.id == id }) { dock.append(app) }
             else { dock.append(HostClient.App(id: group.id, name: group.name, icon: "", categories: [], exec: "")) }
         }
-        // An app running without windows (Steam in its tray) stays reachable, to quit it.
+        // An app running without windows (one in its tray) stays reachable, to quit it.
         if runningAppsAvailable {
             for running in runningApps.listing?.apps ?? [] where running.isBackground {
                 guard let id = running.desktopId, let app = apps.first(where: { TaskManager.sameDesktopID($0.id, id) }),
@@ -1849,6 +1834,15 @@ final class AppModel {
         }
         return AppWindowIdentity.matches(desktopID: app.id, startupWMClass: app.startupWMClass, launchedFrom: window.desktopID,
                                   instance: window.appClass?.instance, name: window.appClass?.name)
+    }
+
+    /// The freedesktop categories of the desktop entry a window belongs to: its taskbar
+    /// group's entry, else the entry it was launched from; a dialog takes its parent's. Empty
+    /// when neither is listed.
+    func categories(of window: RemoteWindow) -> [String] {
+        let window = window.transientFor.flatMap { session?.windows[$0] } ?? window
+        guard let id = taskbar.group(of: window.id)?.entryID ?? window.desktopID else { return [] }
+        return apps.first { TaskManager.sameDesktopID($0.id, id) }?.categories ?? []
     }
 
     func icon(for window: RemoteWindow) -> UIImage? {

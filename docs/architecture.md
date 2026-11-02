@@ -671,24 +671,29 @@ container's cgroup namespace:
 | --- | --- |
 | `/init.scope` | The container's init, root's services and `docker exec` arrivals |
 | `/owner.slice/session.scope` | The owner's processes no app claims, Caboose's own services among them |
-| `/owner.slice/app-<key>-<n>.scope` | One app: `<key>` is its desktop id without `.desktop`, a Steam game's `steam_app_<id>`, a window's class, `caboose-terminal` or `caboose-agent`, escaped as systemd escapes unit names |
+| `/owner.slice/app-<key>-<n>.scope` | One app: `<key>` is its desktop id without `.desktop`, a window's class, `caboose-terminal` or `caboose-agent`, escaped as systemd escapes unit names |
 
 The memory, IO and pids controllers are enabled on both levels. The daemon moves the
 owner's processes out of `init.scope`, and once a second (every 3 s while nobody has listed
 for 30 s) moves processes into scopes, first rule first:
 
-1. Steam's game reaper (`reaper SteamLaunch AppId=N`) and its tree, into a scope for game N.
-2. Children forked during a split and left in the scope it came from follow their parent.
-3. A phone terminal session (a child of the terminal service), or an agent task's runner,
+1. Children forked during a split and left in the scope it came from follow their parent.
+2. A phone terminal session (a child of the terminal service), or an agent task's runner,
    gets its own scope.
-4. In the session scope, a Flatpak application's sandboxes (by `/.flatpak-info`), with the
+3. In the session scope, a Flatpak application's sandboxes (by `/.flatpak-info`), with the
    bubblewrap and `flatpak` processes that started them, join that application's scope.
-5. In the session scope, processes a launch marked (`CABOOSE_DESKTOP_ID`, or GLib's
+4. In the session scope, processes a launch marked (`CABOOSE_DESKTOP_ID`, or GLib's
    `GIO_LAUNCHED_DESKTOP_FILE` and `GIO_LAUNCHED_DESKTOP_FILE_PID`) get one scope per launch.
-6. A toplevel window whose process is in the session scope or a phone terminal session's
-   scope, or in an app scope when the process runs on a terminal under a windowed process
-   of that scope that is not on that terminal (a program run from a terminal app), takes
-   its process tree into a scope of its own.
+5. A toplevel window takes its process tree into a scope of its own when its process is in
+   the session scope or a phone terminal session's scope; in an app scope and runs on a
+   terminal under a windowed process of that scope that is not on that terminal (a program
+   run from a terminal app); or in an app scope and the window belongs to another
+   application than the rest of the scope: its class is set and differs from that of a
+   toplevel another process of the scope owns, its process owns no window of those other
+   classes, and no owner of one descends from its process. The same rule holds for every
+   app; it gives a program another windowed app launched (a game a store client starts)
+   its own scope, while one process with several classes, or a launcher with the children
+   whose windows those are, stays whole ([guest/scopes](../guest/scopes/README.md#the-daemon)).
 
 Dock launches ask for their scope before the app starts (`guest-apps.py` sends the
 desktop id over `/run/caboose/scopes.sock`). Empty scopes are removed. Windows come from
@@ -1538,8 +1543,8 @@ the host serves the guest's app scopes. These routes do not wake the computer.
     id: string,               // the scope: "session.scope" or "app-<key>-<n>.scope", at most 255 characters
     kind: "app" | "session",
     desktopId: string | null, // the desktop entry it was launched from or matched to
-    name: string,             // the entry's Name, a Steam game's name, else a window class; at most 200 characters
-    origin: "launch" | "window" | "game" | "terminal" | "agent" | "session",
+    name: string,             // the entry's Name, else a window class; at most 200 characters
+    origin: "launch" | "window" | "terminal" | "agent" | "session",
     startedAt: number,        // Unix ms the scope was made; 0 for the session
     windows: number[],        // the owner display's window ids (toplevels and dialogs) of its processes
     cpuPercent: number,       // of one CPU, over intervalMs
@@ -2997,14 +3002,17 @@ view's bounds, including while a resize stretches the previous picture.
   rectangle without clearing their states. Removing an output applies the same rule
   after moving those windows to the primary output. Ordinary windows keep their size.
   The dock stays along the bottom under the tiles. Everyday and running apps appear once
-  each, with a dot for an open app. An everyday app's place (a browser, a file manager) is
-  taken by its own entry or a variant in its category (`DockSlot`), never an entry merely
-  sharing its id's prefix, such as Thunar's Bulk Rename; tapping focuses or opens it and holding exposes
-  its window actions. Icons keep their size and scroll horizontally when they do not fit.
-  The running apps are the computer's windows, however they were started (Steam, a
-  terminal, a script, Wine), grouped by application (`CabooseKit/Shell/Taskbar`, matched as
+  each, with a dot for an open app. The everyday places are freedesktop categories (web
+  browser, file manager, terminal, IDE, text editor, word processor, spreadsheet, raster
+  graphics), each taken by one app of that category, the same way for every app: the
+  person's pinned apps first, then their recently opened ones, else the first of the
+  category in the computer's list (`DockSlot`); tapping focuses or opens it and holding
+  exposes its window actions. Icons keep their size and scroll horizontally when they do not fit.
+  The running apps are the computer's windows, however they were started (another app, a
+  terminal, a script), grouped by application (`CabooseKit/Shell/Taskbar`, matched as
   [Windows and launches](display.md#windows-and-launches) describes); a window no desktop
-  entry claims appears as an application of its own with its window's icon, and closing
+  entry claims appears as an application of its own, named by its class (app_id) and drawn
+  with its window's icon, and closing
   its last window removes it. A dock too narrow for every icon leaves out everyday apps
   without windows first, never a running one.
   Overview shows every window (tap to go, swipe up to close), alongside All Apps. The side
@@ -3426,10 +3434,12 @@ and restores its dock.
   remote site, so it fills one field per pick and does not pre-suggest the site's login;
   its suggestions are on the iOS keyboard, not Laptop's own. Return commits any marked
   text and sends a real Enter key press/release, so a browser address bar submits. An
-  unmodified software Return dismisses the keyboard except in terminals and code editors;
-  pasted multiline text and hardware Return leave it open. Otherwise autocorrect and
-  capitals are on for prose and off in terminals and code editors, with an Autocorrect toggle in
-  the keyboard controls menu.
+  unmodified software Return dismisses the keyboard except in an app that types code;
+  pasted multiline text and hardware Return leave it open. Where the field reports no
+  purpose, autocorrect and capitals are on for prose and off in an app that types code,
+  with an Autocorrect toggle in the keyboard controls menu. An app types code when its
+  window's desktop entry has a TerminalEmulator, TextEditor, IDE or Development category
+  (`TextPurposeTraits.typesCode`); a window with no known entry types prose.
 - **Keyboard accessory.** Remote app cards, tiled and free desktops, the external-display
   trackpad, Terminal, the Agents composer and app-owned native form fields use
   CabooseKit’s shared `KeyBar` accessory: one 48-point row of plain keys on the system

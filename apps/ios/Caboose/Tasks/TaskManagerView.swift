@@ -216,7 +216,6 @@ struct RunningAppIcon: View {
     private var symbol: String {
         if app.isSession { return "gearshape.2" }
         switch app.origin {
-        case .game: return "gamecontroller"
         case .terminal: return "apple.terminal"
         case .agent: return "sparkles"
         default: return "app.dashed"

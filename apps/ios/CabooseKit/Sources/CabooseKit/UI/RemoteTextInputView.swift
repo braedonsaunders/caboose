@@ -45,8 +45,8 @@ open class RemoteTextInputView: UIView, UITextInput {
     public private(set) var purposeTraits = TextPurposeTraits(purpose: nil)
 
     /// Follows the focused remote field: its keyboard, AutoFill and secure entry come from its
-    /// purpose, and so does prose, else from whether the app is a terminal or code editor. The
-    /// person's Autocorrect choice outlasts both. A change reloads the keyboard while it is up.
+    /// purpose, and so does prose, else from whether its app types code by its desktop entry's
+    /// categories (`TextPurposeTraits.typesCode`). The person's Autocorrect choice outlasts both. A change reloads the keyboard while it is up.
     public func followField(purpose: String?, isCode: Bool) {
         let traits = TextPurposeTraits(purpose: purpose)
         let traitsChanged = traits != purposeTraits

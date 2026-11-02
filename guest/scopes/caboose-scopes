@@ -18,7 +18,7 @@ The hierarchy, inside the container's own cgroup namespace:
 
     /init.scope                     the container's init, root's services, `docker exec`
     /owner.slice/session.scope      the owner's processes no app claims (Caboose's services)
-    /owner.slice/app-<key>-<n>.scope  one per app launch, game or split-off window
+    /owner.slice/app-<key>-<n>.scope  one per app launch or split-off window
     /services.slice/<name>.service  one per running service
 
 The daemon runs as root, which alone moves processes between cgroups. A forked observer
@@ -205,8 +205,7 @@ def observe(request):
                 flatpak = core.flatpak_app(Path(f'/proc/{pid}/root/.flatpak-info').read_text()[:65536])
             except (OSError, UnicodeDecodeError):
                 flatpak = None
-            out[str(pid)] = {'argv': argv or None, 'marks': list(marks) if marks else None, 'flatpak': flatpak,
-                             'game': core.environ_game(environ) if environ else None}
+            out[str(pid)] = {'argv': argv or None, 'marks': list(marks) if marks else None, 'flatpak': flatpak}
         return out
     if op == 'windows':
         answer = control('windows')
@@ -378,14 +377,6 @@ class Entries:
         lowered = app_id.lower()
         for ident, fields in self.by_id.items():
             if fields.get('StartupWMClass', '').lower() == lowered or core.scope_key(ident).lower() == lowered:
-                return ident
-        return None
-
-    def for_game(self, game):
-        needle = f'steam://rungameid/{game}'
-        for ident, fields in self.by_id.items():
-            exec_line = fields.get('Exec', '')
-            if needle in exec_line and not exec_line[exec_line.index(needle) + len(needle):][:1].isdigit():
                 return ident
         return None
 
@@ -770,7 +761,7 @@ class Daemon:
         self.entries = Entries(self.home)
         self.scopes = {}
         self.next = 1
-        # (pid, start, comm) -> {'argv', 'marks', 'flatpak', 'game'}. comm is in the key because
+        # (pid, start, comm) -> {'argv', 'marks', 'flatpak'}. comm is in the key because
         # a process seen between its fork and its exec still has its parent's command line and
         # environment: once it execs, it is read again.
         self.argv = {}
@@ -818,11 +809,9 @@ class Daemon:
         name = core.scope_name(new.key, number)
         (CGROUP / OWNER / name).mkdir()
         desktop_id = new.desktop_id
-        if new.game is not None:
-            desktop_id = desktop_id or self.entries.for_game(new.game)
-        elif desktop_id is None and new.app_id:
+        if desktop_id is None and new.app_id:
             desktop_id = self.entries.for_window(new.app_id)
-        meta = {'origin': new.origin, 'desktopId': desktop_id, 'appId': new.app_id, 'game': new.game,
+        meta = {'origin': new.origin, 'desktopId': desktop_id, 'appId': new.app_id,
                 'source': new.source, 'flatpak': new.flatpak, 'createdAt': now, 'name': self.name_for(new, desktop_id)}
         self.scopes[name] = meta
         self.save()
@@ -834,25 +823,18 @@ class Daemon:
             key, _ = core.parse_scope_name(name)
             desktop_id = f'{key}.desktop' if self.entries.name(f'{key}.desktop') else None
             new = core.NewScope(key, 'window', desktop_id=desktop_id)
-            self.scopes[name] = {'origin': 'window', 'desktopId': desktop_id, 'appId': None, 'game': None, 'source': None,
+            self.scopes[name] = {'origin': 'window', 'desktopId': desktop_id, 'appId': None, 'source': None,
                                  'createdAt': now, 'name': self.name_for(new, desktop_id)}
             self.save()
         return self.scopes[name]
 
     def name_for(self, new, desktop_id):
-        if new.game is not None:
-            for library in ('.local/share/Steam/steamapps', '.steam/steam/steamapps'):
-                name = core.acf_name(read(Path(self.home) / library / f'appmanifest_{new.game}.acf', '') or '')
-                if name:
-                    return name
         if desktop_id and self.entries.name(desktop_id):
             return self.entries.name(desktop_id)
         if new.origin == 'terminal':
             return 'Terminal session'
         if new.origin == 'agent':
             return 'Agent task'
-        if new.game is not None:
-            return f'Steam game {new.game}'
         return new.app_id or new.key
 
     def move_tree(self, pids, target, source):
@@ -943,12 +925,10 @@ class Daemon:
                 marks = info.get('marks')
                 self.argv[keys[pid]] = {'argv': info.get('argv') if isinstance(info.get('argv'), list) else None,
                                        'marks': (marks[0], marks[1]) if isinstance(marks, list) and len(marks) == 2 else None,
-                                       'flatpak': info.get('flatpak') if isinstance(info.get('flatpak'), str) else None,
-                                       'game': info.get('game') if isinstance(info.get('game'), int) and
-                                       not isinstance(info.get('game'), bool) and 0 < info.get('game') < 1 << 32 else None}
+                                       'flatpak': info.get('flatpak') if isinstance(info.get('flatpak'), str) else None}
         for pid, proc in procs.items():
             info = self.argv.get(keys[pid], {})
-            proc.argv, proc.marks, proc.flatpak, proc.game = info.get('argv'), info.get('marks'), info.get('flatpak'), info.get('game')
+            proc.argv, proc.marks, proc.flatpak = info.get('argv'), info.get('marks'), info.get('flatpak')
         return procs
 
     def reap(self, now):

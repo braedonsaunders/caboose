@@ -15,22 +15,27 @@ struct TaskbarTests {
     ]
 
     @Test func aWindowNoEntryClaimsIsStillRunning() {
-        // Halo, which Steam started: its Proton window's class names no entry.
+        // A window another app's process started, whose class names no entry.
         let bar = Taskbar(windows: [W(id: 25, title: "Steam", instance: "steam", name: "steam", pid: 280),
                                     W(id: 36, title: "Halo: The Master Chief Collection  ", instance: "steam_app_976730", name: "steam_app_976730", pid: 2113)],
                           entries: entries)
         #expect(bar.groups.map(\.id) == ["com.valvesoftware.Steam.desktop", "window:class:steam_app_976730"])
         let halo = bar.group(of: 36)
-        #expect(halo?.entryID == nil && halo?.name == "Halo: The Master Chief Collection" && halo?.windows == [36])
+        #expect(halo?.entryID == nil && halo?.name == "steam_app_976730" && halo?.windows == [36])
         #expect(bar.group(of: 25)?.name == "Steam")
     }
 
-    @Test func aSteamGameMatchesTheEntrySteamWrote() {
+    @Test func aWindowIsMatchedTheSameWayWhateverItsApp() {
+        // An entry's Exec line is only a program to match, never a scheme to parse.
         let game = E(id: "Halo The Master Chief Collection.desktop", name: "Halo: The Master Chief Collection",
                      exec: "flatpak run com.valvesoftware.Steam steam://rungameid/976730")
-        let other = E(id: "Other.desktop", name: "Other", exec: "steam steam://rungameid/9767301")
-        let bar = Taskbar(windows: [W(id: 1, instance: "steam_app_976730", name: "steam_app_976730")], entries: [other, game])
-        #expect(bar.group(of: 1)?.entryID == "Halo The Master Chief Collection.desktop")
+        let bar = Taskbar(windows: [W(id: 1, instance: "steam_app_976730", name: "steam_app_976730")], entries: [game])
+        #expect(bar.group(of: 1)?.entryID == nil)
+        // Launched from the entry, the window is the entry's, whatever its class.
+        let launched = Taskbar(windows: [W(id: 1, instance: "steam_app_976730", name: "steam_app_976730",
+                                           desktopID: "Halo The Master Chief Collection.desktop")], entries: [game])
+        #expect(launched.group(of: 1)?.entryID == "Halo The Master Chief Collection.desktop")
+        #expect(launched.group(of: 1)?.name == "Halo: The Master Chief Collection")
     }
 
     @Test func everyWindowBelongsToOneGroupAndTheBestEntry() {
@@ -87,36 +92,32 @@ struct TaskbarTests {
         #expect(Taskbar.program("env GDK_BACKEND=x11 -u FOO /opt/app/App --flag") == "app")
         #expect(Taskbar.program("flatpak run --branch=stable org.gimp.GIMP %U") == "org.gimp.gimp")
         #expect(Taskbar.program("") == nil)
-        #expect(Taskbar.steamGame("steam_app_976730") == "976730")
-        #expect(Taskbar.steamGame("steam_app_") == nil && Taskbar.steamGame("steam") == nil)
     }
 
-    /// The file manager's dock place on an Xfce computer, whose apps are sorted by name:
-    /// "Bulk Rename" (`thunar-bulk-rename`) comes before "Thunar File Manager" and shares
-    /// its prefix and icon, and tapping it ran `thunar --bulk-rename`.
-    @Test func aDockPlaceTakesItsAppNotOneSharingItsPrefix() {
+    /// The dock's places come from categories alone: an app that merely shares another's
+    /// prefix (Thunar's Bulk Rename) is no file manager, and no app is preferred by its id.
+    @Test func dockPlacesComeFromCategories() {
         typealias App = (id: String, categories: [String])
-        func choose(_ ids: [String], _ category: String, _ apps: [App]) -> String? {
-            DockSlot.choose(ids: ids, category: category, among: apps, id: \.id, categories: \.categories)?.id
+        func choose(_ apps: [App], preferred: [String] = []) -> [String] {
+            DockSlot.choose(among: apps, preferred: preferred, id: \.id, categories: \.categories).map(\.id)
         }
         let xfce: [App] = [
             ("thunar-bulk-rename.desktop", ["Utility", "Core", "GTK", "Filesystem"]),
             ("com.valvesoftware.Steam.desktop", ["Game"]),
+            ("debian-uxterm.desktop", ["System", "TerminalEmulator"]),
             ("thunar.desktop", ["System", "Core", "GTK", "Utility", "FileManager"]),
+            ("xfce4-terminal.desktop", ["GTK", "System", "TerminalEmulator"]),
+            ("firefox-esr.desktop", ["Network", "WebBrowser"]),
         ]
-        let managers = ["thunar", "nautilus", "nemo", "pcmanfm"]
-        #expect(choose(managers, "FileManager", xfce) == "thunar.desktop")
-        // Without Thunar itself, Bulk Rename is no file manager: the category decides.
-        #expect(choose(managers, "FileManager", Array(xfce.prefix(2))) == nil)
-        let nautilus: [App] = [("thunar-bulk-rename.desktop", ["Utility"]), ("org.gnome.Nautilus.desktop", ["FileManager"])]
-        #expect(choose(managers, "FileManager", nautilus) == "org.gnome.Nautilus.desktop")
-        // A variant of the wanted app in its own category still takes the place.
-        let browsers: [App] = [("firefox-esr.desktop", ["Network", "WebBrowser"]), ("firefox-profile-manager.desktop", ["Utility"])]
-        #expect(choose(["chromium", "google-chrome", "firefox"], "WebBrowser", browsers) == "firefox-esr.desktop")
-        #expect(choose(["firefox"], "WebBrowser", [("firefox-profile-manager.desktop", ["Utility"])]) == nil)
-        // An exact id wins over an earlier variant, and over the category.
-        let editors: [App] = [("code-url-handler.desktop", ["IDE"]), ("code.desktop", ["IDE", "Development"])]
-        #expect(choose(["code", "vscodium", "zed"], "IDE", editors) == "code.desktop")
+        // In dock order, the first of each category in the computer's list.
+        #expect(choose(xfce) == ["firefox-esr.desktop", "thunar.desktop", "debian-uxterm.desktop"])
+        // The person's pinned and recent apps come first within their category.
+        #expect(choose(xfce, preferred: ["xfce4-terminal.desktop"]) == ["firefox-esr.desktop", "thunar.desktop", "xfce4-terminal.desktop"])
+        #expect(choose(Array(xfce.prefix(2))).isEmpty)
+        // An app in two categories takes one place; the next of the other category takes the other.
+        let editors: [App] = [("code.desktop", ["Development", "IDE", "TextEditor"]), ("mousepad.desktop", ["Utility", "TextEditor"])]
+        #expect(choose(editors) == ["code.desktop", "mousepad.desktop"])
+        #expect(choose([("code.desktop", ["IDE", "TextEditor"])]) == ["code.desktop"])
     }
 
     @Test func dockFitNeverDropsARunningApp() {
