@@ -123,8 +123,8 @@ The image contains:
   directory. The broker uses the per-wake display token and is stopped with its
   compositor. The private transport does not enable a public GPU ICD.
   Its indexed v4 handshake is selected only with `--private-gpu-indexed`.
-- **Codec passthrough.** The VA-API driver `caboose_drv_video.so` from `guest/vaapi`, and
-  `/dev/udmabuf` for its decode surfaces ([codec-passthrough.md](codec-passthrough.md)).
+- **Phone-decoded video.** The VA-API driver `caboose_drv_video.so` from `guest/vaapi`, and
+  `/dev/udmabuf` for its decode surfaces ([gpu-media.md](gpu-media.md)).
 - **Phone devices.** Debian's generic kernel, with the uinput, UHID, HID sensor, IIO and
   V4L2 drivers, `v4l2loopback` built for it, `iio-sensor-proxy` and the udev rules from
   `guest/devices`, so the phone's hardware becomes the computer's devices
@@ -238,10 +238,11 @@ the nonempty password travels in a private owner-bus Secret Service session, clo
 creation. Only an empty credential store is initialized; existing keyrings and browser
 profiles are preserved. An existing locked keyring that does not accept the managed password
 requires its original password and an explicit operator migration. No reset, empty password
-or plaintext browser password store is selected. The host waits for this bounded preparation
-before owner app, file and URL launches. `GET /v1/computer` and `computer.settings` expose
-`keyring: null | { state: preparing | ready | failed, message? }`; a failure remains visible while ordinary launches and interactive keyring recovery stay
-available.
+or plaintext browser password store is selected. Owner app, file and URL launches start only
+on a prepared keyring, so no application can make GNOME prompt to create or unlock one: a
+launch waits up to 60 s for preparation, tries a failed preparation once more, and otherwise
+answers 409 with the preparation's error. `GET /v1/computer` and `computer.settings` expose
+`keyring: null | { state: preparing | ready | failed, message? }`.
 Memory park retains the daemon and its unlocked state; cold boots use the saved credential.
 
 The agent bus activates a Secret Service forwarder to this canonical daemon. Each agent
@@ -366,10 +367,10 @@ computer as a Docker container built from `guest/container/` (`caboose-computer:
 default) instead. The container gets the GPU named by `CABOOSE_GPU`, detected from the
 host's devices when unset or `auto`:
 
-| `CABOOSE_GPU` | Detected by | Host | Container gets | Rendering / encode |
+| `CABOOSE_GPU` | Detected by | Host | Container gets | Rendering |
 | --- | --- | --- | --- | --- |
-| `wsl` | `/dev/dxg` | Windows + WSL2, any vendor | `/dev/dxg`, `/usr/lib/wsl` (read-only) | Mesa D3D12; NVENC on NVIDIA |
-| `nvidia` | `/dev/nvidiactl` or `/dev/nvidia0` | Linux + NVIDIA container toolkit | `--gpus all`, `/dev/udmabuf` when present | GL + NVENC |
+| `wsl` | `/dev/dxg` | Windows + WSL2, any vendor | `/dev/dxg`, `/usr/lib/wsl` (read-only) | Mesa D3D12 |
+| `nvidia` | `/dev/nvidiactl` or `/dev/nvidia0` | Linux + NVIDIA container toolkit | `--gpus all`, `/dev/udmabuf` when present | GL |
 | `dri` | `/dev/dri/renderD128` | Linux, Intel or AMD | `/dev/dri`, `/dev/udmabuf` when present | Mesa + VA-API |
 | `none` | otherwise | any | nothing | CPU |
 
@@ -505,38 +506,13 @@ within the existing shared Unix user, not an arbitrary-command security boundary
 Each instance writes its launch environment once it is ready: `WAYLAND_DISPLAY`,
 `DISPLAY`, `XAUTHORITY`, toolkit backends (`GDK_BACKEND`, `QT_QPA_PLATFORM`,
 `MOZ_ENABLE_WAYLAND`, `SDL_VIDEODRIVER`, `ELECTRON_OZONE_PLATFORM_HINT`),
-`CABOOSE_DISPLAY_CONTROL` (its control socket, below), `CABOOSE_SCENE_SOCKET` when opt-in scene interception (`CABOOSE_SCENE=1`) is enabled,
+`CABOOSE_DISPLAY_CONTROL` (its control socket, below),
 `CABOOSE_GAME_SOCKET` on the owner's display ([game-handoff.md](game-handoff.md)),
-`CABOOSE_WSI_AUTO_PROMOTE=1` on the owner's display when explicitly opted in (never on the agent seat), plus
-`LIBVA_DRIVER_NAME=caboose` when the passthrough driver is installed, and on the owner's display started with the private GPU
+plus `LIBVA_DRIVER_NAME=caboose` when the VA-API driver is installed, and on the owner's display started with the private GPU
 sockets the variables that route applications to the phone's GPU
 ([gpu-live.md](gpu-live.md#applications)).
 
-**OS Decomposition ("Zero Server Video") & Headless Liveness Invariant.** When a client
-connects with `atlas: true` in `ClientHello` (including zero-video `decoders: []`),
-`caboose-display` replies with `"atlas"` in `ServerHello.features` (and `"scene"` when
-`scene: true` is also requested) and skips per-window H.264/HEVC video encoding (`0x10` `frame`):
-- **Layer 0 — Surface Atlas (`0x23` `surface.batch`, `0x24` `surface.reset`)**: Damaged regions
-  are decomposed into `CopyRect` vertical scroll copies (`detect_scroll_copy` using `XXH64` row
-  hashes), solid RGBA8888 `fills`, 64×64 `XXH64`-addressed cached tile `refs`, and newly encoded
-  lossless tiles compressed with the adaptive UI micro-codec (`pal2-lz4` for 1–2 colors,
-  `pal16-lz4` for 3–16 colors, `rgba-lz4` for >16 colors, or `png`). `surface.reset` (`0x24`)
-  resets the client's `XXH64` tile cache on a new cache epoch.
-- **Layer 1 — Scene Graph (`0x25` `scene.font`, `0x26` `scene.commit`, `0x9A` `scene.scroll`)**:
-  `guest/scene` (`libcaboose_scene_cairo.so`) intercepts Cairo/GTK/Qt drawing via `RTLD_NEXT`
-  with zero link-time `libcairo` dependency, hashes font faces with `XXH64` (`seed = 0`) so each
-  `(font, index)` is registered once via `0x25` `scene.font`, and emits canonical RFC 8949 CBOR
-  `0x26` `scene.commit` updates (with `group`, `clip`, `rclip`, `scroll`, `rect`, `border`,
-  `shadow`, `glyphs` packed as 10-byte `(u16 glyph_id, f32 x, f32 y)` little-endian records,
-  `path`, and `surface` nodes). Client-predicted 120 Hz scroll offsets return via `0x9A`
-  `scene.scroll`.
-- **Headless Liveness Invariant**: Unattended work on the server computer must never block or
-  fail when the phone disconnects or on the headless agent seat. If `$CABOOSE_SCENE_SOCKET` is
-  unset, missing, refuses connection, or returns `EAGAIN`/`EPIPE`/`ECONNRESET` on write, the
-  `guest/scene` client immediately drops into non-blocking local passthrough mode without
-  stalling or raising `SIGPIPE`. Likewise, `VK_LAYER_CABOOSE_wsi_promote` (`libcaboose_wsi_promote.so`)
-  only promotes 3D/Vulkan/Mesa Zink swapchains when `CABOOSE_WSI_AUTO_PROMOTE=1` on the owner
-  seat and never on `CABOOSE_SEAT=agent` or denylisted 2D desktop/Electron processes. Each keeps its X authority, Xwayland shim, PulseAudio
+Each keeps its X authority, Xwayland shim, PulseAudio
 socket and control socket under `$XDG_RUNTIME_DIR/caboose-display/<wayland socket name>/`.
 The agent launch environment also publishes `HOME`, its four XDG state directories,
 `CABOOSE_SEAT`, its session bus, GUI wrapper PATH and browser/editor isolation variables.
@@ -2127,25 +2103,21 @@ The registrations and the latest 200 job states are stored in `activities.json`.
 ## 4. Display
 
 Caboose Display (`guest/display`, Rust and Smithay) is a headless Wayland compositor with
-Xwayland. It composites nothing: each toplevel and popup is its own stream, and the phone
-or TV places them as native surfaces. It encodes each window's changes (H.264, HEVC or AV1,
-with lossless PNG tiles for small changes and a sharpening pass once content is still),
-paces frames on the client's vsync, carries the clipboard (text, images and files), named cursors, touch,
-text-input-v3 and the keyboard, and sends sound as Opus on the same clock as video. The Caboose VA-API driver locally decodes application video before application
-composition; marker-based passthrough is fenced because it cannot preserve arbitrary
-foreground alpha and occlusion.
+Xwayland. It composites nothing across windows: each toplevel and popup is rendered on
+the phone's GPU as its own native surface. It paces frames on the client's vsync,
+carries the clipboard (text, images and files), named cursors, touch, text-input-v3
+and the keyboard, and sends sound as Opus. Application video decoded through the
+VA-API driver is decoded on the phone into the window's GPU images
+([gpu-media.md](gpu-media.md)).
 
-Popups advertise alpha and use lossless RGBA PNG tiles over a transparent canvas,
-including the first picture and keyframe requests. They have no codec frames
-or sharpening. The app keeps their layer and newly resized backing
-pixels transparent, preserving rounded corners and shadows over underlying windows.
+Popups advertise alpha and keep their rounded corners and shadows inside their
+window geometry.
 
 - [display.md](display.md) specifies the Caboose Display Protocol: framing (a type byte, a
-  little-endian length and one canonical CBOR map), the hello and display token, pacing and
-  acknowledgement, every message, audio and video streams. `guest/display/vectors/` pins
-  every message byte for byte, and both the Rust codec and CabooseKit test against them.
-- [codec-passthrough.md](codec-passthrough.md) specifies the contract between the VA-API
-  driver and the compositor.
+  little-endian length and one canonical CBOR map), the hello and display token, pacing,
+  and every message. `guest/display/vectors/` pins every message byte for byte, and
+  both the Rust codec and CabooseKit test against them.
+- [gpu-media.md](gpu-media.md) specifies phone-decoded video in GPU windows.
 
 The app connects through `/v1/display` with the token from `/v1/session`. The host relays
 the stream and never decodes it.
@@ -2156,7 +2128,7 @@ therefore omit their automatic titlebars. `GTK_CSD=0` applies the same default t
 GTK on X11; explicit application headerbars and menus remain application content. The
 window-button layout is empty in the portal, GSettings and GTK settings, so headerbars,
 libadwaita, Firefox and Chromium/Electron caption buttons draw no window controls
-(display.md, "Hosts and encoders").
+(display.md).
 
 ## 5. Agents
 
@@ -2564,8 +2536,7 @@ owner and an agent never type into the same application at once.
 `caboose-desktop-mcp` is a stdio MCP server. The runner passes it to every agent as
 `caboose-desktop` in ACP `session/new`, with the seat's launch environment:
 `CABOOSE_AGENT_DISPLAY` (the seat's `DISPLAY`), `WAYLAND_DISPLAY`, `CABOOSE_DISPLAY_CONTROL`,
-`XAUTHORITY`, `XDG_RUNTIME_DIR`, `DBUS_SESSION_BUS_ADDRESS`, the toolkit backends and the
-video passthrough variables.
+`XAUTHORITY`, `XDG_RUNTIME_DIR`, `DBUS_SESSION_BUS_ADDRESS`, the toolkit backends and the VA-API driver variables.
 
 | Tool | Does |
 | --- | --- |
@@ -2691,30 +2662,12 @@ XcodeGen. `apps/ios/README.md` covers its layout, build and device checks in det
 
 **CabooseKit** (a Swift package without UI dependencies) implements one display client,
 `CabooseDisplaySession`, behind the `DisplaySession` window model the app works against.
-It speaks the Caboose Display Protocol: canonical CBOR, `atlas` and `scene` capability
-negotiation (supporting zero-video `decoders: []` when `atlas: true` is advertised),
-byte-perfect `surface.batch` (`0x23`) and `surface.reset` (`0x24`) Surface Atlas updates
-(`CopyRect` scroll blits, solid RGBA fills, `XXH64` 64×64 tile cache refs, and lossless
-`pal2-lz4` / `pal16-lz4` / `rgba-lz4` tiles), retained vector and glyph scene graphs
-(`0x25` `scene.font`, `0x26` `scene.commit`, and 120 Hz client-predicted `0x9A` `scene.scroll`
-feedback), legacy per-window video with acknowledgements and keyframe recovery, video streams
-layered into windows, Opus sound on the server timeline, and vsync pacing. Audio uses an
-explicit server/host clock anchor, cleared on interruption. Placement samples host time once
-against the requested anchor; renderer timebase updates never drive backlog recovery. Live
-window pictures present immediately, while passthrough video shares the audio
-clock. Each window fills a `RemoteWindow` and its
-Metal `WindowSurface`. Decoding uses the Surface Atlas LZ4 micro-codec and `XXH64` tile cache
-for `surface.batch`, CoreText and Metal for `scene.commit` vector/glyph trees,
-`VTDecompressionSession` for H.264, HEVC and, where the device has a hardware decoder, AV1,
-and ImageIO for PNG and WebP tiles. Every write to a window's texture is a blit on one shared
-Metal queue, which runs command buffers in commit order, so no draw waits for the GPU before
-the next frame or batch is decoded and acknowledged.
+It speaks the Caboose Display Protocol: canonical CBOR, window, cursor, clipboard,
+input and Opus sound messages, and vsync pacing. Each window fills a `RemoteWindow`;
+its picture is presented by the live GPU executor ([gpu-live.md](gpu-live.md)).
 CabooseKit is unit-tested on macOS, including the protocol's golden vectors.
 
-The iOS app omits `video_decoders`. The compositor also requests local decode for
-every marker stream, including headless sessions, because the marker has no independent
-foreground alpha or occlusion provenance. Controls and subtitles are composed by the
-application over decoded pixels before the window's picture encodes them. PCM playback
+PCM playback
 uses decoded sample durations to join adjacent packets despite capture-timestamp jitter; gaps over 200 ms retain the server timeline.
 Compressed playback ingress retains at most 16 queued or running packets and 64 KiB of
 payload. Excess or empty packets are rejected before dispatch, counted as
@@ -2748,12 +2701,8 @@ bounded rate-change and interruption metadata; these observations never drive re
 [the iOS README](../apps/ios/README.md#opt-in-audio-timing-diagnostics) defines the fields
 and collection path.
 
-The window picture and its video layers use the same mapping from the confirmed surface
-size to the view's bounds, including while a resize stretches the previous picture.
-Resize metadata does not change that pixel basis until the replacement frame decodes.
-Video clips intersect the window bounds without rescaling the decoded picture. Only the
-active presentation hosts a stream's playback layer; an inactive Yard relinquishes it to
-the app card, and a detached view releases its layers.
+The window picture uses the same mapping from the confirmed surface size to the
+view's bounds, including while a resize stretches the previous picture.
 
 - **Windows.** A Linux window opened from Home or Apps is an app card: full screen, sized
   to the phone. On a device with a vertical toolbar, the card starts with its controls
@@ -2907,11 +2856,17 @@ the app card, and a detached view releases its layers.
   workspaces and four elsewhere. Columns and scroll stops use the same outer-margin
   geometry, so the leading and trailing edges settle flush with the workspace.
   Windows sit in columns on a horizontal track that scrolls; a column holds one window or
-  a stack (two on an upright phone, three elsewhere). Column widths are ⅓, ½, ⅔ or full,
-  offered only where a tile is at least 280 points wide and two halves fit, so an upright
-  iPhone shows one full-width column, a Duo opened out or a large phone on its side two,
-  an iPad three. New windows open beside the focused one and share the screen evenly until
-  it is full, then take columns of their own. A tile is a title bar above its window: Close and
+  a stack. Every tile follows the window layout policy (`TilePolicy`, rules in
+  `apps/ios/README.md`): at least 560 × 400 points or the window's own minimum plus its
+  title bar, capped at the screen; between 0.55 and 4 times as wide as high when it shares
+  the screen; split by the screen's shape (stacked on a tall screen such as an upright Duo,
+  side by side on a wide one, a grid only where every cell passes); and windows that do not
+  fit continue on the next screen of the track rather than being squeezed. The windows
+  sharing a screen form a group that survives rotation and folding: a group too large for
+  a smaller screen continues across more, and neighbouring groups merge where they fit
+  together. New windows open beside the focused one. Picked widths (⅓, ½, ⅔ or full,
+  offered only where they obey the policy) and hand-built stacks are kept within the
+  policy; one that cannot obey it on a new screen returns to the automatic layout. A tile is a title bar above its window: Close and
   Full Screen as small coloured circles at its leading edge, each answering across its slice of
   the bar's full height, the title, and an options button; there is no Minimize, because a tiled
   window has no minimized state. The bar never covers the app. The tile's rect below the bar is
@@ -2925,14 +2880,22 @@ the app card, and a detached view releases its layers.
   places the carried window in ordinary Yard columns and stacks, with nearby real
   windows filling the other slots. Unfilled slots reserve space in those columns;
   they create no synthetic windows. Explicit snap slots keep their selected fractions
-  in portrait and landscape, independently of the ordinary column-width presets.
-  App minimum sizes constrain the guest content request through `WindowSizePolicy.fitting`,
-  not the slot: larger content fits into the slot with the same transform for rendering
-  and input. Only slots without space for native chrome and positive content are disabled.
+  in portrait and landscape, independently of the ordinary column-width presets, wherever
+  they obey the window layout policy.
+  App minimum sizes larger than a slot constrain the guest content request through
+  `WindowSizePolicy.fitting`: larger content fits into the slot with the same transform
+  for rendering and input. Slots that would break the window layout policy are disabled.
   The palette's region rectangles are also its hit targets. The highlighted destination
   comes from the proposed Yard layout and scroll position that release commits, above
   the existing tiles. The carried window stays above both the highlight and chooser;
   selection uses the drag position, so these overlays do not intercept the gesture. Palette gaps and disabled regions do not select tiles beneath them.
+  A snap joins an arrangement that snap assist fills (`SnapAssist`): the other windows
+  fill the remaining slots at once when they fit them with none left over, and are offered
+  slot by slot in a menu over the free slot when there are more. On the floating desktop
+  the arrangement (`SnapGroup`, kept in `FreeDesktopLayout`) tiles the work area with
+  shared edges, so snapped windows never overlap or leave a gap; dragging a shared edge
+  resizes both sides within their minimums, and closing, minimizing or pulling out a
+  snapped window lets the rest fill its space. Rules are in `apps/ios/README.md`.
   Hover changes neither the saved layout nor guest geometry; cancellation restores the
   track position and leaves fullscreen intact. A tap gives the tile the keyboard, and a double tap opens the same
   full-screen app card as Apps. The green button, the Desktop toolbar's trailing Full
@@ -3083,7 +3046,7 @@ on the next connection retries the decline after the save wait has finished. Sav
 writes IDBFS changes within two seconds and retries every five seconds while the game runs.
 An on-screen controller reaches the page's Gamepad API through `RemoteGame.gamepad`.
 
-### GPU streams
+### Live GPU windows
 
 The live GPU client retains an optional binary display identity from `gpu_live_epoch`
 in the display hello. It accepts only 16 bytes with at least one nonzero byte. This
@@ -3128,35 +3091,14 @@ prefix, without a batching delay. The outbound budget includes the temporary
 concatenation buffer and keeps in-flight permits until send completion; the
 record and byte limits are specified in [gpu-live.md](gpu-live.md).
 
-A window that arrives as a GPU stream ([gpu-stream.md](gpu-stream.md)) is replayed on the
-device. `CabooseDisplaySession.rendersGPUStreams`, true where the player is built in, puts
-`gpu: true` in the hello. `gpu.create` sets `RemoteWindow.gpuStream`; `gpu.data` goes from the
-socket's queue to the stream's replay in order, and the session answers with `gpu.ack` as the
-replay takes the bytes. The player, `GPUStreamPlayer`, is GFXReconstruct's Vulkan replay (tag
-`vulkan-sdk-1.4.363.0`, capture format 1.0.5, MIT) over MoltenVK 1.4.2 (Apache-2.0), linked
-statically behind a C API in `apps/ios/GPUStream` and built by
-`apps/ios/scripts/build-gpu-stream.sh`; without that library CabooseKit builds without the
-player and says nothing of GPU streams. It replays as `gfxrecon-replay --remove-unsupported -m
-rebind` does, through the virtual swapchain, on its own thread, into the `CAMetalLayer` of a
-`GPUStreamView` that the window's interactive view lays over its picture. Input to the window
-still goes to the computer. One stream replays at a time: a later stream's window says it
-waits, its bytes wait in its feed unacknowledged, and it plays when the first ends. A
-`gpu.destroy` with a reason leaves the window saying why its stream ended.
-
-`GPUDeviceCapabilities.queryJSON()` exposes an on-demand diagnostic of the same linked
-MoltenVK: physical devices, core features, relevant limits, extensions and BC format
-support. The C API returns schema-versioned JSON and owns no device or surface. Callers
-run the synchronous query off the UI thread. It does not change the display handshake,
-the computer's static profile or the renderer's advertised capabilities.
-
 The isolated live-transport source in `guest/gpu/gfxstream`, `guest/gpu/broker`, and
 `apps/ios/GPUStream/gfxstream` is not connected to this display handshake or player.
-Its default guest socket selection rejects initialization. The separate private diagnostic
+The separate private diagnostic
 executes the unchanged Vulkan compute/CPU/indirect-draw acceptance fixture on an
 Apple A20 Pro GPU and passes its independent offscreen pixel oracle. This uses
 explicit non-coherent memory transfers and is not a general driver or on-screen
 game presentation. The bounded live envelope codec is specified in
-[gpu-live.md](gpu-live.md); it is separate from the legacy capture protocol.
+[gpu-live.md](gpu-live.md); it is separate from the display protocol.
 The indexed broker can explicitly negotiate independent, bounded DEFLATE records
 for complete DATA envelopes. The phone reserves their expanded memory before
 queuing and validates exact decoding before passing the unchanged command bytes

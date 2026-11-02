@@ -15,6 +15,11 @@ import Foundation
 /// class, never to another app's or to one whose class is not known: after a cold boot an id
 /// can name another window. Once the computer has announced its windows, places of windows it
 /// no longer has are dropped (`prune`).
+///
+/// Windows snapped to halves, quarters or thirds are one arrangement (`group`, a
+/// `SnapGroup`): they tile the work area exactly, share their edges, and close up when one
+/// of them closes, is minimized or is pulled away. Full screen (`maximized`) stays a window's
+/// own snap.
 public struct FreeDesktopLayout: Codable, Equatable, Sendable {
     /// A side, a corner, a third or the whole work area, which the window keeps as the area changes.
     public enum Snap: String, Codable, Sendable, CaseIterable {
@@ -41,6 +46,8 @@ public struct FreeDesktopLayout: Codable, Equatable, Sendable {
     public static let capacity = 64
 
     public private(set) var places: [Int: Place] = [:]
+    /// The windows snapped together, if any.
+    public private(set) var group: SnapGroup?
     private var clock = 0
     /// The display server lifetime the ids belong to, when the computer reports one.
     public private(set) var epoch: String?
@@ -53,6 +60,53 @@ public struct FreeDesktopLayout: Codable, Equatable, Sendable {
     }
 
     public func snap(of id: Int) -> Snap? { places[id]?.snap }
+
+    /// The arrangement a snap belongs to, as the snap palette offers it: a half beside the
+    /// other half, a quarter among four, a third among three.
+    public static func arrangement(for snap: Snap) -> [Snap] {
+        switch snap {
+        case .maximized: [.maximized]
+        case .left, .right: [.left, .right]
+        case .topLeft, .topRight, .bottomLeft, .bottomRight: [.topLeft, .topRight, .bottomLeft, .bottomRight]
+        case .leftThird, .centerThird, .rightThird: [.leftThird, .centerThird, .rightThird]
+        case .leftTwoThirds: [.leftTwoThirds, .rightThird]
+        case .rightTwoThirds: [.leftThird, .rightTwoThirds]
+        }
+    }
+
+    /// Snaps windows together: `group` replaces the arrangement there was. Its windows take
+    /// its slots (each keeping the frame it returns to, or `current` for one without a
+    /// place); windows of the old arrangement that are not in the new one return to their
+    /// own frames.
+    public mutating func setGroup(_ group: SnapGroup?, current: [Int: CGRect], in area: CGRect, app: (Int) -> String?) {
+        clock += 1
+        let members = Set(group?.windows ?? [])
+        for id in Set(self.group?.windows ?? []).subtracting(members) { places[id]?.snap = nil }
+        self.group = group.flatMap { $0.windows.isEmpty ? nil : $0 }
+        guard let group = self.group else { return }
+        for id in members {
+            guard let slot = group.slot(of: id) else { continue }
+            var place = self.place(for: id, app: app(id))
+                ?? Place(preferred: current[id] ?? area, area: area, snap: nil, app: app(id)?.lowercased(), touched: clock)
+            place.snap = group.cell(slot)?.snap
+            place.touched = clock
+            places[id] = place
+        }
+        trim()
+    }
+
+    /// The arrangement changed within itself: a divider dragged. Its windows stay the same.
+    public mutating func updateGroup(_ group: SnapGroup) {
+        guard Set(group.windows) == Set(self.group?.windows ?? []) else { return }
+        self.group = group
+    }
+
+    /// Takes a window out of the arrangement; the others close up. The arrangement ends with
+    /// its last window.
+    private mutating func leaveGroup(_ id: Int) {
+        guard var group, group.contains(id) else { return }
+        self.group = group.remove(id) ? group : nil
+    }
 
     /// A window as `windowsToFill` judges it: its app class (nil until the computer says) and
     /// its smallest and largest content (the window below its title bar), in the work area's
@@ -90,6 +144,7 @@ public struct FreeDesktopLayout: Codable, Equatable, Sendable {
     /// Where the window belongs in `area`, if it has a place.
     public func frame(for id: Int, app: String?, in area: CGRect, minimum: CGSize = .zero) -> CGRect? {
         guard let place = place(for: id, app: app) else { return nil }
+        if let frame = group?.frames(in: area)[id] { return frame }
         if let snap = place.snap { return Self.rect(for: snap, in: area, minimum: minimum) }
         return Self.refit(place.preferred, from: place.area, to: area, minimum: minimum)
     }
@@ -99,6 +154,7 @@ public struct FreeDesktopLayout: Codable, Equatable, Sendable {
         clock += 1
         // Minimized only carries over from this window's own place, never another app's.
         let minimized = place(for: id, app: app)?.minimized
+        leaveGroup(id)
         places[id] = Place(preferred: frame, area: area, snap: nil, app: app?.lowercased(), minimized: minimized, touched: clock)
         trim()
     }
@@ -112,6 +168,8 @@ public struct FreeDesktopLayout: Codable, Equatable, Sendable {
         place.snap = snap
         place.touched = clock
         places[id] = place
+        // A snap of its own (full screen, or none) takes the window out of an arrangement.
+        leaveGroup(id)
         trim()
     }
 
@@ -120,9 +178,14 @@ public struct FreeDesktopLayout: Codable, Equatable, Sendable {
     public mutating func setMinimized(_ id: Int, _ minimized: Bool) {
         guard places[id] != nil, (places[id]?.minimized == true) != minimized else { return }
         places[id]?.minimized = minimized ? true : nil
+        // A minimized window's slot folds away until it comes back.
+        group?.setHidden(id, minimized)
     }
 
-    public mutating func remove(_ id: Int) { places[id] = nil }
+    public mutating func remove(_ id: Int) {
+        places[id] = nil
+        leaveGroup(id)
+    }
 
     /// The display server the windows come from. A new lifetime (the computer cold-booted,
     /// or its display restarted) numbers its windows afresh, so every place kept by id is
@@ -132,6 +195,7 @@ public struct FreeDesktopLayout: Codable, Equatable, Sendable {
     public mutating func enter(epoch: String?) {
         guard let epoch, epoch != self.epoch else { return }
         places.removeAll()
+        group = nil
         self.epoch = epoch
     }
 
@@ -139,12 +203,13 @@ public struct FreeDesktopLayout: Codable, Equatable, Sendable {
     /// announced them after connecting.
     public mutating func prune(keeping live: Set<Int>) {
         places = places.filter { live.contains($0.key) }
+        for id in group?.windows ?? [] where !live.contains(id) { leaveGroup(id) }
     }
 
     private mutating func trim() {
         guard places.count > Self.capacity else { return }
         let oldest = places.sorted { $0.value.touched < $1.value.touched }.prefix(places.count - Self.capacity)
-        for (id, _) in oldest { places[id] = nil }
+        for (id, _) in oldest { remove(id) }
     }
 
     // MARK: Geometry

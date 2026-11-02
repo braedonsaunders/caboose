@@ -5,8 +5,8 @@
 
 namespace caboose::gpuv2 {
 // Where an image presented to a surface of another size lands in the surface's image.
-// A window's overscan (the source is the destination lengthened along one axis, the
-// extra lying right of or below what the window shows) shows its top-left part unscaled.
+// A source lengthened along one axis past the destination (the extra lying right of
+// or below what the window shows) shows its top-left part unscaled.
 // Any other size, such as a game that keeps its own resolution in a window that has since
 // changed size, is scaled by the GPU's sampler to fit the destination with its aspect
 // ratio, centred; a fit within two pixels of the destination fills it. Destination pixels
@@ -25,10 +25,10 @@ struct PresentationPlacement {
 inline PresentationPlacement placePresentation(uint32_t sourceWidth, uint32_t sourceHeight,
                                                uint32_t width, uint32_t height) {
     PresentationPlacement placement;
-    const bool overscan = (sourceWidth == width && sourceHeight > height) ||
-                          (sourceHeight == height && sourceWidth > width);
+    const bool lengthened = (sourceWidth == width && sourceHeight > height) ||
+                            (sourceHeight == height && sourceWidth > width);
     if (!sourceWidth || !sourceHeight || !width || !height ||
-        (sourceWidth == width && sourceHeight == height) || overscan) {
+        (sourceWidth == width && sourceHeight == height) || lengthened) {
         placement.copyWidth = sourceWidth < width ? sourceWidth : width;
         placement.copyHeight = sourceHeight < height ? sourceHeight : height;
         return placement;

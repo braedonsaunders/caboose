@@ -50,7 +50,7 @@ sed 's@HOME=/home/agent@HOME=/root@' /tmp/desk-guest-agent.service > /etc/system
 cp /tmp/desk-vsock-bridge.service /etc/systemd/system/
 # Caboose Display: installed, not enabled. The host starts caboose-display.service (the
 # owner's display) at each wake and caboose-display-agent.service when an agent needs it.
-apt-get install -y --no-install-recommends xwayland libegl1 libgl1-mesa-dri libpixman-1-0 libxkbcommon0
+apt-get install -y --no-install-recommends xwayland libegl1 libgl1-mesa-dri libxkbcommon0
 install -m 0755 /tmp/caboose-display/caboose-display /tmp/caboose-display/caboose-display-probe /tmp/caboose-display/caboose-display-ready /usr/local/bin/
 install -m 0644 /tmp/caboose-display/caboose-display.service /tmp/caboose-display/caboose-display-agent.service /etc/systemd/system/
 # The Caboose VA-API driver (guest/vaapi), and /dev/udmabuf for its decode surfaces.

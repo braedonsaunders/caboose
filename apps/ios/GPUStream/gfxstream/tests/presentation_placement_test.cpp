@@ -10,7 +10,7 @@ int main() {
     auto same = placePresentation(1338, 911, 1338, 911);
     assert(same.kind == Kind::copy && same.copyWidth == 1338 && same.copyHeight == 911 && !same.clear);
 
-    // Overscan: lengthened along one axis, shown top-left and unscaled.
+    // Lengthened along one axis: shown top-left and unscaled.
     auto tall = placePresentation(1338, 1400, 1338, 911);
     assert(tall.kind == Kind::copy && tall.copyWidth == 1338 && tall.copyHeight == 911 && !tall.clear);
     auto wide = placePresentation(2000, 911, 1338, 911);
@@ -40,7 +40,7 @@ int main() {
     auto nearly = placePresentation(999, 700, 2000, 1400);
     assert(nearly.width == 2000 && nearly.height == 1400 && !nearly.clear);
 
-    // Larger in both directions (not an overscan): scaled down whole.
+    // Larger in both directions (not lengthened): scaled down whole.
     auto larger = placePresentation(2000, 1500, 1000, 700);
     assert(larger.kind == Kind::scale && larger.height == 700 && larger.width == 933);
     assert(larger.x == 33 && larger.clear);

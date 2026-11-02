@@ -21,10 +21,16 @@ N=${CABOOSE_NATIVE_ROOT:-$HOME/Library/Caches/caboose-native}
 export DEVELOPER_DIR=${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}  # the CLT linker rejects the iPhoneOS SDK
 mkdir -p "$N/src" "$OUT"
 
-# 1. MoltenVK 1.4.2 with persistent Metal pipeline binaries, and its pinned SPIRV-Cross with
-# the multi-plane padding patch. A provider built from other patches is rebuilt.
-PROVIDER_PATCHES=$(cat "$A/provider-patches/spirv-cross-multiplane-padding.patch" \
-  "$A/provider-patches/moltenvk-pipeline-binary-archive.patch" | shasum -a 256 | cut -d' ' -f1)
+# 1. MoltenVK 1.4.2 with persistent Metal pipeline binaries, event-set-at-execution,
+# encoder status, and MTLResidencySet registration, plus its pinned SPIRV-Cross with
+# the multi-plane padding and MSL reserved type-name patches.
+PROVIDER_PATCHES=$(cat \
+  "$A/provider-patches/spirv-cross-multiplane-padding.patch" \
+  "$A/provider-patches/spirv-cross-msl-type-names.patch" \
+  "$A/provider-patches/moltenvk-pipeline-binary-archive.patch" \
+  "$A/provider-patches/moltenvk-event-set-at-execution.patch" \
+  "$A/provider-patches/moltenvk-command-buffer-encoder-status.patch" \
+  "$A/provider-patches/moltenvk-residency-set.patch" | shasum -a 256 | cut -d' ' -f1)
 if [ "$(cat "$N/moltenvk/provider-patches.sha256" 2>/dev/null)" != "$PROVIDER_PATCHES" ]; then
   rm -rf "$N/moltenvk" "$N/src/moltenvk" "$N/src/spirv-cross"
 fi
@@ -32,11 +38,15 @@ if [ ! -f "$N/moltenvk/libMoltenVK-ios-arm64.a" ]; then
   if [ ! -d "$N/src/moltenvk" ]; then
     git clone -q --depth 1 --branch v1.4.2 https://github.com/KhronosGroup/MoltenVK.git "$N/src/moltenvk"
     git -C "$N/src/moltenvk" apply "$A/provider-patches/moltenvk-pipeline-binary-archive.patch"
+    git -C "$N/src/moltenvk" apply "$A/provider-patches/moltenvk-event-set-at-execution.patch"
+    git -C "$N/src/moltenvk" apply "$A/provider-patches/moltenvk-command-buffer-encoder-status.patch"
+    git -C "$N/src/moltenvk" apply "$A/provider-patches/moltenvk-residency-set.patch"
   fi
   if [ ! -d "$N/src/spirv-cross" ]; then
     git clone -q --filter=blob:none --no-checkout https://github.com/KhronosGroup/SPIRV-Cross.git "$N/src/spirv-cross"
     git -C "$N/src/spirv-cross" checkout -q "$(cat "$N/src/moltenvk/ExternalRevisions/SPIRV-Cross_repo_revision")"
     git -C "$N/src/spirv-cross" apply "$A/provider-patches/spirv-cross-multiplane-padding.patch"
+    git -C "$N/src/spirv-cross" apply "$A/provider-patches/spirv-cross-msl-type-names.patch"
   fi
   (cd "$N/src/moltenvk" &&
     ./fetchDependencies --ios --no-parallel-build --spirv-cross-root "$N/src/spirv-cross" &&

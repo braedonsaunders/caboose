@@ -1,0 +1,112 @@
+diff --git a/MoltenVK/MoltenVK/GPUObjects/MVKDescriptorSet.mm b/MoltenVK/MoltenVK/GPUObjects/MVKDescriptorSet.mm
+index 3cdc623..49561d5 100644
+--- a/MoltenVK/MoltenVK/GPUObjects/MVKDescriptorSet.mm
++++ b/MoltenVK/MoltenVK/GPUObjects/MVKDescriptorSet.mm
+@@ -2007,6 +2007,7 @@ MVKDescriptorPool* MVKDescriptorPool::Create(MVKDevice* device, const VkDescript
+ 			ret->_gpuBuffer = { static_cast<char*>(hostOnlyGPUBuffer), gpuSize };
+ 		} else @autoreleasepool {
+ 			ret->_gpuBufferObject = [device->getPhysicalDevice()->getMTLDevice() newBufferWithLength:gpuSize options:MTLResourceStorageModeShared];
++			device->makeResident(ret->_gpuBufferObject);
+ 			ret->_gpuBuffer = { static_cast<char*>([ret->_gpuBufferObject contents]), gpuSize };
+ 			if (argBufMode == MVKArgumentBufferMode::Metal3)
+ 				ret->_gpuBufferGPUAddress = ret->_gpuBufferObject.gpuAddress;
+@@ -2018,6 +2019,7 @@ MVKDescriptorPool* MVKDescriptorPool::Create(MVKDevice* device, const VkDescript
+ }
+ 
+ MVKDescriptorPool::~MVKDescriptorPool() {
++	if (_gpuBufferObject) { _device->removeResidency(_gpuBufferObject); }
+ 	[_gpuBufferObject release];
+ }
+ 
+diff --git a/MoltenVK/MoltenVK/GPUObjects/MVKDeviceMemory.mm b/MoltenVK/MoltenVK/GPUObjects/MVKDeviceMemory.mm
+index e6e7786..f5416da 100644
+--- a/MoltenVK/MoltenVK/GPUObjects/MVKDeviceMemory.mm
++++ b/MoltenVK/MoltenVK/GPUObjects/MVKDeviceMemory.mm
+@@ -228,6 +228,7 @@ bool MVKDeviceMemory::ensureMTLHeap() {
+ 	_mtlHeap = [getMTLDevice() newHeapWithDescriptor: heapDesc];	// retained
+ 	[heapDesc release];
+ 	if (!_mtlHeap) { return false; }
++	_device->makeResident(_mtlHeap);
+ 
+ 	propagateDebugName();
+ 
+@@ -380,8 +381,10 @@ MVKDeviceMemory::MVKDeviceMemory(MVKDevice* device,
+ 				_externalMemoryHandleType = pImportInfo->handleType;
+ 				// This handle type will only be exposed to the user if we actually are supporting heaps
+ 				if (pImportInfo->handleType & VK_EXTERNAL_MEMORY_HANDLE_TYPE_MTLHEAP_BIT_EXT) {
++					if (_mtlHeap) { _device->removeResidency(_mtlHeap); }
+ 					[_mtlHeap release];
+ 					_mtlHeap = [((id<MTLHeap>)pImportInfo->handle) retain];
++					_device->makeResident(_mtlHeap);
+ 					_mtlStorageMode = _mtlHeap.storageMode;
+ 					_mtlCPUCacheMode = _mtlHeap.cpuCacheMode;
+ 					_allocationSize = _mtlHeap.size;
+@@ -518,6 +521,7 @@ MVKDeviceMemory::~MVKDeviceMemory() {
+ 		[buf release];
+ 	}
+ 
++	if (_mtlHeap) { _device->removeResidency(_mtlHeap); }
+ 	[_mtlHeap release];
+ 	_mtlHeap = nil;
+ 
+diff --git a/MoltenVK/MoltenVK/GPUObjects/MVKImage.mm b/MoltenVK/MoltenVK/GPUObjects/MVKImage.mm
+index ef8ca60..51aeefc 100644
+--- a/MoltenVK/MoltenVK/GPUObjects/MVKImage.mm
++++ b/MoltenVK/MoltenVK/GPUObjects/MVKImage.mm
+@@ -101,7 +101,7 @@ id<MTLTexture> MVKImagePlane::getMTLTexture() {
+             tex = [_heapAllocation.heap
+                            newTextureWithDescriptor: mtlTexDesc
+                            offset: _heapAllocation.offset];
+-            if (_image->_isAliasable) { [_mtlTexture makeAliasable]; }
++            if (_image->_isAliasable || _image->_is2DViewOn3DImageCompatible || _image->_isBlockTexelViewCompatible) { [tex makeAliasable]; }
+         } else if (_image->_isAliasable && dvcMem && dvcMem->isDedicatedAllocation() &&
+             !mvkContains(dvcMem->_imageMemoryBindings, memoryBinding)) {
+             // This is a dedicated allocation, but it belongs to another aliasable image.
+@@ -136,7 +136,10 @@ id<MTLTexture> MVKImagePlane::getMTLTexture(MTLPixelFormat mtlPixFmt) {
+         mtlTex = _mtlTextureViews[mtlPixFmt];
+         if ( !mtlTex ) {
+             mtlTex = [baseTexture newTextureViewWithPixelFormat: mtlPixFmt];    // retained
+-            _image->_device->getLiveResources().add(mtlTex);
++            if (mtlTex.storageMode != MTLStorageModeMemoryless) {
++                _image->_device->makeResident(mtlTex);
++                _image->_device->getLiveResources().add(mtlTex);
++            }
+             _mtlTextureViews[mtlPixFmt] = mtlTex;
+         }
+     }
+@@ -154,6 +157,7 @@ void MVKImagePlane::releaseMTLTexture() {
+     }
+ 
+     for (auto& elem : _mtlTextureViews) {
++        dev->removeResidency(elem.second);
+         live.remove(elem.second);
+         [elem.second release];
+     }
+@@ -1928,7 +1932,10 @@ void MVKImageViewPlane::initializeMTLTexture(id<MTLTexture> mtlTexture) {
+     MVKAssert(mtlTexture, "Attempting to initialize an MVKImageViewPlane with a nil MTLTexture.");
+     if ( !mtlTexture ) { return; }
+ 
+-    getDevice()->getLiveResources().add(mtlTexture);
++    if (mtlTexture.storageMode != MTLStorageModeMemoryless) {
++        getDevice()->makeResident(mtlTexture);
++        getDevice()->getLiveResources().add(mtlTexture);
++    }
+     _mtlTexture = mtlTexture;
+ 
+     propagateDebugName();
+@@ -1995,6 +2002,7 @@ id<MTLTexture> MVKImageViewPlane::newMTLTextureFromBaseMTLTexture(id<MTLTexture>
+         aliasTex = [heapAllocation->heap
+                           newTextureWithDescriptor: mtlTexDesc
+                           offset: heapAllocation->offset + relativeAliasOffset];
++        [aliasTex makeAliasable];
+ 
+         [mtlTexDesc release]; // temp release
+ 
+@@ -2189,6 +2197,7 @@ VkResult MVKImageViewPlane::initSwizzledMTLPixelFormat(const VkImageViewCreateIn
+ 
+ void MVKImageViewPlane::releaseMTLTexture() {
+ 	if (id<MTLTexture> tex = _mtlTexture) {
++		getDevice()->removeResidency(tex);
+ 		getDevice()->getLiveResources().remove(tex);
+ 		[tex release];
+ 		_mtlTexture = nil;

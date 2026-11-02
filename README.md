@@ -217,7 +217,7 @@ loopback, so run it on a host you trust. The GPU container runtime for WSL2 and 
 | [`guest/image`](guest/image) | The golden machine image: Debian 13, Caboose Display, apps and agent runtimes |
 | [`guest/container`](guest/container) | The same computer as a GPU container, for WSL2 and Linux GPU hosts |
 | [`guest/display`](guest/display) | Caboose Display: the per-window display server, its protocol and golden vectors (Rust) |
-| [`guest/vaapi`](guest/vaapi) | The VA-API codec-passthrough driver that forwards apps' compressed video to the phone (C) |
+| [`guest/vaapi`](guest/vaapi) | The VA-API driver that sends apps' compressed video to the phone for decoding (C) |
 | [`guest/agentd`](guest/agentd) | `caboose-agentd`: the ACP client that runs any registry agent for a task |
 | [`guest/desktop-mcp`](guest/desktop-mcp) | GUI tools for agents on their own seat, and the accessibility helper behind `/v1/screen` |
 | [`guest/apps`](guest/apps) | `caboose-app`: apps agents make, web apps that run in their own window and appear in Apps |

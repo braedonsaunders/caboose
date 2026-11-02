@@ -255,5 +255,52 @@ int main() {
         assert(stream->connect("/tmp/caboose-socket-stream-absent/gpu") == -1 && errno == ENOENT);
         delete stream;
     }
+    // When the completion feed or a surface socket marks the executor lost before any
+    // encoder call touches `firstStream` (because lostCall() short-circuits every call
+    // during teardown), `stream->indexedHandshakeReady()` is still true. `reconnectEnded()`
+    // must still close the dead socket, reconnect to the returned executor, send clientFlags,
+    // and clear `executorLost`.
+    {
+        Broker broker(2, [](const Hello&) { return hello(0xF0); }, [](int fd, int index) {
+            if (index == 1) {
+                uint32_t clientFlags = 0xdeadbeef;
+                assert(readExactly(fd, &clientFlags, sizeof(clientFlags)) && clientFlags == 0);
+            }
+            Broker::echo(fd, index);
+        });
+        auto* stream = new CabooseSocketStream(1024);
+        assert(stream->connect(broker.path.c_str()) == 0);
+        assert(stream->indexedHandshakeReady() && !caboose::completion::executorLost.load());
+        // Simulate executor loss detected via the completion feed / surface socket while
+        // `stream->invalidate()` was never called because `lostCall()` intercepted teardown.
+        caboose::completion::markExecutorLost();
+        assert(caboose::completion::executorLost.load());
+        assert(caboose::completion::lostCall("vkDestroyDevice"));
+        assert(stream->indexedHandshakeReady());
+        // Now the compositor creates a new instance after the executor returns.
+        assert(CabooseSocketStream::reconnectEnded() == 0);
+        assert(!caboose::completion::executorLost.load());
+        assert(!caboose::completion::lostCall("vkCreateInstance"));
+        assert(stream->indexedHandshakeReady());
+        roundTrip(*stream);
+        delete stream;
+        assert(broker.offers.size() == 2);
+    }
+    // The executor leaves (last: it marks the process's executor lost). A reply reads as
+    // VK_ERROR_DEVICE_LOST in every word; a read sized by such a reply writes nothing.
+    {
+        Broker broker(1, [](const Hello&) { return hello(0x70); }, [](int, int) {});
+        auto* stream = new CabooseSocketStream(1024);
+        assert(stream->connect(broker.path.c_str()) == 0);
+        int32_t words[2] = {};
+        assert(stream->readFully(words, sizeof(words)) && words[0] == -4 && words[1] == -4);
+        unsigned char data[16];
+        std::memset(data, 0x5a, sizeof(data));
+        uint64_t size = 0;
+        std::memcpy(&size, words, sizeof(size));
+        assert(stream->readFully(data, static_cast<size_t>(size)) == data);
+        for (unsigned char byte : data) assert(byte == 0x5a);
+        delete stream;
+    }
     return 0;
 }

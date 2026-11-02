@@ -129,9 +129,28 @@ start_display() {
   local log="$CABOOSE_HOME/.cache/$name.log"
   # The redirect below is opened by this root shell, so the log must already be caboose's.
   touch "$log" && chown caboose:caboose "$log"
-  runuser -u caboose -- env HOME="$CABOOSE_HOME" XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" \
-    DBUS_SESSION_BUS_ADDRESS="unix:path=$bus" LD_LIBRARY_PATH="$libs" \
-    "${wrapper[@]}" setsid caboose-display --env-file "$envfile" "$@" >>"$log" 2>&1 < /dev/null &
+  # Supervised: a display that crashes is started again, so the computer never sits
+  # without one; one stopped on purpose (SIGTERM, exit 0) stays stopped.
+  (
+    delay=1
+    while :; do
+      started=$SECONDS
+      runuser -u caboose -- env HOME="$CABOOSE_HOME" XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" \
+        DBUS_SESSION_BUS_ADDRESS="unix:path=$bus" LD_LIBRARY_PATH="$libs" \
+        "${wrapper[@]}" setsid --wait caboose-display --env-file "$envfile" "$@" >>"$log" 2>&1 < /dev/null \
+        && status=0 || status=$?
+      [ "$status" -eq 0 ] && break
+      # A display that ran a while restarts at once; one failing at start backs off.
+      if [ $((SECONDS - started)) -ge 60 ]; then delay=1; fi
+      echo "caboose-session: $name exited with status $status; starting it again in ${delay}s" >>"$log"
+      sleep "$delay"
+      delay=$((delay < 30 ? delay * 2 : 30))
+      # The broker refuses the sockets the dead display left (see above).
+      if [[ " $* " == *" --private-gpu-stream-socket "* ]]; then
+        rm -f -- "$PHONE_GPU_DIR/gpu.sock" "$PHONE_GPU_DIR/surface.sock"
+      fi
+    done
+  ) </dev/null >/dev/null 2>&1 &
 }
 
 # A seat's notification endpoint: NAME BUS SCRIPT [ARGUMENT...].

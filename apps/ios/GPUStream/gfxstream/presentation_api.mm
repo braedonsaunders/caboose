@@ -667,7 +667,7 @@ extern "C" caboose_gpu_submit_result caboose_gpu_surface_present(
         s->lastSerial = p->present_serial;
         if (index < s->images.size()) {
             VkImage capture = reserveCapture(*s, *frame->source, frame->serial);
-            // A source of another size is placed by placePresentation: an overscan's top-left
+            // A source of another size is placed by placePresentation: a lengthened image's top-left
             // part, or the whole source scaled to fit the window.
             const VkExtent2D shown{s->bind.width, s->bind.height};
             r = submitPresentationCopy(*frame->source, s->images[index], frame->acquired,

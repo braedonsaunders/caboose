@@ -31,7 +31,8 @@ struct DesktopView: View {
                     }
                 }
                 // Where the window being dragged would snap if let go now.
-                if let preview = desktop.snapPreview {
+                // A snap's destination while dragging, or the free slot snap assist is offering.
+                if let preview = desktop.snapPreview ?? (desktop.menu.isOpen ? desktop.assistSlot : nil) {
                     ConcentricRectangle(cornerRadius: 12 * desktop.ui)
                         .fill(Color.accentColor.opacity(0.12))
                         .overlay { ConcentricRectangle(cornerRadius: 12 * desktop.ui).strokeBorder(Color.accentColor.opacity(0.7), lineWidth: 2) }

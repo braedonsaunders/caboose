@@ -1,7 +1,6 @@
 # Live GPU transport
 
-The live GPU source is separate from the GFXReconstruct capture protocol in
-[gpu-stream.md](gpu-stream.md). Its bounded codec is implemented in
+Its bounded codec is implemented in
 `guest/gpu/broker/live_protocol.py` and CabooseKit’s `LiveGPUEnvelope`, with byte-exact
 vectors in `live-vectors.json` and `live-surface-vectors.json`.
 Applications reach it through their launch environment, as [Applications](#applications)
@@ -730,7 +729,7 @@ failure reject trailing bytes.
 
 PRESENT requires nonzero serial/object handles/format/extents, actual `GENERAL`
 layout (1), and at most 64 distinct nonzero binary waits. An image whose extent
-differs from the bound surface's is placed in it: an overscan (the surface's extent
+differs from the bound surface's is placed in it: a lengthened image (the surface's extent
 lengthened along one axis) shows its top-left part, and any other size is scaled to fit
 the surface with its aspect ratio, centred; surface pixels it does not cover are black. Decoder ownership and
 synchronization checks remain necessary after structural parsing. Disposition is
@@ -846,7 +845,10 @@ phone waits for the acquire's fence on the CPU instead (not at all in mailbox, a
 50 ms in FIFO), reports a present whose image has not arrived as queued and released, and
 gives the acquired image to the next present once it has. The host relay logs why it ended any relay early (phone silence, a full
 queue, a socket error or an abnormal close), and each side may queue up to 2048 messages
-or 8 MiB before a peer that keeps sending past that is ended.
+or 8 MiB before a peer that keeps sending past that is ended. The phone stops reading its
+socket while its decoder has half of that queued (several applications connecting at once)
+and reads again below a quarter; the relay meanwhile holds the guest back, so a slow decoder
+never ends the executor.
 
 Native surface preparation, query, present and retirement run off main. Only
 layer attachment and detachment are asynchronously dispatched to main; main never

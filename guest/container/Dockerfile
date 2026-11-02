@@ -3,8 +3,7 @@ FROM debian:trixie-slim AS display
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl build-essential pkg-config clang libclang-dev \
-      libwayland-dev libxkbcommon-dev libudev-dev libpixman-1-dev \
-      libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libva-dev libdrm-dev libgbm-dev && \
+      libwayland-dev libxkbcommon-dev libudev-dev libavcodec-dev libavformat-dev libavutil-dev libva-dev libdrm-dev libgbm-dev && \
     rm -rf /var/lib/apt/lists/*
 ENV RUSTUP_HOME=/opt/rustup CARGO_HOME=/opt/cargo PATH=/opt/cargo/bin:$PATH
 RUN curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain 1.95.0
@@ -47,7 +46,7 @@ RUN printf 'deb https://deb.debian.org/debian trixie main contrib non-free non-f
       python3 python3-gi gir1.2-gtk-3.0 python3-pyatspi python3-websockets \
       libglib2.0-bin libglib2.0-dev-bin imagemagick ffmpeg at-spi2-core gsettings-desktop-schemas xfce4-settings \
       code nodejs sassc libxml2-utils qt5-gtk-platformtheme qt6-gtk-platformtheme \
-      libgl1-mesa-dri mesa-va-drivers mesa-utils vainfo libpixman-1-0 libxkbcommon0 \
+      libgl1-mesa-dri mesa-va-drivers mesa-utils vainfo libxkbcommon0 \
       ibus ibus-gtk3 ibus-gtk4 \
       pulseaudio pulseaudio-utils gstreamer1.0-plugins-good gstreamer1.0-pulseaudio gstreamer1.0-tools && \
     useradd -m -u 1000 -s /bin/bash caboose && usermod -aG sudo caboose && \

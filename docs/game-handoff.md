@@ -9,7 +9,7 @@ the game belongs to and where its files are; the client runs the game in a `WKWe
 into that window and streams the game's files from the computer. Rendering, sound and input
 stay on the device, and the computer does no per-frame work for the window.
 
-It is the compute counterpart of [codec passthrough](codec-passthrough.md). The pieces:
+The pieces:
 
 | Piece | Where |
 | --- | --- |

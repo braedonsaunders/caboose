@@ -16,7 +16,7 @@ namespace caboose::gpuv2 {
 // ring) receives a second copy of the source in the same submission.
 // A non-null `destinationExtent` is the destination's extent when it may differ from the
 // source's; `placePresentation` (presentation_placement.h) decides where the source lands:
-// an overscan's top-left part is copied, any other size is scaled to fit, and destination
+// a lengthened image's top-left part is copied, any other size is scaled to fit, and destination
 // pixels the source does not cover are cleared.
 VkResult submitPresentationCopy(gfxstream::host::vk::CaboosePresentationObjects& objects,
     VkImage destination, VkSemaphore acquired, VkSemaphore ready,
