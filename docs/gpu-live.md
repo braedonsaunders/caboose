@@ -1,7 +1,6 @@
 # Live GPU transport
 
-The live GPU source is separate from the GFXReconstruct capture protocol in
-[gpu-stream.md](gpu-stream.md). Its bounded codec is implemented in
+Its bounded codec is implemented in
 `guest/gpu/broker/live_protocol.py` and CabooseKit’s `LiveGPUEnvelope`, with byte-exact
 vectors in `live-vectors.json` and `live-surface-vectors.json`.
 Applications reach it through their launch environment, as [Applications](#applications)
