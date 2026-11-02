@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Stage the supervised broker, and with --driver the phone's Vulkan driver (with
+"""Stage the supervised broker and Mesa's driver for the vgem render node, and with --driver the phone's Vulkan driver (with
 --executor-switch and --routing-layer its implicit layers); starts nothing.
 
 The driver goes to /usr/local/lib/caboose-gpu-live with its loader manifest, icd.json,
@@ -59,6 +59,21 @@ ELF_MACHINES = {3: "i386", 62: "x86_64", 183: "aarch64"}
 # The broker's sockets for Flatpak applications, as caboose-session places them.
 FLATPAK_OVERRIDE = Path("var/lib/flatpak/overrides/global")
 SOCKET_FILESYSTEM = "xdg-run/caboose-gpu"
+# Mesa's driver for the vgem render node, Zink (docs/gpu-buffers.md), for the computer and
+# in each "host" GL extension for Flatpak applications.
+DRIRC = "caboose-vgem.conf"
+DRIRC_DIR = Path("usr/share/drirc.d")
+
+
+def drirc_configdir(triplet: str) -> str:
+    """DRIRC_CONFIGDIR for Flatpak applications: Mesa reads its configuration from these
+    directories in place of its own. The runtime's Mesa defaults and the host extension's
+    entry, at their sandbox paths and at Steam's container runtime's (pressure-vessel's),
+    where the sandbox's /usr is /run/parent/usr and the defaults keep their path; the
+    directories a process does not have are skipped."""
+    gl = f"/usr/lib/{triplet}/GL"
+    return ":".join((f"{gl}/default/share/drirc.d", f"{gl}/host/share/drirc.d",
+                     f"/run/parent{gl}/host/share/drirc.d"))
 
 
 def flatpak_extension(target: str) -> tuple:
@@ -101,6 +116,43 @@ def with_filesystem(keyfile: str, entry: str) -> str:
             return "\n".join(lines) + "\n"
     lines.insert(group + 1, f"filesystems={entry};")
     return "\n".join(lines) + "\n"
+
+
+def with_environment(keyfile: str, name: str, value: str) -> str:
+    """A Flatpak override keyfile with `name=value` in its [Environment] group."""
+    lines = keyfile.splitlines()
+    group = next((i for i, line in enumerate(lines) if line.strip() == "[Environment]"), None)
+    if group is None:
+        lines += (["[Environment]"] if not lines else ["", "[Environment]"]) + [f"{name}={value}"]
+        return "\n".join(lines) + "\n"
+    end = next((i for i in range(group + 1, len(lines)) if lines[i].startswith("[")), len(lines))
+    for i in range(group + 1, end):
+        if lines[i].partition("=")[0].strip() == name:
+            lines[i] = f"{name}={value}"
+            return "\n".join(lines) + "\n"
+    lines.insert(group + 1, f"{name}={value}")
+    return "\n".join(lines) + "\n"
+
+
+def install_drirc(data: bytes, destination: Path, machine: str = os.uname().machine):
+    """Installs the vgem driconf entry for the computer's Mesa and for every Flatpak
+    application's, in the host GL extensions of this machine's architectures."""
+    machine = {"arm64": "aarch64", "amd64": "x86_64"}.get(machine, machine)
+    if machine not in ("x86_64", "aarch64"):
+        raise ValueError(f"no driconf install target for {machine}")
+    targets = [machine] + (["i386"] if machine == "x86_64" else [])
+    directories = [destination / DRIRC_DIR] + [destination / flatpak_extension(t)[0] / "share/drirc.d" for t in targets]
+    for directory in directories:
+        if directory.is_symlink():
+            raise ValueError("driconf install directories must not be symlinks")
+        directory.mkdir(mode=0o755, parents=True, exist_ok=True)
+        write_atomically(directory / DRIRC, data, 0o644)
+    override = destination / FLATPAK_OVERRIDE
+    override.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+    current = override.read_text() if override.exists() else ""
+    updated = with_environment(current, "DRIRC_CONFIGDIR", drirc_configdir(TARGETS[machine][2]))
+    if updated != current:
+        write_atomically(override, updated.encode(), 0o644)
 
 
 def install_driver(library: Path, destination: Path, machine: str = os.uname().machine):
@@ -188,7 +240,7 @@ def install_layer(layer: str, library: Path, destination: Path, machine: str = o
                      layer_manifest(layer, sandbox / "lib" / file_name, suffix), 0o644)
 
 
-def install(source: Path, destination: Path):
+def install(source: Path, destination: Path, machine: str = os.uname().machine):
     libexec = destination / "usr/local/libexec"
     private = libexec / "caboose-gpu"
     files = [(source / "gfxstream" / name, private / name, 0o644) for name in MODULES]
@@ -200,11 +252,13 @@ def install(source: Path, destination: Path):
               (source / "caboose-gpu-broker-launcher", libexec / "caboose-gpu-broker", 0o755)]
     # Fail before modifying the install when a component was omitted from a bundle.
     contents = [(src.read_bytes(), dst, mode) for src, dst, mode in files]
+    drirc = (source / DRIRC).read_bytes()
     if private.is_symlink() or libexec.is_symlink():
         raise ValueError("broker install directories must not be symlinks")
     private.mkdir(mode=0o755, parents=True, exist_ok=True)
     for data, destination_file, mode in contents:
         write_atomically(destination_file, data, mode)
+    install_drirc(drirc, destination, machine)
 
 
 if __name__ == "__main__":

@@ -8,7 +8,8 @@ that live on the phone ([docs/gpu-buffers.md](../../docs/gpu-buffers.md)).
 | Path | What |
 | --- | --- |
 | `install.sh` | Installs the live GPU broker and, where present, the driver and its layers (runs `install-live.py`) |
-| `install-live.py`, `test_install_live.py` | Installs the live GPU broker, with `--driver` the phone's Vulkan driver, with `--executor-switch` and `--routing-layer` its layers, each 64-bit or i386 by the library ([docs/gpu-live.md](../../docs/gpu-live.md#applications)); its unit tests |
+| `caboose-vgem.conf` | Mesa's driver for the vgem render node, Zink, for the computer and Flatpak applications ([docs/gpu-buffers.md](../../docs/gpu-buffers.md#opengl-on-the-render-node)) |
+| `install-live.py`, `test_install_live.py` | Installs the live GPU broker and `caboose-vgem.conf`, with `--driver` the phone's Vulkan driver, with `--executor-switch` and `--routing-layer` its layers, each 64-bit or i386 by the library ([docs/gpu-live.md](../../docs/gpu-live.md#applications)); its unit tests |
 | `caboose-gpu-broker-launcher` | Runs the installed private broker modules |
 | `broker/` | The broker's transport and the live wire formats, with golden vectors ([README](broker/README.md)) |
 | `gfxstream/` | The phone's Vulkan driver (gfxstream's guest encoder) and its checks ([README](gfxstream/README.md)) |

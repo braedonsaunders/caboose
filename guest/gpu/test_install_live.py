@@ -87,6 +87,36 @@ class InstalledDriverTests(unittest.TestCase):
             installer.install_driver(library, base / "root", machine="x86_64")
             self.assertEqual(override.read_text().count("caboose-gpu"), 1, "installing again changes nothing")
 
+    def test_mesa_loads_zink_for_vgem_on_the_computer_and_in_every_flatpak_sandbox(self):
+        with tempfile.TemporaryDirectory(prefix="caboose-gpu-drirc-") as temporary:
+            root = Path(temporary) / "root"
+            override = root / "var/lib/flatpak/overrides/global"
+            override.parent.mkdir(parents=True)
+            override.write_text("[Context]\nfilesystems=xdg-run/caboose-gpu;\n")
+            data = (HERE / "caboose-vgem.conf").read_bytes()
+            self.assertIn(b'kernel_driver="vgem"', data)
+            self.assertIn(b'<option name="dri_driver" value="zink" />', data)
+            installer.install_drirc(data, root, machine="x86_64")
+            extensions = root / "var/lib/flatpak/extension"
+            for path in ("usr/share/drirc.d", "var/lib/flatpak/extension/org.freedesktop.Platform.GL.host/x86_64/1.4/share/drirc.d",
+                         "var/lib/flatpak/extension/org.freedesktop.Platform.GL32.host/x86_64/1.4/share/drirc.d"):
+                self.assertEqual((root / path / "caboose-vgem.conf").read_bytes(), data, path)
+            self.assertEqual(override.read_text(), "[Context]\nfilesystems=xdg-run/caboose-gpu;\n\n[Environment]\n"
+                             "DRIRC_CONFIGDIR=/usr/lib/x86_64-linux-gnu/GL/default/share/drirc.d"
+                             ":/usr/lib/x86_64-linux-gnu/GL/host/share/drirc.d"
+                             ":/run/parent/usr/lib/x86_64-linux-gnu/GL/host/share/drirc.d\n")
+            installer.install_drirc(data, root, machine="x86_64")
+            self.assertEqual(override.read_text().count("DRIRC_CONFIGDIR"), 1, "installing again changes nothing")
+            installer.install_drirc(data, root, machine="arm64")
+            self.assertTrue((extensions / "org.freedesktop.Platform.GL.host/aarch64/1.4/share/drirc.d/caboose-vgem.conf").is_file())
+            self.assertIn("DRIRC_CONFIGDIR=/usr/lib/aarch64-linux-gnu/GL/default", override.read_text())
+
+    def test_override_keyfiles_gain_environment_entries(self):
+        self.assertEqual(installer.with_environment("", "A", "1"), "[Environment]\nA=1\n")
+        self.assertEqual(installer.with_environment("[Context]\nx=1;\n", "A", "1"), "[Context]\nx=1;\n\n[Environment]\nA=1\n")
+        self.assertEqual(installer.with_environment("[Environment]\nA=0\nB=2\n", "A", "1"), "[Environment]\nA=1\nB=2\n")
+        self.assertEqual(installer.with_environment("[Environment]\nB=2\n[Context]\n", "A", "1"), "[Environment]\nA=1\nB=2\n[Context]\n")
+
     def test_override_keyfiles_gain_the_socket_directory(self):
         self.assertEqual(installer.with_filesystem("", "x"), "[Context]\nfilesystems=x;\n")
         self.assertEqual(installer.with_filesystem("[Environment]\nA=1\n", "x"), "[Environment]\nA=1\n\n[Context]\nfilesystems=x;\n")

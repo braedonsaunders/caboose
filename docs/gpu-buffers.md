@@ -102,9 +102,13 @@ copied on the registering process's queue.
 
 ## OpenGL on the render node
 
-Mesa has no DRI driver of its own for `vgem`. `/usr/share/drirc.d/caboose-vgem.conf`
-([guest/container](../guest/container/caboose-vgem.conf)) names Zink as the loader's driver for
-any device whose kernel driver is `vgem`, for every application. Zink then opens the Vulkan
+Mesa has no DRI driver of its own for `vgem`. `caboose-vgem.conf`
+([guest/gpu](../guest/gpu/caboose-vgem.conf)) names Zink as the loader's driver for any device
+whose kernel driver is `vgem`, for every application. `install-live.py` installs it in
+`/usr/share/drirc.d` for the computer's Mesa and in `share/drirc.d` of the Flatpak "host" GL
+extensions for every Flatpak application's; the system-wide Flatpak override sets
+`DRIRC_CONFIGDIR` to the runtime Mesa's own configuration and the extension's, at their
+sandbox paths and at the paths Steam's container runtime gives them. Zink then opens the Vulkan
 device whose `VK_EXT_physical_device_drm` names the node: the phone's GPU, through the
 driver. Without one (no phone attached) Zink finds no device for the node, and EGL and GLX
 fall back to Mesa's software platform, where Zink renders on the CPU device and frames reach

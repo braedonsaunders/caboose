@@ -13,7 +13,6 @@ vendor), an NVIDIA GPU on Linux through the NVIDIA container toolkit, and Linux 
 | --- | --- |
 | `Dockerfile` | The image. Its first stages compile Caboose Display, the Caboose VA-API driver, the GBM backend and Xwayland with DRI3 on the render node and touchpad finger scrolling (`guest/xwayland`); the last installs Debian packages, `guest/image/apps.sh` and the guest components. Built with `guest/` as the context. |
 | `caboose-session` | The session script the host runs with `docker exec` (installed as `/usr/local/bin/caboose-session`). |
-| `caboose-vgem.conf` | Mesa's driver for the vgem render node: Zink (installed in `/usr/share/drirc.d`; [gpu-buffers.md](../../docs/gpu-buffers.md#opengl-on-the-render-node)). |
 | `caboose-seccomp.json` | The seccomp profile the host gives each container, so Chromium's and Flatpak's sandboxes can start. |
 | `check.sh` | A check for a running computer's encoders and sound. |
 

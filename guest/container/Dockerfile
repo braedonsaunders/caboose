@@ -95,7 +95,6 @@ RUN triplet=$(dpkg --print-architecture) && \
     case "$triplet" in amd64) triplet=x86_64-linux-gnu ;; arm64) triplet=aarch64-linux-gnu ;; *) exit 1 ;; esac && \
     install -D -m 0644 /tmp/caboose_drv_video.so "/usr/lib/$triplet/dri/caboose_drv_video.so" && rm /tmp/caboose_drv_video.so && \
     install -D -m 0644 /tmp/vgem_gbm.so "/usr/lib/$triplet/gbm/vgem_gbm.so" && rm /tmp/vgem_gbm.so
-COPY container/caboose-vgem.conf /usr/share/drirc.d/caboose-vgem.conf
 COPY --from=xwayland /out/xwayland /tmp/xwayland
 RUN dpkg -i /tmp/xwayland/xwayland_*.deb && apt-mark hold xwayland && rm -rf /tmp/xwayland
 COPY display/caboose-display-ready /usr/local/bin/caboose-display-ready

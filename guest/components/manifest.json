@@ -81,6 +81,7 @@
   "game/games/platformer-3d/godot-COPYRIGHT.txt",
   "gpu/install.sh",
   "gpu/install-live.py",
+  "gpu/caboose-vgem.conf",
   "gpu/caboose-gpu-broker-launcher",
   "gpu/gfxstream/caboose-gpu-broker",
   "gpu/broker/live_protocol.py",

@@ -1108,7 +1108,8 @@ runtime), whose Vulkan manifest the sandbox's loader finds among its runtime's d
 and the i386 builds as `org.freedesktop.Platform.GL32.host`, for the runtime's 32-bit
 compatibility libraries,
 and adds `xdg-run/caboose-gpu`, the broker's socket directory, to the system-wide Flatpak
-override. The launch environment's variables pass into the sandbox unchanged;
+override. Mesa in the sandbox opens the render node with Zink as Mesa on the computer does
+([gpu-buffers.md](gpu-buffers.md#opengl-on-the-render-node)). The launch environment's variables pass into the sandbox unchanged;
 `PRESSURE_VESSEL_FILESYSTEMS_RW` names the socket directory to Steam's container runtime,
 which shares no other part of the runtime directory with games.
 
