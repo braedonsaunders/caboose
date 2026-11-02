@@ -23,6 +23,7 @@ mod ibus;
 mod ibus_portal;
 mod input;
 mod keymap;
+mod last_displays;
 mod launch;
 mod net;
 mod pencil;
@@ -542,17 +543,16 @@ fn run(config: Config) -> Result<(), String> {
 
     let spec = &config.display;
     let mut displays = displays::Displays::default();
-    displays.replace(
-        &dh,
-        &[caboose_display_protocol::Display {
-            id: 0,
-            width: spec.width,
-            height: spec.height,
-            scale: spec.scale,
-            refresh_hz: spec.refresh_hz,
-            hdr: false,
-        }],
-    );
+    // The phone's last displays when it has announced any, else `--display`.
+    let initial = last_displays::load(&config.socket).unwrap_or_else(|| vec![caboose_display_protocol::Display {
+        id: 0,
+        width: spec.width,
+        height: spec.height,
+        scale: spec.scale,
+        refresh_hz: spec.refresh_hz,
+        hdr: false,
+    }]);
+    displays.replace(&dh, &initial);
 
     let x_display = config.x_display;
     let mut state = State {

@@ -297,7 +297,7 @@ summary.
 | `--audio-bitrate BPS` | `128000` | Opus bitrate |
 | `--env-file PATH` | | Where to write the application environment once ready |
 | `--client-timeout SECS` | `30` | Close a client that has sent nothing for this long; `0` never |
-| `--display WxH@HZxS` | `1920x1080@60x1` | The display used before a client connects |
+| `--display WxH@HZxS` | `1920x1080@60x1` | The display used before a client connects, when no client has announced displays before (the last announced are kept in `~/.local/state/caboose/<socket>.displays` and used at the next start) |
 
 | Variable | Effect |
 | --- | --- |

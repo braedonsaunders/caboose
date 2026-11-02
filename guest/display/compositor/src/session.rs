@@ -343,11 +343,15 @@ impl State {
     }
 
     pub fn set_displays(&mut self, displays: &[proto::Display]) {
+        for d in displays {
+            tracing::info!("phone display {} {}x{} scale {}", d.id, d.width, d.height, d.scale);
+        }
         let owner_displays: HashSet<u32> = displays
             .iter()
             .filter(|d| d.width > 0 && d.height > 0 && d.scale.is_finite() && d.scale > 0.0)
             .map(|d| d.id)
             .collect();
+        crate::last_displays::save(&self.config.socket, displays);
         if let Some(session) = self.session.as_mut() {
             session.owner_displays = owner_displays.clone();
         }
