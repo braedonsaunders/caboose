@@ -24,6 +24,8 @@ import { ParkedFilesJournal } from './parked-files-journal.js'
 import { ParkedFilesController, type ParkedFilesHooks } from './parked-files-controller.js'
 import { ParkedFilesStore } from './parked-files-store.js'
 import { stageParkedDisk } from './parked-files-clone.js'
+import type { BootReport } from './boot.js'
+import { LEGACY_COMPUTER } from './computers.js'
 
 /** Verify the Files service through vsock before choosing it for this guest. */
 export async function probeServiceVsock(desk: DeskHandle, timeoutMs = 2_000): Promise<boolean> {
@@ -58,7 +60,8 @@ export interface ComputerResources { memoryMb: number; vcpus: number }
 /** Which computer a controller drives: its id names its disk, and its slot its network. */
 export interface ComputerIdentity { id: string; slot: number }
 
-const OWNER: ComputerIdentity = { id: 'owner', slot: 0 }
+/** A controller made without an identity (tests) drives the legacy computer's disk and network. */
+const LEGACY: ComputerIdentity = { id: LEGACY_COMPUTER, slot: 0 }
 const APPKIT_LEASE_MS = 90_000
 /** Snapshots record the host CPU they were taken on; tests off Linux supply the signature. */
 type SnapshotSignature = Pick<DeskHostOptions, 'cpuSignature' | 'readSnapshotSignature' | 'writeSnapshotSignature'>
@@ -127,9 +130,11 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
   depotPath?: string
   /** Enable only when a compatible parked Files reader is installed. */
   parkedFilesEnabled?: boolean
+  progress?: BootReport
 } = {}): Controller {
   const nativeMac = usesVirtualization(dependencies)
-  const { id, slot } = dependencies.identity ?? OWNER
+  const { id, slot } = dependencies.identity ?? LEGACY
+  const progress: BootReport = dependencies.progress ?? (() => {})
   const address = networkSlot(slot)
   const host = dependencies.desks ?? createDeskPool(config, dependencies)
   // AppKit 0.9 provides resident pause. Older installs and other backends keep the existing
@@ -307,6 +312,7 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
       ])
       await mkdir(join(config.imageRoot, 'overlays'), { recursive: true })
       await mkdir(join(config.imageRoot, 'runtime'), { recursive: true })
+      progress('network')
       if (!nativeMac) await (dependencies.network ?? (() => ensureNetwork(slot)))()
       const restoring = existsSync(snapshotPath)
       ownerScopeAvailable = undefined
@@ -331,6 +337,7 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
         templateOptions = templateFork({ directory: join(templates, sourceId), childDirectory: paths.directory, deskId: id, slot,
           baseImage: base, kernel, initramfs, vmmPath: config.vmmPath, memoryMb: desired.memoryMb, vcpus: desired.vcpus, freePageReporting: config.vmFreePageReporting, attachments })
       }
+      progress('start')
       const mac = [6, 0, (slot >>> 24) & 255, (slot >>> 16) & 255, (slot >>> 8) & 255, slot & 255].map(value => value.toString(16).padStart(2, '0')).join(':')
       desk = await host.start({ deskId: id, baseImage: join(imageDirectory, 'base.raw'), overlayPath,
         ...(dependencies.depotPath ? { shares: [{ tag: 'caboose-depot', path: dependencies.depotPath, readOnly: true }] } : {}),
@@ -375,7 +382,7 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
         }
         displayToken = randomBytes(32).toString('hex')
         await command('/bin/sh', ['-c', WRITE_TOKEN_SCRIPT, 'sh', displayToken])
-        if (mode === 'interactive') await ownerDisplay()
+        if (mode === 'interactive') { progress('display'); await ownerDisplay() }
         if (!nativeMac) void pulseKsmMergeBoost().catch(() => {})
         clearHeartbeat()
         heartbeat = setInterval(() => {

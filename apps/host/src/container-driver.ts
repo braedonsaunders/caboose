@@ -27,15 +27,18 @@ import { TERMINAL_PORT } from './terminal.js'
 import { AI_PORT } from './ai.js'
 import { AGENT_DISPLAY_PORT, DISPLAY_ENV_PATH, OWNER_DISPLAY_PORT, WRITE_TOKEN_SCRIPT, parseEnvFile } from './display.js'
 import { pulseKsmMergeBoost, reclaimCgroupMemory } from './ksm.js'
+import type { BootReport } from './boot.js'
+import { LEGACY_COMPUTER } from './computers.js'
 
-/** The owner computer's own Docker network, so its bridge interface has a known name to fence. */
+/** The legacy computer's Docker network (slot 0), so its bridge interface has a known name to fence. */
 export const CONTAINER_NETWORK = 'caboose'
 export const CONTAINER_BRIDGE = 'caboose-br0'
 const FILES_PORT = 14700
 
 /**
- * Where a container computer lives on the host. Slot 0 is the owner's computer and keeps the
- * names and loopback ports a host had before it ran several. Every other computer gets its own
+ * Where a container computer lives on the host. Slot 0 is the legacy computer of a host from
+ * before computers were equal, and keeps the container name (`CABOOSE_CONTAINER_NAME`), home
+ * and loopback ports it had then; no new computer gets slot 0. Every other computer gets its own
  * container, home volume and bridge network (Docker isolates bridge networks from each other),
  * and legacy loopback ports from 20000 + 10 × slot for slots 1–63. Later slots use Docker-assigned ports.
  */
@@ -240,9 +243,10 @@ export function phoneGpuArgs(kind: GpuKind, exists: (path: string) => boolean = 
   return [...userfaultfd, ...vgem]
 }
 
-export function createContainerController(config: Config, dependencies: { docker?: Docker; dockerInput?: DockerInput; exists?: (path: string) => boolean; drm?: () => DrmNode[]; settings?: () => ComputerSettings; fence?: (device: string) => Promise<void>; unfence?: (device: string) => Promise<void>; allowCompanion?: typeof allowCompanion; spec?: () => ContainerSpec; privileged?: (command: string, args: string[]) => Promise<string>; identity?: ComputerIdentity; pads?: Pick<HostPads, 'start' | 'stop'> } = {}): Controller {
+export function createContainerController(config: Config, dependencies: { docker?: Docker; dockerInput?: DockerInput; exists?: (path: string) => boolean; drm?: () => DrmNode[]; settings?: () => ComputerSettings; fence?: (device: string) => Promise<void>; unfence?: (device: string) => Promise<void>; allowCompanion?: typeof allowCompanion; spec?: () => ContainerSpec; privileged?: (command: string, args: string[]) => Promise<string>; identity?: ComputerIdentity; pads?: Pick<HostPads, 'start' | 'stop'>; progress?: BootReport } = {}): Controller {
   const docker = dependencies.docker ?? dockerCli()
-  const place = containerPlacement(config, dependencies.identity ?? { id: 'owner', slot: 0 })
+  const place = containerPlacement(config, dependencies.identity ?? { id: LEGACY_COMPUTER, slot: 0 })
+  const progress: BootReport = dependencies.progress ?? (() => {})
   const settings = (): ComputerSettings => dependencies.settings?.() ?? { name: 'Caboose', memoryMb: config.memoryMb, vcpus: config.vcpus, idleMs: config.idleMs, defaultAgent: null }
   const spec = (): ContainerSpec => dependencies.spec?.() ?? {}
   /** The computer's own device on the owner's tailnet (tailnet.ts), unless the host turns it off. */
@@ -460,9 +464,11 @@ export function createContainerController(config: Config, dependencies: { docker
     hasSavedState: () => resources !== null,
     lastError: () => lastError,
     async wake(mode = 'interactive'): Promise<Session> {
+      progress('network')
       await ensureNetwork()
       const current = await state()
       if (current === 'missing') {
+        progress('disk')
         const desired = settings()
         resources = { memoryMb: desired.memoryMb, vcpus: desired.vcpus }
         if (dependencies.identity && dependencies.identity.slot >= 64) {
@@ -482,11 +488,13 @@ export function createContainerController(config: Config, dependencies: { docker
           })
         } else await docker(runArgs(resources), 300_000)
       } else {
+        progress('start')
         resources ??= await createdWith()
         if (current === 'stopped') await docker(['start', name], 120_000)
         else if (current === 'paused') await docker(['unpause', name], 60_000)
       }
       running = true
+      progress('start')
       try {
         if (dependencies.identity && dependencies.identity.slot >= 64) {
           for (const [key, port] of ([['files', FILES_PORT], ['terminal', TERMINAL_PORT], ['display', OWNER_DISPLAY_PORT], ['agent', AGENT_DISPLAY_PORT]] as const)) {
@@ -508,7 +516,7 @@ export function createContainerController(config: Config, dependencies: { docker
           await exec('root', '/bin/sh', ['-c', WRITE_TOKEN_SCRIPT, 'sh', displayToken])
         }
         await ensureWritableCgroups()
-        if (mode === 'interactive') await ownerDisplay()
+        if (mode === 'interactive') { progress('display'); await ownerDisplay() }
         void networkTask(() => Promise.all([tailnet?.ensure(), lan?.ensure()]))
         void pulseKsmMergeBoost().catch(() => {})
         return session()
