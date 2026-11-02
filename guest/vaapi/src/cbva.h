@@ -73,6 +73,7 @@ typedef struct {
     unsigned count, elem_size;
     uint8_t *data;    /* the slice data buffer they index */
     size_t data_size;
+    int shared;       /* `data` belongs to an earlier slice */
 } cb_slice;
 
 typedef struct {

@@ -690,7 +690,8 @@ static void picture_clear(cb_picture *p)
     free(p->iq);
     for (unsigned i = 0; i < p->nslices; i++) {
         free(p->slices[i].params);
-        free(p->slices[i].data);
+        if (!p->slices[i].shared)
+            free(p->slices[i].data);
     }
     p->pp = p->iq = NULL;
     p->pp_size = p->iq_size = 0;
@@ -956,6 +957,17 @@ static VAStatus end_picture(VADriverContextP ctx, VAContextID id)
     cb_picture *p = &c->pic;
     cb_surface *s = cb_get_surface(d, p->target);
     VAStatus st = VA_STATUS_SUCCESS;
+    /* Several parameter buffers may index one data buffer: Chromium's AV1 sends the
+     * frame's data once, then a parameter buffer per tile. A parameter buffer left
+     * without data indexes the data buffer sent before it. */
+    for (unsigned i = 1; i < p->nslices; i++) {
+        cb_slice *sl = &p->slices[i], *prev = &p->slices[i - 1];
+        if (!sl->data && sl->params && prev->data) {
+            sl->data = prev->data;
+            sl->data_size = prev->data_size;
+            sl->shared = 1;
+        }
+    }
     for (unsigned i = 0; i < p->nslices; i++)
         if (!p->slices[i].data || !p->slices[i].params)
             st = VA_STATUS_ERROR_INVALID_BUFFER;
