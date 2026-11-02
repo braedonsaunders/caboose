@@ -1,0 +1,37 @@
+# Synchronization check
+
+`sync_check.c` runs the driver's synchronization paths against a real phone executor and
+times them. It needs a computer whose broker has a phone attached (the broker's socket,
+`$XDG_RUNTIME_DIR/caboose-gpu/gpu.sock`, exists) and the driver under test.
+
+Build it on any x86-64 Linux host with Vulkan headers and the loader:
+
+```sh
+cc -std=c11 -O2 -Wall -Wextra -Wno-missing-field-initializers -Werror \
+    -I/path/to/vulkan/include guest/gpu/gfxstream/driver/sync-check/sync_check.c \
+    -o sync_check -lvulkan
+```
+
+Run it on the computer as the seat user with the seat's environment, selecting the driver
+under test through a loader manifest (`../../make_manifest.py`) and no layers:
+
+```sh
+set -a; . /run/caboose/display.env; set +a
+VK_DRIVER_FILES=/path/to/manifest.json VK_LOADER_LAYERS_DISABLE='*' ./sync_check [CASE]
+```
+
+`CASE` runs only the cases whose names contain it. Each case prints one
+`CABOOSE_SYNC_CHECK case=… PASS|FAIL …` line; the exit status is 1 when a case fails and 2
+when the device cannot be set up. A full run takes about fifteen seconds.
+
+| Case | What it does | Passes when |
+| --- | --- | --- |
+| `event_set2_timeline` | 60 times: a host `vkResetEvent`, a command buffer that sets the event with `vkCmdSetEvent2` in a `vkQueueSubmit2` batch that signals a timeline (DXVK's D3D11 event query), then `vkGetEventStatus` until set | every event reads as set within 3 s and a poll takes under 200 µs on average (answered on the computer, not by the phone) |
+| `event_set2_unsignalled` | The same in a batch that signals nothing | as above |
+| `event_set1_fence` | `vkCmdSetEvent` in a `vkQueueSubmit` batch with a fence | as above |
+| `query_timestamp`, `query_occlusion` | 60 times: a host `vkResetQueryPool`, a command buffer that writes a timestamp or ends an occlusion query, then `vkGetQueryPoolResults` without `WAIT` until available | every result arrives within 3 s |
+| `free_after_wait` | 24 times: a 64 MiB buffer filled by the GPU and waited for, then destroyed and its memory freed while a second batch runs on other memory | the device is never lost |
+| `call_*` | 40 each of `vkAllocateDescriptorSets`, `vkCreateBufferView`, `vkBindImageMemory2`, `vkBindBufferMemory2` and `vkGetImageMemoryRequirements2` for an image shape already asked about; one batch then fills the bound buffers, so a failed bind shows as device loss | the mean is under a millisecond: the call did not wait for the phone |
+
+It also prints the mean time of `vkGetImageMemoryRequirements2` for a new image shape,
+which asks the phone once.
