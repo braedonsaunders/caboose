@@ -104,6 +104,13 @@ received from the guest (`presented`, with ordered presents also counted as
 interval between presents (`gap_max_ms`) and between results (`result_gap_max_ms`)
 in that window, so a hitch is visible on either side of the phone.
 
+Always, every five seconds while a surface presents, the broker prints
+`CABOOSE_GPU_SURFACE_STATS surface=N elapsed_ms=… fps=… presented=… results=… released=…
+gap_max_ms=… to_phone_bytes=… from_phone_bytes=…`: the surface's presents per second, the
+present results and source releases the phone returned, the longest gap between presents,
+and the bytes its process sent to and received from the phone in that window. `N` numbers
+the surfaces of the session; lines carry no payloads, handles or identities.
+
 For [frame lab](../../framelab/README.md) the broker also writes a present timeline,
 without the bounds above, while `CABOOSE_PRIVATE_GPU_PRESENT_TRACE=1` is set or while the
 file `$XDG_RUNTIME_DIR/caboose-gpu-present-trace` exists (looked at once a second, so a

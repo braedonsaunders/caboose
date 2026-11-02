@@ -116,6 +116,29 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
             session.surface_progress('received_from_guest', Kind.SWAPCHAIN_PRESENT_ORDERED)
             rate.assert_called_once_with('received_from_guest', int(Kind.SWAPCHAIN_PRESENT_ORDERED))
 
+    def test_surface_stats_report_fps_and_bytes_every_five_seconds_without_opt_in(self):
+        owner = {'to_phone': 1000, 'from_phone': 50}
+        stats = broker.SurfaceStats(2, owner)
+        with mock.patch.dict(os.environ, {}, clear=True), mock.patch('builtins.print') as output:
+            stats.event('present', 0)
+            owner['to_phone'] += 4000
+            stats.event('result', 100_000_000)
+            stats.event('present', 200_000_000)
+            stats.event('released', 300_000_000)
+            stats.event('present', 2_700_000_000)
+            output.assert_not_called()
+            owner['from_phone'] += 700
+            stats.event('result', 5_000_000_000)
+            line = output.call_args.args[0]
+            self.assertEqual(line, 'CABOOSE_GPU_SURFACE_STATS surface=2 elapsed_ms=5000 fps=0.6 presented=3 '
+                                   'results=2 released=1 gap_max_ms=2500 to_phone_bytes=4000 from_phone_bytes=700')
+            # The next window counts afresh.
+            stats.event('present', 6_000_000_000)
+            stats.event('present', 10_000_000_000)
+            line = output.call_args.args[0]
+            self.assertIn('elapsed_ms=5000 fps=0.4 presented=2 results=0 released=0 gap_max_ms=4000 '
+                          'to_phone_bytes=0 from_phone_bytes=0', line)
+
     def test_present_trace_follows_its_flag_file_and_reports_presents_and_bytes(self):
         with tempfile.TemporaryDirectory() as runtime:
             trace = broker.PresentTrace({'XDG_RUNTIME_DIR': runtime})

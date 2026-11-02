@@ -377,6 +377,45 @@ def write_usage(path, record):
     os.replace(temporary, path)
 
 
+class SurfaceStats:
+    """Always on: every 5 s while a surface presents, one CABOOSE_GPU_SURFACE_STATS line with
+    its presents per second, present results and source releases from the phone, the longest
+    gap between presents, and the bytes its process sent to and received from the phone in
+    that window. Counters only; no payloads, handles or identities."""
+    INTERVAL_NS = 5_000_000_000
+
+    def __init__(self, ordinal, owner):
+        self.ordinal, self.owner = ordinal, owner
+        self.start = None
+
+    def restart(self, now):
+        self.start = now
+        self.presented = self.results = self.released = self.gap_max = 0
+        self.to_phone, self.from_phone = self.owner.get('to_phone', 0), self.owner.get('from_phone', 0)
+
+    def event(self, kind, now=None):
+        now = time.monotonic_ns() if now is None else now
+        if self.start is None:
+            self.restart(now)
+            self.last = None
+        if kind == 'present':
+            self.presented += 1
+            if self.last is not None: self.gap_max = max(self.gap_max, now - self.last)
+            self.last = now
+        elif kind == 'result': self.results += 1
+        elif kind == 'released': self.released += 1
+        elapsed = now - self.start
+        if elapsed < self.INTERVAL_NS: return
+        to_phone = self.owner.get('to_phone', 0) - self.to_phone
+        from_phone = self.owner.get('from_phone', 0) - self.from_phone
+        with contextlib.suppress(OSError):
+            print(f'CABOOSE_GPU_SURFACE_STATS surface={self.ordinal} elapsed_ms={elapsed // 1_000_000} '
+                  f'fps={self.presented * 1_000_000_000 / elapsed:.1f} presented={self.presented} '
+                  f'results={self.results} released={self.released} gap_max_ms={self.gap_max // 1_000_000} '
+                  f'to_phone_bytes={to_phone} from_phone_bytes={from_phone}', file=sys.stderr, flush=True)
+        self.restart(now)
+
+
 class Session:
     def __init__(self, broker, executor, generation, reader, writer, indexed=False, features=frozenset()):
         self.broker, self.executor, self.generation = broker, executor, generation
@@ -436,6 +475,7 @@ class Session:
         self.sender_stopped = False
         self.processes, self.streams, self.surfaces = {}, {}, {}
         self.surface_epoch = None
+        self.surface_count = 0  # surfaces bound in this session, numbering their stats lines
         self.session_ready = asyncio.Event()
         self.revoked = asyncio.Event()
         self.revoking = False
@@ -863,6 +903,7 @@ class Session:
                     if pending['release']: raise ValueError('duplicate source release')
                     pending['release'] = True
                     self.frame_timing.event(pending, 'release')
+                    if surface.get('stats') is not None: surface['stats'].event('released')
                 else:
                     disposition, event = struct.unpack_from('<II', frame.payload, 64)
                     if event == 0:
@@ -870,6 +911,7 @@ class Session:
                         if disposition == 0 and pending['release']: raise ValueError('rejected source was released')
                         pending['result'] = True
                         self.frame_timing.event(pending, 'result')
+                        if surface.get('stats') is not None: surface['stats'].event('result')
                         if disposition == 0:
                             if pending.get('swap') is not None:
                                 swap = surface['indexed'].swaps.get(pending['swap'])
@@ -1414,10 +1456,12 @@ class Broker:
                 self.closing.set()
                 raise ValueError('duplicate surface grant')
             session.surface_epoch = result.epoch
+            session.surface_count += 1
             session.surfaces[key] = {
                 'process': process_id, 'window': result.window,
                 'retiring': False, 'retire_sent': False, 'revoke_requested': False,
-                'bind_sent': False, 'disconnected': False, 'retired': asyncio.Event()
+                'bind_sent': False, 'disconnected': False, 'retired': asyncio.Event(),
+                'stats': SurfaceStats(session.surface_count, session.processes[process_id])
             }
             session.processes[process_id]['surfaces'].add(key)
             return result
@@ -1559,6 +1603,7 @@ class Broker:
                         raise ValueError('invalid present state')
                     surface['last_present'] = serial
                     surface['presents'][serial] = {'result': False, 'release': False, 'terminal': False}
+                    surface['stats'].event('present')
                     session.send(Kind.PRESENT, process_id, payload=identity + body)
                 elif kind in (25, 27, 29, 31, 32, 34, 39):
                     if not session.indexed_enabled or not surface['bound']:
@@ -1572,6 +1617,7 @@ class Broker:
                             raise ValueError('invalid indexed present serial')
                         surface['last_present'] = serial
                         surface['presents'][serial] = {'result': False, 'release': False, 'terminal': False, 'swap': swap, 'index': index}
+                        surface['stats'].event('present')
                     surface['indexed'].send(kind, body)
                     if kind in (34, 39):
                         session.frame_timing.begin(surface, surface['presents'][serial])
