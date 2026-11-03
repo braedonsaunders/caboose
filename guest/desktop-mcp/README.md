@@ -48,6 +48,13 @@ page declares, and tools derived from its forms, links and buttons, marked `[der
 `name(param: type, …) — description`, and the step `{"tool": name, "args": {...}}` calls one
 and returns its result; see [guest/webmcp](../webmcp/README.md).
 
+**Routines.** `act` with `save: name`, once a task is done, keeps the steps that worked since
+the last save as a routine of the focused application, each control by role and name and each
+text as a parameter, in `$XDG_STATE_HOME/caboose/routines.json` of the agent profile. `look`
+lists an application's routines first, with their step count, an estimate of their time and the
+texts they used; the step `{"run": name, "texts": [...]}` replays one against the window as it
+is, finding each control again by role and name.
+
 A failure comes back as a sentence the model can act on; an id that no longer resolves says
 to look again. The server's `initialize` reply carries one line of `instructions`.
 `CABOOSE_DESKTOP_TRACE=FILE` appends one JSON line per tool call (`tool`, `ms`, reply
