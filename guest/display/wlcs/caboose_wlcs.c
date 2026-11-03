@@ -336,7 +336,7 @@ static void caboose_position_window_absolute(WlcsDisplayServer *base, struct wl_
                     long window = field(item, "id");
                     free(answer);
                     char reply[256];
-                    if (control(s, reply, sizeof reply, "place %ld %d %d surface", window, x, y) != 0)
+                    if (control(s, reply, sizeof reply, "place %ld %d %d", window, x, y) != 0)
                         fprintf(stderr, "caboose-wlcs: place failed: %s", reply);
                     return;
                 }

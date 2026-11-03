@@ -300,6 +300,10 @@ gesture's centre when it began, which keeps the gesture for its whole life; Xway
 receives them as XInput 2.4 gestures. The delivery is general: no application, window
 or content is treated specially.
 
+Pointer and touch hit testing respects the committed input regions of the window’s
+surface tree. A point outside every input region has no surface focus; an active
+pointer grab retains delivery while dragging outside the region.
+
 ### Scrolling input
 
 A `pointer` message's `scroll` is in the window's pixels when `precise` (a finger)

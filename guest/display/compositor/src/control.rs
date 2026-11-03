@@ -456,7 +456,17 @@ impl State {
 
     /// The window under `at`, topmost first.
     fn window_at(&self, at: Point<f64, Logical>) -> Option<u64> {
-        self.stacked().into_iter().rev().find(|w| w.rect.to_f64().contains(at)).map(|w| w.id)
+        self.stacked().into_iter().rev().find_map(|w| {
+            let window = self.windows.get(w.id)?;
+            let display = self.displays.resolve(Some(window.display));
+            let origin = self.windows.logical_origin(w.id, &self.displays).to_f64();
+            let (_, focus) = self.locate(
+                w.id,
+                display.to_pixels(at.x - origin.x),
+                display.to_pixels(at.y - origin.y),
+            )?;
+            focus.map(|_| w.id)
+        })
     }
 
     /// A pointer event at a logical position, as the client would send it for window `id`.

@@ -26,7 +26,7 @@ by default. `CABOOSE_WLCS_LOGS=DIR` keeps each server's log in `DIR`, named by i
 directory's suffix. The whole suite is 1,160 tests and takes about 5 minutes, much of it WLCS's 10 s wait in each test
 that fails. The check exits 0 when every failure is on the list and every listed pattern still
 matches a failure; a test that starts passing must come off the list. A run against this
-compositor passes 363 tests, fails the 119 listed, and skips 678 that need protocols it does not
+compositor passes 421 tests, fails the 61 listed, and skips 678 that need protocols it does not
 advertise (layer shell, wl_shell, xdg-shell v6, foreign toplevel).
 
 ## How the adapter works

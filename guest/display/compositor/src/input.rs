@@ -128,10 +128,9 @@ impl State {
         let root = w.surface.wl_surface()?;
         let surface_origin = self.windows.surface_origin(id, &self.displays);
         let under = under_from_surface_tree(&root, point, surface_origin, WindowSurfaceType::ALL)
-            .map(|(s, loc)| (s, loc.to_f64()))
-            // Outside every input region (a shadow, say): the root keeps the event, so a
-            // drag that leaves the window still reaches it.
-            .or(Some((root, surface_origin.to_f64())));
+            // Smithay's implicit grab preserves an active drag. Without a grab,
+            // points outside the input region must clear focus, including shadows.
+            .map(|(s, loc)| (s, loc.to_f64()));
         Some((point, under))
     }
 
