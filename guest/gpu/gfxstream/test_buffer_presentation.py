@@ -117,6 +117,20 @@ class WindowTests(unittest.TestCase):
         self.assertEqual(window.bind_finished(('k2',), True), 'send')
         self.assertEqual(window.in_flight.request, 3)
 
+    def test_images_of_a_new_renderer_retire_and_rebind(self):
+        # The compositor made its renderer again: the same window's images are another device's.
+        window = self.bound()
+        remade = IMAGE.__class__(11, 12, 13, 14, 44, 1280, 720, 0)
+        self.assertEqual(window.offer(frame(2, image=remade)), 'retire')
+        self.assertEqual(window.retired(), 'bind')
+        self.assertEqual(window.source, (11, 12))
+        self.assertEqual(window.bind_finished(('k2',), True), 'send')
+        self.assertEqual(window.in_flight.request, 2)
+        # Frames of the same device present on the new grant.
+        self.assertIsNone(window.source_released(1))
+        self.assertIsNone(window.offer(frame(3, image=remade)))
+        self.assertFalse(window.retiring)
+
     def test_failed_bind_releases_and_retires_its_grant(self):
         window = b.Window(5)
         window.offer(frame(1))
