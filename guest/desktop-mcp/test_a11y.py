@@ -80,3 +80,16 @@ class PressTests(unittest.TestCase):
         self.press('MENU', {'ENABLED'})
         self.assertEqual(self.tree.Atspi.Action.do_action.call_count, 2)
         self.screen.click.assert_not_called()
+
+
+class StaleCacheTests(unittest.TestCase):
+    def test_a_missed_window_or_element_is_read_again_by_a_fresh_helper(self):
+        self.assertTrue(a11y.stale('elements', {'elements': [], 'note': "The focused window was not found in its application's accessibility tree; use a screenshot."}))
+        self.assertTrue(a11y.stale('act', {'ok': False, 'error': 'element not found'}))
+        self.assertFalse(a11y.stale('elements', {'elements': [], 'note': 'No window is open on this display.'}))
+        self.assertFalse(a11y.stale('act', {'ok': False, 'error': 'element is disabled'}))
+
+    def test_the_fresh_helper_gets_the_same_request(self):
+        with patch.object(a11y.subprocess, 'run', return_value=Mock(stdout='{"ok": true}')) as run:
+            self.assertEqual(a11y.fresh('act', ':101', {'element': 'e', 'action': 'set-text', 'text': 'x'}), {'ok': True})
+        self.assertEqual(run.call_args.args[0][2:], ['act', '--display', ':101', '--element', 'e', '--action', 'set-text', '--text', 'x'])

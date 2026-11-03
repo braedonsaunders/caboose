@@ -61,7 +61,8 @@ export async function runSpecialist(task, { observe, decide, act, trace = () => 
   // observation, so only a fresh accessibility read is needed.
   const settled = async settle => {
     let state = await observe(task.window, { settle })
-    const ids = s => JSON.stringify((s.elements ?? []).map(e => [e.id, e.name, e.value, e.states]))
+    const ids = s => JSON.stringify([(s.elements ?? []).map(e => [e.id, e.name, e.value, e.states]),
+      taskWindows(task.window, s.windows ?? []).map(w => [w.id, w.title])])
     const limit = now() + 1000
     while (lastFocused !== undefined && (state.focused !== lastFocused || !ours(state)) && now() < limit) {
       await new Promise(resolve => setTimeout(resolve, 20))

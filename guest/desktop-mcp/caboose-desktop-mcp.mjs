@@ -168,7 +168,7 @@ async function workerRequest(worker, request) {
   }
 }
 async function a11y(command, options) {
-  if (command === 'act') actedAt = Number(process.hrtime.bigint() / 1000n)
+  if (command === 'act') { actedAt = Number(process.hrtime.bigint() / 1000n); typed = options?.action === 'set-text' }
   const answer = await workerRequest(a11yWorker, { op: command, ...options })
   return [{ type: 'text', text: JSON.stringify(answer) }]
 }
@@ -250,9 +250,11 @@ const handlers = {
 
 // When the last action went in, on the compositor's clock (CLOCK_MONOTONIC): the next
 // settled observation waits for the seat to react to it.
-let actedAt
+let actedAt, typed = false
 async function observe({ settle = true } = {}) {
-  if (settle) { await seat('settle', 'react', ...(actedAt === undefined ? [] : [String(actedAt)])); actedAt = undefined }
+  // A text edit is processed asynchronously (completion, validation): wait for the window to
+  // go quiet. After a press, the first reaction is enough for an accessibility read.
+  if (settle) { await seat('settle', typed ? 'quiet' : 'react', ...(actedAt === undefined ? [] : [String(actedAt)])); actedAt = undefined; typed = false }
   return JSON.parse((await handlers.elements())[0].text)
 }
 handlers.batch = async ({ steps, observe: observing = true }) => {

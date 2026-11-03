@@ -19,9 +19,12 @@ const call = async (worker, body) => { const r = await worker.request(body, env)
 const sleep = ms => new Promise(r => setTimeout(r, ms))
 // When the last action went in, on the compositor's clock (CLOCK_MONOTONIC), so the next
 // observation waits for the seat to react to it.
-let actedAt
+let actedAt, typed = false
 const observe = async (_window, { settle = true } = {}) => {
-  if (settle) await call(seat, { args: ['settle', 'react', ...(actedAt === undefined ? [] : [String(actedAt)])] })
+  // A text edit is processed asynchronously (completion, validation): wait for the window to
+  // go quiet. After a press, the first reaction is enough for an accessibility read.
+  if (settle) await call(seat, { args: ['settle', typed ? 'quiet' : 'react', ...(actedAt === undefined ? [] : [String(actedAt)])] })
+  if (settle) typed = false
   if (settle) actedAt = undefined
   const state = await call(a11y, { op: 'elements' })
   const listing = await call(seat, { args: ['windows'] })
@@ -53,7 +56,7 @@ try {
       result = await runSpecialist(task, {
         observe, decide: policy,
         act: async action => {
-          actedAt = Number(process.hrtime.bigint() / 1000n)
+          actedAt = Number(process.hrtime.bigint() / 1000n); typed = action.action === 'set_text'
           const r = await call(a11y, { op: 'act', element: action.id, action: action.action === 'set_text' ? 'set-text' : action.action === 'focus_element' ? 'focus' : 'press', ...(action.text !== undefined ? { text: action.text } : {}) })
           if (!r.ok) throw new Error('action outcome unknown')
         },

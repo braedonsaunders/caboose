@@ -1547,12 +1547,36 @@ def serve(display):
                 result, _ = execute(ACTIVE_ARGS)
             finally:
                 faulthandler.cancel_dump_traceback_later()
+            if stale(op, result):
+                result = fresh(op, display, request)
         except ServedResult as result_error:
             result = result_error.result
         except Exception as error:
             result = {"error": str(error)}
         sys.stdout.write(json.dumps(result, ensure_ascii=False) + "\n")
         sys.stdout.flush()
+
+
+def stale(op, result):
+    """Whether a long-lived helper's answer comes from a cache that missed a new window: its
+    accessibility cache learns of a new top-level (a dialog) from events that can lag behind,
+    and does not recover; a fresh process reads it at once."""
+    if op in ("elements", "find", "text"):
+        return str(result.get("note", "")).startswith("The focused window was not found")
+    return op == "act" and result.get("error") == "element not found"
+
+
+def fresh(op, display, request):
+    """The same request answered by a one-shot helper with its own accessibility cache."""
+    argv = [sys.executable, os.path.abspath(__file__), op, "--display", display]
+    for key in ("query", "role", "element", "action", "text"):
+        if request.get(key) is not None:
+            argv += [f"--{key}", str(request[key])]
+    try:
+        done = subprocess.run(argv, capture_output=True, text=True, timeout=9)
+        return json.loads(done.stdout)
+    except (subprocess.TimeoutExpired, ValueError):
+        return {"ok": False, "error": "accessibility read timed out"} if op == "act" else {"error": "accessibility read timed out"}
 
 
 def execute(args):
