@@ -674,6 +674,7 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
         session.processes = {3: {'ready': ready, 'surfaces': set()}}
         session.surfaces = {}
         session.surface_epoch = None
+        session.surface_count = 0
         broker_instance.session = session
         task = asyncio.create_task(broker_instance.request_bind(session, 3, 17, b'e' * 16))
         try:
@@ -694,7 +695,20 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.sleep(0)
             _data, ancillary, _flags, _ = peer.recvmsg(80, socket.CMSG_SPACE(array.array('i').itemsize))
             fds = array.array('i'); fds.frombytes(ancillary[0][2][:fds.itemsize]); os.close(fds[0])
-            broker_instance.pending_binds[2].set_result(control_protocol.BindResult(2, 0, b'x' * 16, b'g' * 16, 9, 2))
+            # A process that ends while the compositor answers (a splash window that exits at
+            # once) has its grant handed back, and the broker goes on.
+            ended = session.processes.pop(3)
+            broker_instance.pending_binds[2].set_result(control_protocol.BindResult(2, 0, b'e' * 16, b'k' * 16, 9, 2))
+            with self.assertRaisesRegex(PermissionError, 'ended process'): await asyncio.wait_for(task, 1)
+            self.assertFalse(broker_instance.closing.is_set())
+            revoke, _ancillary, _flags, _ = peer.recvmsg(80)
+            self.assertEqual(control_protocol.decode(revoke, 0), control_protocol.RevokeRequest(b'e' * 16, b'k' * 16, 2))
+            session.processes[3] = ended
+            task = asyncio.create_task(broker_instance.request_bind(session, 3, 17, b'e' * 16))
+            await asyncio.sleep(0)
+            _data, ancillary, _flags, _ = peer.recvmsg(80, socket.CMSG_SPACE(array.array('i').itemsize))
+            fds = array.array('i'); fds.frombytes(ancillary[0][2][:fds.itemsize]); os.close(fds[0])
+            broker_instance.pending_binds[3].set_result(control_protocol.BindResult(3, 0, b'x' * 16, b'g' * 16, 9, 3))
             with self.assertRaises(PermissionError): await asyncio.wait_for(task, 1)
             self.assertTrue(broker_instance.closing.is_set())
         finally:
@@ -1048,7 +1062,8 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
         values = json.loads((HERE.parent / 'broker' / 'live-swapchain-vectors.json').read_text())
         vectors = {item['name']: bytes.fromhex(item['payload']) for item in values}
         async def bind(_session, _process, _obj, space=0):
-            session.surfaces[key] = {'process': 1, 'window': 12, 'retiring': False, 'retired': asyncio.Event()}
+            session.surfaces[key] = {'process': 1, 'window': 12, 'retiring': False, 'retired': asyncio.Event(),
+                                     'stats': broker.SurfaceStats(1, session.processes[1])}
             return result
         instance = broker.Broker.__new__(broker.Broker); instance.request_bind = bind
         loop = asyncio.get_running_loop()

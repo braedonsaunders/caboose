@@ -1450,13 +1450,20 @@ class Broker:
             if result.status:
                 raise PermissionError('surface bind denied')
             if ((expected_epoch is not None and result.epoch != expected_epoch) or
-                (session.surface_epoch is not None and result.epoch != session.surface_epoch) or
-                self.session is not session or session.draining or
-                not pidfd_alive(pidfd) or pidfd_pid(pidfd) != pid):
-                # The compositor may already hold a grant. Retire the entire
-                # service rather than expose or silently leak a stale grant.
+                (session.surface_epoch is not None and result.epoch != session.surface_epoch)):
+                # Another compositor answered: its grant cannot be told apart from a stale one.
+                # Retire the entire service rather than expose or silently leak it.
                 self.closing.set()
                 raise PermissionError('surface bind became stale')
+            if (self.session is not session or session.draining or process_id not in session.processes or
+                not pidfd_alive(pidfd) or pidfd_pid(pidfd) != pid):
+                # The process ended (or its session did) while the compositor answered, as a
+                # launcher's splash that makes a window and exits at once does: hand the grant
+                # back and refuse this bind alone; every other process goes on.
+                if result.status == 0:
+                    await self.send_control(control_protocol.encode_revoke_request(
+                        control_protocol.RevokeRequest(result.epoch, result.grant, result.generation)))
+                raise PermissionError('surface bind for an ended process')
             key = (result.epoch, result.grant, result.generation)
             if key in session.surfaces:
                 self.closing.set()
