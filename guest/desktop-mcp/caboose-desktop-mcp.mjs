@@ -197,8 +197,8 @@ const handlers = {
   click_element: async ({ id }) => { await a11y('act', { element: element(id), action: 'press' }); return [{ type: 'text', text: `Pressed ${id}.` }] },
   async set_text({ id, text: value }) {
     if (typeof value !== 'string' || value.length > 100_000) throw new Error('text must be a string of at most 100000 characters')
-    await a11y('act', { element: element(id), action: 'set-text', text: value })
-    return [{ type: 'text', text: `Set the text of ${id}.` }]
+    const { note } = JSON.parse((await a11y('act', { element: element(id), action: 'set-text', text: value }))[0].text)
+    return [{ type: 'text', text: `Set the text of ${id}${note ? ` (${note})` : ''}.` }]
   },
   read_text: () => a11y('text', {}),
   async screenshot({ window, annotate = false }) {

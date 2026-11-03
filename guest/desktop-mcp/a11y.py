@@ -437,13 +437,19 @@ class XScreen:
                        env=dict(os.environ, DISPLAY=self.display.name), check=True, timeout=15,
                        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
 
-    def replace_text(self, xid, text):
-        """Select all, delete, and type `text`, into that X window alone (xdotool --window)."""
+    def _xdotool(self, *args, timeout=15):
         env = dict(os.environ, DISPLAY=self.display.name)
-        quiet = {"env": env, "check": True, "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
-        subprocess.run(["xdotool", "key", "--window", str(xid), "ctrl+a", "BackSpace"], timeout=15, **quiet)
-        if text:
-            subprocess.run(["xdotool", "type", "--window", str(xid), "--delay", "4", "--", text], timeout=120, **quiet)
+        subprocess.run(["xdotool", *args], timeout=timeout, env=env, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    def clear_text(self, xid):
+        """Select all and delete, in that X window alone (xdotool --window)."""
+        self._xdotool("key", "--window", str(xid), "ctrl+a", "BackSpace")
+
+    def type_text(self, xid, text):
+        self._xdotool("type", "--window", str(xid), "--delay", "4", "--", text, timeout=120)
+
+    def let_draw(self):
+        pass
 
 
 class SeatScreen:
@@ -526,8 +532,13 @@ class SeatScreen:
 
     def origin(self, wid):
         record = self.records.get(wid)
-        if record is None or record.get("x11"):
+        if record is None:
             return None
+        if record.get("x11"):
+            # Xwayland draws a scaled seat's X11 windows at its scale: their screen
+            # coordinates are the seat's logical ones times it.
+            scale = record.get("scale") or 1
+            return Scale(scale) if scale != 1 else None
         return (record["surface"][0], record["surface"][1])
 
     def popup_origin(self, pid, size):
@@ -562,12 +573,25 @@ class SeatScreen:
         except self.SeatError as error:
             raise Failure(str(error)) from None
 
-    def replace_text(self, wid, text):
+    def clear_text(self, wid):
         try:
             self.seat.key("ctrl+a", "BackSpace")
+        except self.SeatError as error:
+            raise Failure(str(error)) from None
+
+    def type_text(self, wid, text):
+        try:
             self.seat.type(text)
         except self.SeatError as error:
             raise Failure(str(error)) from None
+
+    def let_draw(self):
+        """Let applications draw now: a seat nobody watches paces them at once a second, and
+        some (Firefox) update what they expose only as they draw."""
+        try:
+            self.seat.request("settle")
+        except self.SeatError:
+            pass
 
 
 def make_screen(name):
@@ -857,6 +881,13 @@ class Tree:
         except Exception:
             return None
 
+    def fresh_states(self, node):
+        try:
+            node.clear_cache()
+        except Exception:
+            pass
+        return self.states(node)
+
     def has(self, states, name):
         state = getattr(self.S, name, None)
         return state is not None and states is not None and states.contains(state)
@@ -971,17 +1002,20 @@ class Tree:
         return ""
 
     def bounds(self, node, origin=None):
-        """The element's rectangle: screen coordinates, or with `origin` (a Wayland surface's
-        position) its window coordinates moved there."""
+        """The element's rectangle: screen coordinates (divided by a `Scale` origin), or with
+        `origin` (a Wayland surface's position) its window coordinates moved there."""
         try:
             if node.get_component_iface() is None:
                 return None
-            kind = self.Atspi.CoordType.SCREEN if origin is None else self.Atspi.CoordType.WINDOW
-            rect = self.Atspi.Component.get_extents(node, kind)
+            screen = origin is None or isinstance(origin, Scale)
+            rect = self.Atspi.Component.get_extents(node, self.Atspi.CoordType.SCREEN if screen else self.Atspi.CoordType.WINDOW)
         except Exception:
             return None
         if rect.width <= 0 or rect.height <= 0:
             return None
+        if isinstance(origin, Scale):
+            x, y = round(rect.x / origin), round(rect.y / origin)
+            return {"x": x, "y": y, "width": max(1, round((rect.x + rect.width) / origin) - x), "height": max(1, round((rect.y + rect.height) / origin) - y)}
         dx, dy = origin or (0, 0)
         return {"x": rect.x + dx, "y": rect.y + dy, "width": rect.width, "height": rect.height}
 
@@ -1073,8 +1107,8 @@ def match_frame(tree, app, screen, wid, active):
         except Exception:
             continue
         if role in tree.popup_roles and not name and tree.has(states, "SHOWING"):
-            if origin is None:
-                popups.append((index, top, tree.bounds(top), None))
+            if origin is None or isinstance(origin, Scale):
+                popups.append((index, top, tree.bounds(top, origin), origin))
             else:
                 size = tree.window_size(top)
                 at = screen.popup_origin(pid, size) if size else None
@@ -1107,7 +1141,7 @@ def top_origin(screen, wid, pid, tree, top):
     """Where the top-level accessible `top` (the window, or one of its popups) is placed:
     None for screen coordinates."""
     origin = screen.origin(wid)
-    if origin is None or top is None:
+    if origin is None or isinstance(origin, Scale) or top is None:
         return origin
     size = tree.window_size(top)
     frame = screen.frame_rect(wid)
@@ -1163,6 +1197,10 @@ class Target:
         elif not roots:
             self.note = "The focused window was not found in its application's accessibility tree; use a screenshot."
         return roots
+
+
+class Scale(float):
+    """An element origin meaning: screen coordinates, divided by this scale."""
 
 
 def element_id(xid, pid, path, fingerprint):
@@ -1336,22 +1374,43 @@ def resolve(display_name, element):
         bus.retry(screen.bus_display())
         raise Failure("element not found", NOT_FOUND)
     tree = Tree(bus.Atspi)
-    node, top = app, None
-    for index in path:
+    fingerprint = match.group(4)
+
+    def at(path):
+        node, top = app, None
+        for index in path:
+            try:
+                node = node.get_child_at_index(index) if index < node.get_child_count() else None
+            except Exception:
+                node = None
+            if node is None:
+                return None, top
+            top = top or node
+        return node, top
+
+    def matches(node):
+        states = tree.states(node)
         try:
-            node = node.get_child_at_index(index) if index < node.get_child_count() else None
+            role = node.get_role()
         except Exception:
-            node = None
-        if node is None:
+            return None
+        if states is None or tree.has(states, "DEFUNCT") or tree.fingerprint(role, tree.name(node, role, states)) != fingerprint:
+            return None
+        return states
+
+    node, top = at(path)
+    states = matches(node) if node is not None else None
+    if states is None:
+        # Its place moved (a sibling appeared or went, as a web page edits itself): the one
+        # showing control of the window with the same role and name is the element.
+        top, _ = at(path[:1])
+        found = []
+        if top is not None:
+            tree.walk(top, path[:1], lambda n, p, role, st: found.append(n) if matches(n) is not None else None)
+        if len(found) != 1:
             raise Failure("element not found", NOT_FOUND)
-        top = top or node
-    states = tree.states(node)
-    try:
-        role = node.get_role()
-    except Exception:
-        raise Failure("element not found", NOT_FOUND)
-    if states is None or tree.has(states, "DEFUNCT") or tree.fingerprint(role, tree.name(node, role, states)) != match.group(4):
-        raise Failure("element not found", NOT_FOUND)
+        node = found[0]
+        states = matches(node)
     return screen, xid, tree, node, states, top_origin(screen, xid, pid, tree, top)
 
 
@@ -1394,30 +1453,88 @@ def act(display_name, element, action, text):
     if action == "set-text":
         if text is None:
             raise Failure("set-text needs --text", 2)
+        # The toolkit's EditableText, when the field then reads the new text: some accept the
+        # call and change nothing (Firefox's web fields).
+        pid = screen.pid(xid)
         try:
-            if node.get_editable_text_iface() is not None and tree.Atspi.EditableText.set_text_contents(node, text):
-                return
+            if pid not in INERT_EDITABLE and node.get_editable_text_iface() is not None and tree.Atspi.EditableText.set_text_contents(node, text):
+                if wait_text(screen, tree, node, lambda value: value == text, 0.3) in (text, None):
+                    return
+                INERT_EDITABLE.add(pid)  # remembered for the life of this helper
         except Exception:
             pass
-        # No EditableText (Chromium's and Electron's fields): focus its window and the field
-        # through AT-SPI, then replace the text with keys sent to that window.
+        # Otherwise (Chromium's and Electron's fields have no EditableText): focus its window
+        # and the field, then replace the text with keys sent to that window. A field on screen
+        # is clicked with the seat's pointer, which gives the application keyboard focus the
+        # way a person does (an AT-SPI focus can leave an X11 browser's keyboard elsewhere);
+        # one off screen is focused through AT-SPI.
         if not tree.has(states, "EDITABLE"):
             raise Failure("element is not editable")
         screen.activate(xid)
-        try:
-            focused = node.get_component_iface() is not None and tree.Atspi.Component.grab_focus(node)
-        except Exception:
-            focused = False
-        if not focused:
-            raise Failure("element cannot take focus to type into")
-        deadline = time.monotonic() + 0.15
-        while not tree.has(tree.states(node), "FOCUSED"):
-            if time.monotonic() >= deadline:
-                raise Failure("element did not take focus to type into")
-            time.sleep(0.01)
-        screen.replace_text(xid, text)
+        bounds = tree.bounds(node, origin)
+        on_screen = bounds is not None and tree.has(states, "SHOWING")
+
+        def focus():
+            if on_screen:
+                screen.click(xid, bounds["x"] + bounds["width"] // 2, bounds["y"] + bounds["height"] // 2)
+                return True
+            try:
+                return node.get_component_iface() is not None and tree.Atspi.Component.grab_focus(node)
+            except Exception:
+                return False
+
+        def focused(seconds):
+            # States are cached per process until an event says otherwise: read them fresh.
+            deadline = time.monotonic() + seconds
+            while not tree.has(tree.fresh_states(node), "FOCUSED"):
+                if time.monotonic() >= deadline:
+                    return False
+                screen.let_draw()
+                time.sleep(0.01)
+            return True
+
+        # A window's first click can go to activating it: one more before giving up.
+        if not (focus() and focused(0.4)) and not (focus() and focused(0.4)):
+            raise Failure("element did not take focus to type into")
+        # Keys and typed text reach an application by different paths (key events; an input
+        # method's commit), which it may handle out of order: the text goes in only once the
+        # field reads empty, and the action ends once it reads the new text. An empty field
+        # is not cleared: its Ctrl+A and BackSpace would have nothing to wait for.
+        if wait_text(screen, tree, node, lambda value: True, 0) != "":
+            screen.clear_text(xid)
+            if wait_text(screen, tree, node, lambda value: not value, 0.5) is None:
+                time.sleep(0.15)  # nothing to read: give the keys their time
+        if text:
+            screen.type_text(xid, text)
+            shown = wait_text(screen, tree, node, lambda value: value == text, 1.0)
+            if shown == "":
+                # Some applications update what they expose well after the field itself.
+                return "typed; the field does not read the new text yet"
+            if shown is not None and shown != text:
+                raise Failure(f"the field shows {shown[:80]!r} after typing; read it again before retrying")
         return
     raise Failure(f"unknown action {action}", 2)
+
+
+# Processes whose EditableText accepts a new text and changes nothing (Firefox's web fields).
+INERT_EDITABLE = set()
+
+
+def wait_text(screen, tree, node, done, seconds):
+    """Poll an element's text, read fresh, until `done(text)` or `seconds` pass; the last text,
+    or None for an element without readable text. The seat lets applications draw meanwhile."""
+    deadline = time.monotonic() + seconds
+    while True:
+        if seconds:
+            screen.let_draw()
+        try:
+            node.clear_cache()
+        except Exception:
+            pass
+        value = tree.text(node)
+        if value is None or done(value) or time.monotonic() >= deadline:
+            return value
+        time.sleep(0.01)
 
 
 # --- Commands --------------------------------------------------------------------------
@@ -1668,8 +1785,8 @@ def execute(args):
         if args.command == "bus":
             return command_bus(args.display, args.wait), 0
         if is_act:
-            act(args.display, args.element, args.action, args.text)
-            return {"ok": True}, 0
+            note = act(args.display, args.element, args.action, args.text)
+            return {"ok": True, **({"note": note} if note else {})}, 0
         target = Target(args.display)
         result = {"window": target.window}
         if args.command == "text":
