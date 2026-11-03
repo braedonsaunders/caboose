@@ -88,6 +88,10 @@ executor() { # features
     python3 -u /repo/apps/ios/GPUStream/gfxstream/linux-executor/executor.py --connect "127.0.0.1:$port" \
     --token-file "$token" --library /build/libcaboose_gpu_executor.so --features "$1" --extra-formats "${EXTRA_FORMATS-37:0,43:0}" > /dev/null
   wait_log "$name-executor" 'session ready' 60 || fail 'the executor session did not start'
+  # The broker makes its device socket after the executor's session is ready: an application
+  # that started before it would fail its instance (VK_ERROR_INCOMPATIBLE_DRIVER).
+  i=0; until docker exec "$name-computer" test -S "$sockets/gpu.sock"; do
+    i=$((i + 1)); [ $i -le 150 ] || fail 'the broker never made its device socket'; sleep 0.2; done
 }
 drain() { # log
   # An executor that already exited keeps its logs for the verdict below.
