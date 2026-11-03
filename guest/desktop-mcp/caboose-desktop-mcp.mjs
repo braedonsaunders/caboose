@@ -116,10 +116,57 @@ async function seat(...args) { return workerRequest(seatWorker, { args }) }
 const BUTTONS = { 1: 'left', 2: 'middle', 3: 'right' }
 
 // The display as the observer renders it: everything (`full`), or what changed since the last time.
+let lastState
 async function view(full) {
-  const state = JSON.parse((await a11y('elements', {}))[0].text)
+  const state = lastState = JSON.parse((await a11y('elements', {}))[0].text)
   const listing = await seat('windows')
   return observer.render(listing, state, { full })
+}
+
+// A window with no accessibility tree (SDL, games, custom-drawn toolkits): its picture, and the
+// words OCR finds in it (tesseract, when installed) as lines with their centres in seat
+// coordinates. Marked as read from pixels.
+async function pixelFallback() {
+  const listing = await seat('windows')
+  const window = listing.windows.find(w => w.id === listing.focused)
+  if (!window) return []
+  const dir = await mkdtemp(join(tmpdir(), 'caboose-shot-'))
+  try {
+    const file = join(dir, 'window.png')
+    const shot = await seat('screenshot', '--out', file, '--window', String(window.id))
+    const png = await readFile(file)
+    const parts = [{ type: 'text', text: `No accessibility tree in ${window.kind} ${window.id}: its picture follows (read from pixels).` },
+      { type: 'image', data: png.toString('base64'), mimeType: 'image/png' }]
+    const words = await ocr(file, shot.rect, png.readUInt32BE(16), png.readUInt32BE(20))
+    if (words) parts.push({ type: 'text', text: `Text read from pixels (OCR; x,y are seat coordinates of each line's centre):\n${words}` })
+    return parts
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+}
+function ocr(file, rect, width, height) {
+  return new Promise(resolve => {
+    const child = spawn('tesseract', [file, '-', 'tsv'], { stdio: ['ignore', 'pipe', 'ignore'] })
+    let out = ''
+    child.stdout.on('data', chunk => { out += chunk })
+    child.on('error', () => resolve(''))
+    child.on('close', () => {
+      const [x0, y0, w, h] = rect ?? [0, 0, width, height]
+      const sx = w / width, sy = h / height
+      const lines = new Map()
+      for (const row of out.split('\n').slice(1)) {
+        const f = row.split('\t')
+        if (f.length < 12 || !f[11].trim() || Number(f[10]) < 50) continue
+        const key = `${f[2]}.${f[3]}.${f[4]}`
+        const line = lines.get(key) ?? { words: [], left: Infinity, top: Infinity, right: 0, bottom: 0 }
+        line.words.push(f[11].trim())
+        line.left = Math.min(line.left, +f[6]); line.top = Math.min(line.top, +f[7])
+        line.right = Math.max(line.right, +f[6] + +f[8]); line.bottom = Math.max(line.bottom, +f[7] + +f[9])
+        lines.set(key, line)
+      }
+      resolve([...lines.values()].slice(0, 80).map(l => `${JSON.stringify(l.words.join(' '))} at ${Math.round(x0 + (l.left + l.right) / 2 * sx)},${Math.round(y0 + (l.top + l.bottom) / 2 * sy)}`).join('\n'))
+    })
+  })
 }
 const element = id => observer.resolve(text(id, 'id', 500))
 
@@ -261,6 +308,10 @@ const handlers = {
       parts.push(await view(true))
       const tools = await pageTools()
       if (tools) parts.push(tools)
+      if (lastState?.note && !(lastState.elements ?? []).length && lastState.window) {
+        const pictured = await pixelFallback().catch(() => [])
+        if (pictured.length) return [{ type: 'text', text: parts.join('\n') }, ...pictured]
+      }
     }
     if (withText) {
       const { text: readable } = JSON.parse((await a11y('text', {}))[0].text)

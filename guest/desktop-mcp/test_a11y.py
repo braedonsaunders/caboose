@@ -96,3 +96,31 @@ class StaleCacheTests(unittest.TestCase):
                               input=json.dumps({"op": "also-bogus"}) + "\n", capture_output=True, text=True, env=env, timeout=20)
         lines = [json.loads(l) for l in done.stdout.splitlines()]
         self.assertEqual(lines, [{"error": "invalid worker request"}, {"error": "invalid worker request"}])
+
+
+class CoverTests(unittest.TestCase):
+    def screen(self, *windows):
+        screen = a11y.SeatScreen.__new__(a11y.SeatScreen)
+        screen.records = {w["id"]: w for w in windows}
+        screen.clients = [w["id"] for w in windows]
+        return screen
+
+    def test_a_point_under_another_application_is_covered(self):
+        screen = self.screen({"id": 1, "pid": 10, "rect": [0, 0, 400, 400], "kind": "toplevel", "title": "Editor"},
+                             {"id": 2, "pid": 20, "rect": [100, 100, 100, 100], "kind": "toplevel", "title": "Popup ad"})
+        self.assertEqual(screen.covering(1, 150, 150)["id"], 2)
+        self.assertIsNone(screen.covering(1, 50, 50))
+        self.assertEqual(screen.covering(1, 500, 500)["kind"], "nothing")
+
+    def test_its_own_dialogs_and_menus_do_not_cover_it(self):
+        screen = self.screen({"id": 1, "pid": 10, "rect": [0, 0, 400, 400], "kind": "toplevel", "title": "Editor"},
+                             {"id": 3, "pid": 10, "rect": [100, 100, 100, 100], "kind": "popup", "title": ""})
+        self.assertIsNone(screen.covering(1, 150, 150))
+
+    def test_a_click_on_a_covered_control_is_refused(self):
+        screen = self.screen({"id": 1, "pid": 10, "rect": [0, 0, 400, 400], "kind": "toplevel", "title": "Editor"},
+                             {"id": 2, "pid": 20, "rect": [100, 100, 100, 100], "kind": "dialog", "title": "Update"})
+        screen.seat = Mock()
+        with self.assertRaisesRegex(a11y.Failure, 'covered by dialog 2 "Update"'):
+            screen.click(1, 150, 150)
+        screen.seat.click.assert_not_called()

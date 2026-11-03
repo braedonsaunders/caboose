@@ -570,7 +570,31 @@ class SeatScreen:
         except self.SeatError as error:
             raise Failure(str(error)) from None
 
+    def covering(self, wid, x, y):
+        """The window over (x, y) when it is neither `wid` nor another window of its process
+        (its dialogs and menus), else None: input there would land on that window."""
+        own = (self.records.get(wid) or {}).get("pid")
+        for other in reversed(self.clients):  # bottom to top: the last one holding the point wins
+            record = self.records[other]
+            rx, ry, rw, rh = record["rect"]
+            if not (rx <= x < rx + rw and ry <= y < ry + rh):
+                continue
+            if own is not None and record.get("pid") == own:
+                return None
+            chain, seen = other, set()
+            while chain is not None and chain not in seen:
+                if chain == wid:
+                    return None
+                seen.add(chain)
+                chain = (self.records.get(chain) or {}).get("parent")
+            return record
+        return {"id": None, "title": "", "kind": "nothing"}
+
     def click(self, wid, x, y):
+        covered = self.covering(wid, x, y)
+        if covered is not None:
+            raise Failure(f"the control is covered by {covered['kind']} {covered['id']} {json.dumps(covered.get('title') or '')} "
+                          "at its position; bring its window forward (focus) or close what covers it, then look again")
         try:
             self.seat.click(x, y)
         except self.SeatError as error:
@@ -796,6 +820,23 @@ class Bus:
             except Exception:
                 continue
         return best
+
+
+def titled_pid(bus, title):
+    """The process of the one application on the bus with a showing window of this title."""
+    if not title or not getattr(bus, "address", None):
+        return None
+    wanted, found = _norm(title), set()
+    for index in range(bus.desktop.get_child_count()):
+        try:
+            app = bus.desktop.get_child_at_index(index)
+            for k in range(min(app.get_child_count(), 20)):
+                top = app.get_child_at_index(k)
+                if top is not None and _norm(top.get_name()) == wanted:
+                    found.add(app.get_process_id())
+        except Exception:
+            continue
+    return found.pop() if len(found) == 1 else None
 
 
 def sandbox_bus_proxy(pid):
@@ -1233,6 +1274,9 @@ class Target:
             return
         self.pid = self.screen.pid(self.xid)
         if self.pid is None:
+            # An X11 window without _NET_WM_PID: the application whose window has its title.
+            self.pid = titled_pid(get_bus(self.screen.bus_display()), self.screen.title(self.xid))
+        if self.pid is None:
             self.note = "The focused window does not report its process, so its accessibility tree cannot be matched."
             return
         if not self.screen.confined(self.pid):
@@ -1432,9 +1476,11 @@ def resolve(display_name, element):
     xid, pid = int(match.group(1), 16), int(match.group(2))
     path = [int(i) for i in match.group(3).split(".")]
     screen = make_screen(display_name)
-    if xid not in screen.clients or screen.pid(xid) != pid or not screen.confined(pid):
+    if xid not in screen.clients or not screen.confined(pid):
         raise Failure("element not found", NOT_FOUND)
     bus = get_bus(screen.bus_display())
+    if (screen.pid(xid) or titled_pid(bus, screen.title(xid))) != pid:
+        raise Failure("element not found", NOT_FOUND)
     app = bus.application(pid)
     if app is None:
         bus.retry(screen.bus_display())

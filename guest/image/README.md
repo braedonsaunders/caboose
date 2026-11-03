@@ -132,7 +132,7 @@ and registry integrity. Obsidian is proprietary software; amd64 uses its `.deb`,
 | Category | Lineup |
 | --- | --- |
 | Browsers and writing | Chromium, Firefox ESR, Obsidian, LibreOffice (with its GTK 3 backend, so it is a Wayland application), Mousepad |
-| Desktop tools | Xfce Terminal, Thunar, Evince, KeePassXC, File Roller, mpv |
+| Desktop tools | Xfce Terminal, Thunar, Evince, KeePassXC, File Roller, mpv, Tesseract OCR (English; desktop MCP reads text from windows without an accessibility tree) |
 | Development | VS Code, Neovim, Git, GitHub CLI, delta, Docker and Compose, Lazygit, Lazydocker, btop, tmux, mise, Node 22, uv |
 | Shell | ripgrep, fd, bat, eza, fzf, zoxide, jq, tree, ncdu, htop, fastfetch, yt-dlp, tealdeer, ffmpeg, ImageMagick |
 | Desktop AI | Claude Desktop (Claude Code), ChatGPT Linux preview (Codex) |

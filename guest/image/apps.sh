@@ -12,7 +12,7 @@ apt-get install -y --no-upgrade --no-install-recommends \
   ca-certificates curl xz-utils python3-gi gir1.2-gtk-3.0 adwaita-icon-theme \
   mesa-vulkan-drivers libgl1-mesa-dri \
   chromium firefox-esr xfce4-terminal thunar mousepad libreoffice libreoffice-gtk3 \
-  evince keepassxc file-roller \
+  evince keepassxc file-roller tesseract-ocr tesseract-ocr-eng \
   git ripgrep fd-find bat eza fzf zoxide btop lazygit neovim tmux gh git-delta \
   jq curl wget unzip zip bzip2 tree ncdu htop fastfetch ffmpeg imagemagick docker.io docker-cli docker-compose mpv yt-dlp tealdeer \
   fonts-inter fonts-jetbrains-mono fonts-noto-core fonts-noto-cjk fonts-noto-color-emoji

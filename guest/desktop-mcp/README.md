@@ -68,6 +68,11 @@ focus went, and the focused window's controls added (`+`), changed (`~`, the who
 or removed (`- e14`). A window seen for the first time is listed whole. Bounds are left
 out; `screenshot` with `marks` gives positions when coordinates are needed.
 
+A window with no accessibility tree (SDL, games, custom-drawn toolkits) is still described:
+`look` returns its picture and, with Tesseract installed, the lines of text OCR finds in it
+with their centres in seat coordinates, both marked as read from pixels. An X11 window that
+does not report its process is matched to the one application with a window of its title.
+
 These tools are the seat's assistive technology, and say so: before the first read and
 before each launch the server sets `org.a11y.Status.ScreenReaderEnabled` on the seat's
 accessibility bus, as a screen reader does, and Chromium, Electron and other toolkits that
