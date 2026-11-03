@@ -12,7 +12,7 @@ export const LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef'
 // letter of a choice. The task line opens every step of a task unchanged, so a runtime can
 // keep its KV cache; observed values are listed whether or not their control offers an action.
 export function decisionPrompt(objective, elements, labels, window) {
-  const values = elements.filter(e => e.value).map(e => `${e.name}=${quote(e.value)}`)
+  const values = elements.filter(e => e.value).map(e => `${e.name || e.role}=${quote(e.value)}`)
   return [`Task: ${objective}`, ...(window ? [`Window: ${window}`] : []), ...(values.length ? [`Values: ${values.join('; ')}`] : []),
     ...labels.map((label, i) => `${LETTERS[i]} ${label}`), 'Next:'].join('\n')
 }

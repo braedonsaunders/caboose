@@ -30,6 +30,9 @@ import sys
 import time
 
 TIMEOUT = 20.0
+# Another seat is asked only which processes it shows; one that does not answer this fast is
+# skipped rather than holding up every observation of this seat.
+OTHER_SEAT_TIMEOUT = 1.0
 
 
 class SeatError(Exception):
@@ -47,8 +50,9 @@ def all_sockets():
 
 
 class Seat:
-    def __init__(self, path=None):
+    def __init__(self, path=None, timeout=TIMEOUT):
         self.conn = None
+        self.timeout = timeout
         self.path = path or control_path()
         if not self.path:
             raise SeatError("CABOOSE_DISPLAY_CONTROL is not set: no Caboose Display seat to talk to")
@@ -68,7 +72,7 @@ class Seat:
         try:
             if self.conn is None:
                 self.conn = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-                self.conn.settimeout(TIMEOUT)
+                self.conn.settimeout(self.timeout)
                 self.conn.connect(self.path)
             conn = self.conn
             conn.sendall(line.encode() + b"\n")
@@ -146,18 +150,26 @@ class Seat:
         return answer, png
 
 
+_silent = {}
+
+
 def pids_on_other_seats(own_path):
-    """Processes with a window on any other Caboose Display instance of this user."""
+    """Processes with a window on any other Caboose Display instance of this user. A seat that
+    did not answer is left out for 30 s (a long-lived helper asks on every observation)."""
     pids = set()
     own = os.path.realpath(own_path) if own_path else None
     for path in all_sockets():
         if own and os.path.realpath(path) == own:
             continue
+        if time.monotonic() < _silent.get(path, 0):
+            continue
         try:
-            for window in Seat(path).windows()["windows"]:
+            for window in Seat(path, OTHER_SEAT_TIMEOUT).windows()["windows"]:
                 if window.get("pid"):
                     pids.add(window["pid"])
+            _silent.pop(path, None)
         except (SeatError, ValueError, KeyError):
+            _silent[path] = time.monotonic() + 30
             continue
     return pids
 
