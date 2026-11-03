@@ -71,6 +71,9 @@ for case in phone unbatched older; do
   sleep "$seconds"
   docker exec "$computer" pkill -TERM -f "$bench/triangle.exe" > /dev/null 2>&1 || true
   wait || true
+  # Wine winds down before the next case starts in the same prefix.
+  i=0; while docker exec "$computer" pgrep -u caboose -f 'wineserver|triangle.exe' > /dev/null 2>&1; do
+    i=$((i + 1)); [ $i -le 30 ] || { docker exec "$computer" pkill -KILL -u caboose -f 'wineserver|triangle.exe' > /dev/null 2>&1 || true; break; }; sleep 1; done
   docker exec "$computer" cat "$dir/broker-$case.log" > "$out/broker-$case.log" 2>/dev/null || true
   docker logs "$name" > "$out/executor-$case.log" 2>&1 || true
   log=$out/$case.log
