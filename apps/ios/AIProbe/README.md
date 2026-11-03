@@ -11,7 +11,9 @@ scripts/check-on-device-ai.sh <device id> [probe,probe…] > results.jsonl
 The script generates the project (`xcodegen`), builds, installs and launches the probe with
 `devicectl --console`, and prints each measurement as one JSON line. The phone must be
 unlocked with Developer Mode on; the probe comes to the foreground. Results are also kept in
-the probe's `Documents/probe.jsonl`.
+the probe's `Documents/probe.jsonl`. Each record includes process footprint, thermal
+state, battery level and whether the phone is charging. A charging run does not
+measure battery drain.
 
 Probes: `info` (availability, context size, variant, capabilities), `tokens` (characters
 per token), `throughput` (time to first token and output tokens per second, cold, warm and

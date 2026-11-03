@@ -22,6 +22,9 @@ final class Probe {
         record["probe"] = name
         record["thermal"] = Self.thermal()
         record["footprintMB"] = Self.footprintMB()
+        UIDevice.current.isBatteryMonitoringEnabled = true
+        record["battery"] = UIDevice.current.batteryLevel
+        record["charging"] = UIDevice.current.batteryState == .charging || UIDevice.current.batteryState == .full
         guard let data = try? JSONSerialization.data(withJSONObject: record, options: [.sortedKeys]),
               let line = String(data: data, encoding: .utf8) else { return }
         print("PROBE \(line)")
