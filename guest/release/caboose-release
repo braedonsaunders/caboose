@@ -157,7 +157,13 @@ def run_check(directory, settings):
     result = subprocess.run(["sh", str(Path(settings["repo"]) / CHECK_SCRIPT), settings["image"], settings["work"],
                              str(driver), settings["sync_check"], str(out)],
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-    return result.returncode, result.stdout.decode(errors="replace")
+    summary = result.stdout.decode(errors="replace")
+    if result.returncode:
+        return result.returncode, summary
+    packaged = subprocess.run(["sh", str(Path(settings["repo"]) / "guest/release/check-packaged.sh"),
+                               settings["image"], str(directory), str(out)],
+                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    return packaged.returncode, summary + packaged.stdout.decode(errors="replace")
 
 
 def check(directory, run=None):

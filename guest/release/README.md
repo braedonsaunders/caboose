@@ -33,7 +33,9 @@ match it.
 Sealing first checks the release's 64-bit driver against the
 [Linux executor](../../apps/ios/GPUStream/gfxstream/linux-executor/README.md), which stands
 in for the phone: its `check.sh` runs the synchronization probe, then vkcube presenting 300
-frames, in disposable containers. A release whose check fails is not sealed and stays open.
+frames, in disposable containers. The check then installs the release payload in a disposable computer and starts its own
+`caboose-session`, display and packaged broker launcher, requiring an authenticated `/gpu`
+WebSocket upgrade. A release whose check fails is not sealed and stays open.
 The check's logs and `check/result` (`PASS` or `FAIL`, then the check's summary lines) stay
 in the release, and the manifest covers them. The settings are `key=value` lines in
 `/root/.config/caboose-release/check.conf` (`CABOOSE_RELEASE_CHECK` overrides the path):

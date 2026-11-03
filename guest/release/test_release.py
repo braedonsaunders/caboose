@@ -104,6 +104,22 @@ class Releases(unittest.TestCase):
         self.assertEqual(summary, f"args i w {release.ROOT / 'r1' / 'files' / release.DRIVER} s\n")
         self.assertTrue((release.ROOT / "r1/check/sync-check.log").is_file())
 
+    def test_packaged_start_failure_fails_check_after_executor_passes(self):
+        release.main(["new", "r1"])
+        release.main(["add", "r1", str(self.source), "/" + release.DRIVER, "755"])
+        repo = Path(self.tmp.name) / "repo"
+        executor = repo / release.CHECK_SCRIPT
+        executor.parent.mkdir(parents=True)
+        executor.write_text('echo "PASS executor"; exit 0\n')
+        packaged = repo / "guest/release/check-packaged.sh"
+        packaged.parent.mkdir(parents=True)
+        packaged.write_text('echo "FAIL packaged broker"; exit 1\n')
+        status, summary = RUN_CHECK(release.ROOT / "r1", {
+            "repo": str(repo), "image": "i", "work": "w", "sync_check": "s"})
+        self.assertEqual(status, 1)
+        self.assertIn("PASS executor", summary)
+        self.assertIn("FAIL packaged broker", summary)
+
     def test_a_sealed_release_is_final_and_a_new_one_starts_from_it(self):
         release.main(["new", "r1"])
         release.main(["add", "r1", str(self.source), "/usr/local/bin/x"])
