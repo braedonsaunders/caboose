@@ -33,8 +33,10 @@ export function actionChoices({ objective, goal, elements, values = [], window, 
   // supplied value no observed control shows, or an empty field the objective names exactly.
   const unentered = [...supplied.filter(v => !entered.includes(v.value) && !elements.some(e => e.value === v.value)).map(v => v.name),
     ...editable.filter(e => e.name.length > 1 && !e.value && String(objective).includes(e.name)).map(e => e.name)]
-  // A source named after an editable control is bound to it; other sources may fill any editable control.
-  const bound = source => editable.some(e => e.name === source.name)
+  // A source named after an editable control is bound to it; other sources may fill any editable
+  // control. Names compare without case or a label's trailing colon ("Search for:").
+  const same = (a, b) => a.replace(/[\s:]+$/, '').toLowerCase() === b.replace(/[\s:]+$/, '').toLowerCase()
+  const bound = source => editable.some(e => same(e.name, source.name))
   const candidates = [{ label: 'BLOCKED the objective needs a control or value that no other choice provides', action: { action: 'blocked' } }]
   const controls = []
   for (const element of elements) {
@@ -48,11 +50,11 @@ export function actionChoices({ objective, goal, elements, values = [], window, 
       candidates.push({ label: `PRESS ${name} (${detail})`, action: { action: 'click_element', id: element.id } })
     }
     if (editable.includes(element)) {
-      const own = supplied.filter(s => s.name === element.name)
+      const own = supplied.filter(s => same(s.name, element.name))
       for (const source of own.length ? own : supplied.filter(s => !bound(s))) {
         if (element.value === source.value) continue
         const current = element.value ? `${quote(element.value)}` : 'empty'
-        const origin = source.name === element.name ? '' : ` (source ${source.name})`
+        const origin = same(source.name, element.name) ? '' : ` (source ${source.name})`
         candidates.push({ label: `SET ${name} from ${current} to ${quote(source.value)}${origin}`, action: { action: 'set_text', id: element.id, text: source.value } })
       }
     }

@@ -102,3 +102,8 @@ test('nothing that can submit is offered while a value of the task is not entere
   assert.equal(result.action, 'blocked'); assert.match(result.reason, /Name/)
   assert.equal(fetch.mock.callCount(), 0)
 })
+test('a value binds to a field whose label differs only by case or a trailing colon', () => {
+  const { candidates } = actionChoices({ objective: 'Replace a with b', goal: { name: 'Done', role: 'button' }, values: [{ name: 'search for', value: 'a' }, { name: 'Replace with', value: 'b' }],
+    elements: [{ id: 's', name: 'Search for:', role: 'text', value: '', states: ['editable'] }, { id: 'r', name: 'Replace with:', role: 'text', value: '', states: ['editable'] }] })
+  assert.deepEqual(candidates.filter(c => c.action.action === 'set_text').map(c => [c.action.id, c.action.text]), [['s', 'a'], ['r', 'b']])
+})

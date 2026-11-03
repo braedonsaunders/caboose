@@ -89,7 +89,10 @@ class StaleCacheTests(unittest.TestCase):
         self.assertFalse(a11y.stale('elements', {'elements': [], 'note': 'No window is open on this display.'}))
         self.assertFalse(a11y.stale('act', {'ok': False, 'error': 'element is disabled'}))
 
-    def test_the_fresh_helper_gets_the_same_request(self):
-        with patch.object(a11y.subprocess, 'run', return_value=Mock(stdout='{"ok": true}')) as run:
-            self.assertEqual(a11y.fresh('act', ':101', {'element': 'e', 'action': 'set-text', 'text': 'x'}), {'ok': True})
-        self.assertEqual(run.call_args.args[0][2:], ['act', '--display', ':101', '--element', 'e', '--action', 'set-text', '--text', 'x'])
+    def test_a_re_registered_helper_answers_the_replayed_request_first(self):
+        import json, subprocess
+        env = dict(os.environ, CABOOSE_A11Y_REPLAY=json.dumps({"op": "bogus"}))
+        done = subprocess.run([sys.executable, os.path.join(os.path.dirname(__file__), "a11y.py"), "serve", "--display=:999"],
+                              input=json.dumps({"op": "also-bogus"}) + "\n", capture_output=True, text=True, env=env, timeout=20)
+        lines = [json.loads(l) for l in done.stdout.splitlines()]
+        self.assertEqual(lines, [{"error": "invalid worker request"}, {"error": "invalid worker request"}])

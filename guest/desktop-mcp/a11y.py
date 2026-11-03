@@ -47,6 +47,7 @@ the element at that path still has that role and name.
 from __future__ import annotations
 
 import argparse
+import itertools
 import ctypes
 import ctypes.util
 import hashlib
@@ -768,7 +769,42 @@ def get_bus(display):
         return Bus(display)
     if WARM_BUS is None:
         WARM_BUS = Bus(display)
+        global KNOWN_WINDOWS
+        KNOWN_WINDOWS = seat_windows()
     return WARM_BUS
+
+
+# The seat's windows when this helper registered with the accessibility bus (None off a
+# Caboose Display seat). libatspi's cache does not learn of top-level windows created later.
+KNOWN_WINDOWS = None
+
+
+def seat_windows():
+    if not os.environ.get("CABOOSE_DISPLAY_CONTROL"):
+        return None
+    try:
+        from seat import Seat
+        return {w["id"]: w.get("kind") for w in Seat().windows().get("windows", [])}
+    except Exception:
+        return None
+
+
+def needs_registration(op, request):
+    """Whether the window a request reads or acts in is a top-level or dialog that appeared
+    after this helper registered, so its cache cannot hold it."""
+    if KNOWN_WINDOWS is None:
+        return False
+    now = seat_windows() or {}
+    if op == "act":
+        match = ID_PATTERN.fullmatch(request.get("element") or "")
+        target = int(match.group(1), 16) if match else None
+    else:
+        try:
+            from seat import Seat
+            target = Seat().windows().get("focused")
+        except Exception:
+            target = None
+    return target is not None and target not in KNOWN_WINDOWS and now.get(target) in ("toplevel", "dialog")
 
 
 # --- The tree --------------------------------------------------------------------------
@@ -863,6 +899,8 @@ class Tree:
             name = ""
         if not name.strip():
             name = self.label(node)
+        if not name.strip() and self.has(states, "EDITABLE"):
+            name = self.context_name(node)
         if not name.strip():
             try:
                 name = node.get_description() or ""
@@ -901,6 +939,26 @@ class Tree:
             except Exception:
                 pass
         return None
+
+    def context_name(self, node):
+        """An unnamed field's name from where it sits: the combo box it is the entry of (GTK's
+        combo box with entry names the box, not the field), else the label just before it among
+        its siblings."""
+        try:
+            parent = node.get_parent()
+            if parent is not None and parent.get_role() in _roles(self.Atspi, "COMBO_BOX"):
+                named = parent.get_name() or self.label(parent)
+                if named and named.strip():
+                    return named
+            if parent is not None:
+                index = node.get_index_in_parent()
+                for i in range(index - 1, max(-1, index - 3), -1):
+                    sibling = parent.get_child_at_index(i)
+                    if sibling is not None and sibling.get_role() in _roles(self.Atspi, "LABEL"):
+                        return sibling.get_name() or ""
+        except Exception:
+            pass
+        return ""
 
     def label(self, node):
         """The name of the element that labels this one (a GTK entry's mnemonic label)."""
@@ -1529,7 +1587,9 @@ def serve(display):
     global SERVING, ACTIVE_ARGS
     SERVING = True
     import faulthandler
-    for line in sys.stdin:
+    replay = os.environ.pop(REPLAY, None)
+    for line in itertools.chain([replay] if replay else [], sys.stdin):
+        replaying = line is replay
         try:
             request = json.loads(line)
             op = request.pop("op")
@@ -1540,6 +1600,8 @@ def serve(display):
             if WARM_BUS is not None:
                 _, GLib = _gio()
                 dispatch_accessibility_events(GLib.MainContext.default())
+            if not replaying and needs_registration(op, request):
+                reregister(display, op, request)
             # A native accessibility call can stall outside our tree-walk budget.
             # Capture its stack before the parent terminates the bounded request.
             faulthandler.dump_traceback_later(10)
@@ -1547,8 +1609,8 @@ def serve(display):
                 result, _ = execute(ACTIVE_ARGS)
             finally:
                 faulthandler.cancel_dump_traceback_later()
-            if stale(op, result):
-                result = fresh(op, display, request)
+            if stale(op, result) and not replaying:
+                reregister(display, op, request)
         except ServedResult as result_error:
             result = result_error.result
         except Exception as error:
@@ -1557,26 +1619,45 @@ def serve(display):
         sys.stdout.flush()
 
 
+# A request a helper re-registered for, replayed by the new process before it reads stdin.
+REPLAY = "CABOOSE_A11Y_REPLAY"
+
+
+def reregister(display, op, request):
+    """Become a new process (same pipes) whose accessibility cache is read fresh, new windows
+    included; it answers this request first, then serves on."""
+    sys.stdout.flush()
+    os.execve(sys.executable, [sys.executable, os.path.abspath(__file__), "serve", f"--display={display}"],
+              dict(os.environ, **{REPLAY: json.dumps({"op": op, **request})}))
+
+
 def stale(op, result):
     """Whether a long-lived helper's answer comes from a cache that missed a new window: its
     accessibility cache learns of a new top-level (a dialog) from events that can lag behind,
-    and does not recover; a fresh process reads it at once."""
+    and does not recover by itself; a new registration reads it at once."""
     if op in ("elements", "find", "text"):
         return str(result.get("note", "")).startswith("The focused window was not found")
     return op == "act" and result.get("error") == "element not found"
 
 
-def fresh(op, display, request):
-    """The same request answered by a one-shot helper with its own accessibility cache."""
-    argv = [sys.executable, os.path.abspath(__file__), op, "--display", display]
-    for key in ("query", "role", "element", "action", "text"):
-        if request.get(key) is not None:
-            argv += [f"--{key}", str(request[key])]
-    try:
-        done = subprocess.run(argv, capture_output=True, text=True, timeout=9)
-        return json.loads(done.stdout)
-    except (subprocess.TimeoutExpired, ValueError):
-        return {"ok": False, "error": "accessibility read timed out"} if op == "act" else {"error": "accessibility read timed out"}
+def stale(op, result):
+    """Whether a long-lived helper's answer comes from a cache that missed a new window: its
+    accessibility cache learns of a new top-level (a dialog) from events that can lag behind,
+    and does not recover by itself; a new registration reads it at once."""
+    if op in ("elements", "find", "text"):
+        return str(result.get("note", "")).startswith("The focused window was not found")
+    return op == "act" and result.get("error") == "element not found"
+
+
+def reconnect():
+    """Drop this helper's libatspi connection and cache; the next request registers again."""
+    global WARM_BUS
+    if WARM_BUS is not None and WARM_BUS.address:
+        try:
+            WARM_BUS.Atspi.exit()
+        except Exception:
+            pass
+    WARM_BUS = None
 
 
 def execute(args):
