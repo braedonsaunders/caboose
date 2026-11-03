@@ -190,9 +190,13 @@ async def close_owned_writer(writer, *, abort, timeout=1):
     try:
         await asyncio.wait_for(writer.wait_closed(), timeout)
         return True
-    except (OSError, asyncio.TimeoutError):
+    except asyncio.TimeoutError:  # an OSError since Python 3.11: tested first
         writer.transport.abort()
         return False
+    except OSError:
+        # The transport already ended with an error (its peer closed or shut down its socket
+        # while writes were pending, as a process that lost its device does): it is closed.
+        return True
 
 
 DATA_READ_BYTES = 65536

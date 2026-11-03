@@ -634,6 +634,13 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result)
         self.assertTrue(writer.aborted)
 
+    async def test_writer_whose_peer_went_away_is_closed(self):
+        # A peer that shut its socket while writes were pending ends the transport with an
+        # error: that is a finished close, not one that timed out.
+        class BrokenPeer(Writer):
+            async def wait_closed(self): raise BrokenPipeError()
+        self.assertTrue(await broker.close_owned_writer(BrokenPeer(), abort=False, timeout=0.1))
+
     async def test_failed_remote_writer_is_aborted_before_wait(self):
         class FailedRemote(Writer):
             def __init__(self):
