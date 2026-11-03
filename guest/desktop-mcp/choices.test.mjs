@@ -17,7 +17,8 @@ test('text choices contain only authorized values and observed target IDs', () =
   const { candidates } = actionChoices(input)
   assert.deepEqual(candidates.find(c => c.action.action === 'set_text').action, { action: 'set_text', id: 'one', text: 'Report' })
   assert.equal(candidates.filter(c => c.action.action === 'set_text').length, 1)
-  assert.equal(candidates.filter(c => c.action.action === 'click_element').length, 1)
+  // Submit is withheld until "Report" shows in the field.
+  assert.equal(candidates.filter(c => c.action.action === 'click_element').length, 0)
 })
 test('a value named after a control fills only that control; unnamed sources stay open to every field', () => {
   const sets = actionChoices(form).candidates.filter(c => c.action.action === 'set_text')
@@ -53,12 +54,12 @@ test('disabled controls and readonly text cannot receive mutation choices', () =
   assert.deepEqual(candidates.map(c => c.action.action), ['blocked'])
 })
 test('bounded choices do not silently truncate away the correct option', () => {
-  assert.throws(() => actionChoices({ ...input, elements: Array.from({ length: 40 }, (_, i) => ({ id: String(i), name: `B${i}`, role: 'button', states: [] })) }), /32 choices/)
+  assert.throws(() => actionChoices({ ...input, goal: { name: 'Done', role: 'button' }, elements: Array.from({ length: 40 }, (_, i) => ({ id: String(i), name: `B${i}`, role: 'button', states: [] })) }), /32 choices/)
 })
 test('the model cannot substitute actions or a stale revision', async t => {
   t.mock.method(globalThis, 'fetch', async (_url, options) => {
     const request = JSON.parse(options.body)
-    assert.equal(request.choices, 3)
+    assert.equal(request.choices, 2)
     assert.match(request.prompt, /^Task: Fill the title\n/)
     return Response.json({ revision: request.revision, choice: 1, action: 'shell', text: 'invented' })
   })
@@ -73,10 +74,27 @@ test('exactly decidable observations return without invoking the model', async t
   assert.deepEqual(await decide({ ...input, elements: input.elements.map(e => ({ ...e, states: [...e.states, 'busy'] })) }), { action: 'wait' })
   assert.equal((await decide({ ...input, elements: input.elements.map(e => ({ ...e, states: ['disabled'] })) })).action, 'blocked')
   assert.equal(fetch.mock.callCount(), 0)
+  // No value supplied, but the objective names an empty field: still nothing is submitted.
+  const unnamed = actionChoices({ objective: 'Set Routing code to 856, then press Commit', goal: { name: 'Done', role: 'button' },
+    elements: [{ id: 'r', name: 'Routing code', role: 'text', value: '', states: ['editable'] }, { id: 'c', name: 'Commit', role: 'button', states: [] }] })
+  assert.ok(!unnamed.candidates.some(c => c.label.startsWith('PRESS Commit')))
 })
 test('the prompt names the window a choice acts in, and unnamed controls go by their role', () => {
   const { prompt, candidates } = actionChoices({ objective: 'Name it', goal: { title: 'x' }, window: 'dialog "Create New Folder"',
     values: [{ name: 'Folder name', value: 'Reports' }], elements: [{ id: 'n', name: '', role: 'text', value: 'New Folder', states: ['editable'] }, { id: 'c', name: 'Create', role: 'button', states: [] }] })
   assert.equal(prompt.split('\n')[1], 'Window: dialog "Create New Folder"')
   assert.ok(candidates.some(c => c.label === 'SET text from "New Folder" to "Reports" (source Folder name)'))
+})
+test('nothing that can submit is offered while a value of the task is not entered', async t => {
+  const pending = actionChoices(form).candidates.map(c => c.label)
+  assert.ok(!pending.some(l => l.startsWith('PRESS Save')), 'Save is withheld while Name lacks Ada')
+  assert.ok(pending.includes('PRESS Keep (check box, checked)'), 'toggles stay')
+  const done = actionChoices({ ...form, elements: form.elements.map(e => e.id === 'n' ? { ...e, value: 'Ada' } : e), values: form.values.slice(0, 2) }).candidates.map(c => c.label)
+  assert.ok(done.includes('PRESS Save (button)'), 'offered once every value shows')
+  // A value whose control is gone: only BLOCKED is left, decided without any model.
+  const fetch = t.mock.method(globalThis, 'fetch', () => { throw new Error('must not run') })
+  const result = await choiceDecision()({ objective: 'Set Name to Ada, then Save', goal: { name: 'Saved', role: 'button' }, values: [{ name: 'Name', value: 'Ada' }],
+    elements: [{ id: 's', name: 'Save', role: 'button', states: [] }] })
+  assert.equal(result.action, 'blocked'); assert.match(result.reason, /Name/)
+  assert.equal(fetch.mock.callCount(), 0)
 })

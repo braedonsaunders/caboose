@@ -2570,6 +2570,11 @@ The observation and action contract of a task:
   tabs, list and tree items) are pressed with the seat's pointer at their own coordinates,
   never at positions read from pixels. A control is re-observed after the decision and must
   be unchanged before input goes in.
+- **Nothing incomplete is submitted, whatever a model decides.** While a value the caller
+  supplied (or the goal names) shows in no observed control, or a field the objective names
+  exactly is still empty, no button and no text-field activation is offered as a choice; if
+  nothing else is left, the step is BLOCKED without asking the model. Menus, tabs and toggles
+  stay offered.
 - **Success is observed.** The caller's postcondition is up to eight conditions on
   controls (name, role, value, state) or on window titles of the task's windows; it is
   checked before every decision and after every action.
