@@ -55,6 +55,11 @@ public:
     Status failure() const { return failure_; }
     bool released(uint64_t serial) const;
     Record createSwapchain(const Bytes& suffix, Deadline deadline);
+    void beginCreateSwapchain(const Bytes& suffix, Deadline deadline);
+    bool takeCreatedSwapchain(Record* reply);
+    void beginMapSwapchain(uint64_t swapchain, const std::vector<uint64_t>& images,
+                           Deadline deadline, uint32_t flags = 0);
+    bool takeMappedSwapchain(Record* reply);
     // `flags`: 1 guest-owned images (any count up to 8), 2 with it, mailbox drop.
     Record mapSwapchain(uint64_t swapchain, const std::vector<uint64_t>& images, Deadline deadline, uint32_t flags = 0);
     void beginAcquire(uint64_t swapchain, uint64_t request, uint64_t semaphore,
@@ -121,6 +126,10 @@ private:
     std::map<uint64_t,Swapchain> swapchains_;
     std::map<uint64_t,Record> acquireReplies_;
     bool bindPending_ = false;
+    uint64_t pendingCreate_ = 0, pendingMap_ = 0;
+    uint32_t pendingCreateMinimum_ = 0;
+    bool createArrived_ = false, mapArrived_ = false;
+    Record createReply_{}, mapReply_{};
     uint64_t pendingQuery_ = 0;
     bool queryArrived_ = false;
     Record queryReply_{};

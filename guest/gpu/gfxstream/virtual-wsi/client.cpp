@@ -177,6 +177,23 @@ bool Client::absorb(Record& r, uint16_t kind, uint64_t serial) {
             swapchains_.at(it->second.swapchain).releasedSerial.at(it->second.index)=u64(r.body,40);
         return kind==22 && (!serial || u64(r.body,40)==serial);
     }
+    if (r.kind==26 && pendingCreate_ && u64(r.body,40)==pendingCreate_) {
+        if (createArrived_) fail(EPROTO);
+        if (status(r.body,56).success()) {
+            auto id=u64(r.body,48); auto actual=u32(r.body,72);
+            if (id<=lastSwapchain_ || actual<pendingCreateMinimum_) fail(EPROTO);
+            lastSwapchain_=id;
+            Swapchain state{}; state.count=actual;
+            state.acquired.resize(actual,false); state.releasedSerial.resize(actual,0);
+            swapchains_.emplace(id,std::move(state));
+        }
+        createReply_=std::move(r); createArrived_=true; return false;
+    }
+    if (r.kind==28 && pendingMap_ && u64(r.body,40)==pendingMap_) {
+        if (mapArrived_) fail(EPROTO);
+        swapchains_.at(pendingMap_).mapped=status(r.body,48).success();
+        mapReply_=std::move(r); mapArrived_=true; return false;
+    }
     if (r.kind==19 && pendingQuery_ && u64(r.body,40)==pendingQuery_) {
         if (queryArrived_) fail(EPROTO);
         queryReply_=std::move(r); queryArrived_=true; return false;
@@ -341,6 +358,20 @@ Record Client::retire(Deadline deadline) {
     return r;
 }
 Record Client::createSwapchain(const Bytes& p, Deadline deadline) {
+    beginCreateSwapchain(p,deadline);
+    Record reply;
+    while (!takeCreatedSwapchain(&reply)) {
+        auto r=receive(deadline); absorb(r,0,0);
+    }
+    return reply;
+}
+bool Client::takeCreatedSwapchain(Record* out) {
+    if (!createArrived_) return false;
+    *out=std::move(createReply_); createArrived_=false; pendingCreate_=0;
+    return true;
+}
+void Client::beginCreateSwapchain(const Bytes& p, Deadline deadline) {
+    require(!pendingCreate_);
     require(bound_ && !retiring_ && !revoked_ && p.size()>=80);
     auto request=u64(p,0), device=u64(p,8), old=u64(p,16);
     require(request>lastRequest_ && device && (!old || swapchains_.count(old)));
@@ -354,17 +385,24 @@ Record Client::createSwapchain(const Bytes& p, Deadline deadline) {
         require(std::find(families.begin(),families.end(),family)==families.end()); families.push_back(family);
     }
     require(swapchains_.size()<64);
-    lastRequest_=request; send(25,p,deadline); auto r=await(26,request,deadline);
-    if (status(r.body,56).success()) {
-        auto id=u64(r.body,48); auto actual=u32(r.body,72);
-        if (id<=lastSwapchain_ || actual<u32(p,28)) fail(EPROTO);
-        lastSwapchain_=id;
-        Swapchain state{}; state.count=actual; state.acquired.resize(actual,false); state.releasedSerial.resize(actual,0);
-        swapchains_.emplace(id,std::move(state));
-    }
-    return r;
+    lastRequest_=request; pendingCreate_=request; pendingCreateMinimum_=u32(p,28);
+    send(25,p,deadline);
 }
 Record Client::mapSwapchain(uint64_t id, const std::vector<uint64_t>& images, Deadline deadline, uint32_t flags) {
+    beginMapSwapchain(id,images,deadline,flags);
+    Record reply;
+    while (!takeMappedSwapchain(&reply)) {
+        auto r=receive(deadline); absorb(r,0,0);
+    }
+    return reply;
+}
+bool Client::takeMappedSwapchain(Record* out) {
+    if (!mapArrived_) return false;
+    *out=std::move(mapReply_); mapArrived_=false; pendingMap_=0;
+    return true;
+}
+void Client::beginMapSwapchain(uint64_t id, const std::vector<uint64_t>& images, Deadline deadline, uint32_t flags) {
+    require(!pendingMap_);
     require(bound_ && !retiring_ && !revoked_ && swapchains_.count(id) && flags<=3 && flags!=2);
     auto& swap=swapchains_.at(id);
     require(!swap.mapped && !swap.retiring);
@@ -378,8 +416,7 @@ Record Client::mapSwapchain(uint64_t id, const std::vector<uint64_t>& images, De
     require(!sorted.empty() && sorted[0] && std::adjacent_find(sorted.begin(),sorted.end())==sorted.end());
     Bytes p; put64(p,id); put32(p,images.size()); put32(p,flags);
     for (auto image:images) put64(p,image);
-    send(27,p,deadline); auto r=await(28,id,deadline);
-    swap.mapped=status(r.body,48).success(); return r;
+    pendingMap_=id; send(27,p,deadline);
 }
 void Client::acquireLocally(uint64_t id, uint32_t index) {
     require(bound_ && !retiring_ && !revoked_ && swapchains_.count(id));
