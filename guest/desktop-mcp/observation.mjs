@@ -1,5 +1,5 @@
-// The agent's view of the seat as compact text: the windows, then the focused window's
-// controls one per line under short ids (e1, e2, …). After the first observation of a
+// The agent's view of the seat as compact text: the focused window (the others only as a
+// count), then its controls one per line under short ids (e1, e2, …). After the first observation of a
 // window, later ones carry only what changed: controls added, removed or changed, and windows
 // opened, closed or focused. Short ids stay the same for a control as long as the server
 // runs, so the model refers back to a line it saw several steps ago.
@@ -47,8 +47,11 @@ export class Observer {
     const previous = this.windows
     this.windows = now
     if (full || !previous) {
-      lines.push(listing.windows.length ? 'Windows:' : 'No windows are open on the agent seat.')
-      for (const w of listing.windows) lines.push(`  ${this.windowLine(w)}`)
+      // The focused window alone; the others are a count (look with windows lists them).
+      const focus = now.get(listing.focused)
+      const others = listing.windows.length - (focus ? 1 : 0)
+      if (focus) lines.push(`In ${this.windowLine(focus)}${others ? ` (${others} other window${others > 1 ? 's' : ''})` : ''}`)
+      else lines.push(listing.windows.length ? `No window has the keyboard (${others} open).` : 'No windows are open on the agent seat.')
     } else {
       for (const w of listing.windows) {
         const before = previous.get(w.id)
@@ -73,7 +76,6 @@ export class Observer {
     const before = this.seen.get(focused)
     this.seen.set(focused, current)
     if (full || !before) {
-      lines.push(focused != null ? `Controls of ${focused}:` : 'Controls:')
       for (const line of current.values()) lines.push(line)
       if (!current.size) lines.push('(none)')
       return lines.join('\n')
@@ -84,7 +86,7 @@ export class Observer {
       else if (before.get(short) !== line) changes.push(`~ ${line}`)
     }
     for (const short of before.keys()) if (!current.has(short)) changes.push(`- ${short}`)
-    lines.push(changes.length ? `Changes in ${focused}:` : `No change in the controls of ${focused}.`)
+    if (!changes.length) lines.push(lines.length ? 'No change in its controls.' : 'No change.')
     lines.push(...changes)
     return lines.join('\n')
   }

@@ -1485,6 +1485,18 @@ def act(display_name, element, action, text):
             raise Failure("set-text needs --text", 2)
         # The toolkit's EditableText, when the field then reads the new text: some accept the
         # call and change nothing (Firefox's web fields).
+        # A number for a numeric control (spin button, slider) goes in through its Value, which
+        # the toolkit applies at once; typed digits wait for Enter or a focus change.
+        try:
+            number = float(text)
+        except ValueError:
+            number = None
+        if number is not None and node.get_role() in _roles(tree.Atspi, "SPIN_BUTTON", "SLIDER") and node.get_value_iface() is not None:
+            try:
+                if tree.Atspi.Value.set_current_value(node, number):
+                    return
+            except Exception:
+                pass
         pid = screen.pid(xid)
         try:
             if pid not in INERT_EDITABLE and node.get_editable_text_iface() is not None and tree.Atspi.EditableText.set_text_contents(node, text):
@@ -1819,6 +1831,11 @@ def execute(args):
             return {"ok": True, **({"note": note} if note else {})}, 0
         target = Target(args.display)
         result = {"window": target.window}
+        if target.app is not None:
+            try:
+                result["toolkit"] = f"{target.app.get_toolkit_name() or ''} {target.app.get_toolkit_version() or ''}".strip()
+            except Exception:
+                pass
         if args.command == "text":
             result["text"] = read_text(target) if target.app is not None else ""
             if len(result["text"]) > MAX_TEXT:
