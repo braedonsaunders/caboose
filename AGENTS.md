@@ -27,5 +27,8 @@ by the golden vectors in `guest/display/vectors`.
   check that can be run against a real host and is documented next to the code.
 - **Commits.** Small, descriptive, imperative subject lines. Work on a branch and open a
   pull request into `main`; keep `main` green.
+- **Checks.** GitHub checks run once when a pull request is marked ready for review, not on
+  every push; draft pull requests run none. Run a check again on demand with
+  `gh workflow run <workflow> --ref <branch>`.
 - **Secrets.** Never commit tokens, keys, pairing files, or host addresses that are not
   documentation examples.
