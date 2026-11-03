@@ -148,6 +148,7 @@ impl State {
         }
         let id = self.windows.reserve_id();
         self.children.insert(id, Child { parent, source: Source::X11 { window, toplevel }, place: None, dirty: true, announced: None });
+        tracing::info!("child window {id}: X11 window {window:#x} inset in window {parent}");
         (id, true)
     }
 
@@ -158,6 +159,7 @@ impl State {
         }
         let id = self.windows.reserve_id();
         self.children.insert(id, Child { parent, source: Source::Subsurface(surface.clone()), place: None, dirty: true, announced: None });
+        tracing::info!("child window {id}: a subsurface of window {parent}");
         (id, true)
     }
 
@@ -173,6 +175,7 @@ impl State {
             if self.queue_gpu_revoke(grant).is_err() { self.gpu_control_failed(); }
         }
         let Some(child) = self.children.remove(id) else { return };
+        tracing::info!("child window {id} of window {} ended", child.parent);
         if child.announced.is_some() {
             if let Some(s) = &self.session {
                 self.net.send(s.conn, &proto::Message::WindowDestroy { id });
@@ -223,11 +226,13 @@ impl State {
             child.place = place;
             match (now, &child.announced) {
                 (None, Some(_)) => {
+                    tracing::info!("child window {id} hidden");
                     self.net.send(conn, &proto::Message::WindowDestroy { id });
                     child.announced = None;
                 }
                 (None, None) => {}
                 (Some(now), None) => {
+                    tracing::info!("child window {id} shown at {:?}, clip {:?}, stack {:?}", now.geometry, now.clip, now.stack);
                     self.net.send(conn, &proto::Message::WindowCreate(now.clone()));
                     child.announced = Some(now);
                 }

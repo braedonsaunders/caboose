@@ -291,7 +291,7 @@ impl State {
                 gpu_live_epoch: self.gpu_grants.as_ref().and_then(|g| g.epoch_if_ready()),
             }),
         );
-        tracing::info!("connection {conn}: session started");
+        tracing::info!("connection {conn}: session started{}", if hello.children { " (shows child windows)" } else { "" });
         let audio = hello.audio_decoders.as_ref().is_some_and(|d| d.iter().any(|c| c == "opus"));
         let clipboard_types = hello.clipboard_types.clone().unwrap_or_default();
         self.session = Some(Session {
