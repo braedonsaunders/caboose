@@ -143,3 +143,15 @@ whole-process time. All answer hashes must match, no process may write more than
 record per new answer, the cold process may take at most 10% plus 50 ms longer than the
 baseline, and the executor must drain cleanly. These Linux measurements do not establish
 phone latency.
+
+## GL client after its executor leaves
+
+```sh
+sh apps/ios/GPUStream/gfxstream/linux-executor/check-gl-loss.sh IMAGE WORK DRIVER GL_LOSS_EXIT OUT
+```
+
+`GL_LOSS_EXIT` is `guest/gpu/gfxstream/driver/sync-check/gl_loss_exit.c` built against
+libdl. It renders through Zink into an offscreen colour buffer and flushes every frame; the
+check ends the executor mid-frame and requires the program to tear its context down and
+exit. It prints the frames rendered and the teardown time. `KEEP_EXECUTOR=1` keeps the
+executor, for the same client's teardown with its executor present.
