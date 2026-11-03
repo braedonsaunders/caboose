@@ -48,9 +48,24 @@ export async function runSpecialist(task, { observe, decide, act, trace = () => 
   const metrics = { attemptedActions: 0, actions: 0, observations: 0, observationMs: 0, modelMs: 0, actionMs: 0, rejectedActions: 0, waits: 0 }
   const result = (status, reason) => ({ status, ...(reason ? { reason } : {}), metrics: { ...metrics, elapsedMs: now() - started } })
   const check = () => { signal?.throwIfAborted(); if (now() - started > 60_000) throw new Error('task deadline exceeded') }
+  // A window that just took focus may still be building its accessibility tree: after focus
+  // moves, observe again until two observations agree (at most 10 more, 100 ms apart).
+  let lastFocused
+  const settled = async () => {
+    let state = await observe(task.window)
+    const ids = s => JSON.stringify((s.elements ?? []).map(e => [e.id, e.name, e.value, e.states]))
+    for (let tries = 0; lastFocused !== undefined && state.focused !== lastFocused && tries < 10; tries++) {
+      await new Promise(resolve => setTimeout(resolve, 100))
+      const again = await observe(task.window)
+      if (again.focused === state.focused && (again.elements ?? []).length && ids(again) === ids(state)) { state = again; break }
+      state = again
+    }
+    lastFocused = state.focused
+    return state
+  }
   const read = async () => {
     check()
-    const before = now(), state = await observe(task.window)
+    const before = now(), state = await settled()
     metrics.observationMs += now() - before; metrics.observations++
     check()
     const family = state.windows ? taskWindows(task.window, state.windows) : [{ id: task.window }]
@@ -73,7 +88,8 @@ export async function runSpecialist(task, { observe, decide, act, trace = () => 
       check()
       const before = now()
       let choice
-      try { choice = await decide({ objective: task.objective, goal: task.goal, elements, ...(windowLabel ? { window: windowLabel } : {}), ...(task.values ? { values: task.values } : {}) }, signal) }
+      const decidedIn = windowLabel
+      try { choice = await decide({ objective: task.objective, goal: task.goal, elements, ...(decidedIn ? { window: decidedIn } : {}), ...(task.values ? { values: task.values } : {}) }, signal) }
       finally { metrics.modelMs += now() - before }
       check()
       if (choice?.action === 'blocked') return result('needs_clarification', choice.reason ?? 'specialist cannot select a grounded action')
@@ -107,7 +123,7 @@ export async function runSpecialist(task, { observe, decide, act, trace = () => 
       metrics.actionMs += now() - actionStart; metrics.actions++
       const after = await read()
       // Raw observations only reach an explicitly supplied local trace sink.
-      await trace({ objective: task.objective, goal: task.goal, before: elements, action, after })
+      await trace({ objective: task.objective, goal: task.goal, ...(decidedIn ? { window: decidedIn } : {}), before: elements, action, after })
       elements = after
     }
   } catch (error) {

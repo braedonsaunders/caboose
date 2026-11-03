@@ -105,3 +105,19 @@ test('a window title is an observable goal', async () => {
   const { validateTask } = await import('./specialist.mjs')
   assert.throws(() => validateTask({ ...task, goal: { title: 'x', name: 'y' } }), /window title alone/)
 })
+test('a window that just took focus is observed until its controls settle', async () => {
+  const dialog = { id: '9-123-name', name: 'Name', role: 'text', value: '', states: ['editable'] }
+  let focused = 7, reads = 0
+  const windows = [{ id: 7, parent: null, title: 'Editor' }, { id: 9, parent: 7, kind: 'dialog', title: 'Save As' }]
+  const seen = []
+  const f = fixture({
+    observe: async () => {
+      if (focused === 9) reads++
+      return { focused, windows, elements: focused === 7 ? [element] : reads < 3 ? [] : [dialog] }
+    },
+    decide: async observation => { seen.push(observation.elements.length); return focused === 7 ? { action: 'click_element', id: element.id } : { action: 'blocked' } },
+    act: async () => { focused = 9 },
+  })
+  const r = await runSpecialist({ ...task, goal: { title: 'done' } }, f.options)
+  assert.deepEqual(seen, [1, 1]); assert.equal(r.status, 'needs_clarification')
+})
