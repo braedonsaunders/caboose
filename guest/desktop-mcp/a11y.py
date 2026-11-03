@@ -828,6 +828,76 @@ class Bus:
         return best
 
 
+# Windows programs under Wine: Wine has no AT-SPI bridge, so caboose-msaa.exe, run in the
+# program's own prefix, reads its Win32 controls (wine/caboose-msaa.c). Their element paths
+# start with WINE_CONTROL (a child window) or WINE_MENU.
+WINE_CONTROL, WINE_MENU = 9000, 9001
+MSAA = [os.path.join(os.path.dirname(os.path.abspath(__file__)), "wine", "caboose-msaa.exe"),
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "caboose-msaa.exe")]
+
+
+def wine_prefix(pid):
+    """The Wine prefix of a Windows program's process, or None for any other process."""
+    try:
+        with open(f"/proc/{pid}/maps") as maps:
+            if not any(line.rstrip().endswith(("/ntdll.so", "wine64-preloader", "wine-preloader")) for line in maps):
+                return None
+        with open(f"/proc/{pid}/environ", "rb") as env:
+            values = dict(item.split(b"=", 1) for item in env.read().split(b"\0") if b"=" in item)
+    except OSError:
+        return None
+    prefix = values.get(b"WINEPREFIX") or (values.get(b"HOME", b"") + b"/.wine")
+    return prefix.decode(errors="replace")
+
+
+def wine_bridge(prefix, *fields):
+    helper = next((path for path in MSAA if os.path.exists(path)), None)
+    if helper is None:
+        return None
+    request = "\t".join(f.replace("\t", " ").replace("\n", " ") for f in fields) + "\n"
+    try:
+        done = subprocess.run(["wine", helper], input=request, capture_output=True, text=True, timeout=15,
+                              env=dict(os.environ, WINEPREFIX=prefix, WINEDEBUG="-all"))
+        return json.loads(done.stdout.splitlines()[0]) if done.stdout.strip() else None
+    except (OSError, subprocess.TimeoutExpired, ValueError, IndexError):
+        return None
+
+
+def wine_path(path):
+    kind, *rest = path.split(".")
+    return [WINE_CONTROL if kind == "w" else WINE_MENU] + [int(i) for i in rest]
+
+
+def wine_elements(target, prefix):
+    """The Win32 controls of the focused window of a program under Wine, as elements."""
+    title = target.screen.title(target.xid)
+    answer = wine_bridge(prefix, "list", title)
+    if not answer or not answer.get("ok"):
+        return None
+    rect = target.screen.rect(target.xid) or {}
+    wx, wy, ww, wh = answer.get("window") or [0, 0, 0, 0]
+    sx = (ww / rect["width"]) if rect.get("width") and ww else 1
+    sy = (wh / rect["height"]) if rect.get("height") and wh else 1
+    found = []
+    for e in answer.get("elements", []):
+        name = e.get("name") or ""
+        fingerprint = hashlib.sha1(f"wine|{e['role']}|{name[:100]}".encode()).hexdigest()[:6]
+        element = {"id": element_id(target.xid, target.pid, wine_path(e["path"]), fingerprint), "role": e["role"], "name": name,
+                   "states": [st for st in e.get("states", []) if st != "focusable"]}
+        x, y, w, h = e.get("bounds") or [0, 0, 0, 0]
+        if w and h:
+            element["bounds"] = {"x": round(rect.get("x", 0) + (x - wx) / sx), "y": round(rect.get("y", 0) + (y - wy) / sy),
+                                 "width": max(1, round(w / sx)), "height": max(1, round(h / sy))}
+        actions = ["press"] if e["role"] not in ("label", "panel", "status bar", "tool bar", "page tab list", "menu") and "disabled" not in e.get("states", []) else []
+        if "editable" in e.get("states", []):
+            actions.append("set-text")
+        element["actions"] = actions
+        if e.get("value"):
+            element["value"] = e["value"][:MAX_NAME]
+        found.append(element)
+    return found
+
+
 def titled_pid(bus, title):
     """The process of the one application on the bus with a showing window of this title."""
     if not title or not getattr(bus, "address", None):
@@ -1346,7 +1416,13 @@ class Target:
             return
         self.bus = get_bus(self.screen.bus_display())
         self.app = self.bus.application(self.pid)
+        self.wine = None
         if self.app is None:
+            prefix = wine_prefix(self.pid)
+            if prefix is not None:
+                self.wine = wine_elements(self, prefix)
+                if self.wine is not None:
+                    return
             self.bus.retry(self.screen.bus_display())
             self.note = "The focused window's application exposes no accessibility tree; use a screenshot."
             return
@@ -1589,7 +1665,59 @@ def resolve(display_name, element):
     return screen, xid, tree, node, states, top_origin(screen, xid, pid, tree, top)
 
 
+def wine_act(display_name, element, action, text):
+    """An action on a control of a program under Wine; False when the id is not one."""
+    match = ID_PATTERN.fullmatch(element or "")
+    if not match:
+        return False
+    path = [int(i) for i in match.group(3).split(".")]
+    if path[0] not in (WINE_CONTROL, WINE_MENU):
+        return False
+    xid, pid = int(match.group(1), 16), int(match.group(2))
+    screen = make_screen(display_name)
+    prefix = wine_prefix(pid)
+    if xid not in screen.clients or screen.pid(xid) != pid or not screen.confined(pid) or prefix is None:
+        raise Failure("element not found", NOT_FOUND)
+    where = ("w." if path[0] == WINE_CONTROL else "m.") + ".".join(str(i) for i in path[1:])
+    if action == "press":
+        answer = wine_bridge(prefix, "press", screen.title(xid), where)
+    elif action == "set-text":
+        answer = wine_bridge(prefix, "set", screen.title(xid), where, text or "")
+        if not answer or not answer.get("ok"):
+            # A control that takes no text by message (Scintilla's custom editor): the seat's
+            # pointer gives it focus and its keyboard replaces the text.
+            class Window:
+                pass
+            target = Window()
+            target.screen, target.xid, target.pid = screen, xid, pid
+            element_here = None
+            for _ in range(10):  # the window may be retitling as the text changes
+                target.screen = make_screen(display_name)
+                element_here = next((e for e in wine_elements(target, prefix) or [] if e["id"] == element), None)
+                if element_here:
+                    break
+                time.sleep(0.1)
+            bounds = (element_here or {}).get("bounds")
+            if not bounds:
+                raise Failure("the control takes no text and has no place on screen to type into")
+            screen.activate(xid)
+            screen.click(xid, bounds["x"] + min(bounds["width"] // 2, 40), bounds["y"] + min(bounds["height"] // 2, 20))
+            time.sleep(0.1)
+            screen.clear_text(xid)
+            time.sleep(0.1)
+            if text:
+                screen.type_text(xid, text)
+            return True
+    else:
+        raise Failure(f"{action} is not available on this control")
+    if not answer or not answer.get("ok"):
+        raise Failure((answer or {}).get("error") or "the program did not answer", NOT_FOUND if (answer or {}).get("error") == "element not found" else 1)
+    return True
+
+
 def act(display_name, element, action, text):
+    if wine_act(display_name, element, action, text):
+        return None
     screen, xid, tree, node, states, origin = resolve(display_name, element)
     if action == "press":
         if not (tree.has(states, "ENABLED") or tree.has(states, "SENSITIVE")):
@@ -2031,14 +2159,21 @@ def execute(args):
             except Exception:
                 pass
         if args.command == "text":
-            result["text"] = read_text(target) if target.app is not None else ""
+            if getattr(target, "wine", None) is not None:
+                result["text"] = "\n".join(e.get("value") or e["name"] for e in target.wine if e.get("value") or e["name"])
+            else:
+                result["text"] = read_text(target) if target.app is not None else ""
             if len(result["text"]) > MAX_TEXT:
                 result["text"] = result["text"][:MAX_TEXT]
                 result["truncated"] = True
         else:
             query = args.query if args.command == "find" else None
             role = args.role if args.command == "find" else None
-            result["elements"] = collect(target, query, role) if target.app is not None else []
+            if getattr(target, "wine", None) is not None:
+                q = _norm(query) if query is not None else None
+                result["elements"] = [e for e in target.wine if (q is None or q in _norm(e["name"])) and role_matches(e["role"], role)]
+            else:
+                result["elements"] = collect(target, query, role) if target.app is not None else []
             if target.app is not None and target.tree.partial:
                 result["partial"] = (f"{len(target.tree.partial)} large container(s) ({', '.join(str(c) for c in target.tree.partial[:3])} children) "
                                      "are read in part: their selected children and the first few")
