@@ -387,18 +387,21 @@ class SurfaceStats:
     """Always on: every 5 s while a surface presents, one CABOOSE_GPU_SURFACE_STATS line with
     its presents per second, present results and source releases from the phone, the longest
     gap between presents, the bytes its process sent to and received from the phone in that
-    window (message payloads, before compression), and when the window ended (UTC). Counters
-    only; no payloads, handles or identities."""
+    window (message payloads, before compression), the session's link in that window (bytes
+    written after compression, time the sender waited on the connection), and when the window
+    ended (UTC). Counters only; no payloads, handles or identities."""
     INTERVAL_NS = 5_000_000_000
 
-    def __init__(self, ordinal, owner):
-        self.ordinal, self.owner = ordinal, owner
+    def __init__(self, ordinal, owner, link=None):
+        self.ordinal, self.owner, self.link = ordinal, owner, link
         self.start = None
 
     def restart(self, now):
         self.start = now
         self.presented = self.results = self.released = self.gap_max = 0
         self.to_phone, self.from_phone = self.owner.get('to_phone', 0), self.owner.get('from_phone', 0)
+        if self.link is not None:
+            self.link_bytes, self.link_blocked = self.link.wire_to_phone, self.link.send_blocked_ns
 
     def event(self, kind, now=None):
         now = time.monotonic_ns() if now is None else now
@@ -415,11 +418,16 @@ class SurfaceStats:
         if elapsed < self.INTERVAL_NS: return
         to_phone = self.owner.get('to_phone', 0) - self.to_phone
         from_phone = self.owner.get('from_phone', 0) - self.from_phone
+        # The session's link, shared by its surfaces: bytes written to the phone after
+        # compression, and the time the sender waited for the connection to take them.
+        link = '' if self.link is None else (
+            f'link_bytes={self.link.wire_to_phone - self.link_bytes} '
+            f'link_blocked_ms={(self.link.send_blocked_ns - self.link_blocked) // 1_000_000} ')
         with contextlib.suppress(OSError):
             print(f'CABOOSE_GPU_SURFACE_STATS surface={self.ordinal} elapsed_ms={elapsed // 1_000_000} '
                   f'fps={self.presented * 1_000_000_000 / elapsed:.1f} presented={self.presented} '
                   f'results={self.results} released={self.released} gap_max_ms={self.gap_max // 1_000_000} '
-                  f'to_phone_bytes={to_phone} from_phone_bytes={from_phone} '
+                  f'to_phone_bytes={to_phone} from_phone_bytes={from_phone} {link}'
                   f'at={time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}', file=sys.stderr, flush=True)
         self.restart(now)
 
@@ -552,6 +560,8 @@ class Session:
         self.capacity_changed = asyncio.Event()
         self.credit_waiters = deque()
         self.sender_stopped = False
+        self.wire_to_phone = 0  # bytes written to the phone's connection, after compression
+        self.send_blocked_ns = 0  # time the sender waited for the connection to drain
         self.processes, self.streams, self.surfaces = {}, {}, {}
         self.surface_epoch = None
         self.surface_count = 0  # surfaces bound in this session, numbering their stats lines
@@ -702,11 +712,16 @@ class Session:
     def window_full(self):
         return self.retained_bytes >= RESUME_WINDOW_BYTES or len(self.retained) >= RESUME_WINDOW_MESSAGES
 
+    async def write_drained(self, data):
+        self.writer.write(data)
+        self.wire_to_phone += len(data)
+        started = time.monotonic_ns()
+        await self.writer.drain()
+        self.send_blocked_ns += time.monotonic_ns() - started
+
     async def write_urgent(self):
         while self.urgent:
-            data = self.urgent.popleft()
-            self.writer.write(data)
-            await self.writer.drain()
+            await self.write_drained(self.urgent.popleft())
 
     async def send_loop(self):
         try:
@@ -731,9 +746,8 @@ class Session:
                 if self.resumable and sequence is not None:
                     self.retained.append((sequence, data))
                     self.retained_bytes += len(data)
-                self.writer.write(data)
                 PRESENT_TRACE.stream(to_phone=len(data))
-                await self.writer.drain()
+                await self.write_drained(data)
                 self.pending_bytes -= charge
                 self.pending_count -= 1
                 self.pending.task_done()
@@ -1571,7 +1585,7 @@ class Broker:
                 'process': process_id, 'window': result.window,
                 'retiring': False, 'retire_sent': False, 'revoke_requested': False,
                 'bind_sent': False, 'disconnected': False, 'retired': asyncio.Event(),
-                'stats': SurfaceStats(session.surface_count, session.processes[process_id])
+                'stats': SurfaceStats(session.surface_count, session.processes[process_id], session)
             }
             session.processes[process_id]['surfaces'].add(key)
             return result

@@ -133,6 +133,13 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
             self.assertRegex(line, r'^CABOOSE_GPU_SURFACE_STATS surface=2 elapsed_ms=5000 fps=0\.6 presented=3 '
                                    r'results=2 released=1 gap_max_ms=2500 to_phone_bytes=4000 from_phone_bytes=700 '
                                    r'at=\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$')
+            # With its session's link, a window also reports compressed bytes and send waits.
+            link = mock.Mock(wire_to_phone=100, send_blocked_ns=0)
+            linked = broker.SurfaceStats(3, owner, link)
+            linked.event('present', 0)
+            link.wire_to_phone, link.send_blocked_ns = 1300, 40_000_000
+            linked.event('present', 5_000_000_000)
+            self.assertIn('link_bytes=1200 link_blocked_ms=40 at=', output.call_args.args[0])
             # The next window counts afresh.
             stats.event('present', 6_000_000_000)
             stats.event('present', 10_000_000_000)
