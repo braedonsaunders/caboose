@@ -217,7 +217,8 @@ class Executor:
     def __init__(self, runtime, socket_, options):
         self.rt, self.ws, self.options = runtime, socket_, options
         self.surfaces = SurfaceController(runtime, self._surface_send, self.fail, options.display,
-                                          FrameLog(options.log_every), checksums=not options.no_checksums)
+                                          FrameLog(options.log_every), checksums=not options.no_checksums,
+                                          fail_binds=options.fail_binds)
         self.decoder = None
         self.identity = None
         self.negotiated = False
@@ -648,6 +649,8 @@ def main():
     parser.add_argument('--extra-formats', default='', metavar='FORMAT:SPACE,...',
                         help='surface formats to report beyond the implementation\'s (VkFormat:VkColorSpaceKHR numbers)')
     parser.add_argument('--no-checksums', action='store_true', help='do not capture presented pictures')
+    parser.add_argument('--fail-binds', type=int, default=0, metavar='N',
+                        help="answer each session's first N surface binds with EAGAIN, as a phone whose layer is not ready does")
     parser.add_argument('--sessions', type=int, default=1, metavar='N',
                         help='connect again after a session ends, as the phone does, for N sessions in all')
     options = parser.parse_args()

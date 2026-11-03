@@ -82,7 +82,9 @@ not arrived. With guest-owned images, queries and the first present do not wait 
 bind. A bounded per-surface pump retains accepted frames and consumes bind, creation,
 mapping and presentation replies independently, including when an application presents
 only once. Private semaphore handoffs consume application waits before present returns.
-A refused bind ends the pending swapchain; subsequent acquisition reports out of date.
+A refused bind ends the pending swapchain; subsequent acquisition reports out of date. A bind
+the phone answered with a failure does not: the pending swapchain's frames wait for its retry,
+through up to 8 failures in a row (about 14 s), and only then end as for a refused bind.
 An outstanding bind or presentation does not postpone guest object destruction. Native
 images, memory, private semaphores, devices and instances are retired only after protocol
 proof; their packets contain no application callbacks or guest pointers. Executor generation

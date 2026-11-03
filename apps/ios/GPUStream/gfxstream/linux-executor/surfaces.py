@@ -986,9 +986,10 @@ class SurfaceController:
             self.indexed = None
             self.receipts = None
 
-    def __init__(self, runtime, send, failed, extent, frames, checksums=True):
+    def __init__(self, runtime, send, failed, extent, frames, checksums=True, fail_binds=0):
         self.rt, self.send, self.failed, self.extent, self.frames = runtime, send, failed, extent, frames
         self.checksums = checksums
+        self.fail_binds = fail_binds
         self.entries = {}
 
     def consume(self, kind, payload, process, token):
@@ -1005,6 +1006,12 @@ class SurfaceController:
             self.entries[grant] = self._Entry(process, identity, None, retiring=True)
             if len(self.entries) > self.LIMIT:
                 return emit(17, Status(errno.ENOSPC).pack())
+            if self.fail_binds > 0:
+                # A phone whose layer for the window is not ready answers EAGAIN; the grant
+                # stays until its retirement, as after any failed bind.
+                self.fail_binds -= 1
+                log(f'surface bind failed window={fields["window"]:#x} errno={errno.EAGAIN} (injected)')
+                return emit(17, Status(errno.EAGAIN).pack())
             status, resource = self._bind(identity, token, fields)
             if resource:
                 entry = self._Entry(process, identity, resource, retiring=not status.succeeded)

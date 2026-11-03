@@ -71,7 +71,8 @@ CABOOSE_LINUX_EXECUTOR presented window=0x200000 swapchain=1 frames=60 serial=60
 CABOOSE_LINUX_EXECUTOR swapchain retired window=0x200000 swapchain=1 frames=300 captured=300 distinct=50 chain=e51ca5e4
 ```
 
-`--no-checksums` presents without captures. `CABOOSE_LINUX_EXECUTOR_TRACE=1` also logs each
+`--no-checksums` presents without captures. `--fail-binds N` answers each session's first N
+surface binds with EAGAIN, as a phone whose layer for the window is not ready does. `CABOOSE_LINUX_EXECUTOR_TRACE=1` also logs each
 present as it is run. SIGUSR1 prints every Python thread's stack.
 
 [`broker_host.py`](broker_host.py) hosts a broker for it in place of the owner's display:
@@ -155,3 +156,16 @@ libdl. It renders through Zink into an offscreen colour buffer and flushes every
 check ends the executor mid-frame and requires the program to tear its context down and
 exit. It prints the frames rendered and the teardown time. `KEEP_EXECUTOR=1` keeps the
 executor, for the same client's teardown with its executor present.
+
+## Bind the phone fails
+
+```sh
+sh apps/ios/GPUStream/gfxstream/linux-executor/check-bind-retry.sh COMPUTER WORK DRIVER WAYLAND_PRESENT OUT
+```
+
+Runs against a running computer container: the executor joins its network namespace with
+`--fail-binds 1` and serves it for the check's duration, replacing any executor it had, and
+`caboose-display-probe` is connected as the viewer. `WAYLAND_PRESENT`
+(`guest/gpu/gfxstream/driver/sync-check/wayland_present.c`) presents 30 frames through
+`DRIVER`, loaded for that process only. The check requires the client to see the failed bind,
+bind on a later attempt and have all 30 frames presented.
