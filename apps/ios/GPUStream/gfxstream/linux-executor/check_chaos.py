@@ -50,6 +50,8 @@ PICTURE = re.compile(r'^(\S+) CABOOSE_LINUX_EXECUTOR picture window=(\S+) serial
                      r'content=([0-9.]+) colours=(\d+)')
 PORT, XDISPLAY = 14695, 181
 FRESH_CHROMIUM = (608, 378)
+# DXVK's d3d11 triangle's window.
+TRIANGLE = (1016, 573)
 PAGE = ('data:text/html,<body style="margin:0;background:%23e8f0ff;font:40px sans-serif">'
         '<h1 style="background:%23204080;color:%23ffd040;margin:0">Caboose</h1>'
         '<div style="width:120px;height:120px;background:%23c03020;animation:s 1s linear infinite"></div>'
@@ -91,6 +93,7 @@ class Seat:
         run('docker', 'cp', '-q', os.path.join(files, 'usr/local/lib/caboose-gpu-live/i386/libvulkan_gfxstream.so'),
             f'{self.computer}:{d}/libvulkan_gfxstream32.so')
         run('docker', 'cp', '-q', os.path.join(files, 'usr/local/bin/caboose-display'), f'{self.computer}:{d}/bin/caboose-display')
+        run('docker', 'cp', '-q', os.path.join(files, 'usr/local/bin/caboose-display-probe'), f'{self.computer}:{d}/bin/caboose-display-probe')
         run('docker', 'cp', '-q', os.path.join(files, 'usr/local/libexec'), f'{self.computer}:{d}/libexec')
         icd = json.dumps({'file_format_version': '1.0.0', 'ICD': {'library_path': f'{d}/libvulkan_gfxstream.so', 'api_version': '1.3.0'}})
         icd32 = json.dumps({'file_format_version': '1.0.0', 'ICD': {'library_path': f'{d}/libvulkan_gfxstream32.so', 'api_version': '1.3.0'}})
@@ -147,8 +150,9 @@ class Seat:
     def viewer(self, start=True):
         self.sh(f"pkill -TERM -f 'caboose-display-probe --url ws://127.0.0.1:{PORT}/'", check=False)
         if start:
-            self.sh(f'exec caboose-display-probe --url ws://127.0.0.1:{PORT}/ --token-file {self.dir}/token --duration 100000 '
-                    f'--display 1280x800@60x1 >> {self.dir}/probe.log 2>&1', user='caboose', detach=True)
+            # Showing child windows (inset GPU windows bind), as the phone does.
+            self.sh(f'exec {self.dir}/bin/caboose-display-probe --url ws://127.0.0.1:{PORT}/ --token-file {self.dir}/token '
+                    f'--duration 100000 --display 1280x800@60x1 --children >> {self.dir}/probe.log 2>&1', user='caboose', detach=True)
 
     def viewer_alive(self):
         return subprocess.run(['docker', 'exec', self.computer, 'pgrep', '-f',
@@ -231,20 +235,44 @@ def main():
         seat.app(f'fresh-gl-{n}', 'timeout 40 glxgears -geometry 320x240')
         expected = {'fresh chromium': None, 'fresh gl': None}
         if o.triangle:
-            bench = os.path.dirname(o.triangle)
-            seat.app(f'fresh-dxvk-{n}', f'env HOME={o.steam_home} timeout 45 flatpak run --env=CABOOSE_GFXSTREAM_SOCKET=$CABOOSE_GFXSTREAM_SOCKET '
-                     f'--env=CABOOSE_GFXSTREAM_SURFACE_SOCKET=$CABOOSE_GFXSTREAM_SURFACE_SOCKET --env=VK_DRIVER_FILES={seat.dir}/icd.json:{seat.dir}/icd32.json '
-                     f'--env=CABOOSE_CHAOS_SEAT={os.getpid()} --filesystem={seat.dir} --filesystem={os.path.dirname(o.proton)}:ro '
-                     f'--command=sh com.valvesoftware.Steam -c '
-                     f'"export STEAM_COMPAT_DATA_PATH={bench}/compat/chaos STEAM_COMPAT_CLIENT_INSTALL_PATH={o.steam_home}/.var/app/'
-                     f'com.valvesoftware.Steam/.local/share/Steam; mkdir -p {bench}/compat/chaos; exec {o.proton} waitforexitandrun {o.triangle}"')
+            seat.app(f'fresh-dxvk-{n}', dxvk_command(45))
             expected['fresh dxvk'] = None
         return expected
+
+    def dxvk_command(seconds):
+        bench = os.path.dirname(o.triangle)
+        return (f'env HOME={o.steam_home} timeout {seconds} flatpak run --env=CABOOSE_GFXSTREAM_SOCKET=$CABOOSE_GFXSTREAM_SOCKET '
+                f'--env=CABOOSE_GFXSTREAM_SURFACE_SOCKET=$CABOOSE_GFXSTREAM_SURFACE_SOCKET --env=VK_DRIVER_FILES={seat.dir}/icd.json:{seat.dir}/icd32.json '
+                f'--env=CABOOSE_CHAOS_SEAT={os.getpid()} --filesystem={seat.dir} --filesystem={os.path.dirname(o.proton)}:ro '
+                f'--command=sh com.valvesoftware.Steam -c '
+                f'"export STEAM_COMPAT_DATA_PATH={bench}/compat/1 STEAM_COMPAT_CLIENT_INSTALL_PATH={o.steam_home}/.var/app/'
+                f'com.valvesoftware.Steam/.local/share/Steam; mkdir -p {bench}/compat/1; exec {o.proton} waitforexitandrun {o.triangle}"')
 
     def stop_fresh():
         seat.stop(f'{seat.dir}/home/fresh-')
         seat.stop('glxgears -geometry 320x240')
+        stop_wine()
+
+    def stop_marked(pattern):
+        marker = f'CABOOSE_CHAOS_SEAT={os.getpid()}'
+        for signal in ('TERM', 'KILL'):
+            seat.sh(f'for p in $(pgrep -u caboose -f "{pattern}"); do tr "\\0" "\\n" < /proc/$p/environ 2>/dev/null | '
+                    f'grep -qx {marker} && kill -{signal} $p; done', user='caboose', check=False)
+            time.sleep(2)
+
+    def stop_wine():
+        # Wine winds down before the next DXVK start, which would otherwise join the running
+        # wineserver's desktop as a child window. Only the seat's own processes are ended.
         seat.stop('triangle.exe')
+        marker = f'CABOOSE_CHAOS_SEAT={os.getpid()}'
+        for _ in range(30):
+            alive = seat.sh(f'for p in $(pgrep -u caboose -f "wineserver|triangle.exe|explorer.exe|winedevice"); do '
+                            f'tr "\\0" "\\n" < /proc/$p/environ 2>/dev/null | grep -qx {marker} && echo $p; done',
+                            user='caboose', check=False).split()
+            if not alive:
+                return
+            seat.sh(f'kill -{"KILL" if _ > 10 else "TERM"} {" ".join(alive)}', user='caboose', check=False)
+            time.sleep(1)
 
     def judge(since, wanted, wait):
         """Whether every wanted app presented a real picture after `since`, within `wait` seconds."""
@@ -264,14 +292,23 @@ def main():
         mark = now()
         seat.app('chromium', f'/usr/bin/chromium --user-data-dir={seat.dir}/home/long --no-first-run --no-default-browser-check '
                  f'--password-store=basic --ozone-platform=wayland --use-gl=angle --use-angle=gl --window-size=1000,620 {shlex.quote(PAGE)}')
-        if o.steam_home:
+        def steam():
             seat.app('steam', f'env HOME={o.steam_home} dbus-run-session -- flatpak run --env=CABOOSE_CHAOS_SEAT={os.getpid()} '
                      '--env=CABOOSE_GFXSTREAM_SOCKET=$CABOOSE_GFXSTREAM_SOCKET --env=CABOOSE_GFXSTREAM_SURFACE_SOCKET=$CABOOSE_GFXSTREAM_SURFACE_SOCKET '
                      f'--env=VK_DRIVER_FILES={seat.dir}/icd.json:{seat.dir}/icd32.json --env=PRESSURE_VESSEL_FILESYSTEMS_RW={seat.dir} '
                      f'--filesystem={seat.dir} com.valvesoftware.Steam')
+        if o.steam_home:
+            steam()
         # Learn the long-lived apps' picture sizes: Chromium's is the largest, Steam's the other.
         time.sleep(60 if o.steam_home else 15)
         sizes = sorted({(w, h) for _, _, w, h, good in seat.pictures(mark) if good}, key=lambda s: -s[0] * s[1])
+        if o.steam_home and len(sizes) < 2:
+            # Starting Steam is not under test: a start that never showed its window is tried once more.
+            print('Steam showed no window; starting it again', flush=True)
+            stop_marked('steam')
+            steam()
+            time.sleep(60)
+            sizes = sorted({(w, h) for _, _, w, h, good in seat.pictures(mark) if good}, key=lambda s: -s[0] * s[1])
         if not sizes:
             raise RuntimeError('no long-lived app presented a real picture before the first cycle')
         chromium_size = sizes[0]
@@ -282,6 +319,15 @@ def main():
             steam_size = sizes[1]
             long_lived['steam'] = lambda w, h, s=steam_size: (w, h) == s
         print(f'long-lived apps presenting: {", ".join(long_lived)} (sizes {sizes[:2]})', flush=True)
+        if o.triangle:
+            # Proton makes its prefix on its first run, which takes longer than a cycle allows.
+            mark = now()
+            seat.app('dxvk-prefix', dxvk_command(240))
+            missing, _ = judge(mark, {'dxvk': lambda w, h: (w, h) == TRIANGLE}, 240)
+            stop_wine()
+            if missing:
+                raise RuntimeError('DXVK presented no real picture before the first cycle')
+            print('DXVK presenting', flush=True)
         events = ['kill', 'drop', 'stall', 'viewer', 'startup']
         for cycle in range(1, o.cycles + 1):
             event = rng.choice(events)
@@ -320,8 +366,7 @@ def main():
             # compositor's own window images (the display's size) show it.
             wanted['fresh gl in the compositor'] = lambda w, h: (w, h) == (1280, 800)
             if 'fresh dxvk' in fresh:
-                known = {chromium_size, (1280, 800), FRESH_CHROMIUM} | ({steam_size} if o.steam_home else set())
-                wanted['fresh dxvk'] = lambda w, h, known=known: (w, h) not in known and w >= 600
+                wanted['fresh dxvk'] = lambda w, h: (w, h) == TRIANGLE
             missing, pictures = judge(mark, wanted, 60)
             stop_fresh()
             seconds = time.monotonic() - started

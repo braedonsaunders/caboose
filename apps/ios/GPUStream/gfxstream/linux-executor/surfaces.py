@@ -147,7 +147,7 @@ def write_picture(path, pixels):
         rgb[1::3] = line[1::4]
         rgb[2::3] = line[0::4] if bgr else line[2::4]
         rows.append(bytes(rgb))
-    temporary = f'{path}.part'
+    temporary = f'{path}.{threading.get_ident()}.part'
     with open(temporary, 'wb') as out:
         out.write(f'P6\n{pixels.width} {pixels.height}\n255\n'.encode())
         out.writelines(rows)
