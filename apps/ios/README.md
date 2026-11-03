@@ -898,7 +898,10 @@ agent task Agent. Listening ports show as chips (`TCP 8080`). Caboose's own proc
 listed apart, under System, and cannot be ended. An app opens to its processes
 (name, PID, state, CPU, memory); tap one for its command, or hold it to copy the command or
 PID. Swipe an app, hold it, or open it for Quit (only when it has windows), Force Quit and
-Kill All Processes; the last two ask first. An app still listed five seconds after Quit is
+Kill All Processes; the last two ask first. With the desktop in front (Laptop, the phone's
+desktop, Switchyard or a TV), the question, the offer to Force Quit and any refusal are asked as
+an alert drawn in the desktop's own scene (`SceneMenu.ask`), which the desktop's pointer and a
+finger both answer and which holds the desktop until answered; elsewhere a native alert asks. An app still listed five seconds after Quit is
 offered Force Quit. The host's refusals are shown as it words them. The list is read every
 two seconds while it is on screen and the app is active, never otherwise.
 

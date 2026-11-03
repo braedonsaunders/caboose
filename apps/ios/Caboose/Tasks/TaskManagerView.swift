@@ -429,46 +429,101 @@ struct ProcessesSection: View {
 
 /// Asks before Force Quit and Kill, offers Force Quit for an app still running after Quit,
 /// and shows what the host refused. Only one presenter is active at a time.
+///
+/// With the desktop in front (`inScene`, `AppModel.scenePromptMenu`), each is asked in the
+/// desktop's scene, where the desktop's pointer and a finger both answer it; a native
+/// alert, which the pointer cannot reach, asks everywhere else.
 struct RunningAppsPrompts: ViewModifier {
     @Environment(AppModel.self) private var model
     let active: Bool
+    var inScene = false
+
+    /// What is waiting to be asked, and where.
+    private struct Asking: Equatable {
+        var confirmation: UUID?
+        var stillRunning: String?
+        var failure: UUID?
+        var scene: ObjectIdentifier?
+        var active: Bool
+    }
 
     func body(content: Content) -> some View {
         let center = model.runningApps
+        let scene = active && inScene ? model.scenePromptMenu : nil
+        let native = active && scene == nil
         content
-            .confirmationDialog(confirmationTitle, isPresented: Binding(
-                get: { active && center.confirmation != nil },
-                set: { if !$0 { center.confirmation = nil } }), titleVisibility: .visible, presenting: center.confirmation) { request in
+            .alert(confirmationTitle, isPresented: Binding(
+                get: { native && center.confirmation != nil },
+                set: { if !$0 { center.confirmation = nil } }), presenting: center.confirmation) { request in
                 Button(Self.button(request.kind), role: .destructive) {
                     Task { await center.end(request.kind, ids: request.ids, name: request.name, model: model) }
                 }
+                Button("Cancel", role: .cancel) {}
             } message: { request in
-                switch request.kind {
-                case .forceQuit:
-                    Text("\(request.name) is asked to end, and killed if it has not ended after 5 seconds. Unsaved changes are lost.")
-                case .kill:
-                    Text("Every process of \(request.name) is killed at once. Unsaved changes are lost.")
-                case .deleteService:
-                    Text("\(request.name) is stopped and its definition removed. Its files are kept.")
-                }
+                Text(Self.message(request))
             }
             .alert(center.stillRunning.map { "\($0.name) Is Still Running" } ?? "", isPresented: Binding(
-                get: { active && center.confirmation == nil && center.stillRunning != nil },
+                get: { native && center.confirmation == nil && center.stillRunning != nil },
                 set: { if !$0 { center.stillRunning = nil } }), presenting: center.stillRunning) { app in
                 Button("Force Quit", role: .destructive) {
                     Task { await center.end(.forceQuit, ids: [app.id], name: app.name, model: model) }
                 }
                 Button("Wait", role: .cancel) {}
             } message: { app in
-                Text("\(app.name) has not quit. Force Quit ends it; unsaved changes are lost.")
+                Text(Self.stillRunningMessage(app.name))
             }
             .alert(center.failure?.title ?? "", isPresented: Binding(
-                get: { active && center.confirmation == nil && center.stillRunning == nil && center.failure != nil },
+                get: { native && center.confirmation == nil && center.stillRunning == nil && center.failure != nil },
                 set: { if !$0 { center.failure = nil } }), presenting: center.failure) { _ in
                 Button("OK", role: .cancel) {}
             } message: { failure in
                 Text(failure.message)
             }
+            .onChange(of: Asking(confirmation: center.confirmation?.id, stillRunning: center.stillRunning?.id,
+                                 failure: center.failure?.id, scene: scene.map(ObjectIdentifier.init), active: active),
+                      initial: true) { _, _ in
+                if active { ask(in: scene) }
+            }
+    }
+
+    private static let keyPrefix = "running-apps:"
+
+    /// The first thing waiting, asked in the scene; a question either scene still shows about
+    /// something answered or asked elsewhere is taken away. Answering or cancelling clears
+    /// it, which asks the next.
+    private func ask(in scene: SceneMenu?) {
+        let center = model.runningApps
+        let prefix = Self.keyPrefix
+        let key: String? = if let request = center.confirmation { prefix + "confirm:" + request.id.uuidString }
+            else if let app = center.stillRunning { prefix + "running:" + app.id }
+            else if let failure = center.failure { prefix + "failure:" + failure.id.uuidString }
+            else { nil }
+        for menu in [model.desktop.menu, model.yard.menu] {
+            menu.withdraw(prefix, keeping: menu === scene ? key : nil)
+        }
+        guard let scene, let key else { return }
+        if let request = center.confirmation {
+            scene.ask(key, title: confirmationTitle, message: Self.message(request),
+                      answer: SceneMenuItem(title: Self.button(request.kind), systemImage: "xmark.octagon", destructive: true) {
+                          guard center.confirmation?.id == request.id else { return }
+                          center.confirmation = nil
+                          Task { await center.end(request.kind, ids: request.ids, name: request.name, model: model) }
+                      },
+                      cancel: { if center.confirmation?.id == request.id { center.confirmation = nil } })
+        } else if let app = center.stillRunning {
+            scene.ask(key, title: "\(app.name) Is Still Running", message: Self.stillRunningMessage(app.name),
+                      answer: SceneMenuItem(title: "Force Quit", systemImage: "xmark.octagon", destructive: true) {
+                          guard center.stillRunning?.id == app.id else { return }
+                          center.stillRunning = nil
+                          Task { await center.end(.forceQuit, ids: [app.id], name: app.name, model: model) }
+                      },
+                      cancelTitle: "Wait",
+                      cancel: { if center.stillRunning?.id == app.id { center.stillRunning = nil } })
+        } else if let failure = center.failure {
+            scene.tell(key, title: failure.title, message: failure.message) {
+                if center.failure?.id == failure.id { center.failure = nil }
+            }
+        }
     }
 
     private var confirmationTitle: String {
@@ -478,6 +533,18 @@ struct RunningAppsPrompts: ViewModifier {
         case .kill: return "Kill All Processes of \(request.name)?"
         case .deleteService: return "Delete the \(request.name) Service?"
         }
+    }
+
+    private static func message(_ request: RunningAppsCenter.Confirmation) -> String {
+        switch request.kind {
+        case .forceQuit: "\(request.name) is asked to end, and killed if it has not ended after 5 seconds. Unsaved changes are lost."
+        case .kill: "Every process of \(request.name) is killed at once. Unsaved changes are lost."
+        case .deleteService: "\(request.name) is stopped and its definition removed. Its files are kept."
+        }
+    }
+
+    private static func stillRunningMessage(_ name: String) -> String {
+        "\(name) has not quit. Force Quit ends it; unsaved changes are lost."
     }
 
     private static func button(_ kind: RunningAppsCenter.Confirmation.Kind) -> String {
@@ -501,7 +568,7 @@ struct TaskManagerPresenter: ViewModifier {
                 set: { if !$0 { model.taskManagerPresented = false } })) {
                 TaskManagerScreen().environment(model)
             }
-            .modifier(RunningAppsPrompts(active: active && !model.taskManagerPresented))
+            .modifier(RunningAppsPrompts(active: active && !model.taskManagerPresented, inScene: true))
     }
 }
 

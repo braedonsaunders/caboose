@@ -288,7 +288,9 @@ private struct DesktopStage: View {
                                 .padding(.bottom, model.desktop.detachedChrome ? 8 * model.desktop.ui : model.desktop.dockBottomInset)
                         }
                         if model.desktop.detachedChrome {
-                            SceneMenuView(menu: model.desktop.menu, space: "desktop", bounds: CGRect(origin: .zero, size: proxy.size), ui: model.desktop.ui)
+                            // Laptop draws its questions once, over its upper screen (`LaptopContainer`).
+                            SceneMenuView(menu: model.desktop.menu, space: "desktop", bounds: CGRect(origin: .zero, size: proxy.size),
+                                          ui: model.desktop.ui, showsPrompts: false)
                             if model.desktop.showsCursor {
                                 Cursor(hit: model.desktop.hovered, ui: model.desktop.ui)
                                     .position(model.desktop.cursor)

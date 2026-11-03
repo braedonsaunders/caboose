@@ -604,8 +604,9 @@ final class DesktopModel {
         menu.show(items ?? [], at: cursor)
     }
 
+    /// Closes an open menu; a question stays until it is answered.
     func closePointerMenu() {
-        menu.close()
+        menu.closeMenu()
         if case .menuItem = hovered { hovered = .none }
     }
 

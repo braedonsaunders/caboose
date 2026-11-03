@@ -1638,6 +1638,16 @@ final class AppModel {
     /// The yard is the desktop on this screen: the Desktop tab, no TV, tiled.
     var yardActive: Bool { deviceDesktopActive && deviceDesktopStyle == .tiled }
 
+    /// Where the shell asks its questions (Force Quit and the like) when the desktop is in
+    /// front: in its own scene (`SceneMenu.ask`), where the desktop's pointer and a finger
+    /// both reach. Nil when an app card or another tab is in front, where a native alert asks.
+    var scenePromptMenu: SceneMenu? {
+        guard phase == .ready, presentedWindowID == nil else { return nil }
+        if externalDisplayActive { return desktop.menu }
+        guard deviceDesktopActive, selectedTab == .desktop else { return nil }
+        return yardActive ? yard.menu : desktop.menu
+    }
+
     private func prepareYard() {
         yard.storageKey = credentials.map { "switchyard." + $0.fileDomainIdentifier }
         // The same pixels as the floating desktop: 2x, whatever the screen.
