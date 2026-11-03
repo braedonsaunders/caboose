@@ -141,6 +141,7 @@ Each patch is one feature. Several change Mesa's generated encoder
 | 0068 extensions-per-executor | The host's instance and device extension lists are asked again after the executor changed (its generation), so a process that outlives its executor offers the new device's extensions |
 | 0069 read-profile-at-exit | `CABOOSE_READ_PROFILE` also reports the totals not yet reported when the process exits (`at_exit`), so a process shorter than its 2 s period reports |
 | 0070 instance-version-once | `vkEnumerateInstanceVersion` is asked once per executor connection and answered from the capability cache's process-local answers after that |
+| 0071 deferred-pool-ids | With batched descriptor sets and one encoder, a descriptor pool asks for its set ids without waiting; the reply is read with the other deferred replies or at the pool's first allocation |
 
 The patch messages describe each change. To change the driver, prepare a tree, commit
 the prepared state, edit, and regenerate the affected patch with `git format-patch`

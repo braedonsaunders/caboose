@@ -1,5 +1,5 @@
 From: Caboose <caboose@local>
-Subject: [PATCH 69/70] Report the read profile at exit too
+Subject: [PATCH 69/71] Report the read profile at exit too
 
 CABOOSE_READ_PROFILE reported every 2 s, so a process shorter than that (a launcher's
 splash, one GL initialization) never reported, and a longer one lost its last period. The

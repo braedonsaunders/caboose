@@ -60,6 +60,11 @@ inline constexpr uint64_t prefetchedFenceWaitNs = 250'000'000;
 // Set while the encoder sends a prefetched fence wait instead of a real one.
 inline thread_local bool sendingPrefetchedFenceWait = false;
 
+// Set while a descriptor pool asks for its set ids without waiting: the encoder sends the
+// request, queues its reply as data and leaves the reply here, to be read when the pool
+// first allocates.
+inline thread_local std::shared_ptr<QueryReply>* deferredPoolIds = nullptr;
+
 // Told how long each drain that had replies to read blocked, in microseconds.
 inline void (*drainObserver)(uint64_t us) = nullptr;
 
@@ -173,12 +178,12 @@ public:
         entry.replyBytes += wireSize(entry.replies.back());
         total_.fetch_add(1, std::memory_order_relaxed);
     }
-    // A command whose reply is data and then a result, kept in `reply` when it is read
-    // (query_results.h).
-    void addDataReply(const void* encoder, std::shared_ptr<QueryReply> reply, uint64_t bytes) {
+    // A command whose reply is data and then a result (or only data, `withResult` false),
+    // kept in `reply` when it is read (query_results.h).
+    void addDataReply(const void* encoder, std::shared_ptr<QueryReply> reply, uint64_t bytes, bool withResult = true) {
         std::lock_guard<std::mutex> lock(mutex_);
         auto& entry = pending_[encoder];
-        Reply value; value.data = std::move(reply); value.bytes = bytes;
+        Reply value; value.data = std::move(reply); value.bytes = bytes; value.dataResult = withResult;
         entry.replies.push_back(std::move(value));
         entry.bytes += bytes;
         entry.replyBytes += wireSize(entry.replies.back());
@@ -353,7 +358,7 @@ public:
 private:
     struct Reply;
     static size_t wireSize(const Reply& reply) {
-        if (reply.data) return reply.data->data.size() + sizeof(int32_t);
+        if (reply.data) return reply.data->data.size() + (reply.dataResult ? sizeof(int32_t) : 0);
         return reply.handle ? size_t(reply.count) * sizeof(uint64_t) + sizeof(int32_t) : sizeof(int32_t);
     }
     template<class Stream>
@@ -362,7 +367,7 @@ private:
             auto& data = reply.data->data;
             int32_t result = 0;
             if ((!data.empty() && !stream->tryRead(data.data(), data.size())) ||
-                !stream->tryRead(&result, sizeof(result))) {
+                (reply.dataResult && !stream->tryRead(&result, sizeof(result)))) {
                 stream->invalidate();
                 return false;
             }
@@ -426,6 +431,7 @@ private:
         uint64_t bytes = 0;
         std::shared_ptr<QueryReply> data;  // a data reply (addDataReply)
         uint32_t opcode = 0;  // the create's call, for the log when the device refuses it
+        bool dataResult = true;  // a data reply's data is followed by a result
     };
     struct Entry { std::vector<Reply> replies; uint64_t bytes = 0, replyBytes = 0; };
     std::mutex mutex_;

@@ -174,6 +174,32 @@ int main() {
         creates.addHandleCreate(&a, handle, 40);
         assert(!creates.drain(&a, &replies) && replies.invalidated && creates.pending() == 0);
     }
+    // A reply of data only (a pool's set ids) is read whole and nothing after it; a result
+    // queued behind it is still drained in order.
+    {
+        DeferredReplies table;
+        ByteStream replies;
+        replies.put<uint32_t>(2); replies.put<uint64_t>(1); replies.put<uint64_t>(0x51); replies.put<uint64_t>(0x52);
+        replies.put<int32_t>(0);
+        auto ids = std::make_shared<QueryReply>();
+        ids->data.resize(4 + 8 + 2 * 8);
+        table.addDataReply(&a, ids, 32, false);
+        table.add(&a, 1, 4);
+        assert(table.drain(&a, &replies) && !replies.invalidated && replies.next == replies.bytes.size());
+        assert(ids->done.load() && table.pending() == 0);
+        uint64_t second = 0; std::memcpy(&second, ids->data.data() + 20, 8);
+        assert(second == 0x52);
+    }
+    // A truncated data reply is a transport failure.
+    {
+        DeferredReplies table;
+        ByteStream replies;
+        replies.put<uint32_t>(2); replies.put<uint64_t>(1);
+        auto ids = std::make_shared<QueryReply>();
+        ids->data.resize(4 + 8 + 2 * 8);
+        table.addDataReply(&a, ids, 32, false);
+        assert(!table.drain(&a, &replies) && replies.invalidated && !ids->done.load());
+    }
 
     // An unchecked deferred failure is reported and tolerated; a checked one
     // (a result the application can no longer observe) loses the stream.
