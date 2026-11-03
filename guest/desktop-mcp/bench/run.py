@@ -30,6 +30,7 @@ p.add_argument('--model', required=True)
 p.add_argument('--output', required=True)
 p.add_argument('--task', action='append', default=[])
 p.add_argument('--timeout', type=int, default=900)
+p.add_argument('--tools', default='/opt/caboose', help="directory of desktop MCP's helpers inside the computer")
 p.add_argument('--trace', help='CABOOSE_DESKTOP_TRACE file of the --mcp server inside the computer, summarised per task')
 a = p.parse_args()
 tasks = [t for t in json.loads((here / 'tasks.json').read_text())['tasks'] if not a.task or t['id'] in a.task]
@@ -38,7 +39,7 @@ BENCH = '/tmp/caboose-bench'
 
 
 def computer(script, timeout=120):
-    body = f"export BENCH={BENCH}\nset -a; . /run/caboose/agent-display.env; set +a\n{prelude}\n{script}\n"
+    body = f"export BENCH={BENCH} TOOLS={shlex.quote(a.tools)}\nset -a; . /run/caboose/agent-display.env; set +a\n{prelude}\n{script}\n"
     r = subprocess.run(shlex.split(a.exec_), input=body, text=True, capture_output=True, timeout=timeout)
     return r.returncode, (r.stdout + r.stderr).strip()
 

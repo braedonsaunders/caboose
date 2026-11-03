@@ -13,6 +13,7 @@
   "desktop-mcp/observation.mjs",
   "desktop-mcp/a11y.py",
   "desktop-mcp/seat.py",
+  "desktop-mcp/launcher.py",
   "desktop-mcp/ensure-agent-seat.mjs",
   "desktop-mcp/caboose-agent-seat",
   "container/caboose-session",

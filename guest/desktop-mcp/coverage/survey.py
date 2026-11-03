@@ -59,7 +59,7 @@ def toolkit(pid):
     names = {line.rsplit('/', 1)[-1] for line in maps.splitlines() if '/' in line} | {exe.rsplit('/', 1)[-1]}
     for label, markers in LIBRARIES:
         if label == 'Chromium/Electron':
-            if any(n.startswith('libffmpeg') for n in names) and any(n.endswith('.pak') or n == 'icudtl.dat' for n in names):
+            if any(n.endswith('.pak') or n in ('icudtl.dat', 'v8_context_snapshot.bin') for n in names):
                 return label, flatpak
             continue
         if any(any(n.startswith(m) or m in n for m in markers) for n in names):
@@ -110,7 +110,30 @@ def announce():
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
 
 
-def end(seat, process):
+def agent_orphans(before):
+    """Processes started since `before` (a pid set) that outlived their parent and belong to
+    the agent profile: helpers an application left behind (a sandbox's image loaders)."""
+    found = []
+    for name in os.listdir('/proc'):
+        if not name.isdigit() or int(name) in before:
+            continue
+        try:
+            status = pathlib.Path(f'/proc/{name}/status').read_text()
+            if '\nPPid:\t1\n' not in status:
+                continue
+            marks = pathlib.Path(f'/proc/{name}/cmdline').read_bytes()
+            try:
+                marks += pathlib.Path(f'/proc/{name}/environ').read_bytes()
+            except OSError:
+                pass
+            if b'/caboose/agent-seat/' in marks or b'agent-bus' in marks:
+                found.append(int(name))
+        except OSError:
+            continue
+    return found
+
+
+def end(seat, process, before):
     for w in seat.windows()['windows']:
         try: os.kill(w['pid'], signal.SIGTERM)
         except (OSError, KeyError, TypeError): pass
@@ -124,13 +147,17 @@ def end(seat, process):
         except (OSError, KeyError, TypeError): pass
     try: os.killpg(process.pid, signal.SIGKILL)
     except OSError: pass
+    for pid in agent_orphans(before):
+        try: os.kill(pid, signal.SIGKILL)
+        except OSError: pass
 
 
 def measure(app, seat, wait):
     env = dict(os.environ, ACCESSIBILITY_ENABLED='1', GNOME_ACCESSIBILITY='1', QT_LINUX_ACCESSIBILITY_ALWAYS_ON='1', XDG_SESSION_TYPE='wayland')
     env.pop('NO_AT_BRIDGE', None)
     announce()
-    process = subprocess.Popen(app['exec'], env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    before = {int(n) for n in os.listdir('/proc') if n.isdigit()}
+    process = subprocess.Popen([sys.executable, str(HERE / 'launcher.py'), shlex.join(app['exec'])], env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
     record = {'id': app['id'], 'name': app['name']}
     try:
         window, deadline = None, time.monotonic() + wait
@@ -180,7 +207,7 @@ def measure(app, seat, wait):
             helper.close()
         return record
     finally:
-        end(seat, process)
+        end(seat, process, before)
 
 
 def table(path):

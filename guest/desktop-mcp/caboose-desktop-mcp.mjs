@@ -25,6 +25,7 @@ const TRACE = process.env.CABOOSE_DESKTOP_TRACE
 // Installed side by side: /opt/caboose/desktop-mcp.mjs, a11y.py and seat.py.
 const A11Y = fileURLToPath(new URL('./a11y.py', import.meta.url))
 const SEAT = fileURLToPath(new URL('./seat.py', import.meta.url))
+const LAUNCHER = fileURLToPath(new URL('./launcher.py', import.meta.url))
 // What a launched app needs to build its accessibility tree: GTK's bridge must not be
 // switched off (NO_AT_BRIDGE, GTK_A11Y=none), Chromium and Electron read
 // ACCESSIBILITY_ENABLED, Firefox GNOME_ACCESSIBILITY, Qt QT_LINUX_ACCESSIBILITY_ALWAYS_ON.
@@ -194,7 +195,7 @@ async function step(s) {
     const ready = await ensureAgentSeat()
     Object.assign(launchEnv, ready, { DISPLAY })
     await announceAssistiveTechnology(ready)
-    spawn('/bin/sh', ['-c', command], { env: launchEnv, detached: true, stdio: 'ignore' }).unref()
+    spawn('python3', [LAUNCHER, command], { env: launchEnv, detached: true, stdio: 'ignore' }).unref()
   } else throw new Error('unknown step; use press, set, key, type, click, scroll, drag, focus, wait or launch')
 }
 

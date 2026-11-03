@@ -775,6 +775,14 @@ class Bus:
     def application(self, pid):
         if not self.address:
             return None
+        found = self._application(pid)
+        if found is None:
+            proxy = sandbox_bus_proxy(pid)
+            if proxy is not None:
+                found = self._application(proxy)
+        return found
+
+    def _application(self, pid):
         # A process can register more than once (Qt's bridge beside another toolkit's, one of
         # them empty): the registration with windows is the application.
         best, most = None, -1
@@ -788,6 +796,34 @@ class Bus:
             except Exception:
                 continue
         return best
+
+
+def sandbox_bus_proxy(pid):
+    """A sandboxed process (Flatpak) reaches the accessibility bus through a proxy, so the
+    registry knows it by the proxy's process: the one listening on the socket bound into the
+    sandbox at /run/flatpak/at-spi-bus. None for a process outside a sandbox."""
+    try:
+        with open(f"/proc/{pid}/mountinfo") as mounts:
+            source = next((line.split()[3] for line in mounts if line.split()[4:5] == ["/run/flatpak/at-spi-bus"]), None)
+        if source is None:
+            return None
+        with open("/proc/net/unix") as sockets:
+            inodes = {line.split()[6] for line in sockets if line.split()[-1] == source and line.split()[5] == "01"}
+        if not inodes:
+            return None
+        wanted = {f"socket:[{inode}]" for inode in inodes}
+        for candidate in os.listdir("/proc"):
+            if not candidate.isdigit():
+                continue
+            try:
+                for fd in os.listdir(f"/proc/{candidate}/fd"):
+                    if os.readlink(f"/proc/{candidate}/fd/{fd}") in wanted:
+                        return int(candidate)
+            except OSError:
+                continue
+    except (OSError, ValueError, IndexError):
+        return None
+    return None
 
 
 class ServedResult(Exception):

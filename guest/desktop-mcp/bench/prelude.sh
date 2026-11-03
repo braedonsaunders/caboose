@@ -6,14 +6,15 @@
 export HOME="$BENCH/home" XDG_DATA_HOME="$BENCH/home/.local/share" XDG_CACHE_HOME="$BENCH/home/.cache" \
   XDG_STATE_HOME="$BENCH/home/.local/state"
 mkdir -p "$HOME"
-SEAT=${SEAT:-/opt/caboose/seat.py}
+TOOLS=${TOOLS:-/opt/caboose}  # where desktop MCP's helpers are installed
+SEAT=$TOOLS/seat.py
 # Start an application on the agent seat as desktop MCP's launch does, after announcing the
 # assistive technology on the seat's accessibility bus as it does.
 start() {
   gdbus call --session --dest org.a11y.Bus --object-path /org/a11y/bus --method org.freedesktop.DBus.Properties.Set \
     org.a11y.Status ScreenReaderEnabled '<true>' >/dev/null 2>&1
   ACCESSIBILITY_ENABLED=1 GNOME_ACCESSIBILITY=1 QT_LINUX_ACCESSIBILITY_ALWAYS_ON=1 XDG_SESSION_TYPE=wayland \
-    setsid "$@" >>"$BENCH/app.log" 2>&1 < /dev/null &
+    setsid python3 "$TOOLS/launcher.py" "$(python3 -c 'import shlex, sys; print(shlex.join(sys.argv[1:]))' "$@")" >>"$BENCH/app.log" 2>&1 < /dev/null &
 }
 # A form page whose submit sets the title to COMPLETE only when the expected values are in.
 page() {
