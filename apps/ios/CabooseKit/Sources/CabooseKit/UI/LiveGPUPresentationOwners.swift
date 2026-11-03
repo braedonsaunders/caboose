@@ -12,6 +12,12 @@ import QuartzCore
 /// keeps receiving presents. When an eligible view shows the window again the layer
 /// returns to it holding the latest frame. Only the session, the display epoch, the
 /// window's identity or its server geometry end a lease.
+///
+/// A `child` window (docs/display.md, "Child windows") is a lease of its own, keyed by its
+/// own id, hosted in the view showing its parent: inside the parent's picture at its
+/// geometry, cut to its clip, above the parent's own layer and ordered among the parent's
+/// children by `stack`. It takes no touches, and its presents never become the parent's
+/// snapshot.
 @MainActor
 public final class LiveGPUPresentationOwners {
     private final class ViewRef {
@@ -26,6 +32,8 @@ public final class LiveGPUPresentationOwners {
         init(_ window: RemoteWindow) { self.window = window }
     }
     private var views: [ObjectIdentifier: ViewRef] = [:]
+    /// The display's child windows, by id; each names its parent in `remoteWindows`.
+    private var children: [UInt64: RemoteChildWindow] = [:]
     private var leases: [UInt64: LiveGPULayerLease] = [:]
     private let invalidated: @MainActor (LiveGPUSurfaceIdentity) -> Void
     private var stopped = false
@@ -33,8 +41,9 @@ public final class LiveGPUPresentationOwners {
 
     init(invalidated: @escaping @MainActor (LiveGPUSurfaceIdentity) -> Void) { self.invalidated = invalidated }
 
-    public func update(epoch: Data?, windows: [Int: RemoteWindow]) {
+    public func update(epoch: Data?, windows: [Int: RemoteWindow], children: [Int: RemoteChildWindow] = [:]) {
         guard !stopped else { return }
+        self.children = Self.keyed(children)
         let validEpoch = epoch.flatMap { $0.count == 16 && $0.contains(where: { $0 != 0 }) ? $0 : nil }
         self.epoch = validEpoch
         self.windows = Dictionary(uniqueKeysWithValues: windows.values.compactMap {
@@ -46,6 +55,27 @@ public final class LiveGPUPresentationOwners {
         for window in windows.values { window.liveGPUPresentation = self }
         for lease in leases.values { validate(lease) }
         waiting.retry()
+    }
+
+    /// The display's child windows changed: one came, went, moved, was cut or restacked.
+    func update(children: [Int: RemoteChildWindow]) {
+        guard !stopped else { return }
+        self.children = Self.keyed(children)
+        for lease in leases.values { validate(lease) }
+        waiting.retry()
+    }
+
+    private static func keyed(_ children: [Int: RemoteChildWindow]) -> [UInt64: RemoteChildWindow] {
+        Dictionary(uniqueKeysWithValues: children.values.compactMap { $0.id > 0 ? (UInt64($0.id), $0) : nil })
+    }
+
+    private func parentWindow(of child: RemoteChildWindow) -> RemoteWindow? {
+        UInt64(exactly: child.parent).flatMap { remoteWindows[$0]?.window }
+    }
+
+    /// The object a window id names now: a window's, or a child's.
+    private func identity(of windowID: UInt64) -> ObjectIdentifier? {
+        windows[windowID] ?? children[windowID].map(ObjectIdentifier.init)
     }
 
     /// Invalidates admission and detaches visible presentation layers immediately on main;
@@ -75,7 +105,7 @@ public final class LiveGPUPresentationOwners {
     }
 
     public func revoke() {
-        stopped = true; epoch = nil; windows.removeAll(); remoteWindows.removeAll()
+        stopped = true; epoch = nil; windows.removeAll(); remoteWindows.removeAll(); children.removeAll()
         healthTimer?.invalidate(); healthTimer = nil
         waiting.cancel()
         for lease in leases.values {
@@ -84,14 +114,15 @@ public final class LiveGPUPresentationOwners {
                 LiveGPUMemoryAudit.ownerInvalidated(.session)
                 #endif
             }
-            lease.content?.removeFromSuperview()
+            lease.hosted?.removeFromSuperview()
             if lease.translucent { lease.view?.liveGPUTranslucencyChanged() }
         }
     }
 
-    /// Whether the live GPU layer in `view` blends with what is behind the window.
+    /// Whether the live GPU layer in `view` blends with what is behind the window. A child's
+    /// layer blends with its parent's picture, not with what is behind the window.
     func presentsTranslucent(in view: RemoteWindowView) -> Bool {
-        leases.values.contains { $0.isValid && $0.view === view && $0.translucent }
+        leases.values.contains { $0.isValid && !$0.isChild && $0.view === view && $0.translucent }
     }
 
     /// For diagnosis: where `window`'s live GPU layer presents, if anywhere.
@@ -117,10 +148,11 @@ public final class LiveGPUPresentationOwners {
     }
     private func validate(_ lease: LiveGPULayerLease) {
         guard lease.isValid else { return }
-        guard !stopped, epoch == lease.identity.epoch, windows[lease.windowID] == lease.windowIdentity else {
+        guard !stopped, epoch == lease.identity.epoch, identity(of: lease.windowID) == lease.windowIdentity else {
             end(lease, stopped ? .session : .ownership)
             return
         }
+        if let child = children[lease.windowID] { return validate(lease, child: child) }
         guard let view = host(for: lease) else {
             park(lease)
             return
@@ -165,20 +197,94 @@ public final class LiveGPUPresentationOwners {
         // the new extent via configurePresentationExtent, and a picture that keeps
         // another size is scaled to the window (LiveGPUDrawableGeometry.placement).
         (lease.content as? LiveGPULayerView)?.fit(in: view.bounds, fullscreen: window.isFullscreen)
+        if !children.isEmpty { arrangeChildren(in: view) }
+    }
+
+    /// A child's lease follows the view showing its parent, and the child's own geometry.
+    private func validate(_ lease: LiveGPULayerLease, child: RemoteChildWindow) {
+        guard let parent = parentWindow(of: child),
+              let view = host(showing: ObjectIdentifier(parent), preferring: lease.view) else {
+            park(lease)
+            return
+        }
+        guard let currentExtent = LiveGPUDrawableGeometry.extent(serverPixels: child.geometry.size,
+                                                                 visibleBounds: view.bounds.size) else {
+            end(lease, .geometry)
+            return
+        }
+        if currentExtent != lease.extent { lease.updateExtent(currentExtent) }
+        lease.view = view
+        if let clip = lease.clip, clip.superview !== view { view.addSubview(clip) }
+        if lease.parked {
+            lease.parked = false
+            #if DEBUG && canImport(CabooseGPUMemoryAudit)
+            LiveGPUMemoryAudit.ownerParked(false)
+            #endif
+        }
+        arrangeChildren(in: view)
+    }
+
+    /// Where a parent's picture shows in `view`: a child's geometry and clip, relative to
+    /// the parent in display pixels, map through it as the parent's own layer is fitted.
+    private func parentPicture(in view: RemoteWindowView, parent: RemoteWindow) -> CGRect {
+        let main = leases.values.first { $0.isValid && !$0.isChild && $0.view === view && $0.content?.superview === view }
+        let picture = (main?.content as? LiveGPULayerView)?.pixelExtent ?? parent.frame.size
+        return LiveGPUDrawableGeometry.placement(picture: picture, in: view.bounds, fill: parent.isFullscreen)
+    }
+
+    /// Places the children hosted in `view` over the parent's picture, at their geometry and
+    /// cut to their clips, and stacks them: directly above the parent's own layer, lowest
+    /// `stack` first, below everything else the view shows.
+    private func arrangeChildren(in view: RemoteWindowView) {
+        guard let parent = view.remoteWindow else { return }
+        let hosted = leases.values.filter { $0.isValid && $0.isChild && $0.view === view && $0.clip?.superview === view }
+            .compactMap { lease in children[lease.windowID].map { (lease, $0) } }
+            .sorted { $0.1.stack != $1.1.stack ? $0.1.stack < $1.1.stack : $0.1.id < $1.1.id }
+        guard !hosted.isEmpty else { return }
+        let placed = parentPicture(in: view, parent: parent)
+        let frame = parent.frame.size
+        let sx = frame.width > 0 ? placed.width / frame.width : 0
+        let sy = frame.height > 0 ? placed.height / frame.height : 0
+        func points(_ rect: CGRect) -> CGRect {
+            CGRect(x: placed.minX + rect.minX * sx, y: placed.minY + rect.minY * sy,
+                   width: rect.width * sx, height: rect.height * sy)
+        }
+        for (lease, child) in hosted {
+            guard let clip = lease.clip else { continue }
+            let cut = points(child.clip)
+            if clip.frame != cut { clip.frame = cut }
+            let shown = points(child.geometry).offsetBy(dx: -cut.minX, dy: -cut.minY)
+            (lease.content as? LiveGPULayerView)?.fit(in: shown)
+        }
+        // Directly above the parent's own layer, or lowest of all without one.
+        let main = leases.values.first { $0.isValid && !$0.isChild && $0.view === view && $0.content?.superview === view }?.content
+        let wanted = (main.map { [$0] } ?? []) + hosted.compactMap { $0.0.clip }
+        let start = main.flatMap { view.subviews.firstIndex(of: $0) } ?? 0
+        let current = view.subviews.dropFirst(start).prefix(wanted.count)
+        guard !current.elementsEqual(wanted, by: ===) else { return }
+        var below = main
+        for clip in wanted.dropFirst(main == nil ? 0 : 1) {
+            if let below { view.insertSubview(clip, aboveSubview: below) } else { view.insertSubview(clip, at: 0) }
+            below = clip
+        }
     }
     /// The one eligible view showing the lease's window, preferring its current view.
     private func host(for lease: LiveGPULayerLease) -> RemoteWindowView? {
+        host(showing: lease.windowIdentity, preferring: lease.view)
+    }
+    /// The one eligible view showing the window `identity`, preferring `current`.
+    private func host(showing identity: ObjectIdentifier, preferring current: RemoteWindowView?) -> RemoteWindowView? {
         func shows(_ view: RemoteWindowView) -> Bool {
-            view.remoteWindow.map(ObjectIdentifier.init) == lease.windowIdentity && eligible(view)
+            view.remoteWindow.map(ObjectIdentifier.init) == identity && eligible(view)
         }
-        if let view = lease.view, shows(view) { return view }
+        if let view = current, shows(view) { return view }
         // A duplicated visible owner is not resolved by picking an arbitrary view.
         let candidates = views.values.compactMap(\.view).filter(shows)
         return candidates.count == 1 ? candidates[0] : nil
     }
     /// Takes the layer out of view while keeping the binding and its presents.
     private func park(_ lease: LiveGPULayerLease) {
-        lease.content?.removeFromSuperview()
+        lease.hosted?.removeFromSuperview()
         guard !lease.parked else { return }
         lease.parked = true
         #if DEBUG && canImport(CabooseGPUMemoryAudit)
@@ -194,7 +300,7 @@ public final class LiveGPUPresentationOwners {
         case .geometry: LiveGPUMemoryAudit.ownerInvalidated(.geometry)
         }
         #endif
-        lease.content?.removeFromSuperview()
+        lease.hosted?.removeFromSuperview()
         if lease.translucent { lease.view?.liveGPUTranslucencyChanged() }
         invalidated(lease.identity)
     }
@@ -224,6 +330,10 @@ public final class LiveGPUPresentationOwners {
         guard !stopped else { throw unavailable(ECANCELED) }
         guard let epoch else { throw unavailable(EAGAIN) }
         guard epoch == identity.epoch else { throw unavailable(ESTALE) }
+        if windows[windowID] == nil, let child = children[windowID] {
+            guard leases[windowID] == nil else { throw unavailable(EBUSY) }
+            return try claim(identity: identity, child: child)
+        }
         guard let object = windows[windowID] else { throw unavailable(EAGAIN) }
         guard leases[windowID] == nil else { throw unavailable(EBUSY) }
         let showing = views.values.compactMap(\.view).filter {
@@ -277,12 +387,58 @@ public final class LiveGPUPresentationOwners {
         watchHealth()
         return lease
     }
+    /// A child's surface: hosted in the one eligible view showing its parent, or parked, at
+    /// the child's own size in display pixels.
+    private func claim(identity: LiveGPUSurfaceIdentity, child: RemoteChildWindow) throws -> LiveGPULayerLease {
+        let windowID = UInt64(child.id)
+        guard let parent = parentWindow(of: child) else { throw unavailable(EAGAIN) }
+        let candidates = views.values.compactMap(\.view).filter { $0.remoteWindow === parent && eligible($0) }
+        guard candidates.count < 2 else { throw unavailable(EBUSY) }
+        let view = candidates.first
+        let bounds = view?.bounds.size ?? child.geometry.size
+        guard let size = LiveGPUDrawableGeometry.extent(serverPixels: child.geometry.size, visibleBounds: bounds) else {
+            throw unavailable(EAGAIN)
+        }
+        // Until its first present the child shows the parent's picture under it.
+        let content = LiveGPULayerView(frame: CGRect(origin: .zero, size: child.geometry.size), pixelExtent: size)
+        content.isUserInteractionEnabled = false
+        content.isOpaque = false
+        content.backgroundColor = .clear
+        let layer = content.metal
+        layer.contentsScale = 1
+        layer.drawableSize = size
+        layer.framebufferOnly = false
+        layer.presentsWithTransaction = false
+        // The clip: what of the child its parent shows. Touches pass through to the parent.
+        let clip = UIView()
+        clip.clipsToBounds = true
+        clip.isUserInteractionEnabled = false
+        clip.backgroundColor = .clear
+        clip.isOpaque = false
+        clip.addSubview(content)
+        view?.addSubview(clip)
+        // Its own snapshot, which nothing asks for: a child's presents never replace the parent's.
+        let lease = LiveGPULayerLease(identity: identity, windowID: windowID, windowIdentity: ObjectIdentifier(child),
+            extent: size, view: view, content: content, snapshot: WindowSnapshot(), clip: clip)
+        if view == nil {
+            lease.parked = true
+            #if DEBUG && canImport(CabooseGPUMemoryAudit)
+            LiveGPUMemoryAudit.ownerParked(true)
+            #endif
+        }
+        leases[windowID] = lease
+        if let view { arrangeChildren(in: view) }
+        watchHealth()
+        return lease
+    }
     func release(_ lease: LiveGPULayerLease) {
         guard leases[lease.windowID] === lease else { return }
         lease.invalidate()
-        lease.content?.removeFromSuperview()
+        lease.hosted?.removeFromSuperview()
         if lease.translucent { lease.view?.liveGPUTranslucencyChanged() }
+        lease.content?.removeFromSuperview()
         lease.content = nil
+        lease.clip = nil
         leases.removeValue(forKey: lease.windowID)
     }
     private enum EndReason { case session, ownership, geometry }
@@ -392,6 +548,13 @@ final class LiveGPULayerLease: @unchecked Sendable {
     var extent: CGSize { lock.withLock { currentExtent } }
     @MainActor weak var view: RemoteWindowView?
     @MainActor var content: UIView?
+    /// A child window's clip, which holds `content` and is what its parent's view hosts;
+    /// nil for a window's own layer.
+    @MainActor var clip: UIView?
+    /// Whether this is a child window's layer (`RemoteChildWindow`).
+    let isChild: Bool
+    /// The view placed in the hosting `RemoteWindowView`.
+    @MainActor var hosted: UIView? { clip ?? content }
     @MainActor var layer: CAMetalLayer? {
         guard isValid, let content = content as? LiveGPULayerView else { return nil }
         content.layoutIfNeeded()
@@ -434,9 +597,10 @@ final class LiveGPULayerLease: @unchecked Sendable {
     /// The window's snapshot, which copies of this layer's presents replace.
     let snapshot: WindowSnapshot
     @MainActor init(identity: LiveGPUSurfaceIdentity, windowID: UInt64, windowIdentity: ObjectIdentifier,
-                    extent: CGSize, view: RemoteWindowView?, content: UIView, snapshot: WindowSnapshot) {
+                    extent: CGSize, view: RemoteWindowView?, content: UIView, snapshot: WindowSnapshot, clip: UIView? = nil) {
         self.identity = identity; self.windowID = windowID; self.windowIdentity = windowIdentity
         self.currentExtent = extent; self.view = view; self.content = content; self.snapshot = snapshot
+        self.clip = clip; self.isChild = clip != nil
     }
 }
 #endif

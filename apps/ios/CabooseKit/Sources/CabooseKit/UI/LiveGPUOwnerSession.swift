@@ -87,7 +87,8 @@ public final class LiveGPUOwnerSession {
         guard display.state == .ready else { return }
         switch state {
         case .idle, .connecting, .connected:
-            presentationOwners.update(epoch: display.server?.gpuLiveEpoch, windows: display.windows)
+            display.liveGPUPresentation = presentationOwners
+            presentationOwners.update(epoch: display.server?.gpuLiveEpoch, windows: display.windows, children: display.children)
         case .draining, .ended: break
         }
     }

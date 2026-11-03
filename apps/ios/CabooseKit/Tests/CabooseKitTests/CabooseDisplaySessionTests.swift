@@ -101,6 +101,7 @@ final class MockStream: ByteStream, @unchecked Sendable {
             #expect(sent.first?.body[key] == nil, "\(key)")
         }
         #expect(sent.first?.body["targets"] == .bool(true))
+        #expect(sent.first?.body["children"] == .bool(true))
     }
 
     @Test func unselectedBootstrapAndResumePaceRetainedIDs() async throws {
@@ -220,6 +221,59 @@ final class MockStream: ByteStream, @unchecked Sendable {
 
         stream.server([(.windowDestroy, ["id": 9])])
         try await until("destroyed") { session.windows[9] == nil }
+    }
+
+    func child(_ id: Int, parent: Int, geometry: [Int], clip: [Int], stack: Int) -> CBOR {
+        ["id": CBOR(id), "kind": "child", "parent": CBOR(parent), "title": "", "app_id": "app",
+         "geometry": .array(geometry.map { CBOR($0) }), "clip": .array(clip.map { CBOR($0) }),
+         "stack": CBOR(stack), "fullscreen": false]
+    }
+
+    /// A child is part of its parent: never one of the windows, gone with its parent.
+    @Test func childWindowsAreNeverWindowsAndEndWithTheirParent() async throws {
+        let session = try await ready()
+        stream.server([
+            (.windowCreate, window(12, geometry: [100, 80, 1920, 1080])),
+            (.windowCreate, child(16, parent: 12, geometry: [2, 368, 1916, 1254], clip: [2, 368, 1916, 712], stack: 0)),
+            (.windowCreate, child(17, parent: 12, geometry: [0, 0, 300, 200], clip: [0, 0, 300, 200], stack: 1)),
+            // A child of a window this session does not have is not shown.
+            (.windowCreate, child(18, parent: 99, geometry: [0, 0, 10, 10], clip: [0, 0, 10, 10], stack: 0)),
+        ])
+        try await until("children") { session.children.count == 2 }
+        #expect(Set(session.windows.keys) == [12])
+        let first = try #require(session.children[16])
+        #expect(first.parent == 12 && first.stack == 0)
+        #expect(first.geometry == CGRect(x: 2, y: 368, width: 1916, height: 1254))
+        #expect(first.clip == CGRect(x: 2, y: 368, width: 1916, height: 712))
+
+        // It moves within its parent, now shown whole, and restacks.
+        stream.server([(.windowUpdate, ["id": 16, "geometry": [2, 200, 1916, 880], "clip": [2, 200, 1916, 880], "stack": 2])])
+        try await until("moved") { first.geometry.minY == 200 }
+        #expect(first.clip == CGRect(x: 2, y: 200, width: 1916, height: 880) && first.stack == 2)
+        #expect(session.children[16] === first && session.windows[16] == nil)
+        // The parent moving does not move a child: its geometry is the parent's own.
+        stream.server([(.windowUpdate, ["id": 12, "geometry": [0, 0, 1920, 1080]])])
+        try await until("parent moved") { session.windows[12]?.frame.minX == 0 }
+        #expect(first.geometry == CGRect(x: 2, y: 200, width: 1916, height: 880))
+
+        stream.server([(.windowDestroy, ["id": 17])])
+        try await until("child destroyed") { session.children[17] == nil }
+        #expect(session.windows[12] != nil && session.children[16] != nil)
+
+        stream.server([(.windowDestroy, ["id": 12])])
+        try await until("parent destroyed") { session.windows.isEmpty }
+        #expect(session.children.isEmpty)
+    }
+
+    @Test func childWindowsGoWithTheConnection() async throws {
+        let session = try await ready()
+        stream.server([
+            (.windowCreate, window(12, geometry: [0, 0, 800, 600])),
+            (.windowCreate, child(16, parent: 12, geometry: [0, 100, 800, 500], clip: [0, 100, 800, 400], stack: 0)),
+        ])
+        try await until("child") { session.children[16] != nil }
+        session.disconnect()
+        #expect(session.windows.isEmpty && session.children.isEmpty)
     }
 
     @Test func aFixedSizeWindowKeepsItsInputGeometryUntilTheAppResizes() async throws {

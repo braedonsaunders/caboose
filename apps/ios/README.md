@@ -456,9 +456,15 @@ around it.
   shows it (another tab, a thumbnail only, the view reused), the layer is parked off screen
   and keeps its binding and its presents; it returns to the next view that shows the window
   with the newest frame. Each popup and override-redirect window is a window of its own, in
-  its own view at its own place.
+  its own view at its own place. A child window (an application's own GPU surface inset in
+  its window, such as a browser view; [display.md](../../docs/display.md#child-windows)) is
+  not a window: it never appears in the taskbar, the desktop or a window list. Its layer is
+  placed in the view showing its parent, at its geometry and cut to its clip, scaled as the
+  parent's picture is, above the parent's own layer and ordered by the application's
+  stacking; it parks and returns with its parent, and touches on it reach the parent.
 - **Before the first frame.** A live view draws nothing of its own. Until the layer
-  presents it is blank: black for an opaque window, clear for one with alpha. A premultiplied
+  presents it is blank: black for an opaque window, clear for one with alpha and for a child
+  window, which shows its parent's picture until then. A premultiplied
   swapchain (a menu with a shadow) shows what is behind it.
 - **Snapshots.** Views that are never live (Switchyard and Home thumbnails, previews) show
   the window's `WindowSnapshot`: a copy of one presented frame, taken through the presenter's
@@ -469,7 +475,8 @@ around it.
   it), and otherwise one every five seconds. The capture images are freed between copies.
   A window that stops presenting keeps its last copy, which can be up to that interval older
   than its last frame. Home and the frames kept through the background are reduced copies
-  of the snapshots; a game window's snapshot is its game's last frame.
+  of the snapshots; a game window's snapshot is its game's last frame. A snapshot is the
+  window's own layer only: what its child windows show is not in it.
 - **Pacing.** Every window view on screen, previews and the desktop included, sends `vsync`
   from its own screen's display link, at 120 Hz on ProMotion
   (`CADisableMinimumFrameDurationOnPhone`) and at the TV's rate on a TV. The compositor

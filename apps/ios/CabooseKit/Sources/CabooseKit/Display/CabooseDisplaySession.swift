@@ -17,6 +17,14 @@ import QuartzCore
 public final class CabooseDisplaySession: DisplaySession {
     public private(set) var state: DisplaySessionState = .idle
     public private(set) var windows: [Int: RemoteWindow] = [:]
+    /// The `child` windows inset in `windows` (docs/display.md, "Child windows"), by id. They
+    /// are parts of their parents, never windows: none is in `windows`.
+    public private(set) var children: [Int: RemoteChildWindow] = [:]
+    #if canImport(UIKit)
+    /// Where the children's GPU layers are placed: the owner's GPU executor
+    /// (`LiveGPUOwnerSession`) sets it, and hears every change to `children`.
+    @ObservationIgnored weak var liveGPUPresentation: LiveGPUPresentationOwners?
+    #endif
     /// The server's hello: its features and epochs.
     public private(set) var server: ServerHello?
     /// Round trip to the computer, from ping and pong, in milliseconds.
@@ -276,12 +284,16 @@ public final class CabooseDisplaySession: DisplaySession {
         reconciling = nil
         echo.reset()
         if keepWindows, server?.epoch != nil {
-            retained = Set(windows.keys)
+            retained = Set(windows.keys).union(children.keys)
             return
         }
         dropRetained()
         for window in windows.values { endGame(of: window) }
         windows.removeAll()
+        if !children.isEmpty {
+            children.removeAll()
+            childrenChanged()
+        }
         placement.removeAll()
         focusedWindow = nil
         textInput = nil
@@ -294,6 +306,8 @@ public final class CabooseDisplaySession: DisplaySession {
     }
 
     private func removeWindow(_ id: Int) {
+        if removeChildren({ $0.id == id }) { return }
+        removeChildren { $0.parent == id }
         endGame(of: windows[id])
         windows[id] = nil
         placement[id] = nil
@@ -312,7 +326,7 @@ public final class CabooseDisplaySession: DisplaySession {
         state = .authenticating
         send(.hello(token: displayToken, displays: displays, audioDecoders: playsAudio ? ["opus"] : nil,
                     wasm: runsGames, webview: runsGames, devices: devices != nil,
-                    clipboardTypes: ClipboardPolicy.clientTypes, targets: true))
+                    clipboardTypes: ClipboardPolicy.clientTypes, targets: true, children: true))
     }
 
     // MARK: Server messages
@@ -510,6 +524,7 @@ public final class CabooseDisplaySession: DisplaySession {
 
     private func createWindow(_ fields: WindowFields) {
         let kind = fields.kind ?? .toplevel
+        if kind == .child { return createChild(fields) }
         let geometry = fields.geometry ?? .zero
         placement[fields.id] = (kind, fields.parent, geometry)
         reconciling?.announced.insert(fields.id)
@@ -532,6 +547,7 @@ public final class CabooseDisplaySession: DisplaySession {
     }
 
     private func updateWindow(_ fields: WindowFields) {
+        if let child = children[fields.id] { return updateChild(child, fields) }
         guard let window = windows[fields.id], var entry = placement[fields.id] else { return }
         if let kind = fields.kind { entry.kind = kind }
         if fields.parent != nil { entry.parent = fields.parent }
@@ -556,6 +572,9 @@ public final class CabooseDisplaySession: DisplaySession {
 
     private func destroyWindow(_ id: Int) {
         retained.remove(id)
+        if removeChildren({ $0.id == id }) { return }
+        // A window's children end with it.
+        removeChildren { $0.parent == id }
         endGame(of: windows[id])
         windows[id] = nil
         placement[id] = nil
@@ -564,6 +583,61 @@ public final class CabooseDisplaySession: DisplaySession {
         if focusedWindow == id { focusedWindow = nil }
         if textInput?.window == id { textInput = nil }
         if surroundingText?.window == id { surroundingText = nil }
+    }
+
+    // MARK: Children
+
+    /// A child of a window this session has; one whose parent it does not know is not shown.
+    /// The same child from the same server epoch keeps its object.
+    private func createChild(_ fields: WindowFields) {
+        guard let parent = fields.parent, windows[parent] != nil, windows[fields.id] == nil else { return }
+        let geometry = fields.geometry ?? .zero
+        let clip = fields.clip ?? geometry
+        let stack = fields.stack ?? 0
+        reconciling?.announced.insert(fields.id)
+        retained.remove(fields.id)
+        if let kept = children[fields.id] {
+            kept.parent = parent
+            kept.geometry = geometry
+            kept.clip = clip
+            kept.stack = stack
+        } else {
+            children[fields.id] = RemoteChildWindow(id: fields.id, parent: parent, geometry: geometry, clip: clip, stack: stack)
+        }
+        childrenChanged()
+    }
+
+    private func updateChild(_ child: RemoteChildWindow, _ fields: WindowFields) {
+        if let parent = fields.parent {
+            guard windows[parent] != nil else {
+                _ = removeChildren { $0 === child }
+                return
+            }
+            child.parent = parent
+        }
+        if let geometry = fields.geometry { child.geometry = geometry }
+        if let clip = fields.clip { child.clip = clip }
+        if let stack = fields.stack { child.stack = stack }
+        childrenChanged()
+    }
+
+    /// Removes the children that match; whether there were any.
+    @discardableResult
+    private func removeChildren(_ matching: (RemoteChildWindow) -> Bool) -> Bool {
+        let gone = children.values.filter(matching).map(\.id)
+        guard !gone.isEmpty else { return false }
+        for id in gone {
+            children[id] = nil
+            retained.remove(id)
+        }
+        childrenChanged()
+        return true
+    }
+
+    private func childrenChanged() {
+        #if canImport(UIKit)
+        liveGPUPresentation?.update(children: children)
+        #endif
     }
 
     // MARK: Games
@@ -640,6 +714,7 @@ public final class CabooseDisplaySession: DisplaySession {
             case .toplevel: []
             case .popup: ["POPUP_MENU"]
             case .dialog: ["DIALOG"]
+            case .child: [] // children are never `windows` (createChild)
             }
         }
         if let fullscreen = fields.fullscreen { window.isFullscreen = fullscreen }

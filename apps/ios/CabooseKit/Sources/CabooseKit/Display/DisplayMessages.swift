@@ -3,7 +3,7 @@ import Foundation
 
 /// Caboose Display Protocol v0 messages (docs/display.md). Server → client types are
 /// 0x01–0x7F and client → server 0x81–0xFF. Coordinates are display pixels: toplevel
-/// geometry from its display's origin, popup and dialog geometry from the parent's.
+/// geometry from its display's origin, popup, dialog and child geometry from the parent's.
 public enum DisplayProtocol {
     public static let version = 0
 
@@ -103,7 +103,9 @@ public struct DisplayInfo: Equatable, Sendable {
 // MARK: Server → client
 
 public enum WindowKind: String, Sendable {
-    case toplevel, popup, dialog
+    /// `child`: a region of its parent where one of the parent application's own GPU
+    /// surfaces presents (docs/display.md, "Child windows").
+    case toplevel, popup, dialog, child
 }
 
 /// The fields of `window.create`, or the changed ones of `window.update`.
@@ -125,6 +127,10 @@ public struct WindowFields: Equatable, Sendable {
     public var desktopID: String?
     /// The process that owns a toplevel, as the computer sees it.
     public var pid: Int?
+    /// A child's part that its parent shows, relative to the parent like its geometry.
+    public var clip: CGRect?
+    /// A child's place among its parent's children, lowest first.
+    public var stack: Int?
 
     public init(id: Int) { self.id = id }
 
@@ -145,6 +151,8 @@ public struct WindowFields: Equatable, Sendable {
         alpha = body["alpha"]?.bool
         desktopID = body["desktop_id"]?.string
         pid = body["pid"]?.int
+        clip = body["clip"].flatMap(Self.rect)
+        stack = body["stack"]?.int
     }
 
     static func rect(_ value: CBOR) -> CGRect? {
@@ -500,8 +508,10 @@ public enum ClientMessage: Sendable {
     /// `devices`: the client offers its hardware as devices (docs/devices.md); absent otherwise.
     /// `clipboardTypes`: what the client takes from the clipboard besides text; absent, text only.
     /// `targets`: the client aims touches at windows' controls (`targets` messages).
+    /// `children`: the client shows `child` windows inside their parents.
     case hello(token: String, displays: [DisplayInfo], audioDecoders: [String]? = nil, wasm: Bool = false,
-               webview: Bool = false, devices: Bool = false, clipboardTypes: [String]? = nil, targets: Bool = false)
+               webview: Bool = false, devices: Bool = false, clipboardTypes: [String]? = nil, targets: Bool = false,
+               children: Bool = false)
     case vsync(display: Int, micros: UInt64)
     case configure(window: Int, geometry: CGRect?, display: Int? = nil, fullscreen: Bool? = nil,
                    maximized: Bool? = nil, activated: Bool? = nil)
@@ -561,7 +571,7 @@ public enum ClientMessage: Sendable {
             [CBOR(Int(r.minX.rounded())), CBOR(Int(r.minY.rounded())), CBOR(Int(r.width.rounded())), CBOR(Int(r.height.rounded()))]
         }
         switch self {
-        case .hello(let token, let displays, let audioDecoders, let wasm, let webview, let devices, let clipboardTypes, let targets):
+        case .hello(let token, let displays, let audioDecoders, let wasm, let webview, let devices, let clipboardTypes, let targets, let children):
             return DisplayFrame(type: T.hello.rawValue, body: map([
                 ("version", CBOR(DisplayProtocol.version)), ("token", CBOR(token)),
                 ("displays", .array(displays.map(\.cbor))),
@@ -570,6 +580,7 @@ public enum ClientMessage: Sendable {
                 ("webview", webview ? CBOR(true) : nil),
                 ("devices", devices ? CBOR(true) : nil),
                 ("targets", targets ? CBOR(true) : nil),
+                ("children", children ? CBOR(true) : nil),
                 ("clipboard_types", clipboardTypes.map { .array($0.map { CBOR($0) }) }),
             ]))
         case .devices(let devices):

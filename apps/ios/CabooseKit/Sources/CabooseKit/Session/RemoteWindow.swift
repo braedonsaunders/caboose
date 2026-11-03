@@ -71,6 +71,31 @@ public final class RemoteWindow: Identifiable {
     }
 }
 
+/// A `child` window (docs/display.md, "Child windows"): a region of its parent where one of
+/// the parent application's own GPU surfaces presents. It is part of its parent, never a
+/// window of its own: it is not in a session's `windows`, takes no input, and shows only as
+/// a GPU layer inside the view showing its parent.
+@MainActor
+public final class RemoteChildWindow: Identifiable {
+    public nonisolated let id: Int
+    /// The window it is inset in.
+    public internal(set) var parent: Int
+    /// Its place relative to the parent's geometry, in display pixels.
+    public internal(set) var geometry: CGRect
+    /// The part of it the parent shows, in the same coordinates as `geometry`.
+    public internal(set) var clip: CGRect
+    /// Its place among the parent's children, lowest first.
+    public internal(set) var stack: Int
+
+    init(id: Int, parent: Int, geometry: CGRect, clip: CGRect, stack: Int) {
+        self.id = id
+        self.parent = parent
+        self.geometry = geometry
+        self.clip = clip
+        self.stack = stack
+    }
+}
+
 public struct RemoteNotification: Sendable, Identifiable {
     public var id: Int
     public var appName: String

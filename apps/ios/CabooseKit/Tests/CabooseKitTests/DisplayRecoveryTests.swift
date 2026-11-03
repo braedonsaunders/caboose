@@ -239,6 +239,29 @@ import Testing
         #expect(session.epoch == "e1" && session.connections == 2)
     }
 
+    /// A child is kept with its parent through a lost connection, and ends with the burst that
+    /// does not announce it.
+    @Test func theSameEpochKeepsAChildUntilTheBurstLeavesItOut() async throws {
+        let session = makeSession()
+        session.connect()
+        try await handshake(session, epoch: "e1", windows: [7])
+        streams.last.server([
+            (.windowCreate, helpers.child(16, parent: 7, geometry: [0, 2, 8, 4], clip: [0, 2, 8, 4], stack: 0)),
+            (.windowCreate, helpers.child(17, parent: 7, geometry: [0, 0, 8, 2], clip: [0, 0, 8, 2], stack: 1)),
+        ])
+        try await helpers.until("children") { session.children.count == 2 }
+        let sixteen = try #require(session.children[16])
+        try await dropAndResume(session)
+        #expect(session.children[16] === sixteen && session.children[17] != nil)
+
+        let marker = try #require(try await handshake(session, epoch: "e1", windows: [7]))
+        streams.last.server([(.windowCreate, helpers.child(16, parent: 7, geometry: [0, 1, 8, 4], clip: [0, 1, 8, 4], stack: 0))])
+        try await helpers.until("moved") { sixteen.geometry.minY == 1 }
+        streams.last.server([(.pong, ["t_us": CBOR(marker)])])
+        try await helpers.until("child 17 gone") { session.children[17] == nil }
+        #expect(session.children[16] === sixteen && session.windows.keys.sorted() == [7])
+    }
+
     @Test func theResumedHelloCarriesTheNewToken() async throws {
         let session = makeSession()
         session.connect()

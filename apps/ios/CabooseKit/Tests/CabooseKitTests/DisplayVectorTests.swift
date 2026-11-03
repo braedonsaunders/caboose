@@ -212,6 +212,16 @@ import Testing
         guard case .windowUpdate(let moved) = try server("window-update-geometry").first else { Issue.record("update"); return }
         #expect(moved.geometry == CGRect(x: 100, y: 80, width: 1600, height: 900) && moved.fullscreen == false && moved.title == nil)
 
+        guard case .windowCreate(let child) = try server("window-create-child").first else { Issue.record("child"); return }
+        #expect(child.id == 16 && child.kind == .child && child.parent == 12 && child.title == "" && child.appID == "XTerm")
+        #expect(child.geometry == CGRect(x: 2, y: 368, width: 1916, height: 1254))
+        #expect(child.clip == CGRect(x: 2, y: 368, width: 1916, height: 712) && child.stack == 0)
+        #expect(popup.clip == nil && popup.stack == nil)
+
+        guard case .windowUpdate(let childMoved) = try server("window-update-child").first else { Issue.record("child update"); return }
+        #expect(childMoved.id == 16 && childMoved.kind == nil && childMoved.stack == nil)
+        #expect(childMoved.geometry == CGRect(x: 2, y: 200, width: 1916, height: 880) && childMoved.clip == childMoved.geometry)
+
         guard case .windowUpdate(let liberal) = try server("liberal-window-update").first else { Issue.record("liberal"); return }
         #expect(liberal.id == 7 && liberal.title == "x")
     }
@@ -337,6 +347,8 @@ import Testing
         #expect(plain["wasm"] == nil)
         #expect(ClientMessage.hello(token: "t", displays: [display], wasm: false).frame.body.encoded() == plain.encoded())
         #expect(ClientMessage.hello(token: "t", displays: [display], wasm: true).frame.body["wasm"] == .bool(true))
+        #expect(plain["children"] == nil)
+        #expect(ClientMessage.hello(token: "t", displays: [display], children: true).frame.body["children"] == .bool(true))
     }
 
     // MARK: Client messages, byte for byte
@@ -407,6 +419,9 @@ import Testing
         "client-hello-clipboard": .hello(token: "f3a9c1d27e8b4a6f", displays: [
             DisplayInfo(id: 1, width: 1179, height: 2556, scale: 3, refreshHz: 120, hdr: true),
         ], audioDecoders: ["opus"], clipboardTypes: ["image/png", "image/jpeg", "text/uri-list"]),
+        "client-hello-children": .hello(token: "f3a9c1d27e8b4a6f", displays: [
+            DisplayInfo(id: 1, width: 1179, height: 2556, scale: 3, refreshHz: 120, hdr: true),
+        ], audioDecoders: ["opus"], children: true),
         "client-hello-devices": .hello(token: "f3a9c1d27e8b4a6f", displays: [
             DisplayInfo(id: 1, width: 1179, height: 2556, scale: 3, refreshHz: 120, hdr: true),
         ], audioDecoders: ["opus"], devices: true),

@@ -485,6 +485,134 @@ final class LiveGPUSurfaceControllerTests: XCTestCase {
         owners.release(lease)
     }
 
+    /// A child window's surface presents inside the view showing its parent: at its geometry,
+    /// cut to its clip, over the parent's own layer, stacked, and taking no touches.
+    @MainActor
+    func testAChildPresentsInItsParentsViewAtItsGeometryCutToItsClip() throws {
+        let stream = MockStream()
+        let display = DisplayInfo(id: 0, width: 1600, height: 1200, scale: 2, refreshHz: 120)
+        let session = CabooseDisplaySession(stream: { stream }, token: "wake", displays: [display])
+        let parent = RemoteWindow(id: 7, frame: CGRect(x: 40, y: 30, width: 800, height: 600), overrideRedirect: false)
+        let browser = RemoteChildWindow(id: 16, parent: 7, geometry: CGRect(x: 0, y: 100, width: 800, height: 400),
+                                        clip: CGRect(x: 0, y: 100, width: 800, height: 300), stack: 1)
+        let video = RemoteChildWindow(id: 17, parent: 7, geometry: CGRect(x: 100, y: 50, width: 200, height: 100),
+                                      clip: CGRect(x: 100, y: 50, width: 200, height: 100), stack: 0)
+        let host = UIWindow(frame: CGRect(x: 0, y: 0, width: 400, height: 300))
+        host.isHidden = false
+        let view = RemoteWindowView(session: session, window: parent)
+        view.frame = host.bounds
+        host.addSubview(view)
+
+        var invalidatedIdentities: [LiveGPUSurfaceIdentity] = []
+        let owners = LiveGPUPresentationOwners { invalidatedIdentities.append($0) }
+        owners.update(epoch: identity.epoch, windows: [7: parent], children: [16: browser, 17: video])
+        view.layoutLiveGPU()
+        func claim(_ window: UInt64, _ grant: UInt8) throws -> LiveGPULayerLease {
+            var claimed: Result<LiveGPULayerLease, Error>?
+            let next = LiveGPUSurfaceIdentity(epoch: identity.epoch, grant: Data(repeating: grant, count: 16), generation: UInt64(grant))
+            owners.requestClaim(identity: next, windowID: window) { claimed = $0 }
+            return try XCTUnwrap(claimed?.get())
+        }
+        let main = try claim(7, 1)
+        let browserLease = try claim(16, 2)
+        let videoLease = try claim(17, 3)
+        let mainView = try XCTUnwrap(main.content)
+
+        // The child's own surface, at its own size in display pixels, in the parent's view.
+        XCTAssertFalse(browserLease.parked)
+        XCTAssertTrue(browserLease.view === view)
+        XCTAssertEqual(browserLease.extent, CGSize(width: 800, height: 400))
+        XCTAssertEqual(browserLease.layer?.drawableSize, CGSize(width: 800, height: 400))
+        let browserClip = try XCTUnwrap(browserLease.clip), browserView = try XCTUnwrap(browserLease.content)
+        XCTAssertTrue(browserClip.superview === view && browserView.superview === browserClip)
+        // Half scale: the parent's 800×600 shows in 400×300 points.
+        XCTAssertEqual(browserClip.frame, CGRect(x: 0, y: 50, width: 400, height: 150))
+        XCTAssertTrue(browserClip.clipsToBounds)
+        XCTAssertEqual(browserView.frame, CGRect(x: 0, y: 0, width: 400, height: 200))
+        XCTAssertEqual(try XCTUnwrap(videoLease.clip).frame, CGRect(x: 50, y: 25, width: 100, height: 50))
+        XCTAssertFalse(browserClip.isUserInteractionEnabled || browserView.isUserInteractionEnabled)
+        // Over the parent's own layer, lowest stack first.
+        XCTAssertEqual(view.subviews.map(ObjectIdentifier.init),
+                       [mainView, try XCTUnwrap(videoLease.clip), browserClip].map(ObjectIdentifier.init))
+        // Its presents are its own; they never become the parent's snapshot, nor its translucency.
+        XCTAssertFalse(browserLease.snapshot === parent.snapshot)
+        browserLease.setTranslucent(true)
+        XCTAssertFalse(owners.presentsTranslucent(in: view))
+
+        // It moves and is cut differently within its parent.
+        browser.geometry = CGRect(x: 0, y: 200, width: 800, height: 400)
+        browser.clip = CGRect(x: 0, y: 200, width: 800, height: 400)
+        owners.update(children: [16: browser, 17: video])
+        XCTAssertEqual(browserClip.frame, CGRect(x: 0, y: 100, width: 400, height: 200))
+        XCTAssertEqual(browserView.frame, CGRect(x: 0, y: 0, width: 400, height: 200))
+        // A new size changes the lease's extent; the binding stays.
+        browser.geometry.size = CGSize(width: 600, height: 400)
+        owners.update(children: [16: browser, 17: video])
+        XCTAssertTrue(browserLease.isValid)
+        XCTAssertEqual(browserLease.extent, CGSize(width: 600, height: 400))
+        XCTAssertEqual(browserView.frame.size, CGSize(width: 300, height: 200))
+        // Restacked: now above the other child.
+        video.stack = 5
+        owners.update(children: [16: browser, 17: video])
+        XCTAssertEqual(view.subviews.map(ObjectIdentifier.init),
+                       [mainView, browserClip, try XCTUnwrap(videoLease.clip)].map(ObjectIdentifier.init))
+
+        // The parent's view grows: the children scale with it.
+        host.frame = CGRect(x: 0, y: 0, width: 800, height: 600)
+        view.frame = host.bounds
+        view.layoutLiveGPU()
+        XCTAssertEqual(browserClip.frame, CGRect(x: 0, y: 200, width: 800, height: 400))
+        XCTAssertEqual(browserView.frame, CGRect(x: 0, y: 0, width: 600, height: 400))
+
+        // The parent's view stops showing it: the children park with it, still bound.
+        owners.withdraw(view)
+        XCTAssertTrue(browserLease.parked && browserLease.isValid)
+        XCTAssertNil(browserClip.superview)
+        view.layoutLiveGPU()
+        XCTAssertFalse(browserLease.parked)
+        XCTAssertTrue(browserClip.superview === view)
+
+        // A destroyed child's lease ends; the parent's and the other child's stay.
+        owners.update(children: [17: video])
+        XCTAssertFalse(browserLease.isValid)
+        XCTAssertNil(browserClip.superview)
+        XCTAssertEqual(invalidatedIdentities.map(\.generation), [2])
+        XCTAssertTrue(main.isValid && videoLease.isValid)
+        owners.revoke()
+        for lease in [main, browserLease, videoLease] { owners.release(lease) }
+    }
+
+    /// A child bound before its parent is on screen starts parked at its own size, and joins
+    /// the parent's view when one shows it.
+    @MainActor
+    func testAChildBoundWithItsParentOffScreenJoinsTheParentsView() throws {
+        let stream = MockStream()
+        let display = DisplayInfo(id: 0, width: 1600, height: 1200, scale: 2, refreshHz: 120)
+        let session = CabooseDisplaySession(stream: { stream }, token: "wake", displays: [display])
+        let parent = RemoteWindow(id: 7, frame: CGRect(x: 0, y: 0, width: 800, height: 600), overrideRedirect: false)
+        let child = RemoteChildWindow(id: 16, parent: 7, geometry: CGRect(x: 0, y: 0, width: 400, height: 300),
+                                      clip: CGRect(x: 0, y: 0, width: 400, height: 300), stack: 0)
+        let owners = LiveGPUPresentationOwners { _ in XCTFail("no invalidation expected") }
+        owners.update(epoch: identity.epoch, windows: [7: parent], children: [16: child])
+        var claimed: Result<LiveGPULayerLease, Error>?
+        owners.requestClaim(identity: identity, windowID: 16) { claimed = $0 }
+        let lease = try XCTUnwrap(claimed?.get())
+        XCTAssertTrue(lease.parked)
+        XCTAssertEqual(lease.extent, CGSize(width: 400, height: 300))
+
+        let host = UIWindow(frame: CGRect(x: 0, y: 0, width: 400, height: 300))
+        host.isHidden = false
+        let view = RemoteWindowView(session: session, window: parent)
+        view.frame = host.bounds
+        host.addSubview(view)
+        view.layoutLiveGPU()
+        XCTAssertFalse(lease.parked)
+        XCTAssertTrue(lease.clip?.superview === view)
+        XCTAssertEqual(lease.clip?.frame, CGRect(x: 0, y: 0, width: 200, height: 150))
+        owners.revoke()
+        owners.release(lease)
+    }
+
     @MainActor
     func testClaimWithNoViewShowingTheWindowBindsParkedAtTheServerExtent() throws {
         let window = RemoteWindow(id: 7, frame: CGRect(x: 0, y: 0, width: 800, height: 600),
