@@ -17,6 +17,7 @@ transfer and reply handling, so it can be tested without Mesa.
 | `deferred_replies.h` | Replies the caller does not wait for, read as they arrive and drained in order once 6 MiB of commands or 64 KiB of their replies are owed; prefetched fence waits; guest-assigned handle checks |
 | `deferred_destroys.h` | Frees and destroys held until every queue submission sent before them has completed (Deferred frees, below) |
 | `event_status.h` | Event status asked for without waiting when the completion tracker does not follow the event |
+| `memory_traffic.h` | What a process moves, always counted and reported every five seconds in which anything moved: bytes its sockets sent and received, mapped memory flushed and read back by the application or the driver's coherent upkeep, and the readback ranges copies into buffers marked |
 | `async_allocation.h` | Which device-memory allocations may skip the round trip: plain ones that keep their heap at most half committed |
 | `requirements_cache.h` | Image and buffer memory requirements by exact creation parameters, so an identical object needs no query; kept by device identity in a file shared by every process made the same way |
 | `static_query_cache.h` | Answers of physical-device format queries, which cannot change, by their exact parameters |

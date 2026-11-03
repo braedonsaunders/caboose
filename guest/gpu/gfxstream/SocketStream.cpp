@@ -15,6 +15,7 @@
 #include <unistd.h>
 #include "caboose-bounded-memory/completion_feed.h"
 #include "caboose-bounded-memory/deferred_replies.h"
+#include "caboose-bounded-memory/memory_traffic.h"
 #include "caboose-bounded-memory/upload_cache.h"
 #include "caboose-shader-cache/shader_cache.h"
 
@@ -389,8 +390,10 @@ int CabooseSocketStream::writeFully(const void* data, size_t len) {
         ssize_t n = send(fd_, p, len, MSG_NOSIGNAL);
         if (n < 0 && errno == EINTR) continue;
         if (n <= 0) { invalidate(); return -1; }
+        caboose::memory::traffic::counters().sent(static_cast<uint64_t>(n));
         p += n; len -= static_cast<size_t>(n);
     }
+    caboose::memory::traffic::counters().report();
     return 0;
 }
 const unsigned char* CabooseSocketStream::readFully(void* data, size_t len) {
@@ -404,6 +407,7 @@ const unsigned char* CabooseSocketStream::readFully(void* data, size_t len) {
             if (handshaking) return nullptr;
             return lostReply(start, static_cast<size_t>(p - start) + len);
         }
+        caboose::memory::traffic::counters().received(static_cast<uint64_t>(n));
         p += n; len -= static_cast<size_t>(n);
     }
     return start;
@@ -420,6 +424,7 @@ const unsigned char* CabooseSocketStream::read(void* data, size_t* len) {
     ssize_t n;
     do { n = recv(fd_, data, *len, 0); } while (n < 0 && errno == EINTR);
     if (n <= 0) { invalidate(); return nullptr; }
+    caboose::memory::traffic::counters().received(static_cast<uint64_t>(n));
     *len = static_cast<size_t>(n);
     return static_cast<const unsigned char*>(data);
 }

@@ -112,6 +112,12 @@ and the bytes its process sent to and received from the phone in that window (me
 payloads, before the session's compression). `N` numbers the surfaces of the session;
 lines carry no payloads, handles or identities.
 
+Each process's driver also writes `CABOOSE_GPU_MEMORY_TRAFFIC` to its standard error
+every five seconds in which anything moved: the bytes its sockets sent and received, the
+mapped memory it flushed and read back (the application's own flushes and invalidates apart
+from the driver's upkeep of its host-coherent type) and the readback ranges copies into
+buffers marked (`bounded-memory/memory_traffic.h`).
+
 For [frame lab](../../framelab/README.md) the broker also writes a present timeline,
 without the bounds above, while `CABOOSE_PRIVATE_GPU_PRESENT_TRACE=1` is set or while the
 file `$XDG_RUNTIME_DIR/caboose-gpu-present-trace` exists (looked at once a second, so a

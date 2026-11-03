@@ -32,7 +32,7 @@ OWNED = {
                     'flush_packet.h', 'flush_shadow.h', 'flush_timing.h', 'ranges.h',
                     'requirements_cache.h', 'rpc_timing.h', 'static_query_cache.h',
                     'query_results.h', 'handles.h', 'upload_cache.h', 'write_watch.h', 'poll_stall.h',
-                    'deferred_destroys.h', 'event_status.h')},
+                    'deferred_destroys.h', 'event_status.h', 'memory_traffic.h')},
     **{f'dmabuf/{name}': f'src/gfxstream/guest/vulkan_enc/caboose-dmabuf/{name}'
        for name in ('dmabuf.h', 'registration.h', 'remote_images.h', 'sync_file.h')},
     **{f'media/{name}': f'src/gfxstream/guest/vulkan_enc/caboose-media/{name}'
