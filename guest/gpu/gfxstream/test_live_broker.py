@@ -52,6 +52,26 @@ class ReadyReader(asyncio.StreamReader):
 
 
 class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
+    @unittest.skipUnless(hasattr(socket, 'TCP_USER_TIMEOUT'), 'Linux TCP options')
+    def test_executor_connection_finds_a_vanished_peer(self):
+        listener = socket.socket(); listener.bind(('127.0.0.1', 0)); listener.listen(1)
+        client = socket.create_connection(listener.getsockname())
+        accepted, _ = listener.accept()
+        try:
+            broker.detect_dead_peer(accepted)
+            self.assertEqual(accepted.getsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE), 1)
+            self.assertEqual(accepted.getsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE), broker.DEAD_PEER_IDLE_S)
+            self.assertEqual(accepted.getsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT), broker.DEAD_PEER_PROBES)
+            self.assertEqual(accepted.getsockopt(socket.IPPROTO_TCP, socket.TCP_USER_TIMEOUT), broker.DEAD_PEER_UNACKED_MS)
+        finally:
+            for item in (accepted, client, listener): item.close()
+        local, remote = socket.socketpair()
+        try:
+            broker.detect_dead_peer(local)  # not TCP: left as it is
+            self.assertEqual(local.getsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE), 0)
+        finally:
+            local.close(); remote.close()
+
     def test_frame_timing_uses_broker_intervals_and_bounded_aggregates(self):
         timing = broker.FrameTiming(True)
         surface, first, second = {}, {}, {}

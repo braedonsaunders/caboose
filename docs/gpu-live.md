@@ -507,7 +507,11 @@ which ends every surface grant the generation held, and then releases the lease.
 reconnect (which may wait up to 5 s for that) is admitted as a new generation and served
 by the same broker. Reconnect never replays stale
 handles or command history. A refused or abnormally ended executor session is logged
-as `CABOOSE_GPU_BROKER executor session ended: <reason>`.
+as `CABOOSE_GPU_BROKER executor session ended: <reason>`. A TCP executor connection whose
+peer vanished without closing it counts as an abrupt loss within about 30 s: the broker
+sets keepalive probes (after 10 s idle, every 5 s, 3 of them) and ends a connection whose
+data stays unacknowledged for 30 s, so neither the lease nor clients waiting for replies
+are held for the kernel's retransmission timeout.
 
 ## Resuming an executor
 
