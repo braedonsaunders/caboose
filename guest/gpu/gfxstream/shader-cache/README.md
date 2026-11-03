@@ -11,7 +11,8 @@ is Mesa's (`util/mesa-blake3.h`).
 (`apps/ios/GPUStream/gfxstream/tests/shader_store_test.cpp`) is tested against the same
 file. `test_shader_cache.cpp` checks the wire forms, that the inventory is asked for once
 per executor, that modules too small to cache never ask, that a module sent as code is
-named by token afterwards only on a single device stream, and that a failed, malformed or
+named by token afterwards only on a single device stream and only when the inventory listed
+a key (an executor without a store answers an empty one), and that a failed, malformed or
 superseded inventory leaves the process sending code. `../driver/test.sh` builds and runs
 it with Mesa's BLAKE3 sources; by hand, from a prepared Mesa tree `MESA`:
 

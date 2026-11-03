@@ -366,7 +366,8 @@ module the phone holds, a 48-byte token: magic u32 `0x4D534243` ("CBSM"), versio
 the code size u32 (256 bytes to 16 MiB, whole words), reserved u32 zero and the key, with
 `codeSize` 48. A SPIR-V module starts with `0x07230203`, so a module is never read as a
 token. A process whose commands all share one device stream also names by token a module
-it sent as code earlier on that stream. The key covers the bytes the driver sends, after
+it sent as code earlier on that stream, when its inventory listed at least one key: an
+executor without a store also answers an empty inventory, and cannot resolve such a token. The key covers the bytes the driver sends, after
 its own rewrites of the module. The byte-exact forms are in
 `guest/gpu/gfxstream/shader-cache/vectors.json`.
 

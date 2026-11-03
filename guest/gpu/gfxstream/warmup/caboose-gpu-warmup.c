@@ -38,13 +38,19 @@ static double now(void) {
 }
 
 // The cache's opcodes (static_query_cache.h keys: opcode, then the query's parameters,
-// as the driver's patches 0024, 0052 and 0065 build them).
+// as the driver's patches 0024, 0052, 0065 and 0066 build them).
 enum {
     kFormat = 20004, kImage = 20005, kFormat2 = 20149, kImage2 = 20150, kFormat2KHR = 20200, kImage2KHR = 20201,
-    kSemaphore = 20163,
+    kSemaphore = 20163, kProperties = 20006, kQueueFamilies = 20007, kMemory = 20008, kExtensions = 20014,
+    kFeatures2 = 20147, kProperties2 = 20148, kFeatures2KHR = 20198, kProperties2KHR = 20199, kMaxChain = 64,
     kMaxQuestions = 8192, kProcesses = 8, kMaxIdentities = 16,
 };
-typedef struct { uint32_t op, format, type, tiling, usage, flags, three; uint64_t initial; } Question;
+// A chained query's shape: each structure's sType and size, root first (capability_chains.h).
+typedef struct { uint32_t type, size; } Link;
+typedef struct {
+    uint32_t op, format, type, tiling, usage, flags, three; uint64_t initial;
+    uint32_t links; Link chain[kMaxChain];
+} Question;
 static Question questions[kMaxQuestions];
 static size_t asked;
 // The logged scopes' identities, which name the device each was asked of.
@@ -59,6 +65,37 @@ static PFN_vkGetPhysicalDeviceImageFormatProperties2 imageProperties2;
 static PFN_vkGetPhysicalDeviceFormatProperties2KHR formatProperties2KHR;
 static PFN_vkGetPhysicalDeviceImageFormatProperties2KHR imageProperties2KHR;
 static PFN_vkGetPhysicalDeviceExternalSemaphoreProperties semaphoreProperties;
+static PFN_vkGetPhysicalDeviceProperties deviceProperties;
+static PFN_vkGetPhysicalDeviceQueueFamilyProperties queueFamilies;
+static PFN_vkGetPhysicalDeviceMemoryProperties memoryProperties;
+static PFN_vkEnumerateDeviceExtensionProperties deviceExtensions;
+static PFN_vkGetPhysicalDeviceFeatures2 features2, features2KHR;
+static PFN_vkGetPhysicalDeviceProperties2 properties2, properties2KHR;
+
+// Builds the recorded chain in zeroed memory and asks it as recorded.
+static void ask_chain(VkPhysicalDevice device, const Question* q) {
+    size_t total = 0;
+    for (uint32_t i = 0; i < q->links; ++i) {
+        if (q->chain[i].size < sizeof(VkBaseOutStructure) || q->chain[i].size > 65536) return;
+        total += (q->chain[i].size + 15) & ~(size_t)15;
+    }
+    unsigned char* memory = calloc(1, total);
+    if (!memory) return;
+    VkBaseOutStructure* previous = NULL;
+    size_t at = 0;
+    for (uint32_t i = 0; i < q->links; ++i) {
+        VkBaseOutStructure* link = (VkBaseOutStructure*)(memory + at);
+        link->sType = (VkStructureType)q->chain[i].type;
+        if (previous) previous->pNext = link;
+        previous = link;
+        at += (q->chain[i].size + 15) & ~(size_t)15;
+    }
+    if (q->op == kFeatures2) features2(device, (VkPhysicalDeviceFeatures2*)memory);
+    else if (q->op == kFeatures2KHR) features2KHR(device, (VkPhysicalDeviceFeatures2*)memory);
+    else if (q->op == kProperties2) properties2(device, (VkPhysicalDeviceProperties2*)memory);
+    else properties2KHR(device, (VkPhysicalDeviceProperties2*)memory);
+    free(memory);
+}
 
 static uint64_t digest(const unsigned char* bytes, size_t count, uint64_t hash) {
     for (size_t i = 0; i < count; ++i) hash = (hash ^ bytes[i]) * 0x100000001b3ull;
@@ -100,6 +137,8 @@ static void read_log(const char* path) {
         memcpy(&question.op, query, 4);
         uint32_t fields[5] = {0};
         if (length > 4 && length - 4 <= sizeof(fields)) memcpy(fields, query + 4, length - 4);
+        const int chained = question.op == kFeatures2 || question.op == kProperties2 ||
+                            question.op == kFeatures2KHR || question.op == kProperties2KHR;
         switch (question.op) {
         case kFormat: if (length != 8) continue; question.format = fields[0]; break;
         case kFormat2: case kFormat2KHR: if (length != 12) continue;
@@ -111,7 +150,13 @@ static void read_log(const char* path) {
             // handle type, whether a semaphore type is chained, the type, its initial value
             question.usage = fields[0]; question.three = fields[1]; question.type = fields[2];
             memcpy(&question.initial, &fields[3], 8); break;
-        default: continue;
+        case kProperties: case kMemory: if (length != 4) continue; break;
+        case kQueueFamilies: case kExtensions: if (length != 8) continue; question.usage = fields[0]; break;
+        default:
+            if (!chained || length < 12 || (length - 4) % 8 || (length - 4) / 8 > kMaxChain) continue;
+            question.links = (uint32_t)((length - 4) / 8);
+            memcpy(question.chain, query + 4, length - 4);
+            break;
         }
         if (!known(&question)) questions[asked++] = question;
     }
@@ -128,6 +173,23 @@ static void ask(size_t first, size_t step) {
                 VkFormatProperties3 three = {VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_3};
                 VkFormatProperties2 value = {VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_2, q->three ? &three : NULL};
                 (q->op == kFormat2 ? formatProperties2 : formatProperties2KHR)(devices[d], (VkFormat)q->format, &value);
+            } else if (q->links) {
+                ask_chain(devices[d], q);
+            } else if (q->op == kProperties) {
+                VkPhysicalDeviceProperties value;
+                deviceProperties(devices[d], &value);
+            } else if (q->op == kMemory) {
+                VkPhysicalDeviceMemoryProperties value;
+                memoryProperties(devices[d], &value);
+            } else if (q->op == kQueueFamilies || q->op == kExtensions) {
+                uint32_t count = q->usage;
+                const size_t each = q->op == kQueueFamilies ? sizeof(VkQueueFamilyProperties) : sizeof(VkExtensionProperties);
+                void* values = count == UINT32_MAX || !count ? NULL : calloc(count, each);
+                if (count != UINT32_MAX && count && !values) continue;
+                if (count == UINT32_MAX) count = 0;
+                if (q->op == kQueueFamilies) queueFamilies(devices[d], &count, values);
+                else deviceExtensions(devices[d], NULL, &count, values);
+                free(values);
             } else if (q->op == kSemaphore) {
                 VkSemaphoreTypeCreateInfo type = {VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO};
                 type.semaphoreType = (VkSemaphoreType)q->type; type.initialValue = q->initial;
@@ -186,9 +248,19 @@ static int ask_share(size_t first, size_t step) {
     formatProperties2KHR = (PFN_vkGetPhysicalDeviceFormatProperties2KHR)proc(instance, "vkGetPhysicalDeviceFormatProperties2KHR");
     imageProperties2KHR = (PFN_vkGetPhysicalDeviceImageFormatProperties2KHR)proc(instance, "vkGetPhysicalDeviceImageFormatProperties2KHR");
     semaphoreProperties = (PFN_vkGetPhysicalDeviceExternalSemaphoreProperties)proc(instance, "vkGetPhysicalDeviceExternalSemaphoreProperties");
+    deviceProperties = (PFN_vkGetPhysicalDeviceProperties)proc(instance, "vkGetPhysicalDeviceProperties");
+    queueFamilies = (PFN_vkGetPhysicalDeviceQueueFamilyProperties)proc(instance, "vkGetPhysicalDeviceQueueFamilyProperties");
+    memoryProperties = (PFN_vkGetPhysicalDeviceMemoryProperties)proc(instance, "vkGetPhysicalDeviceMemoryProperties");
+    deviceExtensions = (PFN_vkEnumerateDeviceExtensionProperties)proc(instance, "vkEnumerateDeviceExtensionProperties");
+    features2 = (PFN_vkGetPhysicalDeviceFeatures2)proc(instance, "vkGetPhysicalDeviceFeatures2");
+    features2KHR = (PFN_vkGetPhysicalDeviceFeatures2)proc(instance, "vkGetPhysicalDeviceFeatures2KHR");
+    properties2 = (PFN_vkGetPhysicalDeviceProperties2)proc(instance, "vkGetPhysicalDeviceProperties2");
+    properties2KHR = (PFN_vkGetPhysicalDeviceProperties2)proc(instance, "vkGetPhysicalDeviceProperties2KHR");
     PFN_vkDestroyInstance destroy = (PFN_vkDestroyInstance)proc(instance, "vkDestroyInstance");
     if (!enumerate || !properties || !formatProperties || !formatProperties2 || !imageProperties || !imageProperties2 ||
-        !formatProperties2KHR || !imageProperties2KHR || !semaphoreProperties ||
+        !formatProperties2KHR || !imageProperties2KHR || !semaphoreProperties || !deviceProperties ||
+        !queueFamilies || !memoryProperties || !deviceExtensions || !features2 || !features2KHR ||
+        !properties2 || !properties2KHR ||
         enumerate(instance, &deviceCount, NULL) != VK_SUCCESS || !deviceCount) {
         if (destroy) destroy(instance, NULL);
         return 1;

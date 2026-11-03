@@ -654,6 +654,13 @@ def main():
     surfaces.EXTRA_FORMATS[:] = [tuple(int(n) for n in pair.split(':')) for pair in options.extra_formats.split(',') if pair]
     width, _, height = options.display.partition('x')
     options.display = (int(width), int(height))
+    # The shader and upload caches need their stores: without --cache-root the executor
+    # cannot resolve what a guest names by hash, so it does not offer them.
+    if not options.cache_root:
+        kept = [name for name in options.features.split(',') if name not in ('shader-cache', 'upload-cache')]
+        if len(kept) != len(options.features.split(',')):
+            log('no --cache-root: shader-cache and upload-cache not offered')
+        options.features = ','.join(kept)
     runtime = native.Runtime(str(options.library))
     current = []
     draining = []

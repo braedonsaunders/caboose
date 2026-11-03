@@ -37,7 +37,7 @@ public:
                          (unsigned long long)(firstLookup_ ? (lastLookup_-firstLookup_)/1000 : 0));
         closeAll();
     }
-    static constexpr size_t kMaxEntries=8192, kMaxKeyBytes=4096, kMaxValueBytes=4096;
+    static constexpr size_t kMaxEntries=8192, kMaxKeyBytes=4096, kMaxValueBytes=65536;
     static constexpr size_t kMaxScopes=64, kMaxFileBytes=8u<<20, kMaxPendingBytes=256u<<10;
     // How long a claim holds other processes back from asking the same question: far
     // longer than one round trip, short enough that a claimant that died costs little.
@@ -83,13 +83,36 @@ public:
     // of asking again. Otherwise it claims the question and the caller asks it, then
     // `store`s the answer. A process never waits for questions it did not ask.
     template<class T> bool lookup(const std::string& input,T* out) {
+        std::string bytes;
+        if (!lookupValue(input,sizeof(T),&bytes)) return false;
+        std::memcpy(out,bytes.data(),sizeof(T)); return true;
+    }
+    // An answer of any size (a structure chain or a list), for `storeBytes`.
+    bool lookupBytes(const std::string& input,std::string* out) { return lookupValue(input,0,out); }
+    template<class T> void store(const std::string& input,const T& value) {
+        storeBytes(input,std::string(reinterpret_cast<const char*>(&value),sizeof(T)));
+    }
+    void storeBytes(const std::string& input,const std::string& bytes) {
+        if (disabled()) return;
+        if (input.size()>kMaxKeyBytes || bytes.empty() || bytes.size()>kMaxValueBytes) return;
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto scoped=normalize(input);
+        const bool known=entries_.count(scoped.second);
+        if (!known && entries_.size()>=kMaxEntries) return;
+        entries_[scoped.second]=bytes; waits_.erase(scoped.second);
+        if (!known && !scoped.first.empty()) appendLocked(scoped.first,scoped.second,bytes);
+    }
+    uint64_t epoch() { std::lock_guard<std::mutex> lock(mutex_); return epoch_; }
+private:
+    // `expected` is the answer's size, or 0 for any.
+    bool lookupValue(const std::string& input,size_t expected,std::string* out) {
         std::unique_lock<std::mutex> lock(mutex_);
         if (disabled()) { ++misses_; return false; }
         auto scoped=normalize(input);
         auto found=[&]() {
             auto it=entries_.find(scoped.second);
-            if (it==entries_.end() || it->second.size()!=sizeof(T)) return false;
-            std::memcpy(out,it->second.data(),sizeof(T)); return true;
+            if (it==entries_.end() || (expected && it->second.size()!=expected)) return false;
+            *out=it->second; return true;
         };
         if (!scoped.first.empty()) lastLookup_=monotonic(), firstLookup_=firstLookup_ ? firstLookup_ : lastLookup_;
         if (found()) { ++hits_; return true; }
@@ -114,18 +137,7 @@ public:
         claimLocked(scoped.first,scoped.second);
         ++misses_; return false;
     }
-    template<class T> void store(const std::string& input,const T& value) {
-        if (disabled()) return;
-        if (input.size()>kMaxKeyBytes || sizeof(T)>kMaxValueBytes) return;
-        std::lock_guard<std::mutex> lock(mutex_);
-        auto scoped=normalize(input);
-        const bool known=entries_.count(scoped.second);
-        if (!known && entries_.size()>=kMaxEntries) return;
-        std::string bytes(reinterpret_cast<const char*>(&value),sizeof(T));
-        entries_[scoped.second]=bytes; waits_.erase(scoped.second);
-        if (!known && !scoped.first.empty()) appendLocked(scoped.first,scoped.second,bytes);
-    }
-    uint64_t epoch() { std::lock_guard<std::mutex> lock(mutex_); return epoch_; }
+public:
     size_t size() { std::lock_guard<std::mutex> lock(mutex_); return entries_.size(); }
     uint64_t writes() { std::lock_guard<std::mutex> lock(mutex_); return writes_; }
     uint64_t writeBytes() { std::lock_guard<std::mutex> lock(mutex_); return writeBytes_; }
