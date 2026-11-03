@@ -135,8 +135,11 @@ and `-lvulkan`, then run:
 sh apps/ios/GPUStream/gfxstream/linux-executor/check-capabilities.sh IMAGE WORK DRIVER CAPABILITY_PROBE OUT
 ```
 
-This creates a fresh broker/cache directory and runs three independent probe processes.
-The first is cold; the next two reuse the seat cache. Each reports setup, format queries,
-device creation and descriptor-support queries separately. All answer hashes must match,
-and the executor must drain cleanly. These Linux measurements do not establish phone
-latency.
+This creates a fresh broker/cache directory and runs four independent probe processes:
+an uncached baseline (`CABOOSE_CAPABILITY_CACHE_DISABLE=1`), a cold process on the empty
+cache, and two that reuse the seat cache. Each reports setup, format queries, device
+creation, descriptor-support queries, records appended and time spent appending, and
+whole-process time. All answer hashes must match, no process may write more than one
+record per new answer, the cold process may take at most 10% plus 50 ms longer than the
+baseline, and the executor must drain cleanly. These Linux measurements do not establish
+phone latency.

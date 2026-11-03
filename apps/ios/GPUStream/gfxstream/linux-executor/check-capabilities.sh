@@ -108,6 +108,7 @@ python3 - "$out" <<'PYCHECK'
 import pathlib,re,sys
 root=pathlib.Path(sys.argv[1])
 rows=[]
+seconds={}
 for name in ('disabled','cold','warm','fresh'):
     text=(root/(name+'.log')).read_text()
     found=re.search(r'CABOOSE_CAPABILITY_QUERIES .*hash=([0-9a-f]+)',text)
@@ -118,6 +119,18 @@ for name in ('disabled','cold','warm','fresh'):
     hits,misses,scopes=map(int,counters.groups())
     if not scopes or (name in ('disabled','cold') and (hits or misses<368)) or (name in ('warm','fresh') and hits<368):
         raise SystemExit('FAIL incorrect cold/warm cache use: '+name+' '+counters.group(0))
+    writes=re.search(r'writes=(\d+) write_bytes=(\d+) write_us=(\d+)',text)
+    elapsed=re.search(r'CABOOSE_CAPABILITY_PROCESS elapsed_s=([0-9.]+)',text)
+    if not writes or not elapsed: raise SystemExit('FAIL missing write or process timing: '+name)
+    count,size,micros=map(int,writes.groups())
+    # Each new answer is one appended record: never a rewrite of earlier records.
+    if count>misses or size>count*(2*4096+4096+16):
+        raise SystemExit('FAIL capability cache rewrote records: '+name+' '+writes.group(0))
+    seconds[name]=float(elapsed.group(1))
+    print('%-8s process %.3f s, %d records appended, %d bytes, %.3f ms appending'%(name,seconds[name],count,size,micros/1000))
 if len(set(rows))!=1: raise SystemExit('FAIL cold/warm capabilities differ')
+# An empty cache may cost no more than the uncached baseline beyond run-to-run noise.
+if seconds['cold']>seconds['disabled']*1.10+0.05:
+    raise SystemExit('FAIL empty-cache process %.3f s is slower than the uncached %.3f s'%(seconds['cold'],seconds['disabled']))
 print('PASS identical cold/warm/fresh process capability answers')
 PYCHECK

@@ -2,7 +2,6 @@
 #pragma once
 #include <cstdint>
 #include <cerrno>
-#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -23,13 +22,17 @@ namespace caboose::memory {
 class StaticQueryCache {
 public:
     ~StaticQueryCache() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        // One last nonblocking attempt for records a busy lock held back.
+        for (auto& file:files_) if (file.second.pid==getpid()) flushLocked(file.first,file.second);
         if (std::getenv("CABOOSE_CAPABILITY_CACHE_DIAGNOSTICS"))
-            std::fprintf(stderr,"CABOOSE_CAPABILITY_CACHE hits=%llu misses=%llu scopes=%zu writes=%llu write_bytes=%llu write_us=%llu\n",
+            std::fprintf(stderr,"CABOOSE_CAPABILITY_CACHE hits=%llu misses=%llu scopes=%zu writes=%llu write_bytes=%llu write_us=%llu contended=%llu\n",
                          (unsigned long long)hits_,(unsigned long long)misses_,identities_.size(),(unsigned long long)writes_,
-                         (unsigned long long)writeBytes_,(unsigned long long)writeMicros_);
+                         (unsigned long long)writeBytes_,(unsigned long long)writeMicros_,(unsigned long long)contended_);
+        closeAll();
     }
     static constexpr size_t kMaxEntries=8192, kMaxKeyBytes=4096, kMaxValueBytes=4096;
-    static constexpr size_t kMaxScopes=64, kMaxFileBytes=8u<<20;
+    static constexpr size_t kMaxScopes=64, kMaxFileBytes=8u<<20, kMaxPendingBytes=256u<<10;
     template<class... Parts> static std::string key(uint32_t query,const Parts&... parts) {
         std::string out; append(&out,query); (append(&out,parts),...); return out;
     }
@@ -50,19 +53,20 @@ public:
         identities_[physical]=identity;
         if (directory.empty() || files_.count(identity) || files_.size()>=kMaxScopes) return;
         char suffix[40]; std::snprintf(suffix,sizeof(suffix),"/formats-%016llx.bin",(unsigned long long)digest(identity));
-        files_[identity]=directory+suffix;
-        loadLocked(identity,files_[identity]);
+        Scope& scope=files_[identity];
+        scope.path=directory+suffix;
+        loadLocked(identity,scope);
     }
     // A replacement executor cannot inherit physical handle associations, even when
     // its handles reuse the old numeric values. Persistent files stay identity scoped.
     void connection(const void* bytes,size_t count) {
         std::lock_guard<std::mutex> lock(mutex_);
-        ++epoch_; identities_.clear(); files_.clear(); entries_.clear();
+        ++epoch_; identities_.clear(); closeAll(); entries_.clear();
         connection_.assign(static_cast<const char*>(bytes),count<=256 ? count : 0);
     }
     void reset() {
         std::lock_guard<std::mutex> lock(mutex_);
-        ++epoch_; identities_.clear(); files_.clear(); entries_.clear(); connection_.clear();
+        ++epoch_; identities_.clear(); closeAll(); entries_.clear(); connection_.clear();
     }
     template<class T> bool lookup(const std::string& input,T* out) {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -85,21 +89,38 @@ public:
     }
     uint64_t epoch() { std::lock_guard<std::mutex> lock(mutex_); return epoch_; }
     size_t size() { std::lock_guard<std::mutex> lock(mutex_); return entries_.size(); }
+    uint64_t writes() { std::lock_guard<std::mutex> lock(mutex_); return writes_; }
+    uint64_t writeBytes() { std::lock_guard<std::mutex> lock(mutex_); return writeBytes_; }
 private:
+    // One append-only record log per device scope. Descriptors are opened once per
+    // scope and process; each new answer appends one record under an exclusive lock.
+    struct Scope {
+        std::string path,name;
+        int dir=-1,lock=-1,data=-1;
+        pid_t pid=0;
+        dev_t device=0; ino_t inode=0;
+        uint64_t end=0;   // bytes of the data file known to be header + valid records
+        bool synced=false;
+        std::string pending; // records not yet appended because the lock was busy
+        uint64_t pendingRecords=0;
+    };
     static bool disabled() { const char* value=std::getenv("CABOOSE_CAPABILITY_CACHE_DISABLE"); return value && !std::strcmp(value,"1"); }
     template<class T> static void append(std::string* out,const T& value) {
         out->append(reinterpret_cast<const char*>(&value),sizeof(T));
     }
     static std::string header(const std::string& identity) {
-        std::string out("CBCQ\1\0\0\0",8);
+        std::string out("CBCQ\2\0\0\0",8);
         append(&out,uint32_t(identity.size())); out+=identity; return out;
+    }
+    static std::string scopePrefix(const std::string& identity) {
+        std::string out(1,'P'); append(&out,uint32_t(identity.size())); out+=identity; return out;
     }
     std::pair<std::string,std::string> normalize(const std::string& input) const {
         if (input.size()<12) return {"",std::string(1,'L')+input};
         uint64_t physical=0; std::memcpy(&physical,input.data()+4,8);
         auto scope=identities_.find(physical);
         if (scope==identities_.end()) return {"",std::string(1,'L')+input};
-        std::string out(1,'P'); append(&out,uint32_t(scope->second.size())); out+=scope->second;
+        std::string out=scopePrefix(scope->second);
         out.append(input.data(),4); out.append(input.data()+12,input.size()-12);
         return {scope->second,out};
     }
@@ -131,97 +152,156 @@ private:
         }
         return fd;
     }
-    void loadLocked(const std::string& identity,const std::string& path) {
-        std::string name; int dir=directory(path,&name); if (dir<0) return;
-        int lock=openat(dir,(name+".lock").c_str(),O_RDWR|O_CREAT|O_CLOEXEC|O_NOFOLLOW|O_NONBLOCK,0600);
-        struct stat lockInfo{};
-        if (lock<0 || !regularOwned(lock,&lockInfo) || lockInfo.st_size || flock(lock,LOCK_SH|LOCK_NB)) {
-            if (lock>=0) close(lock);
-            close(dir); return;
-        }
-        int fd=openat(dir,name.c_str(),O_RDONLY|O_CLOEXEC|O_NOFOLLOW|O_NONBLOCK);
-        close(dir);
-        if (fd<0) { close(lock); return; }
+    static void closeScope(Scope& scope) {
+        for (int* fd:{&scope.data,&scope.lock,&scope.dir}) if (*fd>=0) { close(*fd); *fd=-1; }
+        scope.synced=false; scope.end=0; scope.pid=0;
+    }
+    void closeAll() { for (auto& file:files_) closeScope(file.second); files_.clear(); }
+    // Opens the scope's directory and lock once per process. A forked child shares its
+    // parent's lock description, so it reopens its own before taking the lock.
+    static bool openScope(Scope& scope) {
+        if (scope.pid==getpid() && scope.dir>=0 && scope.lock>=0) return true;
+        closeScope(scope);
+        scope.dir=directory(scope.path,&scope.name);
+        if (scope.dir<0) return false;
+        scope.lock=openat(scope.dir,(scope.name+".lock").c_str(),O_RDWR|O_CREAT|O_CLOEXEC|O_NOFOLLOW|O_NONBLOCK,0600);
         struct stat info{};
-        // Non-blocking locks: another writer is a cache miss, never startup latency.
-        if (!regularOwned(fd,&info)) { close(fd); close(lock); return; }
-        std::string bytes(size_t(info.st_size),'\0'); size_t got=0;
+        if (scope.lock<0 || !regularOwned(scope.lock,&info) || info.st_size) { closeScope(scope); return false; }
+        scope.pid=getpid();
+        return true;
+    }
+    // Reads `[from, size)` and decodes records in order. Each record is checksummed and
+    // must carry the full scope prefix; decoding stops at the first damaged or partial
+    // record, so a torn tail costs only the records after it. Returns the valid end.
+    uint64_t decodeLocked(int fd,const std::string& identity,uint64_t from,uint64_t size) {
+        std::string bytes(size_t(size-from),'\0'); size_t got=0;
         while (got<bytes.size()) {
-            ssize_t n=pread(fd,bytes.data()+got,bytes.size()-got,off_t(got));
+            ssize_t n=pread(fd,bytes.data()+got,bytes.size()-got,off_t(from+got));
             if (n<=0) break;
             got+=size_t(n);
         }
-        close(fd); close(lock);
-        auto prefix=header(identity);
-        if (got!=bytes.size() || bytes.size()<prefix.size() || bytes.compare(0,prefix.size(),prefix)) return;
-        // Validate the entire snapshot before publishing any answers; malformed data is
-        // never partially authoritative. A writer holds an exclusive lock over a record.
-        std::vector<std::pair<std::string,std::string>> decoded;
-        size_t at=prefix.size();
-        while (at<bytes.size()) {
-            if (bytes.size()-at<16 || decoded.size()>=kMaxEntries) return;
+        bytes.resize(got);
+        const std::string scope=scopePrefix(identity);
+        size_t at=0;
+        while (bytes.size()-at>=16) {
             uint32_t keys=0,values=0; uint64_t checksum=0;
             std::memcpy(&keys,bytes.data()+at,4); std::memcpy(&values,bytes.data()+at+4,4);
-            std::memcpy(&checksum,bytes.data()+at+8,8); at+=16;
-            if (!keys || keys>kMaxKeyBytes*2+16 || !values || values>kMaxValueBytes ||
-                size_t(keys)+values>bytes.size()-at) return;
-            std::string key=bytes.substr(at,keys),value=bytes.substr(at+keys,values);
-            if (digest(key+value)!=checksum) return;
-            std::string scope(1,'P'); append(&scope,uint32_t(identity.size())); scope+=identity;
-            if (key.compare(0,scope.size(),scope)) return;
-            decoded.emplace_back(std::move(key),std::move(value)); at+=size_t(keys)+values;
+            std::memcpy(&checksum,bytes.data()+at+8,8);
+            if (keys<=scope.size() || keys>kMaxKeyBytes*2+16 || !values || values>kMaxValueBytes ||
+                size_t(keys)+values>bytes.size()-at-16) break;
+            std::string key=bytes.substr(at+16,keys),value=bytes.substr(at+16+keys,values);
+            if (digest(key+value)!=checksum || key.compare(0,scope.size(),scope)) break;
+            if (entries_.size()<kMaxEntries || entries_.count(key)) entries_.emplace(std::move(key),std::move(value));
+            at+=16+size_t(keys)+values;
         }
-        for (auto& entry:decoded) {
-            if (entries_.size()>=kMaxEntries && !entries_.count(entry.first)) break;
-            entries_.insert_or_assign(std::move(entry.first),std::move(entry.second));
+        return from+at;
+    }
+    void loadLocked(const std::string& identity,Scope& scope) {
+        if (!openScope(scope)) return;
+        // Non-blocking locks: another writer is a cache miss, never startup latency.
+        if (flock(scope.lock,LOCK_SH|LOCK_NB)) return;
+        int fd=openat(scope.dir,scope.name.c_str(),O_RDWR|O_CLOEXEC|O_NOFOLLOW|O_NONBLOCK);
+        struct stat info{};
+        if (fd>=0 && regularOwned(fd,&info)) {
+            const auto prefix=header(identity);
+            std::string head(prefix.size(),'\0');
+            if (size_t(info.st_size)>=prefix.size() &&
+                pread(fd,head.data(),head.size(),0)==ssize_t(head.size()) && head==prefix) {
+                scope.end=decodeLocked(fd,identity,prefix.size(),uint64_t(info.st_size));
+                scope.synced=scope.end==uint64_t(info.st_size);
+            }
+            scope.data=fd; scope.device=info.st_dev; scope.inode=info.st_ino; fd=-1;
         }
+        if (fd>=0) close(fd);
+        flock(scope.lock,LOCK_UN);
+    }
+    // With the exclusive lock held: make `scope.data` the file at the scope's name and
+    // `scope.end` its valid length, adopting records other processes appended and
+    // cutting a torn tail or a file of another format back to what is valid.
+    bool syncLocked(const std::string& identity,Scope& scope) {
+        const auto prefix=header(identity);
+        struct stat named{};
+        if (fstatat(scope.dir,scope.name.c_str(),&named,AT_SYMLINK_NOFOLLOW)) {
+            if (errno!=ENOENT) return false;
+            if (scope.data>=0) { close(scope.data); scope.data=-1; }
+            int fd=openat(scope.dir,scope.name.c_str(),O_RDWR|O_CREAT|O_EXCL|O_CLOEXEC|O_NOFOLLOW,0600);
+            if (fd<0) return false;
+            struct stat info{};
+            if (!regularOwned(fd,&info) || pwrite(fd,prefix.data(),prefix.size(),0)!=ssize_t(prefix.size())) {
+                close(fd); (void)unlinkat(scope.dir,scope.name.c_str(),0); return false;
+            }
+            scope.data=fd; scope.device=info.st_dev; scope.inode=info.st_ino;
+            scope.end=prefix.size(); scope.synced=true;
+            return true;
+        }
+        if (scope.data<0 || named.st_dev!=scope.device || named.st_ino!=scope.inode) {
+            if (scope.data>=0) { close(scope.data); scope.data=-1; }
+            scope.synced=false;
+            int fd=openat(scope.dir,scope.name.c_str(),O_RDWR|O_CLOEXEC|O_NOFOLLOW|O_NONBLOCK);
+            if (fd<0) return false;
+            scope.data=fd;
+        }
+        struct stat info{};
+        if (!regularOwned(scope.data,&info)) return false;
+        scope.device=info.st_dev; scope.inode=info.st_ino;
+        const uint64_t size=uint64_t(info.st_size);
+        if (scope.synced && size==scope.end) return true;
+        if (!scope.synced || size<scope.end) {
+            std::string head(prefix.size(),'\0');
+            if (size<prefix.size() || pread(scope.data,head.data(),head.size(),0)!=ssize_t(head.size()) || head!=prefix) {
+                // Another format or a damaged header: restart the log in place.
+                if (ftruncate(scope.data,0) || pwrite(scope.data,prefix.data(),prefix.size(),0)!=ssize_t(prefix.size()))
+                    return false;
+                scope.end=prefix.size(); scope.synced=true;
+                return true;
+            }
+            scope.end=prefix.size();
+        }
+        scope.end=decodeLocked(scope.data,identity,scope.end,size);
+        if (scope.end<size && ftruncate(scope.data,off_t(scope.end))) return false;
+        scope.synced=true;
+        return true;
     }
     void appendLocked(const std::string& identity,const std::string& key,const std::string& value) {
         const auto started=std::chrono::steady_clock::now();
         struct Timing { uint64_t& micros; std::chrono::steady_clock::time_point start;
             ~Timing() { micros+=std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-start).count(); }
         } timing{writeMicros_,started};
-        auto path=files_.find(identity); if (path==files_.end()) return;
-        std::string name; int dir=directory(path->second,&name); if (dir<0) return;
-        int lock=openat(dir,(name+".lock").c_str(),O_RDWR|O_CREAT|O_CLOEXEC|O_NOFOLLOW|O_NONBLOCK,0600);
-        struct stat info{};
-        if (lock<0 || !regularOwned(lock,&info) || info.st_size || flock(lock,LOCK_EX|LOCK_NB)) {
-            if (lock>=0) close(lock);
-            close(dir); return;
-        }
-        std::string bytes=header(identity);
-        int old=openat(dir,name.c_str(),O_RDONLY|O_CLOEXEC|O_NOFOLLOW|O_NONBLOCK);
-        if (old>=0) {
-            if (!regularOwned(old,&info)) { close(old); close(lock); close(dir); return; }
-            std::string existing(size_t(info.st_size),'\0');
-            ssize_t got=pread(old,existing.data(),existing.size(),0); close(old);
-            if (got!=ssize_t(existing.size()) || existing.compare(0,bytes.size(),bytes)) {
-                close(lock); close(dir); return;
-            }
-            bytes=std::move(existing);
-        } else if (errno!=ENOENT) { close(lock); close(dir); return; }
-        append(&bytes,uint32_t(key.size())); append(&bytes,uint32_t(value.size()));
-        append(&bytes,digest(key+value)); bytes+=key; bytes+=value;
-        if (bytes.size()>kMaxFileBytes) { close(lock); close(dir); return; }
-        static std::atomic<uint64_t> serial{0};
-        const std::string temp=name+".tmp-"+std::to_string(getpid())+"-"+std::to_string(++serial);
-        int fd=openat(dir,temp.c_str(),O_WRONLY|O_CREAT|O_EXCL|O_CLOEXEC|O_NOFOLLOW,0600);
-        if (fd>=0) {
-            // Cache durability is optional; fsync per query would stall cold discovery.
-            // Atomic rename publishes a complete snapshot; crash damage is a miss.
-            if (write(fd,bytes.data(),bytes.size())==ssize_t(bytes.size())) {
-                ++writes_; writeBytes_+=bytes.size();
-                (void)renameat(dir,temp.c_str(),dir,name.c_str());
-            }
-            close(fd); (void)unlinkat(dir,temp.c_str(),0);
-        }
-        close(lock); close(dir);
+        auto file=files_.find(identity); if (file==files_.end()) return;
+        Scope& scope=file->second;
+        std::string record;
+        append(&record,uint32_t(key.size())); append(&record,uint32_t(value.size()));
+        append(&record,digest(key+value)); record+=key; record+=value;
+        // Records wait, within a fixed budget, while another process holds the lock and
+        // go out with the next append; past the budget they are only process-local.
+        if (scope.pending.size()+record.size()<=kMaxPendingBytes) { scope.pending+=record; ++scope.pendingRecords; }
+        flushLocked(identity,scope);
     }
-    uint64_t epoch_=1,hits_=0,misses_=0,writes_=0,writeBytes_=0,writeMicros_=0;
+    void flushLocked(const std::string& identity,Scope& scope) {
+        if (scope.pending.empty() || !openScope(scope)) return;
+        if (flock(scope.lock,LOCK_EX|LOCK_NB)) { ++contended_; return; }
+        if (!syncLocked(identity,scope)) {
+            scope.synced=false;
+        } else if (scope.end+scope.pending.size()>kMaxFileBytes) {
+            scope.pending.clear(); scope.pendingRecords=0;
+        } else if (pwrite(scope.data,scope.pending.data(),scope.pending.size(),off_t(scope.end))==ssize_t(scope.pending.size())) {
+            // Cache durability is optional, so there is no fsync. A crash or failed
+            // write leaves at most a partial final record, which readers ignore and
+            // the next writer cuts away.
+            scope.end+=scope.pending.size(); writes_+=scope.pendingRecords; writeBytes_+=scope.pending.size();
+            scope.pending.clear(); scope.pendingRecords=0;
+        } else {
+            scope.synced=false;
+            (void)ftruncate(scope.data,off_t(scope.end));
+        }
+        flock(scope.lock,LOCK_UN);
+    }
+    uint64_t epoch_=1,hits_=0,misses_=0,writes_=0,writeBytes_=0,writeMicros_=0,contended_=0;
     std::string connection_;
     std::mutex mutex_;
     std::unordered_map<uint64_t,std::string> identities_;
-    std::unordered_map<std::string,std::string> files_,entries_;
+    std::unordered_map<std::string,Scope> files_;
+    std::unordered_map<std::string,std::string> entries_;
 };
 inline StaticQueryCache staticQueryCache;
 } // namespace caboose::memory

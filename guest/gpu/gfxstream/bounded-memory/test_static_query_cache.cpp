@@ -103,14 +103,71 @@ int main() {
     assert(!ftruncate(fd,Cache::kMaxFileBytes+1));
     Cache oversized; identify(oversized,0x20,identity,directory);
     assert(!oversized.lookup(fresh,&out)); assert(!ftruncate(fd,before.st_size));
-    // Partial append or corrupted checksum makes the whole file non-authoritative.
+    // A torn final record costs only itself: earlier records stay authoritative and the
+    // next writer cuts the tail away before appending.
     assert(pwrite(fd,"x",1,before.st_size)==1);
-    Cache partial; identify(partial,0x20,identity,directory); assert(!partial.lookup(fresh,&out));
-    assert(!ftruncate(fd,before.st_size));
-    char byte=0; assert(pread(fd,&byte,1,before.st_size-1)==1); byte^=1;
-    assert(pwrite(fd,&byte,1,before.st_size-1)==1);
-    Cache corrupt; identify(corrupt,0x20,identity,directory); assert(!corrupt.lookup(fresh,&out));
+    Cache partial; identify(partial,0x20,identity,directory); assert(partial.lookup(fresh,&out));
+    const auto late=Cache::key(uint32_t(20004),uint64_t(0x20),uint32_t(900));
+    partial.store(late,Answer{0,{9,9,9,9}});
+    Cache repaired; identify(repaired,0x20,identity,directory);
+    assert(repaired.lookup(fresh,&out) && repaired.lookup(late,&out) && out.values[0]==9);
+    struct stat grown{}; assert(!fstat(fd,&grown) && grown.st_size>before.st_size);
+    // A damaged checksum in the last record hides that record only.
+    char byte=0; assert(pread(fd,&byte,1,grown.st_size-1)==1); byte^=1;
+    assert(pwrite(fd,&byte,1,grown.st_size-1)==1);
+    Cache corrupt; identify(corrupt,0x20,identity,directory);
+    assert(corrupt.lookup(fresh,&out) && !corrupt.lookup(late,&out));
+    // Damage in the first record hides everything after it.
+    const size_t headerBytes=8+4+std::string("protocol"+identity).size();
+    assert(pread(fd,&byte,1,headerBytes+16)==1); byte^=1; assert(pwrite(fd,&byte,1,headerBytes+16)==1);
+    Cache first; identify(first,0x20,identity,directory); assert(!first.lookup(fresh,&out));
+    // A file of another format is never read; a writer restarts the log in place.
+    assert(pwrite(fd,"\1",1,4)==1);
+    Cache older; identify(older,0x20,identity,directory); assert(!older.lookup(fresh,&out));
+    older.store(late,Answer{0,{9,9,9,9}});
+    Cache restarted; identify(restarted,0x20,identity,directory);
+    assert(restarted.lookup(late,&out) && !restarted.lookup(fresh,&out));
     close(fd); assert(!unlink(path.c_str()));
+    // Cold discovery appends each record once: bytes written equal the file's records,
+    // never a rewrite of what is already there.
+    {
+        Cache cold; identify(cold,0x30,identity,directory);
+        for (uint32_t i=0;i<368;++i) cold.store(Cache::key(uint32_t(20004),uint64_t(0x30),i),Answer{0,{i,1,2,3}});
+        struct stat info{}; assert(!stat(path.c_str(),&info));
+        assert(cold.writes()==368 && cold.writeBytes()+headerBytes==uint64_t(info.st_size));
+        Cache warm; identify(warm,0x31,identity,directory);
+        for (uint32_t i=0;i<368;++i)
+            assert(warm.lookup(Cache::key(uint32_t(20004),uint64_t(0x31),i),&out) && out.values[0]==i);
+        for (uint32_t i=0;i<368;++i) warm.store(Cache::key(uint32_t(20004),uint64_t(0x31),i),Answer{0,{i,1,2,3}});
+        assert(warm.writes()==0);
+        // A forked child takes its own lock and appends after its parent's records.
+        child=fork(); assert(child>=0);
+        if (!child) {
+            cold.store(Cache::key(uint32_t(20004),uint64_t(0x30),uint32_t(5000)),Answer{0,{50,0,0,0}});
+            _exit(cold.writes()==369 ? 0 : 1);
+        }
+        assert(waitpid(child,&status,0)==child && status==0);
+        cold.store(Cache::key(uint32_t(20004),uint64_t(0x30),uint32_t(5001)),Answer{0,{51,0,0,0}});
+        Cache both; identify(both,0x32,identity,directory);
+        assert(both.lookup(Cache::key(uint32_t(20004),uint64_t(0x32),uint32_t(5000)),&out) && out.values[0]==50);
+        assert(both.lookup(Cache::key(uint32_t(20004),uint64_t(0x32),uint32_t(5001)),&out) && out.values[0]==51);
+        assert(both.lookup(Cache::key(uint32_t(20004),uint64_t(0x32),uint32_t(367)),&out));
+    }
+    // Records held back by a busy lock go out with the next append.
+    {
+        Cache busy; identify(busy,0x40,identity,directory);
+        locked=open((path+".lock").c_str(),O_RDWR); assert(locked>=0);
+        assert(!flock(locked,LOCK_EX));
+        for (uint32_t i=0;i<4;++i) busy.store(Cache::key(uint32_t(20005),uint64_t(0x40),i),Answer{0,{i,4,4,4}});
+        assert(busy.writes()==0);
+        assert(!flock(locked,LOCK_UN)); close(locked);
+        busy.store(Cache::key(uint32_t(20005),uint64_t(0x40),uint32_t(4)),Answer{0,{4,4,4,4}});
+        assert(busy.writes()==5);
+        Cache later; identify(later,0x41,identity,directory);
+        for (uint32_t i=0;i<5;++i)
+            assert(later.lookup(Cache::key(uint32_t(20005),uint64_t(0x41),i),&out) && out.values[0]==i);
+    }
+    assert(!unlink(path.c_str()));
     // Symlinked cache files are never read or written.
     assert(!symlink("/dev/null",path.c_str()));
     Cache link; identify(link,0x20,identity,directory); assert(!link.lookup(fresh,&out));
@@ -121,5 +178,5 @@ int main() {
         assert(!unlinkat(dirfd(contents),entry->d_name,0));
     }
     closedir(contents); assert(!rmdir(directory.c_str()));
-    std::puts("static capabilities: exact keys, process reuse, identity/protocol isolation, bounds, locks and corruption passed");
+    std::puts("static capabilities: exact keys, process reuse, identity/protocol isolation, bounds, locks, append-only writes and corruption passed");
 }

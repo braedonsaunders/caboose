@@ -132,18 +132,32 @@ Logical-device descriptor-layout support queries remain real queries: enabled de
 features affect their answers.
 
 Files are untrusted seat-user data, not an authorization source. Readers require a
-private directory and regular private files owned by the effective user, reject symlinks
-in every path component, and validate the complete identity, record sizes and checksums
-before publishing any answer. Checksums detect damaged records, not malicious writes by
-the same user. Values contain only fixed-size capability scalars, never pointers or
-object handles. Bounds are 8192 entries, 64 device scopes, 4096-byte values and 8 MiB per
-file. Writers use a nonblocking per-file lock and atomic replacement; a reader sees one
-complete snapshot. Unsafe paths, lock contention, oversized or corrupt records produce
-cache misses. Current connection/device identity always comes from real queries.
+private directory and regular private files owned by the effective user, and reject
+symlinks in every path component. Each file is an append-only log: a header carrying the
+complete identity, then records, each with its sizes, a checksum and the full scope
+prefix in its key. Readers take records in order and stop at the first damaged or partial
+one, so a torn tail left by a crash costs only the records after it; a file of another
+format or with a damaged header supplies nothing. Checksums detect damaged records, not
+malicious writes by the same user. Values contain only fixed-size capability scalars,
+never pointers or object handles. Bounds are 8192 entries, 64 device scopes, 4096-byte
+values and 8 MiB per file.
+
+A process opens a scope's directory, lock and file once. Each new answer is appended as
+one record under a nonblocking exclusive lock, after adopting records other processes
+appended since and cutting any torn tail; nothing already written is rewritten and there
+is no fsync, since the cache is optional. While another process holds the lock, new
+records wait in a 256 KiB per-scope buffer and go out with the next append, or in one
+last attempt when the process exits. A forked child opens its own lock before writing.
+Unsafe paths, a busy lock at load, oversized or corrupt records produce cache misses.
+Current connection/device identity always comes from real queries.
+`CABOOSE_CAPABILITY_CACHE_DIAGNOSTICS=1` prints hits, misses, appended records and bytes,
+time spent appending and contended locks at exit; `CABOOSE_CAPABILITY_CACHE_DISABLE=1`
+bypasses the cache.
 
 `test_static_query_cache.cpp` covers fresh-process reuse, changed identities/protocols,
-concurrent writers, lock contention, unsafe permissions, symlinks, size limits and corrupt
-records. `../../../../apps/ios/GPUStream/gfxstream/linux-executor/check-capabilities.sh`
+concurrent and forked writers, lock contention and held-back records, append-only write
+volume, unsafe permissions, symlinks, size limits, torn tails, corrupt records and other
+formats. `../../../../apps/ios/GPUStream/gfxstream/linux-executor/check-capabilities.sh`
 measures a genuinely empty cache and two fresh warmed processes, with separate format,
 device-creation and descriptor-query timings. A warmed result does not measure first-use
 latency.
@@ -189,7 +203,5 @@ the headers, not the generated encoder or a device. `test_requirements_cache.cpp
 Vulkan's headers on the include path (`test.sh` uses Mesa's, or
 `CABOOSE_VULKAN_INCLUDE`).
 
-`CABOOSE_CAPABILITY_CACHE_DISABLE=1` bypasses lookups and stores for a baseline run.
-`CABOOSE_CAPABILITY_CACHE_DIAGNOSTICS=1` reports hits, misses, writes, bytes written and
-time spent attempting writes. Cache snapshots use atomic replacement without forcing
-disk persistence; damaged snapshots after a crash are discarded.
+`CABOOSE_CAPABILITY_CACHE_DISABLE=1` bypasses lookups and stores for a baseline run
+(see "Physical capability cache" for the diagnostics).
