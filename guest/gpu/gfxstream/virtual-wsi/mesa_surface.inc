@@ -80,6 +80,8 @@ struct Surface {
     // A refused bind (the window does not exist yet) is tried again from this time on;
     // a bind the phone answered with a failure, not before `nextPhoneBind`.
     std::chrono::steady_clock::time_point nextBind{}, nextPhoneBind{};
+    // When the compositor first refused the bind that pending swapchain work waits for.
+    std::chrono::steady_clock::time_point firstRefused{};
     uint32_t bindAttempts=0, phoneFailures=0;
     // The last bind was answered by the phone with a failure and is retried: pending
     // swapchain work waits for it instead of ending (kPhoneBindFailuresMax).
@@ -146,6 +148,8 @@ constexpr auto kPhoneBindRetryMax=std::chrono::seconds(4);
 // Phone failures in a row a pending swapchain waits through (about 14 s with the backoff
 // above) before its work ends as for a refused bind.
 constexpr uint32_t kPhoneBindFailuresMax=8;
+// How long pending swapchain work waits through a bind the compositor refuses.
+constexpr auto kRefusedBindPatience=std::chrono::seconds(5);
 static void logBind(const Surface& surface, const char* outcome, int error, int vk) {
     // The first attempts, then every 32nd: enough to see why a window never binds.
     if (surface.bindAttempts>4 && surface.bindAttempts%32) return;
