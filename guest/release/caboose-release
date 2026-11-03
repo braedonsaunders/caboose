@@ -42,7 +42,7 @@ CHECK_CONF = Path(os.environ.get("CABOOSE_RELEASE_CHECK", "/root/.config/caboose
 # The release's 64-bit guest driver, which the check runs.
 DRIVER = "usr/local/lib/caboose-gpu-live/libvulkan_gfxstream.so"
 CHECK_SCRIPT = "apps/ios/GPUStream/gfxstream/linux-executor/check.sh"
-CHECK_KEYS = ("repo", "image", "work", "sync_check", "capability_probe", "dxvk_computer", "dxvk_bench")
+CHECK_KEYS = ("repo", "image", "work", "sync_check", "capability_probe", "dxvk_computer", "dxvk_bench", "chaos_home")
 
 
 class Failure(Exception):
@@ -188,7 +188,21 @@ def run_check(directory, settings):
         "sh", str(Path(settings["repo"]) / "apps/ios/GPUStream/gfxstream/linux-executor/check-loss-pixels.sh"),
         settings["dxvk_computer"], settings["work"], str(driver), str(out / "loss-pixels")],
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-    return pixels.returncode, summary + pixels.stdout.decode(errors="replace")
+    summary += pixels.stdout.decode(errors="replace")
+    if pixels.returncode:
+        return pixels.returncode, summary
+    # Fifty random executor losses, replacements, stalls and viewer reconnects through a seat
+    # running the release's compositor, broker and driver: every app must present real
+    # pictures after each.
+    home = settings["chaos_home"]
+    chaos = subprocess.run([
+        "python3", str(Path(settings["repo"]) / "apps/ios/GPUStream/gfxstream/linux-executor/check_chaos.py"),
+        settings["dxvk_computer"], settings["work"], str(directory), str(out / "chaos"), "--cycles", "50",
+        "--steam-home", home, "--triangle", f"{home}/.var/app/com.valvesoftware.Steam/caboose-bench/triangle.exe"],
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    summary += "\n".join(line for line in chaos.stdout.decode(errors="replace").splitlines()
+                         if not line.startswith("PASS cycle")) + "\n"
+    return chaos.returncode, summary
 
 
 def check(directory, run=None):

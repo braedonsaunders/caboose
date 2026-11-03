@@ -45,7 +45,12 @@ find the device without skipping it and present. Then Chromium draws a page thro
 the check makes in the same computer, with the release's driver for its compositor and
 clients, and a fresh Chromium draws it again after the seat's executor was replaced
 ([`check-loss-pixels.sh`](../../apps/ios/GPUStream/gfxstream/linux-executor/check-loss-pixels.sh)):
-each must present pictures that are neither noise nor blank.
+each must present pictures that are neither noise nor blank. Last, fifty random executor
+losses, replacements, stalls, viewer reconnects and losses during application startup go
+through a seat running the release's own compositor, broker and driver
+([`check_chaos.py`](../../apps/ios/GPUStream/gfxstream/linux-executor/check_chaos.py)), with a
+long-lived Chromium and Steam client and fresh Chromium, GL and DXVK applications, and every
+one must present real pictures after each.
 A release whose check fails is not sealed and stays open.
 The check's logs and `check/result` (`PASS` or `FAIL`, then the check's summary lines) stay
 in the release, and the manifest covers them. The settings are `key=value` lines in
@@ -60,6 +65,7 @@ in the release, and the manifest covers them. The settings are `key=value` lines
 | `sync_check` | The synchronization probe ([sync-check](../gpu/gfxstream/driver/sync-check/README.md)), built |
 | `dxvk_computer` | The running computer DXVK's and the loss pixels check run in (its Steam Flatpak and Proton, and Chromium); its own executor and displays are untouched |
 | `dxvk_bench` | The directory in that computer's Steam Flatpak data holding DXVK's `triangle.exe` |
+| `chaos_home` | A home in that computer of the check's own (never its owner's) with a Steam Flatpak profile, and DXVK's `triangle.exe` in its Flatpak data's `caboose-bench` |
 
 ## Signatures and the SBOM
 

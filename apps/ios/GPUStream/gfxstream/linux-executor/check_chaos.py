@@ -49,6 +49,7 @@ PHONE = ('guest-handles,guest-handle-arrays,completion-feed,ordered-present,gues
 PICTURE = re.compile(r'^(\S+) CABOOSE_LINUX_EXECUTOR picture window=(\S+) serial=\d+ (\d+)x(\d+) format=\d+ '
                      r'content=([0-9.]+) colours=(\d+)')
 PORT, XDISPLAY = 14695, 181
+FRESH_CHROMIUM = (608, 378)
 PAGE = ('data:text/html,<body style="margin:0;background:%23e8f0ff;font:40px sans-serif">'
         '<h1 style="background:%23204080;color:%23ffd040;margin:0">Caboose</h1>'
         '<div style="width:120px;height:120px;background:%23c03020;animation:s 1s linear infinite"></div>'
@@ -87,15 +88,19 @@ class Seat:
         # The release's own compositor, broker and driver, in the seat's directory.
         run('docker', 'cp', '-q', os.path.join(files, 'usr/local/lib/caboose-gpu-live/libvulkan_gfxstream.so'),
             f'{self.computer}:{d}/libvulkan_gfxstream.so')
+        run('docker', 'cp', '-q', os.path.join(files, 'usr/local/lib/caboose-gpu-live/i386/libvulkan_gfxstream.so'),
+            f'{self.computer}:{d}/libvulkan_gfxstream32.so')
         run('docker', 'cp', '-q', os.path.join(files, 'usr/local/bin/caboose-display'), f'{self.computer}:{d}/bin/caboose-display')
         run('docker', 'cp', '-q', os.path.join(files, 'usr/local/libexec'), f'{self.computer}:{d}/libexec')
         icd = json.dumps({'file_format_version': '1.0.0', 'ICD': {'library_path': f'{d}/libvulkan_gfxstream.so', 'api_version': '1.3.0'}})
+        icd32 = json.dumps({'file_format_version': '1.0.0', 'ICD': {'library_path': f'{d}/libvulkan_gfxstream32.so', 'api_version': '1.3.0'}})
         env = '\n'.join([
             f'export PATH=/usr/local/bin:/usr/bin:/bin HOME={d}/home XDG_RUNTIME_DIR={d}/run',
             f'export VK_DRIVER_FILES={d}/icd.json:/usr/share/vulkan/icd.d/lvp_icd.json CABOOSE_GPU_ROUTING=1 NODEVICE_SELECT=1',
             'export GALLIUM_DRIVER=zink LIBGL_KOPPER_DRI2=1 MESA_GL_VERSION_OVERRIDE=4.5COMPAT MESA_GLSL_VERSION_OVERRIDE=450 ZINK_DESCRIPTORS=lazy',
             f'export CABOOSE_GAME_SOCKET={d}/run/game.sock CABOOSE_CHAOS_SEAT={os.getpid()}', ''])
-        self.sh(f"printf '%s' {shlex.quote(icd)} > {d}/icd.json && printf '%s' {shlex.quote(env)} > {d}/env && chown -R caboose {d}")
+        self.sh(f"printf '%s' {shlex.quote(icd)} > {d}/icd.json && printf '%s' {shlex.quote(icd32)} > {d}/icd32.json && "
+                f"printf '%s' {shlex.quote(env)} > {d}/env && chown -R caboose {d}")
         self.sh(f'. {d}/env; CABOOSE_GPU_BROKER={d}/libexec/caboose-gpu-broker exec {d}/bin/caboose-display --listen 127.0.0.1:{PORT} --token-file {d}/token --socket wayland-chaos '
                 f'--x-display {XDISPLAY} --no-audio --no-devices --private-gpu-stream-socket {d}/run/gpu/gpu.sock '
                 f'--private-gpu-surface-socket {d}/run/gpu/surface.sock --private-gpu-indexed --env-file {d}/display.env '
@@ -144,6 +149,11 @@ class Seat:
         if start:
             self.sh(f'exec caboose-display-probe --url ws://127.0.0.1:{PORT}/ --token-file {self.dir}/token --duration 100000 '
                     f'--display 1280x800@60x1 >> {self.dir}/probe.log 2>&1', user='caboose', detach=True)
+
+    def viewer_alive(self):
+        return subprocess.run(['docker', 'exec', self.computer, 'pgrep', '-f',
+                               f'caboose-display-probe --url ws://127.0.0.1:{PORT}/'],
+                              stdout=subprocess.DEVNULL).returncode == 0
 
     def app(self, label, command):
         self.sh(f'. {self.dir}/client; exec {command} > {self.dir}/{label}.log 2>&1', user='caboose', detach=True)
@@ -217,14 +227,15 @@ def main():
         n = fresh_count
         seat.app(f'fresh-chromium-{n}', f'timeout 40 /usr/bin/chromium --user-data-dir={seat.dir}/home/fresh-{n} --no-first-run '
                  f'--no-default-browser-check --password-store=basic --ozone-platform=wayland --use-gl=angle --use-angle=gl '
-                 f'--window-size=700,500 {shlex.quote(STILL)}')
+                 f'--window-size=640,420 {shlex.quote(STILL)}')
         seat.app(f'fresh-gl-{n}', 'timeout 40 glxgears -geometry 320x240')
         expected = {'fresh chromium': None, 'fresh gl': None}
         if o.triangle:
             bench = os.path.dirname(o.triangle)
             seat.app(f'fresh-dxvk-{n}', f'env HOME={o.steam_home} timeout 45 flatpak run --env=CABOOSE_GFXSTREAM_SOCKET=$CABOOSE_GFXSTREAM_SOCKET '
-                     f'--env=CABOOSE_GFXSTREAM_SURFACE_SOCKET=$CABOOSE_GFXSTREAM_SURFACE_SOCKET --env=VK_DRIVER_FILES=$VK_DRIVER_FILES '
-                     f'--env=CABOOSE_CHAOS_SEAT={os.getpid()} --filesystem={seat.dir} --command=sh com.valvesoftware.Steam -c '
+                     f'--env=CABOOSE_GFXSTREAM_SURFACE_SOCKET=$CABOOSE_GFXSTREAM_SURFACE_SOCKET --env=VK_DRIVER_FILES={seat.dir}/icd.json:{seat.dir}/icd32.json '
+                     f'--env=CABOOSE_CHAOS_SEAT={os.getpid()} --filesystem={seat.dir} --filesystem={os.path.dirname(o.proton)}:ro '
+                     f'--command=sh com.valvesoftware.Steam -c '
                      f'"export STEAM_COMPAT_DATA_PATH={bench}/compat/chaos STEAM_COMPAT_CLIENT_INSTALL_PATH={o.steam_home}/.var/app/'
                      f'com.valvesoftware.Steam/.local/share/Steam; mkdir -p {bench}/compat/chaos; exec {o.proton} waitforexitandrun {o.triangle}"')
             expected['fresh dxvk'] = None
@@ -256,7 +267,8 @@ def main():
         if o.steam_home:
             seat.app('steam', f'env HOME={o.steam_home} dbus-run-session -- flatpak run --env=CABOOSE_CHAOS_SEAT={os.getpid()} '
                      '--env=CABOOSE_GFXSTREAM_SOCKET=$CABOOSE_GFXSTREAM_SOCKET --env=CABOOSE_GFXSTREAM_SURFACE_SOCKET=$CABOOSE_GFXSTREAM_SURFACE_SOCKET '
-                     f'--env=VK_DRIVER_FILES=$VK_DRIVER_FILES --env=PRESSURE_VESSEL_FILESYSTEMS_RW={seat.dir} --filesystem={seat.dir} com.valvesoftware.Steam')
+                     f'--env=VK_DRIVER_FILES={seat.dir}/icd.json:{seat.dir}/icd32.json --env=PRESSURE_VESSEL_FILESYSTEMS_RW={seat.dir} '
+                     f'--filesystem={seat.dir} com.valvesoftware.Steam')
         # Learn the long-lived apps' picture sizes: Chromium's is the largest, Steam's the other.
         time.sleep(60 if o.steam_home else 15)
         sizes = sorted({(w, h) for _, _, w, h, good in seat.pictures(mark) if good}, key=lambda s: -s[0] * s[1])
@@ -288,6 +300,10 @@ def main():
             elif event == 'startup':
                 fresh_apps(); time.sleep(rng.uniform(0, 2)); seat.end_executor(); time.sleep(rng.uniform(0, 2)); seat.executor()
                 stop_fresh()
+            # The compositor closes the display session on every executor change and the phone
+            # reconnects it: so does the viewer.
+            if not seat.viewer_alive():
+                seat.viewer()
             time.sleep(4)
             mark = now()
             stop_fresh()
@@ -298,12 +314,14 @@ def main():
                         f'xdotool windowsize $w {700 + cycle % 2} 440 2>/dev/null; xdotool windowsize $w 700 440 2>/dev/null; done',
                         user='caboose', check=False)
             wanted = dict(long_lived)
-            wanted['fresh chromium'] = lambda w, h, big=chromium_size: (w, h) != big and 500 <= w <= 720 and 300 <= h <= 520
+            # Chromium's Wayland window is its --window-size less its frame (32x42).
+            wanted['fresh chromium'] = lambda w, h: (w, h) == FRESH_CHROMIUM
             # glxgears draws with Zink and reaches the compositor as an X11 window's pixels; the
             # compositor's own window images (the display's size) show it.
             wanted['fresh gl in the compositor'] = lambda w, h: (w, h) == (1280, 800)
             if 'fresh dxvk' in fresh:
-                wanted['fresh dxvk'] = lambda w, h, known={chromium_size, (1280, 800)}: (w, h) not in known and w >= 600
+                known = {chromium_size, (1280, 800), FRESH_CHROMIUM} | ({steam_size} if o.steam_home else set())
+                wanted['fresh dxvk'] = lambda w, h, known=known: (w, h) not in known and w >= 600
             missing, pictures = judge(mark, wanted, 60)
             stop_fresh()
             seconds = time.monotonic() - started

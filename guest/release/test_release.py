@@ -34,7 +34,7 @@ class Releases(unittest.TestCase):
         release.KEY, public = keypair(self.tmp.name, "release")
         os.environ["CABOOSE_RELEASE_PUB"] = str(public)
         release.CHECK_CONF = Path(self.tmp.name) / "check.conf"
-        release.CHECK_CONF.write_text("repo=/r\nimage=caboose-computer:x\nwork=/w\n# a comment\nsync_check=/s\ncapability_probe=/c\ndxvk_computer=/k\ndxvk_bench=/b\n")
+        release.CHECK_CONF.write_text("repo=/r\nimage=caboose-computer:x\nwork=/w\n# a comment\nsync_check=/s\ncapability_probe=/c\ndxvk_computer=/k\ndxvk_bench=/b\nchaos_home=/h\n")
         self.checked = []
         release.run_check = self.passing_check
 
@@ -71,7 +71,7 @@ class Releases(unittest.TestCase):
         release.main(["add", "r1", str(self.source), "/" + release.DRIVER, "755"])
         release.main(["seal", "r1", "first"])
         directory = release.ROOT / "r1"
-        self.assertEqual(self.checked, [("r1", {"repo": "/r", "image": "caboose-computer:x", "work": "/w", "sync_check": "/s", "capability_probe": "/c", "dxvk_computer": "/k", "dxvk_bench": "/b"})])
+        self.assertEqual(self.checked, [("r1", {"repo": "/r", "image": "caboose-computer:x", "work": "/w", "sync_check": "/s", "capability_probe": "/c", "dxvk_computer": "/k", "dxvk_bench": "/b", "chaos_home": "/h"})])
         self.assertEqual((directory / "check/result").read_text(), "PASS\nPASS sync-check: 12 cases\nPASS vkcube: frames=300\n")
         manifest = (directory / "MANIFEST").read_text()
         self.assertIn("check/result", manifest)
@@ -167,6 +167,27 @@ class Releases(unittest.TestCase):
         self.assertIn("PASS DXVK", summary)
         self.assertIn(f"args k w {release.ROOT / 'r1' / 'files' / release.DRIVER}", summary)
         self.assertIn("a fresh Chromium drew no real picture", summary)
+
+    def test_a_release_whose_apps_stop_drawing_after_a_loss_fails_the_seal_check(self):
+        release.main(["new", "r1"])
+        release.main(["add", "r1", str(self.source), "/" + release.DRIVER, "755"])
+        repo = Path(self.tmp.name) / "repo"
+        for name, body in ((release.CHECK_SCRIPT, 'echo "PASS executor"'),
+                           ("guest/release/check-packaged.sh", 'echo "PASS packaged"'),
+                           ("apps/ios/GPUStream/gfxstream/linux-executor/check-capabilities.sh", 'echo "PASS cache"'),
+                           ("apps/ios/GPUStream/gfxstream/linux-executor/check-dxvk.sh", 'echo "PASS DXVK"'),
+                           ("apps/ios/GPUStream/gfxstream/linux-executor/check-loss-pixels.sh", 'echo "PASS loss pixels"'),
+                           ("apps/ios/GPUStream/gfxstream/linux-executor/check_chaos.py",
+                            'import sys\nprint("args", *sys.argv[1:5])\nprint("PASS cycle 1/50 kill")\n'
+                            'print("FAIL cycle 2/50 drop: no real picture from steam")\nsys.exit(1)\n')):
+            script = repo / name; script.parent.mkdir(parents=True, exist_ok=True); script.write_text(body)
+        status, summary = RUN_CHECK(release.ROOT / "r1", {"repo": str(repo), "image": "i", "work": "w", "sync_check": "s",
+                                                          "capability_probe": "c", "dxvk_computer": "k", "dxvk_bench": "b",
+                                                          "chaos_home": "h"})
+        self.assertEqual(status, 1)
+        self.assertIn(f"args k w {release.ROOT / 'r1'}", summary)
+        self.assertNotIn("PASS cycle", summary)
+        self.assertIn("FAIL cycle 2/50 drop", summary)
 
     def test_a_sealed_release_is_final_and_a_new_one_starts_from_it(self):
         release.main(["new", "r1"])
