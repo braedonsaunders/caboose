@@ -20,6 +20,7 @@ sources, which include these headers from `caboose-dmabuf/`.
 
 ```sh
 g++ -std=c++17 -O2 -Wall -Wextra -Werror dmabuf_test.cpp -o dmabuf_test && ./dmabuf_test
+g++ -std=c++17 -O2 -Wall -Wextra -Werror registration_test.cpp -o registration_test && ./registration_test
 ```
 
 It checks that a created buffer has at least the requested size, that every descriptor of
@@ -28,4 +29,7 @@ one buffer has its identity and other buffers and ordinary files do not, that a 
 descriptors and release, and that 64 pending sync files each signal only when signalled
 from another thread. It passes as an unprivileged user under AddressSanitizer and
 UndefinedBehaviorSanitizer. The broker side of registration and presentation is tested
-by `../test_buffer_presentation.py` and `../test_broker_buffers.py`.
+by `../test_buffer_presentation.py` and `../test_broker_buffers.py`. `registration_test.cpp` needs no
+device: against a stand-in broker socket it checks that a registration replaces a connection
+the broker closed and still arrives, that a forget is not resent, and that a missing socket
+is tried again after its retry interval.

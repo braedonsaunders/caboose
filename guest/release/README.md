@@ -41,7 +41,11 @@ Last, DXVK's d3d11 triangle runs with the release's driver on the executor, thro
 from the checkout in a running computer, under the phone's feature negotiation with and
 without batched descriptor sets and an older phone's
 ([`check-dxvk.sh`](../../apps/ios/GPUStream/gfxstream/linux-executor/check-dxvk.sh)): DXVK must
-find the device without skipping it and present.
+find the device without skipping it and present. Then Chromium draws a page through a seat
+the check makes in the same computer, with the release's driver for its compositor and
+clients, and a fresh Chromium draws it again after the seat's executor was replaced
+([`check-loss-pixels.sh`](../../apps/ios/GPUStream/gfxstream/linux-executor/check-loss-pixels.sh)):
+each must present pictures that are neither noise nor blank.
 A release whose check fails is not sealed and stays open.
 The check's logs and `check/result` (`PASS` or `FAIL`, then the check's summary lines) stay
 in the release, and the manifest covers them. The settings are `key=value` lines in
@@ -54,7 +58,7 @@ in the release, and the manifest covers them. The settings are `key=value` lines
 | `work` | The directory the Linux executor's `build.sh` built in |
 | `capability_probe` | The built `capability_queries.c` probe; packaged broker/cache handshake validation |
 | `sync_check` | The synchronization probe ([sync-check](../gpu/gfxstream/driver/sync-check/README.md)), built |
-| `dxvk_computer` | The running computer DXVK's check runs in (its Steam Flatpak and Proton); its own executor and displays are untouched |
+| `dxvk_computer` | The running computer DXVK's and the loss pixels check run in (its Steam Flatpak and Proton, and Chromium); its own executor and displays are untouched |
 | `dxvk_bench` | The directory in that computer's Steam Flatpak data holding DXVK's `triangle.exe` |
 
 ## Signatures and the SBOM

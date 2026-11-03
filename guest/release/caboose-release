@@ -179,7 +179,16 @@ def run_check(directory, settings):
         "sh", str(Path(settings["repo"]) / "apps/ios/GPUStream/gfxstream/linux-executor/check-dxvk.sh"),
         settings["dxvk_computer"], settings["work"], str(driver), settings["dxvk_bench"], str(out / "dxvk")],
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-    return dxvk.returncode, summary + dxvk.stdout.decode(errors="replace")
+    summary += dxvk.stdout.decode(errors="replace")
+    if dxvk.returncode:
+        return dxvk.returncode, summary
+    # Chromium must draw real pictures (not noise, not blank) through a seat of the check's own
+    # in the same computer, and a fresh Chromium again after the seat's executor was replaced.
+    pixels = subprocess.run([
+        "sh", str(Path(settings["repo"]) / "apps/ios/GPUStream/gfxstream/linux-executor/check-loss-pixels.sh"),
+        settings["dxvk_computer"], settings["work"], str(driver), str(out / "loss-pixels")],
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    return pixels.returncode, summary + pixels.stdout.decode(errors="replace")
 
 
 def check(directory, run=None):

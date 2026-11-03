@@ -71,7 +71,20 @@ CABOOSE_LINUX_EXECUTOR presented window=0x200000 swapchain=1 frames=60 serial=60
 CABOOSE_LINUX_EXECUTOR swapchain retired window=0x200000 swapchain=1 frames=300 captured=300 distinct=50 chain=e51ca5e4
 ```
 
-`--no-checksums` presents without captures. `--fail-binds N` answers each session's first N
+`--no-checksums` presents without captures. `--pictures DIR` writes each window's newest
+captured picture to `DIR/window-ID.ppm`, at most ten a second, and logs its content
+measures: the fraction of texels that repeat their left neighbour and the distinct colours
+sampled (up to 64). A rendered window repeats in most texels and has a few colours; memory
+never written, or read with the wrong layout, is noise (it repeats in almost none); a
+picture nothing drew into has one colour.
+
+```
+CABOOSE_LINUX_EXECUTOR picture window=0x1 serial=32 868x558 format=44 content=0.965 colours=64
+```
+
+`python3 test_pictures.py` covers the measures and the PPM output.
+
+`--fail-binds N` answers each session's first N
 surface binds with EAGAIN, as a phone whose layer for the window is not ready does. `CABOOSE_LINUX_EXECUTOR_TRACE=1` also logs each
 present as it is run. SIGUSR1 prints every Python thread's stack.
 
@@ -185,3 +198,22 @@ The broker is this checkout's (`broker_host.py`, every bind granted) on a port o
 computer's own executor and displays are untouched. Each case requires DXVK to report the device
 without skipping it, a D3D11 device, a swapchain and presented frames, and no executor fault.
 The release seal runs it.
+
+## Pictures after an executor loss
+
+```sh
+sh apps/ios/GPUStream/gfxstream/linux-executor/check-loss-pixels.sh COMPUTER WORK DRIVER OUT
+```
+
+Makes a seat of its own in a running computer that has Chromium: a `caboose-display` on its
+own port, token, Wayland socket, X display, runtime directory and private GPU sockets, with
+`DRIVER` for the compositor and its clients, the real executor serving it with `--pictures`,
+and `caboose-display-probe` as the viewer. None of the computer's own session is used.
+Chromium (ANGLE on Zink, a fresh profile in the check's own home) shows a page; then the
+executor and the viewer leave mid-run, as a phone that drops off does, and a new executor
+and viewer connect while the compositor and Xwayland live on. A fresh Chromium must then draw
+its page as well. Each phase requires a presented picture that is neither noise nor one colour
+(a repeat fraction from `MIN_REPEAT`, default 0.3, to 0.999, and at least 3 colours).
+Chromium runs as a Wayland client, so its frames reach the compositor as phone-resident
+dma-bufs registered by the driver. `SECONDS_RUNNING` (default 25) is each Chromium's time.
+The release seal runs it, in the computer DXVK's check uses.

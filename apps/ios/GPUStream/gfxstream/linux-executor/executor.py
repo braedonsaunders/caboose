@@ -655,11 +655,17 @@ def main():
     parser.add_argument('--extra-formats', default='', metavar='FORMAT:SPACE,...',
                         help='surface formats to report beyond the implementation\'s (VkFormat:VkColorSpaceKHR numbers)')
     parser.add_argument('--no-checksums', action='store_true', help='do not capture presented pictures')
+    parser.add_argument('--pictures', type=Path, metavar='DIR',
+                        help="write each window's newest captured picture to DIR/window-ID.ppm, with its content "
+                             'measures in the log (the repeat fraction and colours: surfaces.content), at most ten a second')
     parser.add_argument('--fail-binds', type=int, default=0, metavar='N',
                         help="answer each session's first N surface binds with EAGAIN, as a phone whose layer is not ready does")
     parser.add_argument('--sessions', type=int, default=1, metavar='N',
                         help='connect again after a session ends, as the phone does, for N sessions in all')
     options = parser.parse_args()
+    if options.pictures:
+        options.pictures.mkdir(parents=True, exist_ok=True)
+        surfaces.PICTURES['directory'] = str(options.pictures)
     surfaces.EXTRA_FORMATS[:] = [tuple(int(n) for n in pair.split(':')) for pair in options.extra_formats.split(',') if pair]
     width, _, height = options.display.partition('x')
     options.display = (int(width), int(height))
