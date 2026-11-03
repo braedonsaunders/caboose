@@ -175,12 +175,13 @@ bind on a later attempt and have all 30 frames presented.
 ## DXVK under each negotiation
 
 ```sh
-sh apps/ios/GPUStream/gfxstream/linux-executor/check-dxvk.sh COMPUTER WORK BENCH_DIR OUT
+sh apps/ios/GPUStream/gfxstream/linux-executor/check-dxvk.sh COMPUTER WORK DRIVER BENCH_DIR OUT
 ```
 
-Runs DXVK's d3d11 triangle (`BENCH_DIR/triangle.exe`, in the Steam Flatpak's data) through the
-running computer's Steam Linux Runtime 4 and Proton, on the real Linux executor serving that
-computer under the phone's feature list and an older phone's, with `caboose-display-probe` as a
-phone-shaped viewer. Each case requires DXVK to report the device without skipping it and to make
-its D3D11 device and swapchain; `REQUIRE_FRAMES=1` also requires presented frames, which reach
-the compositor only through a viewer it binds the window for (a phone). The release seal runs it.
+Runs DXVK's d3d11 triangle (`BENCH_DIR/triangle.exe`, in the Steam Flatpak's data) through Proton
+in a running computer, with `DRIVER` loaded for that process only, on the real Linux executor
+under the phone's feature list with and without batched descriptor sets and an older phone's.
+The broker is this checkout's (`broker_host.py`, every bind granted) on a port of its own, so the
+computer's own executor and displays are untouched. Each case requires DXVK to report the device
+without skipping it, a D3D11 device, a swapchain and presented frames, and no executor fault.
+The release seal runs it.

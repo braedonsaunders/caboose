@@ -173,11 +173,11 @@ def run_check(directory, settings):
     summary += capabilities.stdout.decode(errors="replace")
     if capabilities.returncode:
         return capabilities.returncode, summary
-    # DXVK must find an adapter and make its device and swapchain on the executor under each
-    # negotiation a phone makes: a device that lacks a feature DXVK requires fails here.
+    # DXVK must find an adapter and present on the executor with the release's driver under
+    # each negotiation a phone makes: a device that lacks a feature DXVK requires fails here.
     dxvk = subprocess.run([
         "sh", str(Path(settings["repo"]) / "apps/ios/GPUStream/gfxstream/linux-executor/check-dxvk.sh"),
-        settings["dxvk_computer"], settings["work"], settings["dxvk_bench"], str(out / "dxvk")],
+        settings["dxvk_computer"], settings["work"], str(driver), settings["dxvk_bench"], str(out / "dxvk")],
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     return dxvk.returncode, summary + dxvk.stdout.decode(errors="replace")
 

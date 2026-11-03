@@ -142,12 +142,12 @@ class Releases(unittest.TestCase):
                            ("guest/release/check-packaged.sh", 'echo "PASS packaged"'),
                            ("apps/ios/GPUStream/gfxstream/linux-executor/check-capabilities.sh", 'echo "PASS cache"'),
                            ("apps/ios/GPUStream/gfxstream/linux-executor/check-dxvk.sh",
-                            'echo "args $1 $2 $3"; echo "FAIL: phone: DXVK skipped the device"; exit 1')):
+                            'echo "args $1 $2 $3 $4"; echo "FAIL: phone: DXVK skipped the device"; exit 1')):
             script = repo / name; script.parent.mkdir(parents=True, exist_ok=True); script.write_text(body)
         status, summary = RUN_CHECK(release.ROOT / "r1", {"repo": str(repo), "image": "i", "work": "w", "sync_check": "s",
                                                           "capability_probe": "c", "dxvk_computer": "k", "dxvk_bench": "b"})
         self.assertEqual(status, 1)
-        self.assertIn("args k w b", summary)
+        self.assertIn(f"args k w {release.ROOT / 'r1' / 'files' / release.DRIVER} b", summary)
         self.assertIn("DXVK skipped the device", summary)
 
     def test_a_sealed_release_is_final_and_a_new_one_starts_from_it(self):
