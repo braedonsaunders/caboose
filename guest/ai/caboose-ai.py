@@ -33,6 +33,15 @@ RELAY_PORT = int(os.environ.get('CABOOSE_AI_RELAY_PORT', '14702'))
 API_HOST = os.environ.get('CABOOSE_AI_HOST', '127.0.0.1')
 API_PORT = int(os.environ.get('CABOOSE_AI_PORT', '11434'))
 CONFIG = os.environ.get('CABOOSE_AI_CONFIG', os.path.expanduser('~/.config/caboose/ai.json'))
+# Models the computer's release carries for the phone to run (docs/ai.md § Computer models).
+MODELS_DIR = os.environ.get('CABOOSE_AI_MODELS', '/opt/caboose/ai/models')
+RELEASE_MARKER = os.environ.get('CABOOSE_AI_RELEASE_MARKER', '/etc/caboose-release')
+MODEL_NAME = re.compile(r'[a-z0-9][a-z0-9._-]{0,63}')
+MODEL_FILE = re.compile(r'[A-Za-z0-9][A-Za-z0-9._-]{0,127}')
+MAX_MODEL_FILES = 32
+MAX_READ = 1024 * 1024
+DECISION_CHOICES = (2, 32)
+MAX_DECISION_PROMPT = 16000
 
 MAX_BODY = 32 * 1024 * 1024
 MAX_HEADERS = 64 * 1024
@@ -389,6 +398,64 @@ def valid_model(model):
             and isinstance(model.get('capabilities'), list))
 
 
+_digests = {}
+
+
+def _digest(path, stat):
+    key = (path, stat.st_size, stat.st_mtime_ns)
+    if key not in _digests:
+        digest = hashlib.sha256()
+        with open(path, 'rb') as f:
+            for block in iter(lambda: f.read(1024 * 1024), b''):
+                digest.update(block)
+        _digests[key] = digest.hexdigest()
+    return _digests[key]
+
+
+def model_manifest(root=None, marker=None):
+    """The release this computer runs and the model folders it carries, each file with its size
+    and SHA-256. Only plain files named like model files count; links and folders inside are skipped."""
+    root = root or MODELS_DIR
+    try:
+        with open(marker or RELEASE_MARKER) as f:
+            release = f.readline().strip()[:64]
+    except OSError:
+        release = ''
+    models = []
+    try:
+        names = sorted(os.listdir(root))
+    except OSError:
+        names = []
+    for name in names:
+        folder = os.path.join(root, name)
+        if not MODEL_NAME.fullmatch(name) or os.path.islink(folder) or not os.path.isdir(folder):
+            continue
+        files = []
+        for entry in sorted(os.listdir(folder)):
+            path = os.path.join(folder, entry)
+            stat = os.lstat(path)
+            if MODEL_FILE.fullmatch(entry) and not entry.startswith('.') and os.path.isfile(path) and not os.path.islink(path):
+                files.append({'path': entry, 'size': stat.st_size, 'sha256': _digest(path, stat)})
+        if files and len(files) <= MAX_MODEL_FILES:
+            models.append({'name': name, 'files': files})
+    return {'release': release, 'models': models}
+
+
+def read_model_file(name, path, offset, length, root=None):
+    """`length` bytes (at most MAX_READ) of a manifest file from `offset`; raises ApiError."""
+    if not isinstance(name, str) or not MODEL_NAME.fullmatch(name) or not isinstance(path, str) or not MODEL_FILE.fullmatch(path) or path.startswith('.'):
+        raise bad('no such model file')
+    if not isinstance(offset, int) or isinstance(offset, bool) or offset < 0 or not isinstance(length, int) or isinstance(length, bool) or not 0 < length <= MAX_READ:
+        raise bad('a read needs an offset and a length of at most 1 MiB')
+    folder = os.path.join(root or MODELS_DIR, name)
+    full = os.path.join(folder, path)
+    if os.path.islink(folder) or os.path.islink(full) or not os.path.isfile(full):
+        raise ApiError(HTTPStatus.NOT_FOUND, 'not_found', 'no such model file')
+    with open(full, 'rb') as f:
+        f.seek(offset)
+        return f.read(length)
+
+
 class Phone:
     """The phone as the host presents it: its models while it is there, and the requests it runs."""
 
@@ -402,7 +469,7 @@ class Phone:
         return self.connection is not None and bool(self.models)
 
     def model(self, name, kind='chat'):
-        """The phone's model of this kind (`chat` or `embedding`) by name; a default name picks its first."""
+        """The phone's model of this kind (`chat`, `embedding` or `decision`) by name; a default name picks its first."""
         models = [m for m in self.models if m.get('type', 'chat') == kind]
         if not models:
             return None
@@ -411,7 +478,7 @@ class Phone:
         return next((m for m in models if m['id'] == name), None)
 
     def find(self, name):
-        return self.model(name, 'chat') or self.model(name, 'embedding') if name not in DEFAULT_MODELS else self.model(name)
+        return self.model(name, 'chat') or self.model(name, 'embedding') or self.model(name, 'decision') if name not in DEFAULT_MODELS else self.model(name)
 
     async def send(self, message):
         connection = self.connection
@@ -423,7 +490,8 @@ class Phone:
             raise unavailable(PHONE_AWAY) from None
 
     async def generate(self, request, kind='request'):
-        """Runs a request (`request`, or `embed`) on the phone, yielding its events until `done`; raises ApiError."""
+        """Runs a request (`request`, `embed` or `decide`) on the phone, yielding its events until `done`
+        (or a decide's `decision`); raises ApiError."""
         if not self.present:
             raise unavailable(PHONE_AWAY)
         if len(self.pending) >= MAX_PENDING:
@@ -446,7 +514,7 @@ class Phone:
                 if event['type'] == 'error':
                     raise event['error']
                 yield event
-                if event['type'] == 'done':
+                if event['type'] in ('done', 'decision'):
                     return
         finally:
             if self.pending.pop(rid, None) is not None and not getattr(queue, 'finished', False):
@@ -457,8 +525,12 @@ class Phone:
                     pass
 
     def deliver(self, message):
-        """One message from the host: the phone's models, or an event for a pending request."""
+        """One message from the host: the phone's models, a request for the computer's models, or an
+        event for a pending request."""
         kind = message.get('type') if isinstance(message, dict) else None
+        if kind in ('models', 'read') and isinstance(message.get('id'), str) and REQUEST_ID.fullmatch(message['id']):
+            asyncio.get_running_loop().create_task(self.answer_models(message))
+            return
         if kind == 'phone':
             models = message.get('models')
             self.models = [m for m in models if valid_model(m)] if isinstance(models, list) else []
@@ -484,6 +556,12 @@ class Phone:
             values = message.get('values')
             if isinstance(message.get('index'), int) and isinstance(values, list) and all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in values):
                 queue.put_nowait({'type': 'vector', 'index': message['index'], 'values': [float(v) for v in values]})
+        elif kind == 'decision':
+            choice, elapsed = message.get('choice'), message.get('elapsedMs')
+            if isinstance(choice, int) and not isinstance(choice, bool) and 0 <= choice < DECISION_CHOICES[1]:
+                queue.finished = True
+                queue.put_nowait({'type': 'decision', 'choice': choice,
+                                  **({'elapsedMs': float(elapsed)} if isinstance(elapsed, (int, float)) and not isinstance(elapsed, bool) and elapsed >= 0 else {})})
         elif kind == 'done':
             usage = message.get('usage') if isinstance(message.get('usage'), dict) else {}
             queue.finished = True
@@ -495,6 +573,24 @@ class Phone:
             text = message.get('message') if isinstance(message.get('message'), str) else 'The phone could not answer.'
             queue.finished = True
             queue.put_nowait({'type': 'error', 'error': ApiError(status, code[:64], text[:2000], 'server_error' if status >= 500 else 'invalid_request_error')})
+
+    async def answer_models(self, message):
+        """The host's `models` (the manifest) or `read` (one chunk, sent as a binary frame of the
+        request id followed by the bytes)."""
+        try:
+            if message['type'] == 'models':
+                reply = {'type': 'models', 'id': message['id'], **await asyncio.to_thread(model_manifest)}
+                await self.send(reply)
+                return
+            data = await asyncio.to_thread(read_model_file, message.get('name'), message.get('path'), message.get('offset'), message.get('length'))
+            connection = self.connection
+            if connection is not None:
+                await connection.send(message['id'].encode() + data)
+        except ApiError as error:
+            try:
+                await self.send({'type': message['type'], 'id': message['id'], 'error': error.message})
+            except ApiError:
+                pass
 
     def fail_all(self, text):
         for queue in self.pending.values():
@@ -911,6 +1007,32 @@ class Server:
             raise ApiError(HTTPStatus.NOT_FOUND, 'model_not_found', f"The phone has no {kind} model {request['model']!r}. Its {kind} models: {names}.")
         raise unavailable(PHONE_AWAY)
 
+    async def decide(self, body):
+        """One grounded decision (`prompt`, `choices`) on the phone's decision model: the index of
+        the choice whose letter it reads first. There is no fallback provider for decisions."""
+        if not isinstance(body, dict):
+            raise bad('the body must be a JSON object')
+        prompt, choices = body.get('prompt'), body.get('choices')
+        if not isinstance(prompt, str) or not prompt or len(prompt) > MAX_DECISION_PROMPT:
+            raise bad(f'prompt must be 1-{MAX_DECISION_PROMPT} characters')
+        if not isinstance(choices, int) or isinstance(choices, bool) or not DECISION_CHOICES[0] <= choices <= DECISION_CHOICES[1]:
+            raise bad('choices must be an integer from 2 to 32')
+        model = self.phone.model(str(body.get('model', '')), 'decision') if self.phone.present else None
+        if model is None:
+            if self.phone.present:
+                raise ApiError(HTTPStatus.NOT_FOUND, 'model_not_found', 'The phone has no decision model; it downloads one from this computer when the release carries it.')
+            raise unavailable(PHONE_AWAY)
+        events = self.phone.generate({'model': model['id'], 'prompt': prompt, 'choices': choices}, 'decide')
+        try:
+            async for event in events:
+                if event['type'] == 'decision':
+                    if event['choice'] >= choices:
+                        raise ApiError(HTTPStatus.BAD_GATEWAY, 'invalid_decision', 'The phone chose outside the offered choices.', 'server_error')
+                    return {'model': model['id'], 'choice': event['choice'], **({'elapsedMs': event['elapsedMs']} if 'elapsedMs' in event else {})}
+        finally:
+            await events.aclose()
+        raise ApiError(HTTPStatus.BAD_GATEWAY, 'incomplete', 'The phone ended the decision without one.', 'server_error')
+
     async def vectors(self, request):
         """Runs an embeddings request: (model, vectors in input order, prompt tokens)."""
         request, model, generate = self.backend(request, 'embedding')
@@ -995,6 +1117,8 @@ class Server:
                 return await response.whole(200, {'embedding': vectors[0]})
             return await response.whole(200, {'model': model, 'embeddings': vectors, 'total_duration': int((time.monotonic() - started) * 1e9),
                                               'load_duration': 0, 'prompt_eval_count': tokens})
+        if method == 'POST' and path == '/v1/decision':
+            return await response.whole(200, await self.decide(request.json()))
         if method == 'POST' and path in ('/v1/completions', '/v1/responses'):
             raise ApiError(HTTPStatus.NOT_IMPLEMENTED, 'not_supported', f'{path} is not supported; use /v1/chat/completions or /api/chat')
         if method == 'GET' and path == '/api/version':
