@@ -1,6 +1,7 @@
 //! caboose-display: Caboose's headless Wayland compositor. See docs/display.md.
 
 mod audio;
+mod children;
 mod devices;
 mod clipboard;
 mod config;
@@ -568,6 +569,8 @@ fn run(config: Config) -> Result<(), String> {
         x11_scale: 1.0,
         x11_foreground: None,
         gpu_x11: None,
+        children: Default::default(),
+        gpu_bind_new_child: None,
         gpu_bind_larger: false,
         x11_identity: None,
         ibus: None,
@@ -754,7 +757,23 @@ fn run(config: Config) -> Result<(), String> {
                                 );
                                 if state.gpu_grants.is_some() {
                                     match gpu_x11::X11Windows::connect(display_number, &cookie) {
-                                        Ok(windows) => state.gpu_x11 = Some(windows),
+                                        Ok(windows) => {
+                                            // Child windows follow the X11 windows they are (children.rs).
+                                            match windows.fd() {
+                                                Ok(fd) => {
+                                                    let source = smithay::reexports::calloop::generic::Generic::new(
+                                                        fd, smithay::reexports::calloop::Interest::READ, smithay::reexports::calloop::Mode::Level);
+                                                    if let Err(error) = state.handle.insert_source(source, |_, _, state: &mut State| {
+                                                        Ok(if state.drain_gpu_x11() { smithay::reexports::calloop::PostAction::Continue }
+                                                           else { smithay::reexports::calloop::PostAction::Remove })
+                                                    }) {
+                                                        tracing::error!("GPU X11 window events unavailable: {error}");
+                                                    }
+                                                }
+                                                Err(error) => tracing::error!("GPU X11 window events unavailable: {error}"),
+                                            }
+                                            state.gpu_x11 = Some(windows);
+                                        }
                                         Err(error) => tracing::error!("GPU X11 window lookup unavailable: {error}"),
                                     }
                                 }

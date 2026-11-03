@@ -136,6 +136,12 @@ impl Windows {
         id
     }
 
+    /// An id no window has, for a child window (children.rs), which shares the id space.
+    pub fn reserve_id(&mut self) -> u64 {
+        self.next_id += 1;
+        self.next_id
+    }
+
     pub fn remove(&mut self, id: u64) -> Option<Window> {
         self.map.remove(&id)
     }

@@ -187,6 +187,10 @@ pub struct State {
     pub x11_foreground: Option<crate::x11_focus::Foreground>,
     /// The X server's window tree and client records, for GPU surface binds on X11 windows.
     pub gpu_x11: Option<crate::gpu_x11::X11Windows>,
+    /// Applications' own GPU surfaces inset in their windows (children.rs).
+    pub children: crate::children::Children,
+    /// The child the bind being answered made, ended again if the bind is refused.
+    pub gpu_bind_new_child: Option<u64>,
     /// The X11 bind being answered names a window larger than its top-level (gpu_x11.rs).
     pub gpu_bind_larger: bool,
     pub x11_identity: Option<crate::x11_identity::X11Identity>,
@@ -319,20 +323,35 @@ impl State {
         Some((peer.uid, peer.pid, peer.start_ticks, object.protocol_id()))
     }
 
-    /// Toplevels whose own wl_surface is the bind's object, made by the bound process.
-    fn wayland_gpu_bind_matches(&self, bind: &crate::gpu_control::Bind) -> Vec<u64> {
+    /// Toplevels whose own wl_surface is the bind's object, made by the bound process; or,
+    /// for a client that shows child windows, the child for a subsurface of one.
+    fn wayland_gpu_bind_matches(&mut self, bind: &crate::gpu_control::Bind) -> Vec<u64> {
         use smithay::reexports::wayland_server::Resource;
         use std::os::fd::AsRawFd;
         let mut matches = Vec::new();
+        let mut inset = Vec::new();
         for window in self.windows.iter() {
             let Surface::Toplevel(toplevel) = &window.surface else { continue };
-            let object = toplevel.wl_surface().id();
-            if object.protocol_id() != bind.object { continue; }
-            let Ok(client) = self.dh.get_client(object) else { continue };
+            let root = toplevel.wl_surface();
+            let object = root.id();
+            let Ok(client) = self.dh.get_client(object.clone()) else { continue };
             let Some(peer) = client.get_data::<ClientState>().and_then(|state| state.gpu_peer.as_ref()) else { continue };
-            if peer.matches_pidfd(bind.uid, bind.pid, bind.start_ticks, bind.pidfd.as_raw_fd()) {
+            if !peer.matches_pidfd(bind.uid, bind.pid, bind.start_ticks, bind.pidfd.as_raw_fd()) { continue; }
+            if object.protocol_id() == bind.object {
                 matches.push(window.id);
+                continue;
             }
+            // Protocol ids are per client: a subsurface of the bound client's window.
+            smithay::wayland::compositor::with_surface_tree_downward(root, (), |_, _, _|
+                smithay::wayland::compositor::TraversalAction::DoChildren(()),
+                |surface, _, _| if surface != root && surface.id().protocol_id() == bind.object { inset.push((window.id, surface.clone())) },
+                |_, _, _| true);
+        }
+        if matches.is_empty() && inset.len() == 1 && self.session.as_ref().is_some_and(|s| s.children) {
+            let (parent, surface) = inset.remove(0);
+            let (id, new) = self.subsurface_child(parent, &surface);
+            if new { self.gpu_bind_new_child = Some(id); }
+            matches.push(id);
         }
         matches
     }
@@ -357,6 +376,20 @@ impl State {
         }).collect();
         let ids: Vec<u32> = toplevels.iter().map(|(xid, _)| *xid).collect();
         match lookup.resolve(bind.object, &ids, self.x11_scale) {
+            Ok(Some(found)) if found.inset && found.pid == bind.pid &&
+                crate::gpu_peer::pidfd_identifies(bind.uid, bind.pid, bind.start_ticks, bind.pidfd.as_raw_fd()) => {
+                // An inset child (a browser view) is a child window of its top-level, for a
+                // client that shows children; for any other it has nowhere to be shown.
+                let parents: Vec<u64> = toplevels.iter().filter(|(xid, _)| *xid == found.toplevel).map(|(_, id)| *id).collect();
+                if parents.len() != 1 || !self.session.as_ref().is_some_and(|s| s.children) {
+                    tracing::info!("GPU X11 bind of {:#x} by process {} refused: {}", bind.object, bind.pid,
+                                   lookup.refusal(bind.object, &ids, self.x11_scale, bind.pid));
+                    return Vec::new();
+                }
+                let (id, new) = self.x11_child(parents[0], bind.object, found.toplevel);
+                if new { self.gpu_bind_new_child = Some(id); }
+                vec![id]
+            }
             Ok(Some(found)) if found.pid == bind.pid &&
                 crate::gpu_peer::pidfd_identifies(bind.uid, bind.pid, bind.start_ticks, bind.pidfd.as_raw_fd()) => {
                 let matches: Vec<u64> = toplevels.iter().filter(|(xid, _)| *xid == found.toplevel).map(|(_, id)| *id).collect();
@@ -610,7 +643,7 @@ impl State {
                 // A retained fallback display is not an authenticated owner layout.
                 // Ambiguous Wayland connections must remain ambiguous, even if
                 // only one happens to be on an eligible output.
-                if matches.len() == 1 && !self.windows.get(matches[0]).is_some_and(|window|
+                if matches.len() == 1 && !self.bind_window(matches[0]).is_some_and(|window|
                     self.session.as_ref().is_some_and(|session| session.ready && session.owner_displays.contains(&window.display)) &&
                     self.displays.get(window.display).is_some_and(|display| {
                         let size = display.logical_size(); size.w > 0 && size.h > 0
@@ -630,6 +663,10 @@ impl State {
                 }
                 let grant = self.gpu_grants.as_mut().and_then(|grants|
                     grants.bind(bind.process, bind.space, (bind.uid, bind.pid, bind.start_ticks, bind.object), &matches).ok());
+                // A child made for this bind lives only with its grant.
+                if let Some(child) = self.gpu_bind_new_child.take().filter(|_| grant.is_none()) {
+                    self.children.remove(child);
+                }
                 if let Some(grant) = grant {
                     // A popup keeps the place and size its application gave it, and a window the
                     // phone placed keeps its geometry: CEF rebinding on every swapchain recreate
@@ -969,6 +1006,7 @@ impl State {
                 }
             }
         }
+        self.sync_children();
     }
 
     pub fn on_text_input_toggle(&mut self, toggle: Toggle) {

@@ -65,6 +65,11 @@ impl Grants {
         self.phase == Phase::Ready && self.windows.get(&window).is_some_and(|(_, phase)| *phase == GrantPhase::Active)
     }
 
+    /// Whether the window has a grant, active or on its way out.
+    pub fn holds(&self, window: u64) -> bool {
+        self.windows.contains_key(&window)
+    }
+
     /// Whether the window's active grant is a buffer window: the compositor's own images
     /// (or a client's remote buffers) are presented in it.
     pub fn buffer_window(&self, window: u64) -> bool {

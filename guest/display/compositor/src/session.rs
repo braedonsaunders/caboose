@@ -29,6 +29,8 @@ pub struct Session {
     pub devices: bool,
     /// The client aims touches at `targets`, and this instance has their provider.
     pub targets: bool,
+    /// The client shows child windows inside their parents (children.rs).
+    pub children: bool,
     /// What the client takes from the clipboard besides text.
     pub clipboard_types: Vec<String>,
 }
@@ -308,6 +310,7 @@ impl State {
             webview_grant,
             devices,
             targets,
+            children: hello.children,
             clipboard_types,
         });
         self.games_session_changed();

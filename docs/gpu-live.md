@@ -604,6 +604,15 @@ X11 `_NET_WM_PID` is not authority.
   X11 has no client isolation: any client of the seat's Xwayland can create a child
   window inside another's toplevel, so an X11 grant proves only that the bound
   process made the window it presents to on the owner's own display.
+- An inset surface, an X11 descendant of such a toplevel that does not cover it (a
+  browser view CEF draws in its own child window) or a subsurface of a Wayland toplevel,
+  bound by the process that made it (the same X-Resource and pidfd checks), becomes a
+  child window of that toplevel ([display.md](display.md#child-windows)) when the
+  display client shows children, and the grant is the child's window. The compositor
+  follows the X11 window and its ancestors (structure and substructure notifications)
+  and sends the child's geometry, clip and stacking whenever they change; the phone
+  places the bound layer there, inside the parent's picture. A display client that
+  does not show children leaves such a bind refused.
 The app's visible interactive owner view supplies the native layer; thumbnails
 cannot acquire it. `LiveGPUOwnerSession` explicitly constructs the owner registry
 and linked surface backend; ordinary display and agent sessions do not. The

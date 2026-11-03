@@ -1,13 +1,16 @@
 //! The X11 side of a live GPU surface bind. A Vulkan swapchain on an X11 window names
-//! the window it was created for: a managed top-level, or a child window that covers
-//! one (Chromium's GPU process draws into such a child). Only the X server's own record
-//! of the process that created the window is authority, never a window property.
+//! the window it was created for: a managed top-level, a child window that covers one
+//! (Chromium's GPU process draws into such a child), or a child inset in one (a browser
+//! view CEF draws in its own child window), which the phone shows as a child window of
+//! the top-level (docs/display.md, "Child windows"). Only the X server's own record of the
+//! process that created the window is authority, never a window property.
 use std::os::unix::net::UnixStream;
 use x11rb::{
     connection::Connection,
     protocol::{
         res::{ClientIdMask, ClientIdSpec, ConnectionExt as _},
-        xproto::{ConnectionExt as _, Window},
+        xproto::{ChangeWindowAttributesAux, ConnectionExt as _, EventMask, MapState, Window},
+        Event,
     },
     rust_connection::{DefaultStream, RustConnection},
 };
@@ -41,9 +44,9 @@ impl X11Windows {
         Ok(Self { conn, root })
     }
 
-    /// The top-level in `toplevels` that `window` is, or that it covers, with the PID of the
-    /// X client that created `window` and whether `window` is larger than the top-level.
-    /// None when it is neither, or unknown. X11 windows are in display pixels at `scale`
+    /// The top-level in `toplevels` that `window` is, covers or is inset in, with the PID of
+    /// the X client that created `window`, whether `window` is larger than the top-level and
+    /// whether it is inset in it. None when it is in none of them, or unknown. X11 windows are in display pixels at `scale`
     /// (x11_scale.rs) while the compositor sizes top-levels in whole logical pixels, so a
     /// child sized to an odd display (a full-screen game's, 911 pixels high at scale 2) may
     /// fall short of its top-level by less than a logical pixel. A game's child sized to the
@@ -51,15 +54,94 @@ impl X11Windows {
     /// window below Laptop's title bar).
     pub fn resolve(&self, window: Window, toplevels: &[Window], scale: f64) -> Result<Option<Resolved>, Error> {
         let Some(toplevel) = self.toplevel_of(window, toplevels)? else { return Ok(None) };
-        let mut larger = false;
+        let (mut larger, mut inset) = (false, false);
         if window != toplevel {
             match self.covers(window, toplevel, scale)? {
-                Cover::No => return Ok(None),
+                Cover::No => inset = true,
                 Cover::Exactly => {}
                 Cover::Larger => larger = true,
             }
         }
-        Ok(self.client_pid(window)?.map(|pid| Resolved { toplevel, pid, larger }))
+        Ok(self.client_pid(window)?.map(|pid| Resolved { toplevel, pid, larger, inset }))
+    }
+
+    /// Where an inset child is in its top-level now, in X pixels relative to the top-level:
+    /// its rectangle, the part of it its ancestors show, and its place in the top-level's
+    /// stacking among `bound` (bottom first). None when it or an ancestor is unmapped or it
+    /// has left the top-level. It and its ancestors report their changes from now on
+    /// (`changed`).
+    pub fn placement(&self, child: Window, toplevel: Window, bound: &[Window]) -> Result<Option<Placement>, Error> {
+        let mut chain = vec![child];
+        let mut current = child;
+        let mut inside = false;
+        for _ in 0..MAX_DEPTH {
+            let parent = self.conn.query_tree(current)?.reply()?.parent;
+            if parent == toplevel { inside = true; break; }
+            if parent == x11rb::NONE || parent == self.root { break; }
+            chain.push(parent);
+            current = parent;
+        }
+        if !inside { return Ok(None); }
+        // Selected before reading, so a change after the read is never missed.
+        for (i, window) in chain.iter().chain(std::iter::once(&toplevel)).enumerate() {
+            let mask = if i == 0 { EventMask::STRUCTURE_NOTIFY } else { EventMask::STRUCTURE_NOTIFY | EventMask::SUBSTRUCTURE_NOTIFY };
+            self.conn.change_window_attributes(*window, &ChangeWindowAttributesAux::new().event_mask(mask))?.check()?;
+        }
+        let mut clip: Option<Rect> = None;
+        let mut rect = None;
+        for window in &chain {
+            if self.conn.get_window_attributes(*window)?.reply()?.map_state != MapState::VIEWABLE {
+                return Ok(None);
+            }
+            let geometry = self.conn.get_geometry(*window)?.reply()?;
+            let at = self.conn.translate_coordinates(*window, toplevel, 0, 0)?.reply()?;
+            if !at.same_screen { return Ok(None); }
+            let r = Rect { x: at.dst_x.into(), y: at.dst_y.into(), w: geometry.width.into(), h: geometry.height.into() };
+            if rect.is_none() { rect = Some(r); }
+            clip = Some(clip.map_or(r, |c| c.intersect(r)));
+        }
+        let outer = self.conn.get_geometry(toplevel)?.reply()?;
+        let clip = clip.unwrap_or_default().intersect(Rect { x: 0, y: 0, w: outer.width.into(), h: outer.height.into() });
+        let order = self.stacking(toplevel)?;
+        let stack = order.iter().filter(|w| bound.contains(w)).position(|w| *w == child).unwrap_or(0) as u32;
+        Ok(rect.map(|rect| Placement { rect, clip, stack }))
+    }
+
+    /// The top-level's descendants, bottom of the stacking first (a window below its children).
+    fn stacking(&self, toplevel: Window) -> Result<Vec<Window>, Error> {
+        let mut out = Vec::new();
+        let mut frontier = vec![(toplevel, 0usize)];
+        while let Some((window, depth)) = frontier.pop() {
+            if window != toplevel { out.push(window); }
+            if depth >= MAX_DEPTH { continue; }
+            // Bottom first: popped last-in first, so push the topmost first.
+            for child in self.conn.query_tree(window)?.reply()?.children.into_iter().rev() {
+                frontier.push((child, depth + 1));
+            }
+        }
+        Ok(out)
+    }
+
+    /// Whether any window this connection follows changed (moved, resized, restacked,
+    /// mapped, unmapped, reparented or destroyed) since the last call; drains the events.
+    pub fn changed(&self) -> Result<bool, Error> {
+        let mut changed = false;
+        for _ in 0..1024 {
+            match self.conn.poll_for_event()? {
+                None => break,
+                Some(Event::ConfigureNotify(_) | Event::MapNotify(_) | Event::UnmapNotify(_) |
+                     Event::DestroyNotify(_) | Event::ReparentNotify(_) | Event::GravityNotify(_) |
+                     Event::CirculateNotify(_)) => changed = true,
+                Some(_) => {}
+            }
+        }
+        Ok(changed)
+    }
+
+    /// The connection's descriptor, for the event loop.
+    pub fn fd(&self) -> std::io::Result<std::os::fd::OwnedFd> {
+        use std::os::fd::AsFd;
+        self.conn.stream().as_fd().try_clone_to_owned()
     }
 
     fn toplevel_of(&self, window: Window, toplevels: &[Window]) -> Result<Option<Window>, Error> {
@@ -135,13 +217,41 @@ impl X11Windows {
     }
 }
 
-/// A bound X11 window's top-level, the bound process, and whether the window is larger
-/// than the top-level (its window should grow to the display to show all of it).
+/// A bound X11 window's top-level, the bound process, whether the window is larger than
+/// the top-level (its window should grow to the display to show all of it) and whether it
+/// is inset in it (a child window of the top-level on the phone).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Resolved {
     pub toplevel: Window,
     pub pid: u32,
     pub larger: bool,
+    pub inset: bool,
+}
+
+/// A rectangle in X pixels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Rect {
+    pub x: i32,
+    pub y: i32,
+    pub w: i32,
+    pub h: i32,
+}
+
+impl Rect {
+    /// The overlap of two rectangles; empty (zero-sized, at the first's origin) when none.
+    pub fn intersect(self, other: Rect) -> Rect {
+        let (x0, y0) = (self.x.max(other.x), self.y.max(other.y));
+        let (x1, y1) = ((self.x + self.w).min(other.x + other.w), (self.y + self.h).min(other.y + other.h));
+        if x1 <= x0 || y1 <= y0 { Rect { x: self.x, y: self.y, w: 0, h: 0 } } else { Rect { x: x0, y: y0, w: x1 - x0, h: y1 - y0 } }
+    }
+}
+
+/// An inset child's place in its top-level (`X11Windows::placement`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Placement {
+    pub rect: Rect,
+    pub clip: Rect,
+    pub stack: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -212,6 +322,14 @@ mod tests {
         // Larger on one side does not make up for falling short on the other.
         assert_eq!(covers((0, 0), (1338, 911), (1300, 960), 2.0), No);
         assert_eq!(covers((0, 4), (1338, 911), (1338, 848), 2.0), No);
+    }
+
+    #[test]
+    fn a_child_is_cut_by_what_holds_it() {
+        let view = Rect { x: 1, y: 184, w: 1338, h: 900 };
+        let frame = Rect { x: 0, y: 0, w: 1340, h: 912 };
+        assert_eq!(view.intersect(frame), Rect { x: 1, y: 184, w: 1338, h: 728 });
+        assert_eq!(view.intersect(Rect { x: 2000, y: 0, w: 10, h: 10 }), Rect { x: 1, y: 184, w: 0, h: 0 });
     }
 
     #[test]
