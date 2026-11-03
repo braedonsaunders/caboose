@@ -393,3 +393,17 @@ GUI success, and an alternative valid ordering can differ from the oracle.
 and a 5 GiB MLX allocation limit. It accepts the ordinary `mlx_lm.lora` arguments.
 Training requires a separate Python environment with `mlx-lm[train]`; these tools
 are development checks and are not installed in the guest product.
+
+The reproducible small-model configuration is `check/specialist-lora.yaml`: Qwen3
+0.6B-compatible q/v LoRA, rank 8, scale 2, seed 42, 1,600 microsteps with accumulation
+8 (200 optimizer updates). Supply local model, dataset and output directories:
+
+```sh
+python check/specialist-mlx-train.py --config check/specialist-lora.yaml \
+  --model MODEL_DIRECTORY --data DATA_DIRECTORY --adapter-path ADAPTER_DIRECTORY
+```
+
+The fixture training tools are checked with MLX 0.32.4, mlx-lm 0.32.2 and
+Transformers 5.22.1. Keep baseline and adapter evaluations on the same model revision,
+non-thinking template, task cases and hardware; do not infer phone speed from Mac
+measurements. Weight training and runtime export are separate operations.

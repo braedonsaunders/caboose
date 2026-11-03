@@ -2540,7 +2540,8 @@ owner and an agent never type into the same application at once.
 ### Desktop tools
 
 The desktop MCP process can opt into `computer_task` with
-`CABOOSE_SPECIALIST_MODEL`. A bounded model loop acts only on freshly observed
+`CABOOSE_SPECIALIST_MODEL`, forwarded when explicitly set in the agent runner
+environment. A bounded model loop acts only on freshly observed
 accessibility IDs in one focused agent window and verifies the caller’s explicit
 control postcondition (or conjunction of up to eight conditions). Ambiguous
 completion controls return `needs_clarification`. Missing model service, changed focus, deadlines and
