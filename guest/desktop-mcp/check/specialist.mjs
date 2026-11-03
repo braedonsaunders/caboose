@@ -33,7 +33,7 @@ try {
         return { action: goal.value ? 'set_text' : 'click_element', id: target?.id, ...(goal.value ? { text: goal.value } : {}) }
       },
       act: async action => {
-        const r = await request(a11y, { op: 'act', element: action.id, action: action.action === 'set_text' ? 'set-text' : 'press', ...(action.text ? { text: action.text } : {}) })
+        const r = await request(a11y, { op: 'act', element: action.id, action: action.action === 'set_text' ? 'set-text' : action.action === 'focus_element' ? 'focus' : 'press', ...(action.text ? { text: action.text } : {}) })
         if (!r.ok) throw new Error('action outcome unknown')
       },
       // Explicitly opt in only in this fixture, whose strings contain no user data.

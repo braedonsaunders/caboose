@@ -1,0 +1,5 @@
+{
+  "instructions": "Choose the next action toward the goal from the observed state. WAIT only while busy. DONE only when all outcomes hold. BLOCKED if stale, ambiguous, or required information is unavailable.",
+  "max_len": 1024,
+  "head_max_len": 768
+}

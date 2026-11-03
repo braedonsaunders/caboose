@@ -407,3 +407,40 @@ The fixture training tools are checked with MLX 0.32.4, mlx-lm 0.32.2 and
 Transformers 5.22.1. Keep baseline and adapter evaluations on the same model revision,
 non-thinking template, task cases and hardware; do not infer phone speed from Mac
 measurements. Weight training and runtime export are separate operations.
+
+### Choice backend
+
+`CABOOSE_SPECIALIST_BACKEND=choices` opts the runner's desktop child into a local
+encoder decision service at `127.0.0.1:11435/v1/decision`. The development service
+`check/specialist-laya.py --model LOCAL_CHECKPOINT --device cpu` serves Laya without
+UI access. It requires the Apache-2.0 Laya Python runtime; no model or Python
+service is installed by the guest installer. The default generative backend uses
+`CABOOSE_SPECIALIST_MODEL` and the existing port 11434 service.
+
+A task can supply up to 12 named `values` (`name`, `value`). Exact goal values are
+also eligible sources. The choice backend offers at most 32 choices made from
+observed control capabilities and those literal values, plus WAIT, DONE and
+BLOCKED. It never asks the scorer to create text, IDs or commands. Overflow or
+missing information returns to the caller; the caller can delegate a smaller
+step or supply the missing text. Each answer is bound to the observation revision;
+the ordinary fresh-target check still runs before input. DONE cannot override the
+caller's postcondition. WAIT consumes a step and reobserves after 200 ms; it does
+not poll the model continuously. AT-SPI workers drain pending accessibility events
+before observations; the current interface returns full bounded observations,
+not event subscriptions or state deltas. `elements` includes supported semantic
+`actions` and the `busy` state when the application exposes them.
+
+The Laya service uses a 1,024-token observation/question budget and refuses
+truncated state or choices. Its probabilities are model preferences; this
+integration does not claim calibrated confidence or general desktop accuracy.
+The service binds only loopback and does not perform computer actions.
+
+The prototype uses Laya 0.4.21 at upstream commit
+`0565524a27bcb9821bcd7c42aaf49d925f6f8560`
+([source and Apache-2.0 license](https://github.com/NandhaKishorM/laya)). The tested
+multilingual checkpoint is `convaiinnovations/laya` revision
+`7b928d828b7b0e022f929d9bd2e44165aa270148`, subfolder `multilingual`, also Apache-2.0.
+`check/specialist-choice-data.mjs` labels recorded fixture actions/completion and
+explicit synthetic busy/unavailable negatives. `check/specialist-laya-train.py`
+trains the decision head with the encoder frozen, option-order augmentation and
+separate validation data. Synthetic negative rows are not live GUI test results.

@@ -7,9 +7,11 @@ p = argparse.ArgumentParser()
 p.add_argument('--split', choices=['train', 'validation', 'heldout'], required=True)
 p.add_argument('--count', type=int, default=20)
 p.add_argument('--output', required=True)
+p.add_argument('--varied', action='store_true', help='train/validation use 1–4 fields; heldout uses new 0/5-field families')
 a = p.parse_args()
 assert 1 <= a.count <= 1000
 seed = {'train': 42, 'validation': 1701, 'heldout': 9001}[a.split]
+if a.varied: seed += 10000
 rng = random.Random(seed)
 vocabulary = {
     'train': [('Title', 'Summary', 'Enable alerts', 'Apply', 'Applied', 'Reset all'), ('Name', 'Note', 'Keep copy', 'Save', 'Saved', 'Discard')],
@@ -21,6 +23,11 @@ for i in range(a.count):
     first, second, toggle, submit, complete, distractor = vocabulary[i % len(vocabulary)]
     fields = [{'name': first, 'value': f'{a.split} record {rng.randrange(1000, 9999)}'}, {'name': second, 'value': f'item {rng.randrange(1000, 9999)}'}]
     if a.split == 'heldout': fields.append({'name': 'Routing code', 'value': f'route {rng.randrange(100, 999)}'})
+    if a.varied:
+        count = (0 if i % 2 == 0 else 5) if a.split == 'heldout' else 1 + i % 4
+        extra = {'train': ['Category', 'Tracking number', 'Group'], 'validation': ['Section', 'Batch number', 'Topic'], 'heldout': ['Routing code', 'Department', 'Contact tag']}[a.split]
+        labels = [first, second, *extra]
+        fields = [{'name': name, 'value': f'{a.split} value {rng.randrange(1000, 9999)}'} for name in labels[:count]]
     order = list(range(len(fields) + 3)); rng.shuffle(order)
     objective = "; ".join(f"Set {f['name']} to {f['value']}" for f in fields) + f"; check {toggle}, then press {submit}."
     cases.append(dict(split=a.split, seed=seed, fields=fields, toggle=toggle, submit=submit, complete=complete,

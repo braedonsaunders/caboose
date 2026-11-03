@@ -6,6 +6,7 @@
 // seat's windows, pointer, keyboard and pictures, through its control socket). Wayland and
 // X11 applications are driven alike. caboose-agentd gives it to every ACP agent in
 // session/new, and answers the agent's permission requests itself.
+import { choiceDecision } from './choices.mjs'
 import { spawn } from 'node:child_process'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -297,10 +298,11 @@ for (const name of mutations) {
 }
 
 // Opt-in: do not advertise an unavailable model as a product capability.
-if (process.env.CABOOSE_SPECIALIST_MODEL) {
+if (process.env.CABOOSE_SPECIALIST_MODEL || process.env.CABOOSE_SPECIALIST_BACKEND === 'choices') {
   tools.push({ name: 'computer_task',
     description: 'Delegate a bounded accessibility task in the currently focused agent window. Supply an objective and exact observable goal. Returns verified only after observing that goal; otherwise returns a structured failure or screenshot for the caller. At most 20 actions and 60 seconds. Does not run shell commands or choose arbitrary coordinates.',
     inputSchema: { type: 'object', properties: {
+      values: { type: 'array', maxItems: 12, items: { type: 'object', properties: { name: { type: 'string', maxLength: 80 }, value: { type: 'string', maxLength: 200 } }, required: ['name', 'value'] } },
       objective: { type: 'string', maxLength: 2000 }, window: { type: 'integer', minimum: 1 },
       goal: { anyOf: [
         { type: 'object', properties: { name: { type: 'string' }, role: { type: 'string' }, value: { type: 'string' }, state: { type: 'string' } }, required: ['name', 'role'] },
@@ -325,7 +327,7 @@ if (process.env.CABOOSE_SPECIALIST_MODEL) {
           const state = await observe()
           return { ...state, focused: (await seat('windows')).focused }
         },
-        decide: phoneDecision(process.env.CABOOSE_SPECIALIST_MODEL),
+        decide: process.env.CABOOSE_SPECIALIST_BACKEND === 'choices' ? choiceDecision() : phoneDecision(process.env.CABOOSE_SPECIALIST_MODEL),
         act: async step => {
           const reply = JSON.parse((await handlers.batch({ steps: [step], observe: false }))[0].text)
           if (reply.completed !== 1) throw new Error(reply.error ?? 'action outcome unknown')

@@ -4,6 +4,9 @@ export function validateTask(task) {
   if (!task || typeof task.objective !== 'string' || !task.objective.trim() || task.objective.length > 2000)
     throw new Error('objective must contain 1–2000 characters')
   if (!Number.isSafeInteger(task.window) || task.window < 1) throw new Error('window must be a positive seat window id')
+  if (task.values !== undefined && (!Array.isArray(task.values) || task.values.length > 12 || task.values.some(v =>
+      !v || typeof v.name !== 'string' || !v.name || v.name.length > 80 || typeof v.value !== 'string' || v.value.length > 200)))
+    throw new Error('values must contain at most 12 named text sources')
   const goals = task.goal?.all ?? [task.goal]
   if (!Array.isArray(goals) || goals.length < 1 || goals.length > 8) throw new Error('goal all must contain 1–8 conditions')
   for (const goal of goals) {
@@ -27,7 +30,7 @@ export function goalSatisfied(goal, elements) {
 export async function runSpecialist(task, { observe, decide, act, trace = () => {}, signal, now = () => performance.now() }) {
   validateTask(task)
   const started = now()
-  const metrics = { attemptedActions: 0, actions: 0, observations: 0, observationMs: 0, modelMs: 0, actionMs: 0, rejectedActions: 0 }
+  const metrics = { attemptedActions: 0, actions: 0, observations: 0, observationMs: 0, modelMs: 0, actionMs: 0, rejectedActions: 0, waits: 0 }
   const result = (status, reason) => ({ status, ...(reason ? { reason } : {}), metrics: { ...metrics, elapsedMs: now() - started } })
   const check = () => { signal?.throwIfAborted(); if (now() - started > 60_000) throw new Error('task deadline exceeded') }
   const read = async () => {
@@ -50,9 +53,17 @@ export async function runSpecialist(task, { observe, decide, act, trace = () => 
       check()
       const before = now()
       let choice
-      try { choice = await decide({ objective: task.objective, goal: task.goal, elements }, signal) }
+      try { choice = await decide({ objective: task.objective, goal: task.goal, elements, ...(task.values ? { values: task.values } : {}) }, signal) }
       finally { metrics.modelMs += now() - before }
       check()
+      if (choice?.action === 'blocked') return result('needs_clarification', choice.reason ?? 'specialist cannot select a grounded action')
+      if (choice?.action === 'done') { metrics.rejectedActions++; return result('rejected', 'model requested completion without an observed postcondition') }
+      if (choice?.action === 'wait') {
+        metrics.waits++
+        await new Promise(resolve => setTimeout(resolve, 200))
+        elements = await read()
+        continue
+      }
       if (choice?.action === 'escalate') return result('needs_visual', 'specialist requested visual inspection')
       if (!['click_element', 'set_text', 'focus_element'].includes(choice?.action) ||
           typeof choice.id !== 'string' || !elements.some(e => e.id === choice.id) ||

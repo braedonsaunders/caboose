@@ -804,7 +804,7 @@ class Tree:
             ("FOCUSED", "focused"), ("CHECKED", "checked"), ("PRESSED", "pressed"), ("SELECTED", "selected"),
             ("EXPANDED", "expanded"), ("EDITABLE", "editable"), ("INDETERMINATE", "mixed"),
             ("REQUIRED", "required"), ("INVALID_ENTRY", "invalid"), ("READ_ONLY", "read-only"),
-            ("MULTI_LINE", "multi-line"), ("VISITED", "visited")]
+            ("MULTI_LINE", "multi-line"), ("VISITED", "visited"), ("BUSY", "busy")]
         self.started = time.monotonic()
         self.visited = 0
 
@@ -1149,6 +1149,13 @@ def collect(target, query=None, role=None):
             "id": element_id(target.xid, target.pid, path, tree.fingerprint(node_role, name)),
             "role": role_name, "name": name, "states": tree.state_names(states), "bounds": bounds,
         })
+        # Expose capabilities rather than asking a policy to infer them from pixels.
+        _, native_actions = tree.actions(node)
+        supported = []
+        if any(name in tree.press_actions for name in native_actions): supported.append("press")
+        if tree.has(states, "EDITABLE"): supported.append("set-text")
+        if tree.has(states, "FOCUSABLE"): supported.append("focus")
+        found[-1]["actions"] = supported
         value = tree.value(node, node_role, states)
         if value is not None and value != "":
             found[-1]["value"] = value
