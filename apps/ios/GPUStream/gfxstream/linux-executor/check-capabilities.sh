@@ -117,12 +117,17 @@ for name in ('disabled','cold','warm','fresh'):
     counters=re.search(r'CABOOSE_CAPABILITY_CACHE hits=(\d+) misses=(\d+) scopes=(\d+)',text)
     if not counters: raise SystemExit('FAIL missing cache diagnostics: '+name)
     hits,misses,scopes=map(int,counters.groups())
-    if not scopes or (name in ('disabled','cold') and (hits or misses<368)) or (name in ('warm','fresh') and hits<368):
+    # The uncached baseline never hits; the cold process asks every question (a repeat of
+    # its own earlier answer may hit); the later processes take them from the seat cache.
+    if not scopes or (name=='disabled' and (hits or misses<368)) or (name=='cold' and misses<368) or \
+            (name in ('warm','fresh') and hits<368):
         raise SystemExit('FAIL incorrect cold/warm cache use: '+name+' '+counters.group(0))
     writes=re.search(r'writes=(\d+) write_bytes=(\d+) write_us=(\d+)',text)
     elapsed=re.search(r'CABOOSE_CAPABILITY_PROCESS elapsed_s=([0-9.]+)',text)
     if not writes or not elapsed: raise SystemExit('FAIL missing write or process timing: '+name)
     count,size,micros=map(int,writes.groups())
+    if name=='cold' and not count:
+        raise SystemExit('FAIL the cold process kept no answers: '+writes.group(0))
     # Each new answer is one appended record: never a rewrite of earlier records.
     if count>misses or size>count*(2*4096+4096+16):
         raise SystemExit('FAIL capability cache rewrote records: '+name+' '+writes.group(0))
