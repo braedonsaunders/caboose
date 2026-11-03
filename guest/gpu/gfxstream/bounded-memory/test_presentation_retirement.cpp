@@ -11,6 +11,9 @@ static Ledger::Packet packet(uint8_t marker) {
 int main() {
     static_assert(std::is_trivially_copyable_v<Ledger::Packet>);
     Ledger ledger;
+    auto initial=ledger.reserve(0,{{Ledger::Kind::Instance,99}});
+    assert(initial && ledger.release(*initial));
+    assert(ledger.takeReady(0).send.empty() && ledger.recordCount()==0);
     ledger.changeGeneration(1);
     const std::vector<Ledger::Key> objects={{Ledger::Kind::Image,1},{Ledger::Kind::Memory,2},
         {Ledger::Kind::Semaphore,3},{Ledger::Kind::Device,4},{Ledger::Kind::Instance,5}};
