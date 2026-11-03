@@ -177,5 +177,28 @@ class Dependencies(unittest.TestCase):
         self.assertIn('require working node and npm', error)
 
 
+class InstalledModules(unittest.TestCase):
+    def test_every_module_an_installed_script_imports_is_shipped_and_installed_beside_it(self):
+        """desktop-mcp.mjs runs from /opt/caboose: each relative import, followed transitively,
+        must be in the manifest and installed into the same directory."""
+        import json
+        import re
+        guest = INSTALLER.parent.parent
+        manifest = set(json.loads((INSTALLER.parent / 'manifest.json').read_text()))
+        installer = INSTALLER.read_text()
+        pending, seen = ['desktop-mcp/caboose-desktop-mcp.mjs'], set()
+        while pending:
+            source = pending.pop()
+            if source in seen:
+                continue
+            seen.add(source)
+            for module in re.findall(r"^import [^\n]*? from '\./([^']+)'", (guest / source).read_text(), re.M):
+                path = f'desktop-mcp/{module}'
+                self.assertIn(path, manifest, f'{source} imports {module}, which the host does not ship')
+                self.assertRegex(installer, rf'"\$root/{re.escape(path)}" /opt/caboose/{re.escape(module)}\b', f'{module} is not installed beside desktop-mcp.mjs')
+                pending.append(path)
+        self.assertIn('desktop-mcp/worker.mjs', seen)
+
+
 if __name__ == '__main__':
     unittest.main()

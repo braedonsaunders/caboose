@@ -63,6 +63,10 @@ install -Dm755 "$root/desktop-mcp/caboose-desktop-mcp.mjs" /opt/caboose/desktop-
 install -Dm755 "$root/desktop-mcp/a11y.py" /opt/caboose/a11y.py
 install -Dm755 "$root/desktop-mcp/seat.py" /opt/caboose/seat.py
 install -Dm644 "$root/desktop-mcp/ensure-agent-seat.mjs" /opt/caboose/ensure-agent-seat.mjs
+# desktop-mcp.mjs imports these beside itself.
+install -Dm644 "$root/desktop-mcp/worker.mjs" /opt/caboose/worker.mjs
+install -Dm644 "$root/desktop-mcp/specialist.mjs" /opt/caboose/specialist.mjs
+install -Dm644 "$root/desktop-mcp/choices.mjs" /opt/caboose/choices.mjs
 install -Dm644 "$root/desktop-mcp/ensure-agent-seat.mjs" /opt/caboose/desktop-mcp/ensure-agent-seat.mjs
 install -Dm755 "$root/desktop-mcp/caboose-agent-seat" /usr/local/libexec/caboose-agent-seat
 install -Dm755 "$root/desktop-mcp/agent-profile.py" /opt/caboose/agent-profile.py
