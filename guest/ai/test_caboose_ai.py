@@ -157,44 +157,6 @@ async def http(port, method, path, body=None, host='localhost', read_all=True):
     return status, headers, data
 
 
-class ComputerModels(unittest.TestCase):
-    def setUp(self):
-        self.dir = tempfile.TemporaryDirectory()
-        self.addCleanup(self.dir.cleanup)
-        self.root = os.path.join(self.dir.name, 'models')
-        os.makedirs(os.path.join(self.root, 'caboose-decide'))
-        with open(os.path.join(self.root, 'caboose-decide', 'model.safetensors'), 'wb') as f:
-            f.write(b'weights' * 1000)
-        with open(os.path.join(self.root, 'caboose-decide', 'config.json'), 'w') as f:
-            f.write('{}')
-        with open(os.path.join(self.root, 'caboose-decide', '.hidden'), 'w') as f:
-            f.write('x')
-        os.symlink('/etc/passwd', os.path.join(self.root, 'caboose-decide', 'passwd'))
-        os.symlink(os.path.join(self.root, 'caboose-decide'), os.path.join(self.root, 'linked'))
-        self.marker = os.path.join(self.dir.name, 'release')
-        with open(self.marker, 'w') as f:
-            f.write('r5.14\nmanifest_sha256=abc\n')
-
-    def test_manifest_lists_plain_files_with_digests(self):
-        import hashlib
-        manifest = ai.model_manifest(self.root, self.marker)
-        self.assertEqual(manifest['release'], 'r5.14')
-        self.assertEqual([m['name'] for m in manifest['models']], ['caboose-decide'])
-        files = manifest['models'][0]['files']
-        self.assertEqual([f['path'] for f in files], ['config.json', 'model.safetensors'])
-        self.assertEqual(files[1], {'path': 'model.safetensors', 'size': 7000, 'sha256': hashlib.sha256(b'weights' * 1000).hexdigest()})
-        self.assertEqual(ai.model_manifest(os.path.join(self.dir.name, 'none'), os.path.join(self.dir.name, 'none'))['models'], [])
-
-    def test_reads_are_bounded_chunks_of_listed_files(self):
-        self.assertEqual(ai.read_model_file('caboose-decide', 'model.safetensors', 7, 7, self.root), b'weights')
-        self.assertEqual(ai.read_model_file('caboose-decide', 'model.safetensors', 6990, 100, self.root), b'ghtsweights'[1:])
-        for name, path, offset, length in [('caboose-decide', '../release', 0, 1), ('caboose-decide', 'passwd', 0, 1), ('linked', 'config.json', 0, 1),
-                                           ('caboose-decide', '.hidden', 0, 1), ('caboose-decide', 'config.json', -1, 1),
-                                           ('caboose-decide', 'config.json', 0, ai.MAX_READ + 1), ('Bad Name', 'config.json', 0, 1)]:
-            with self.assertRaises(ai.ApiError, msg=(name, path)):
-                ai.read_model_file(name, path, offset, length, self.root)
-
-
 @unittest.skipUnless(HAVE_WEBSOCKETS, 'needs python3-websockets')
 class Service(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
@@ -262,48 +224,6 @@ class Service(unittest.IsolatedAsyncioTestCase):
         for word in ('Hello', ' from', ' the', ' phone'):
             yield {'type': 'delta', 'content': word}
         yield {'type': 'done', 'finishReason': 'stop', 'usage': {'promptTokens': 12, 'completionTokens': 4}}
-
-    @staticmethod
-    def decision(request):
-        yield {'type': 'started'}
-        yield {'type': 'decision', 'choice': request['prompt'].count('\n') - 2, 'elapsedMs': 41.5}
-
-    async def test_decisions_run_on_the_phones_decision_model(self):
-        status, _, body = await http(self.api_port, 'POST', '/v1/decision', {'prompt': 'Task: x\nA BLOCKED\nB PRESS OK\nNext:', 'choices': 2})
-        self.assertEqual((status, json.loads(body)['error']['code']), (503, 'phone_unavailable'))
-        await self.connect(self.decision)
-        status, _, body = await http(self.api_port, 'POST', '/v1/decision', {'prompt': 'Task: x\nA BLOCKED\nB PRESS OK\nNext:', 'choices': 2})
-        self.assertEqual((status, json.loads(body)['error']['code']), (404, 'model_not_found'))
-        await self.host.send(json.dumps({'type': 'phone', 'models': MODELS + [{'id': 'caboose-decide', 'name': 'Caboose decisions', 'contextSize': 2048, 'capabilities': [], 'type': 'decision'}]}))
-        await asyncio.sleep(0.05)
-        status, _, body = await http(self.api_port, 'POST', '/v1/decision', {'prompt': 'Task: x\nA BLOCKED\nB PRESS OK\nNext:', 'choices': 2})
-        self.assertEqual((status, json.loads(body)), (200, {'model': 'caboose-decide', 'choice': 1, 'elapsedMs': 41.5}))
-        self.assertEqual(self.requests[-1], {'model': 'caboose-decide', 'prompt': 'Task: x\nA BLOCKED\nB PRESS OK\nNext:', 'choices': 2})
-        status, _, body = await http(self.api_port, 'POST', '/v1/decision', {'prompt': 'Task: x\nA BLOCKED\nB PRESS OK\nC PRESS No\nNext:', 'choices': 2})
-        self.assertEqual((status, json.loads(body)['error']['code']), (502, 'invalid_decision'))
-        for bad_body in ({'prompt': '', 'choices': 2}, {'prompt': 'x', 'choices': 1}, {'prompt': 'x', 'choices': 33}, {'prompt': 'x', 'choices': True}):
-            status, _, _ = await http(self.api_port, 'POST', '/v1/decision', bad_body)
-            self.assertEqual(status, 400, bad_body)
-
-    async def test_the_host_reads_the_computers_models(self):
-        root = os.path.join(self.dir.name, 'models', 'caboose-decide')
-        os.makedirs(root)
-        with open(os.path.join(root, 'model.safetensors'), 'wb') as f:
-            f.write(bytes(range(256)) * 64)
-        ai.MODELS_DIR, saved = os.path.join(self.dir.name, 'models'), ai.MODELS_DIR
-        self.addCleanup(setattr, ai, 'MODELS_DIR', saved)
-        from websockets.asyncio.client import connect
-        self.host = await connect(f'ws://127.0.0.1:{self.relay_port}/relay', additional_headers={'Authorization': 'Bearer relay-token'})
-        rid = 'a' * 32
-        await self.host.send(json.dumps({'type': 'models', 'id': rid}))
-        manifest = json.loads(await self.host.recv())
-        self.assertEqual((manifest['type'], manifest['id']), ('models', rid))
-        self.assertEqual(manifest['models'][0]['files'][0]['size'], 16384)
-        await self.host.send(json.dumps({'type': 'read', 'id': rid, 'name': 'caboose-decide', 'path': 'model.safetensors', 'offset': 256, 'length': 300}))
-        frame = await self.host.recv()
-        self.assertEqual((frame[:32], frame[32:]), (rid.encode(), (bytes(range(256)) * 2)[:300]))
-        await self.host.send(json.dumps({'type': 'read', 'id': rid, 'name': 'caboose-decide', 'path': 'missing', 'offset': 0, 'length': 1}))
-        self.assertEqual(json.loads(await self.host.recv()), {'type': 'read', 'id': rid, 'error': 'no such model file'})
 
     async def test_away(self):
         status, headers, body = await http(self.api_port, 'POST', '/v1/chat/completions', {'model': 'apple-foundation', 'messages': [{'role': 'user', 'content': 'hi'}]})

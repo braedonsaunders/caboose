@@ -179,7 +179,7 @@ final class PhoneModelLibrary {
 }
 
 /// A downloaded model's folder as MLX's downloader: it never reaches the network.
-struct ModelFolder: MLXLMCommon.Downloader {
+private struct ModelFolder: MLXLMCommon.Downloader {
     static let patterns = ["*.safetensors", "*.json", "*.jinja", "*.model", "*.tiktoken", "*.txt"]
     let directory: URL
 

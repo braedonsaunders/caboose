@@ -2539,52 +2539,23 @@ owner and an agent never type into the same application at once.
 
 ### Desktop tools
 
-The desktop MCP process offers `computer_task` when the computer's release carries a
-decision model for the phone (`/opt/caboose/ai/models`), on the choice backend;
-`CABOOSE_SPECIALIST_BACKEND` or `CABOOSE_SPECIALIST_MODEL`, forwarded when explicitly set in
-the agent runner environment, choose explicitly. The choice backend sends a bounded
-set of grounded choices to the phone's decision model ([docs/ai.md § Decisions](ai.md#decisions))
-and only the desktop executor resolves the answer into an action; the generative backend
-uses `CABOOSE_SPECIALIST_MODEL`.
+The agent drives the seat with these tools itself; no model inside the computer chooses
+its actions. Their observation and action contract:
 
-The observation and action contract of a task:
-
-- **Windows come from the compositor.** The task names a window id from the seat's window
-  list. Its windows are that one and every window whose `parent` chain reaches it: the
-  dialogs and popup menus it opens are their own records with `kind` and `parent`. When
-  focus is on one of them the task observes and acts there; focus on any other window stops
-  input (`interrupted`). Each step names the window it acts in when that is not the task's
-  own.
 - **Controls come from AT-SPI.** An observation is the focused window's accessibility
-  subtree, joined to its window record by process and geometry; each element id names its
-  window. Settling is driven by the compositor's commit record, not by timeouts: after an
-  action the read waits for the first commit after it (the application applied it; a new
+  subtree, joined to its window record from the compositor by process and geometry; each
+  element id names its window. Dialogs and popup menus are their own window records with
+  `kind` and `parent`.
+- **Settling is driven by the compositor's commit record, not by timeouts.** After an
+  action, a read waits for the first commit after it (the application applied it; a new
   window mapped), at most 150 ms, and a picture waits until no window committed for 30 ms.
-  When focus moves to another of the task's windows, reads repeat until two agree (at most
-  1 s). AT-SPI change events arrive after the change itself, so they never stand in for a
-  read. Busy, empty, ambiguous and completed observations are
-  decided in code, never by a model.
-- **Actions are semantic first.** A choice presses a control through its own accessibility
-  action or replaces an editable text's contents. A menu on screen, whose own action can
+  AT-SPI change events arrive after the change itself, so they never stand in for a read.
+- **Actions are semantic first.** A press uses the control's own accessibility action and
+  `set_text` replaces an editable text's contents. A menu on screen, whose own action can
   open a different menu of its bar, and selectable items a toolkit gives no action (notebook
   tabs, list and tree items) are pressed with the seat's pointer at their own coordinates,
-  never at positions read from pixels. A control is re-observed after the decision and must
-  be unchanged before input goes in.
-- **Nothing incomplete is submitted, whatever a model decides.** While a value the caller
-  supplied (or the goal names) shows in no observed control, or a field the objective names
-  exactly is still empty, no button and no text-field activation is offered as a choice; if
-  nothing else is left, the step is BLOCKED without asking the model. Menus, tabs and toggles
-  stay offered.
-- **Success is observed.** The caller's postcondition is up to eight conditions on
-  controls (name, role, value, state) or on window titles of the task's windows; it is
-  checked before every decision and after every action.
-
-Ambiguous completion controls return `needs_clarification`. A missing model service, a
-focus change, a deadline, or an observation with no accessible controls return control to
-the parent agent (`needs_visual` attaches a picture of the task window from the seat's
-control socket). The ordinary desktop tools remain available without phone inference;
-this does not change seat ownership, task takeover, or unattended computer lifetime. See
-the [desktop specialist contract](../guest/desktop-mcp/README.md#bounded-computer-specialist).
+  never at positions read from pixels. A target is re-resolved by its id before input goes
+  in, and a changed control is refused.
 
 `caboose-desktop-mcp` is a stdio MCP server. The runner passes it to every agent as
 `caboose-desktop` in ACP `session/new`, with the seat's launch environment:

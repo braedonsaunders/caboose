@@ -45,13 +45,6 @@ lines, no shell expansion, one pair of matching quotes around a value removed. T
 belong to `caboose` and be closed to group and others (mode 0600), or it is ignored with a
 note on stderr. Values are never written to the transcript or logs.
 
-The runner forwards explicitly set `CABOOSE_SPECIALIST_MODEL` and
-`CABOOSE_SPECIALIST_BACKEND` to the desktop
-MCP child. This opts into its bounded `computer_task` tool using the existing
-loopback model service. Leaving the variable unset keeps ordinary desktop tools
-available without advertising a specialist. A phone disconnect returns a model
-failure to the calling agent and does not stop the computer.
-
 ## The task directory
 
 The host writes these, each whole and renamed into place:

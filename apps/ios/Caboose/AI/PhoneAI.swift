@@ -28,22 +28,17 @@ final class PhoneAI {
     @ObservationIgnored private var tasks: [String: Task<Void, Never>] = [:]
     /// The open-weight models downloaded to this phone.
     let library = PhoneModelLibrary()
-    /// The computer's decision models, downloaded from it.
-    let decider = PhoneDecider()
     @ObservationIgnored private let runner: PhoneModelRunner
 
     init() {
         AISettings.register()
         runner = PhoneModelRunner(library: library)
         library.changed = { [weak self] in self?.modelsChanged() }
-        decider.changed = { [weak self] in self?.modelsChanged() }
     }
-
-    private func offered() -> [AIRelay.Model] { runner.models() + decider.models() }
 
     /// Tells the computer the models now on offer.
     private func modelsChanged() {
-        models = offered()
+        models = runner.models()
         if let socket { send(AIRelay.hello(models), on: socket) }
     }
 
@@ -60,7 +55,6 @@ final class PhoneAI {
         // iOS ends an app holding gigabytes in the background.
         library.unload()
         runner.embedder.unload()
-        decider.unload()
     }
 
     func settingChanged() {
@@ -71,7 +65,7 @@ final class PhoneAI {
     private func connect() {
         guard let host, socket == nil else { return }
         guard AISettings.enabled else { status = .off; return }
-        models = offered()
+        models = runner.models()
         if models.isEmpty { status = .unavailable(runner.unavailableReason ?? "No models are on this iPhone."); return }
         generation += 1
         let current = generation
@@ -83,10 +77,6 @@ final class PhoneAI {
         status = .connecting
         task.resume()
         send(AIRelay.hello(models), on: task)
-        decider.sync { [weak self] message in
-            guard let self, self.socket === task else { return }
-            self.send(message, on: task)
-        }
         task.sendPing { [weak self] error in
             Task { @MainActor in
                 guard let self, error == nil, self.generation == current, self.socket === task else { return }
@@ -104,7 +94,6 @@ final class PhoneAI {
         tasks = [:]
         running = 0
         runner.cancelAll()
-        decider.disconnected()
     }
 
     private func send(_ text: String, on task: URLSessionWebSocketTask) {
@@ -125,7 +114,7 @@ final class PhoneAI {
                 case .success(let message):
                     switch message {
                     case .string(let text): self.handle(text, on: task)
-                    case .data(let data): if !self.decider.received(chunk: data) { self.handle(String(decoding: data, as: UTF8.self), on: task) }
+                    case .data(let data): self.handle(String(decoding: data, as: UTF8.self), on: task)
                     @unknown default: break
                     }
                     self.receive(on: task, generation: current)
@@ -148,29 +137,6 @@ final class PhoneAI {
         case .cancel(let id):
             tasks.removeValue(forKey: id)?.cancel()
             running = tasks.count
-        case .models(let id, let manifest):
-            decider.received(id, manifest: manifest)
-        case .unanswered(let id, let reason):
-            decider.unanswered(id, reason: reason)
-        case .decide(let id, let request):
-            guard tasks[id] == nil else { return }
-            send(AIRelay.started(id), on: task)
-            tasks[id] = Task { @MainActor [weak self, decider] in
-                let event: String
-                do {
-                    let answer = try await decider.decide(request)
-                    event = answer.choice < request.choices ? AIRelay.decision(id, choice: answer.choice, elapsedMs: answer.elapsedMs)
-                        : AIRelay.error(id, .init(status: 500, code: "model_error", message: "The model chose outside the offered choices."))
-                } catch let failure as AIRelay.Failure {
-                    event = AIRelay.error(id, failure)
-                } catch {
-                    event = AIRelay.error(id, .init(status: 500, code: "model_error", message: String(describing: error).prefix(500).description))
-                }
-                guard let self else { return }
-                if self.tasks.removeValue(forKey: id) != nil, !Task.isCancelled, self.socket === task { self.send(event, on: task); self.answered += 1 }
-                self.running = self.tasks.count
-            }
-            running = tasks.count
         case .request(let id, _), .embed(let id, _):
             guard tasks[id] == nil else { return }
             tasks[id] = Task { @MainActor [weak self, runner] in
@@ -181,7 +147,7 @@ final class PhoneAI {
                 switch message {
                 case .request(_, let request): await runner.run(id: id, request: request, send: send)
                 case .embed(_, let request): await runner.embed(id: id, request: request, send: send)
-                case .cancel, .decide, .models, .unanswered: break
+                case .cancel: break
                 }
                 guard let self else { return }
                 if self.tasks.removeValue(forKey: id) != nil { self.answered += 1 }
