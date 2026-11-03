@@ -198,7 +198,9 @@ private:
         const std::string temp=name+".tmp-"+std::to_string(getpid())+"-"+std::to_string(++serial);
         int fd=openat(dir,temp.c_str(),O_WRONLY|O_CREAT|O_EXCL|O_CLOEXEC|O_NOFOLLOW,0600);
         if (fd>=0) {
-            if (write(fd,bytes.data(),bytes.size())==ssize_t(bytes.size()) && fsync(fd)==0)
+            // Cache durability is optional; fsync per query would stall cold discovery.
+            // Atomic rename publishes a complete snapshot; crash damage is a miss.
+            if (write(fd,bytes.data(),bytes.size())==ssize_t(bytes.size()))
                 (void)renameat(dir,temp.c_str(),dir,name.c_str());
             close(fd); (void)unlinkat(dir,temp.c_str(),0);
         }
