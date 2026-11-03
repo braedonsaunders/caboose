@@ -45,8 +45,9 @@ const tools = [
     name: 'look',
     description: 'The focused window\'s controls from its accessibility tree, one per line: id role "name" = value [states], '
       + 'and in a browser the page\'s tools. find: only controls whose name contains it. text: also the window\'s readable text '
-      + '(documents, pages, terminals). windows: every window, with its id and position.',
-    inputSchema: { type: 'object', properties: { find: { type: 'string' }, text: { type: 'boolean' }, windows: { type: 'boolean' } } },
+      + '(documents, pages, terminals). windows: every window, with its id and position. ocr: also the words read from the '
+      + 'window\'s pixels with their positions, for areas the controls leave out (icon views, canvases).',
+    inputSchema: { type: 'object', properties: { find: { type: 'string' }, text: { type: 'boolean' }, windows: { type: 'boolean' }, ocr: { type: 'boolean' } } },
   },
   {
     name: 'act',
@@ -162,9 +163,39 @@ async function pixelFallback() {
     await rm(dir, { recursive: true, force: true })
   }
 }
-function ocr(file, rect, width, height) {
+// The focused window's words read from its pixels (OCR), with their centres in seat coordinates.
+async function windowWords() {
+  const listing = await seat('windows')
+  const window = listing.windows.find(w => w.id === listing.focused)
+  if (!window) return 'No window has the keyboard.'
+  const dir = await mkdtemp(join(tmpdir(), 'caboose-shot-'))
+  try {
+    const file = join(dir, 'window.png')
+    const shot = await seat('screenshot', '--out', file, '--window', String(window.id))
+    const png = await readFile(file)
+    const words = await ocr(file, shot.rect, png.readUInt32BE(16), png.readUInt32BE(20))
+    return words ? `Text read from pixels (OCR; x,y are seat coordinates of each line's centre):\n${words}` : 'No text was read from pixels.'
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+}
+// Small interface text reads better enlarged and in grey (ImageMagick, where installed), and
+// as sparse text rather than a page (tesseract --psm 11).
+function enlarge(file) {
   return new Promise(resolve => {
-    const child = spawn('tesseract', [file, '-', 'tsv'], { stdio: ['ignore', 'pipe', 'ignore'] })
+    const out = file.replace(/\.png$/, '-x2.png')
+    const child = spawn('convert', [file, '-colorspace', 'Gray', '-resize', '200%', out], { stdio: 'ignore' })
+    child.on('error', () => resolve(null))
+    child.on('close', code => resolve(code === 0 ? out : null))
+  })
+}
+async function ocr(file, rect, width, height) {
+  const enlarged = await enlarge(file)
+  return read(enlarged ?? file, rect, enlarged ? width * 2 : width, enlarged ? height * 2 : height)
+}
+function read(file, rect, width, height) {
+  return new Promise(resolve => {
+    const child = spawn('tesseract', [file, '-', '--psm', '11', 'tsv'], { stdio: ['ignore', 'pipe', 'ignore'] })
     let out = ''
     child.stdout.on('data', chunk => { out += chunk })
     child.on('error', () => resolve(''))
@@ -401,7 +432,7 @@ async function replayStep(s, texts) {
 }
 
 const handlers = {
-  async look({ find, text: withText = false, windows = false } = {}) {
+  async look({ find, text: withText = false, windows = false, ocr: withOcr = false } = {}) {
     const parts = []
     if (windows) parts.push(windowLines((await seat('windows')).windows))
     if (find !== undefined) {
@@ -428,6 +459,7 @@ const handlers = {
       const { text: readable } = JSON.parse((await a11y('text', {}))[0].text)
       parts.push(`Text:\n${readable ?? ''}`)
     }
+    if (withOcr) parts.push(await windowWords().catch(error => `No text could be read from pixels: ${error.message}`))
     return [{ type: 'text', text: parts.join('\n') }]
   },
   async act({ steps, observe = true, save }) {
