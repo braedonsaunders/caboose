@@ -14,8 +14,10 @@
 //! to show it on.
 //!
 //! A wl_shm buffer becomes a texture through its own staging buffer, uploading only the
-//! client's damage (upload.rs). Client dma-bufs, phone-resident ones included, are
-//! imported as EGL images: their pixels never pass through the computer.
+//! client's damage (upload.rs). Client dma-bufs are imported as EGL images: their pixels
+//! never pass through the computer. A phone-resident client buffer is never composed: its
+//! pixels exist only in its own process's phone memory, so it is shown only when it covers
+//! its window and the broker presents it there.
 //!
 //! Textures are sampled with nearest filtering when magnified: a window's picture is at
 //! its buffer's own density, so its pixels map one to one, and a subsurface of a lower
@@ -396,6 +398,16 @@ impl Gpu {
                         Ok(None) => {}
                         Err(e) => tracing::warn!("shm upload: {e}"),
                     }
+                    return;
+                }
+                // A client's phone-resident buffer has no pixels in this process: importing it
+                // here gets new phone memory nobody drew into, which shows as noise. Only the
+                // broker can show it, presented straight into the window (docs/gpu-buffers.md),
+                // so a composed window leaves it out.
+                let remote = data.lock().unwrap().buffer().is_some_and(|b|
+                    smithay::wayland::dmabuf::get_dmabuf(b).is_ok_and(crate::remote_buffers::is_remote));
+                if remote {
+                    tracing::trace!(surface = ?surface.id(), "remote buffer left out of a composed window");
                     return;
                 }
                 match WaylandSurfaceRenderElement::from_surface(renderer, surface, states, location, 1.0, Kind::Unspecified) {

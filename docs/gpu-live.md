@@ -513,6 +513,58 @@ sets keepalive probes (after 10 s idle, every 5 s, 3 of them) and ends a connect
 data stays unacknowledged for 30 s, so neither the lease nor clients waiting for replies
 are held for the kernel's retransmission timeout.
 
+## Executor generations
+
+A computer outlives its executors: the phone app closes, relaunches, loses the network or
+the phone locks, and a new executor (perhaps another phone) takes its place while the
+compositor, Xwayland and the applications keep running. Each executor a process connects to
+after losing the previous one is a new **executor generation**, and everything that belongs
+to an executor belongs to its generation:
+
+- **Objects.** Every dispatchable Vulkan object a guest process makes (instance, physical
+  device, device, queue, command buffer) records the generation it was made under
+  (`caboose::completion::connectionGeneration`, driver patch 0077). A call on an object of
+  an earlier generation reports `VK_ERROR_DEVICE_LOST` at the encoder's entry and never
+  reaches the executor, which does not know its handles; a surface of an earlier
+  generation's instance reports `VK_ERROR_SURFACE_LOST_KHR` and never binds. A process
+  connects to the new executor with its next `vkCreateInstance`, so an application recovers
+  by making a new instance, as Chromium's GPU process, Zink contexts and the compositor do.
+  One that cannot recover ends, as a DXVK game does.
+- **Answers and tables.** What the driver keeps of an executor's answers is either keyed by
+  generation (the capability cache's connection identity, the shader and upload cache
+  inventories, the completion feed, deferred replies, extension lists) or forgotten through
+  one reset hook (`caboose::completion::onNewGeneration`) that runs on the reconnecting
+  thread before the first call of the new generation: cached memory types, heaps and budget,
+  the instance extension table, the device features the driver emulates around, devices'
+  presentation queues, completion watches owed to old queues and host allocations shared
+  through dma-bufs. A capability answer read while its executor was leaving is never stored
+  under the next one.
+- **Connections.** The device stream reconnects with the next instance. A process's dma-buf
+  registrations (`dmabuf/registration.h`) belong to the broker session they were made
+  under, which the broker's device socket identifies; the process keeps the registrations of
+  its live buffers and sends them again on every new connection of the same session, and
+  drops those of an earlier session.
+- **Broker.** Each admitted executor is a new `Session`; its processes, streams, surfaces,
+  buffer registrations and grants end with it. Ready is reported to the compositor only once
+  the session's device and surface sockets exist, so a renderer rebuilt on the report finds
+  the executor. The session's buffer binds and retries are cancelled when it ends, so nothing
+  of it is answered after its loss. A registration of a buffer another process registered
+  first (the compositor importing a client's buffer) registers nothing and ends nothing, and
+  a generation admits up to 64 processes.
+- **Compositor.** A ready executor supersedes a previous one whose loss or retirement report
+  never arrived; a stale loss, retirement or buffer release is ignored instead of restarting
+  the broker. It never composes a client's phone-resident buffer (its pixels exist only in
+  its own process's phone memory; importing it elsewhere gets memory nobody drew into), so a
+  window shows a client buffer only when the broker presents it. An output that goes away is
+  disabled before it is destroyed, so an application starting during a display reconnect is
+  not ended by a protocol error.
+
+`apps/ios/GPUStream/gfxstream/linux-executor/check_chaos.py` holds the stack to this: a seat
+of its own with the compositor, a long-lived Chromium, Steam's CEF client, and fresh
+Chromium, GL and DXVK applications, through random executor kills, network drops, stalls,
+viewer reconnects and losses during application startup, with every application required to
+present real pictures (not noise, not blank) after each. The release seal runs it.
+
 ## Resuming an executor
 
 A phone that declares `executor-resume` keeps its executor across a lost socket. The host
