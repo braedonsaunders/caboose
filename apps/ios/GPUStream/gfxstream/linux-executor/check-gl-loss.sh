@@ -20,7 +20,7 @@ repo=$(cd "$here/../../../../.." && pwd)
 name=caboose-gl-loss-$$
 shared=$(mktemp -d); chmod 1777 "$shared"
 cpus=${CPUS:-4}
-phone=guest-handles,guest-handle-arrays,completion-feed,ordered-present,guest-images,guest-query-pools,executor-resume,zstd-stream,guest-buffer-views
+phone=guest-handles,guest-handle-arrays,completion-feed,ordered-present,guest-images,guest-query-pools,executor-resume,zstd-stream,guest-buffer-views,batched-descriptor-sets
 cleanup() { docker rm -f "$name-executor" "$name-computer" > /dev/null 2>&1 || true; rm -rf "$shared"; }
 trap cleanup EXIT INT TERM
 fail() { echo "FAIL: $*" >&2; exit 1; }

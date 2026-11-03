@@ -249,6 +249,9 @@ declare `batched-descriptor-sets` leaves the process on per-call `vkAllocateDesc
 and `vkUpdateDescriptorSet*`. The process's first connection decides: a later executor that
 does not take batched sets cannot serve a process that uses them (its connection fails
 with `CABOOSE_GPU_CONNECT_FAILED`), while one that does serves a process that does not.
+The executor makes every pool's set ids when the pool is created, for every process, and
+deletes the handles of sets allocated per call when they are freed or their pool is reset.
+Its devices do not offer inline uniform blocks, which a batched commit cannot carry.
 
 ### Guest-assigned handles
 
