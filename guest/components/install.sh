@@ -74,15 +74,9 @@ install -Dm644 "$root/desktop-mcp/ensure-agent-seat.mjs" /opt/caboose/desktop-mc
 install -Dm755 "$root/desktop-mcp/caboose-agent-seat" /usr/local/libexec/caboose-agent-seat
 install -Dm755 "$root/desktop-mcp/agent-profile.py" /opt/caboose/agent-profile.py
 rm -rf /opt/caboose/media-handoff
-# Chromium builds its whole accessibility tree only with --force-renderer-accessibility;
-# on the agent seat, which an assistive technology (desktop MCP) always reads, it gets it.
-if [ -d /etc/chromium.d ]; then
-    printf '%s\n' '# Caboose: the agent seat is read by desktop MCP.' \
-        'if [ "${CABOOSE_SEAT:-}" = agent ]; then export CHROMIUM_FLAGS="$CHROMIUM_FLAGS --force-renderer-accessibility"; fi' \
-        > /etc/chromium.d/caboose-accessibility
-fi
 rm -f /etc/chromium.d/caboose-scroll /etc/chromium.d/zz-caboose-extensions /usr/share/chromium/extensions/caboose-media-handoff /etc/chromium/native-messaging-hosts/com.caboose.media.json
 sh "$root/notifications/install.sh"
+sh "$root/webmcp/install.sh"
 bash "$root/phone/install.sh"
 sh "$root/bridge/install.sh"
 sh "$root/keyring/install.sh"

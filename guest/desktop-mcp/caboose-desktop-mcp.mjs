@@ -13,6 +13,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createInterface } from 'node:readline'
+import { createConnection } from 'node:net'
 import { Worker } from './worker.mjs'
 import { Observer } from './observation.mjs'
 import { controlAlive, ensureAgentSeat } from './ensure-agent-seat.mjs'
@@ -22,6 +23,8 @@ const env = { ...process.env, DISPLAY }
 const PROTOCOL = '2025-06-18'
 // CABOOSE_DESKTOP_TRACE: a file that gets one line per tool call (tool, milliseconds, reply size).
 const TRACE = process.env.CABOOSE_DESKTOP_TRACE
+// CABOOSE_DESKTOP_PAGE_TOOLS=0 leaves page tools out, to measure the accessibility path alone.
+const PAGE_TOOLS = process.env.CABOOSE_DESKTOP_PAGE_TOOLS !== '0'
 // Installed side by side: /opt/caboose/desktop-mcp.mjs, a11y.py and seat.py.
 const A11Y = fileURLToPath(new URL('./a11y.py', import.meta.url))
 const SEAT = fileURLToPath(new URL('./seat.py', import.meta.url))
@@ -39,9 +42,9 @@ if (launchEnv.GTK_A11Y === 'none') delete launchEnv.GTK_A11Y
 const tools = [
   {
     name: 'look',
-    description: 'The focused window\'s controls from its accessibility tree, one per line: id role "name" = value [states]. '
-      + 'find: only controls whose name contains it. text: also the window\'s readable text (documents, pages, terminals). '
-      + 'windows: every window, with its id and position.',
+    description: 'The focused window\'s controls from its accessibility tree, one per line: id role "name" = value [states], '
+      + 'and in a browser the page\'s tools. find: only controls whose name contains it. text: also the window\'s readable text '
+      + '(documents, pages, terminals). windows: every window, with its id and position.',
     inputSchema: { type: 'object', properties: { find: { type: 'string' }, text: { type: 'boolean' }, windows: { type: 'boolean' } } },
   },
   {
@@ -49,7 +52,8 @@ const tools = [
     description: 'Run steps in order, stopping at the first failure; then reply with what changed (+ added, ~ changed, - removed '
       + 'controls; windows opened or closed). Put every step you already know in one call. A step is one of: {"press":id} '
       + '{"set":id,"text":t} replaces a field\'s text, {"key":"ctrl+s"}, {"type":t}, {"click":[x,y],"button":1-3,"count":1-3}, '
-      + '{"scroll":[x,y],"dy":n}, {"drag":[x1,y1,x2,y2]}, {"focus":window}, {"wait":ms}, {"launch":"command"}.',
+      + '{"scroll":[x,y],"dy":n}, {"drag":[x1,y1,x2,y2]}, {"focus":window}, {"wait":ms}, {"launch":"command"}, '
+      + '{"tool":name,"args":{...}} calls a page tool.',
     inputSchema: { type: 'object', properties: { steps: { type: 'array', items: { type: 'object' } } }, required: ['steps'] },
   },
   {
@@ -118,6 +122,43 @@ async function view(full) {
   return observer.render(listing, state, { full })
 }
 const element = id => observer.resolve(text(id, 'id', 500))
+
+// Page tools (guest/webmcp): the Caboose WebMCP extension's native host listens beside the
+// browser process that owns the window, at $XDG_RUNTIME_DIR/caboose-webmcp/<pid>.sock.
+function pageRequest(pid, request, timeout = 25_000) {
+  const path = join(env.XDG_RUNTIME_DIR || `/run/user/${process.getuid()}`, 'caboose-webmcp', `${pid}.sock`)
+  return new Promise((resolve, reject) => {
+    const socket = createConnection(path)
+    let data = ''
+    const timer = setTimeout(() => { socket.destroy(); reject(new Error('the page did not answer')) }, timeout)
+    socket.on('connect', () => socket.write(JSON.stringify(request) + '\n'))
+    socket.on('data', chunk => {
+      data += chunk
+      if (!data.includes('\n')) return
+      clearTimeout(timer); socket.end()
+      try { resolve(JSON.parse(data.split('\n')[0])) } catch { reject(new Error('invalid page reply')) }
+    })
+    socket.on('error', error => { clearTimeout(timer); reject(error) })
+  })
+}
+async function focusedPid() {
+  const listing = await seat('windows')
+  return listing.windows.find(w => w.id === listing.focused)?.pid
+}
+const schemaLine = schema => Object.entries(schema?.properties ?? {}).map(([key, p]) =>
+  `${key}${(schema.required ?? []).includes(key) ? '' : '?'}: ${p.enum ? p.enum.slice(0, 12).map(v => JSON.stringify(v)).join('|') + (p.enum.length > 12 ? '|…' : '') : p.type ?? 'any'}`).join(', ')
+// The focused browser tab's tools as lines, or '' where there are none to offer.
+async function pageTools() {
+  if (!PAGE_TOOLS) return ''
+  const pid = await focusedPid()
+  if (!pid) return ''
+  let reply
+  try { reply = await pageRequest(pid, { op: 'tools' }, 5000) } catch { return '' }
+  if (!reply.ok || !reply.result?.tools?.length) return ''
+  return [`Page tools (${reply.result.title || reply.result.url}):`,
+    ...reply.result.tools.map(t => `${t.name}(${schemaLine(t.inputSchema)})${t.source === 'derived' ? ' [derived]' : ''} — ${String(t.description ?? '').slice(0, 200)}`)].join('\n')
+}
+const resultText = result => (result?.content ?? []).map(part => part.text ?? (part.type ? `[${part.type}]` : '')).join(' ').slice(0, 4000) || JSON.stringify(result ?? null).slice(0, 4000)
 
 function windowLines(windows) {
   return windows.length ? windows.map(w => `${w.kind} ${w.id} ${JSON.stringify(w.title ?? '')} (${w.app_id ?? 'unknown app'})`
@@ -190,13 +231,22 @@ async function step(s) {
   } else if ('wait' in s) {
     if (!Number.isInteger(s.wait) || s.wait < 10 || s.wait > 5000) throw new Error('wait must be 10–5000 ms')
     await new Promise(resolve => setTimeout(resolve, s.wait))
+  } else if ('tool' in s) {
+    const name = text(s.tool, 'tool', 200)
+    if (!PAGE_TOOLS) throw new Error('page tools are off (CABOOSE_DESKTOP_PAGE_TOOLS=0)')
+    if (s.args !== undefined && (typeof s.args !== 'object' || s.args === null || Array.isArray(s.args))) throw new Error('args must be an object')
+    const pid = await focusedPid()
+    let reply
+    try { reply = await pageRequest(pid, { op: 'call', name, args: s.args ?? {} }) } catch { throw new Error('the focused window offers no page tools') }
+    if (!reply.ok) throw new Error(`${name}: ${reply.error}`)
+    return `${name}: ${resultText(reply.result)}`
   } else if ('launch' in s) {
     const command = text(s.launch, 'launch', 2000)
     const ready = await ensureAgentSeat()
     Object.assign(launchEnv, ready, { DISPLAY })
     await announceAssistiveTechnology(ready)
     spawn('python3', [LAUNCHER, command], { env: launchEnv, detached: true, stdio: 'ignore' }).unref()
-  } else throw new Error('unknown step; use press, set, key, type, click, scroll, drag, focus, wait or launch')
+  } else throw new Error('unknown step; use press, set, key, type, click, scroll, drag, focus, wait, launch or tool')
 }
 
 const handlers = {
@@ -207,7 +257,11 @@ const handlers = {
       const { elements, note } = JSON.parse((await a11y('find', { query: text(find, 'find', 500) }))[0].text)
       const lines = (elements ?? []).map(e => observer.line(observer.short(e.id), e))
       parts.push(lines.length ? lines.join('\n') : (note ?? 'No control matches.'))
-    } else parts.push(await view(true))
+    } else {
+      parts.push(await view(true))
+      const tools = await pageTools()
+      if (tools) parts.push(tools)
+    }
     if (withText) {
       const { text: readable } = JSON.parse((await a11y('text', {}))[0].text)
       parts.push(`Text:\n${readable ?? ''}`)

@@ -39,10 +39,16 @@ environment below). An element step fails when the focused window changed since 
 read. `act` replies `Done.` (or how many steps ran and why it stopped), then the changes;
 `observe: false` skips the settle and the read.
 
+In a Chromium window on the agent seat, `look` also lists the page's tools (WebMCP tools the
+page declares, and tools derived from its forms, links and buttons, marked `[derived]`) as
+`name(param: type, …) — description`, and the step `{"tool": name, "args": {...}}` calls one
+and returns its result; see [guest/webmcp](../webmcp/README.md).
+
 A failure comes back as a sentence the model can act on; an id that no longer resolves says
 to look again. The server's `initialize` reply carries one line of `instructions`.
 `CABOOSE_DESKTOP_TRACE=FILE` appends one JSON line per tool call (`tool`, `ms`, reply
-`chars`, `images`), for measuring.
+`chars`, `images`), for measuring. `CABOOSE_DESKTOP_PAGE_TOOLS=0` leaves page tools out, to measure the
+accessibility path alone.
 
 ### Observations
 

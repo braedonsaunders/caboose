@@ -67,6 +67,7 @@ COPY files /tmp/bundle/files
 COPY terminal /tmp/bundle/terminal
 COPY ports /tmp/bundle/ports
 COPY notifications /tmp/bundle/notifications
+COPY webmcp /tmp/bundle/webmcp
 COPY scopes /tmp/bundle/scopes
 COPY phone /tmp/bundle/phone
 COPY devices /tmp/bundle/devices

@@ -207,6 +207,27 @@
       "setup": "mkdir -p $HOME/Documents; python3 -c \"import zipfile, os; z = zipfile.ZipFile(os.environ['HOME'] + '/Documents/photos.zip', 'w'); z.writestr('photos/one.txt', 'a'); z.writestr('photos/two.txt', 'b'); z.close()\"; start file-roller $HOME/Documents/photos.zip",
       "prompt": "In the open archive manager window showing photos.zip, extract all of its files into a new folder named extracted inside the Documents folder of the home directory.",
       "verify": "test -f $HOME/Documents/extracted/photos/two.txt || test -f $HOME/Documents/extracted/two.txt"
+    },
+    {
+      "id": "webmcp-shop",
+      "app": "Chromium",
+      "setup": "mkdir -p $HOME/Documents; cat > $HOME/Documents/shop.html <<'HTML'\n<!doctype html><html><head><title>Harbor shop</title></head><body><h1>Harbor shop</h1><ul id=cart></ul><button id=buy>Checkout</button>\n<script>\nconst cart = []\nconst render = () => { document.getElementById('cart').innerHTML = cart.map(i => '<li>' + i.qty + ' ' + i.item + '</li>').join('') }\ndocument.modelContext.registerTool({ name: 'add_to_cart', description: 'Add an item to the cart', inputSchema: { type: 'object', properties: { item: { type: 'string', enum: ['rope', 'sail', 'anchor'] }, qty: { type: 'number' } }, required: ['item', 'qty'] },\n  execute: ({ item, qty }) => { cart.push({ item, qty }); render(); return { content: [{ type: 'text', text: 'cart: ' + cart.map(i => i.qty + ' ' + i.item).join(', ') }] } } })\ndocument.modelContext.registerTool({ name: 'checkout', description: 'Place the order for the cart', inputSchema: { type: 'object', properties: {} },\n  execute: () => { document.title = 'Ordered ' + cart.map(i => i.qty + ' ' + i.item).join(', '); return { content: [{ type: 'text', text: document.title }] } } })\ndocument.getElementById('buy').onclick = () => { document.title = 'Ordered ' + cart.map(i => i.qty + ' ' + i.item).join(', ') }\n</script></body></html>\nHTML\nstart python3 -m http.server 18761 --bind 127.0.0.1 --directory $HOME/Documents; sleep 0.5; start chromium --no-first-run --no-default-browser-check --user-data-dir=$HOME/chromium http://127.0.0.1:18761/shop.html",
+      "prompt": "In the open Chromium window, put 3 rope and 1 anchor in the cart and check out.",
+      "verify": "window_title 'Ordered 3 rope, 1 anchor - Chromium'"
+    },
+    {
+      "id": "webmcp-berth",
+      "app": "Chromium",
+      "setup": "mkdir -p $HOME/Documents; cat > $HOME/Documents/berth.html <<'HTML'\n<!doctype html><html><head><title>Marina</title></head><body><h1>Marina</h1>\n<form toolname=\"book_berth\" toolautosubmit tooldescription=\"Book a berth for a boat\" onsubmit=\"event.preventDefault(); document.title = 'Booked ' + this.boat.value + ' for ' + this.nights.value + ' nights'\">\n<p><label>Boat <input name=boat toolparamdescription=\"The boat's name\"></label></p><p><label>Nights <input name=nights type=number toolparamdescription=\"How many nights\"></label></p><button type=submit>Book</button></form></body></html>\nHTML\nstart python3 -m http.server 18761 --bind 127.0.0.1 --directory $HOME/Documents; sleep 0.5; start chromium --no-first-run --no-default-browser-check --user-data-dir=$HOME/chromium http://127.0.0.1:18761/berth.html",
+      "prompt": "In the open Chromium window, book a berth for the boat Heron for 4 nights.",
+      "verify": "window_title 'Booked Heron for 4 nights - Chromium'"
+    },
+    {
+      "id": "webmcp-derived-form",
+      "app": "Chromium",
+      "setup": "page $HOME/Documents/form.html 'Shipping' 'Claimed'; start python3 -m http.server 18761 --bind 127.0.0.1 --directory $HOME/Documents; sleep 0.5; start chromium --no-first-run --no-default-browser-check --user-data-dir=$HOME/chromium http://127.0.0.1:18761/form.html",
+      "prompt": "In the open Chromium window, fill the form: Recipient \"Iris Moss\", City \"Granite Falls\", tick Gift wrap, then press Ship order.",
+      "verify": "window_title 'Claimed - Chromium'"
     }
   ]
 }

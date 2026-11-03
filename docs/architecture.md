@@ -2591,6 +2591,16 @@ persist; a lost response fails the action without replaying it, and the next cal
 An element step rejects a changed focused window as well as a stale id. Observation reports
 the current state without guaranteeing navigation has completed.
 
+**Page tools.** Chromium on the agent seat runs with its WebMCP (`WebMCPTesting`) and the
+Caboose WebMCP extension (`guest/webmcp`). The extension lists and runs the tools the focused
+tab declares through `document.modelContext` (imperative `registerTool` and declarative
+`<form toolname>`), and derives general tools from every page's semantics: one per form
+(fill its fields, press its button), following a link, and pressing a button outside forms.
+Its native messaging host listens on `$XDG_RUNTIME_DIR/caboose-webmcp/<browser pid>.sock`;
+desktop MCP reaches it through the focused window's process, so `look` lists the page's
+tools and an `act` step `{"tool": name, "args": {...}}` calls one. A page's tool is the page's
+code: its results are the page's word, like its text.
+
 Controls include a bounded optional `value` for editable fields, selections and numeric
 controls. Password and sensitive fields omit it. Values do not enter element ID
 fingerprints. A screenshot with `marks` numbers the focused window's accessible controls
