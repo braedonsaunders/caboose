@@ -448,12 +448,16 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(negotiate(hello(0x470), everything), hello(0x470))
         self.assertIsNone(negotiate(hello(0x1070), everything))
         self.assertEqual(negotiate(hello(0x20070), frozenset()), hello(0x20070))
-        self.assertIsNone(negotiate(hello(0x80070), everything))
+        self.assertIsNone(negotiate(hello(0x100070), everything))
         # Batched descriptor sets are granted only when the phone declared them; an older phone
         # leaves the process on per-call descriptor sets.
         self.assertEqual(negotiate(hello(0x40070), everything), hello(0x40070))
         self.assertEqual(negotiate(hello(0x40070), everything - {'batched-descriptor-sets'}), hello(0x70))
         self.assertEqual(negotiate(hello(0x5ff80 | 0x70), everything - {'batched-descriptor-sets'}), hello(0x1ff80 | 0x70))
+        # So are batched sets with inline uniform blocks (0x80000), under their own name.
+        self.assertEqual(negotiate(hello(0x80070), everything), hello(0x80070))
+        self.assertEqual(negotiate(hello(0x80070), everything - {'batched-descriptor-sets-inline'}), hello(0x70))
+        self.assertEqual(negotiate(hello(0x80070), everything - {'batched-descriptor-sets'}), hello(0x80070))
         # Buffer view handles need guest handles too.
         self.assertEqual(negotiate(hello(0x100F0), everything), hello(0x100F0))
         self.assertEqual(negotiate(hello(0x100F0), everything - {'guest-buffer-views'}), hello(0xF0))

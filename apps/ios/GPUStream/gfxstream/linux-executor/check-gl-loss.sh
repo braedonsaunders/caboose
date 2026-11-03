@@ -22,7 +22,7 @@ repo=$(cd "$here/../../../../.." && pwd)
 name=caboose-gl-loss-$$
 cpus=${CPUS:-4}
 port=14650
-phone=guest-handles,guest-handle-arrays,completion-feed,ordered-present,guest-images,guest-query-pools,executor-resume,zstd-stream,guest-buffer-views
+phone=guest-handles,guest-handle-arrays,completion-feed,ordered-present,guest-images,guest-query-pools,executor-resume,zstd-stream,guest-buffer-views,batched-descriptor-sets-inline
 fail() { echo "FAIL: $*" >&2; exit 1; }
 if [ -n "${COMPUTER:-}" ]; then
   computer=$COMPUTER; dir=/tmp/$name

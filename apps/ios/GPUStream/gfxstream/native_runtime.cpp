@@ -79,9 +79,11 @@ static int startRuntime(PFN_vkGetInstanceProcAddr get, caboose_gpu_resolve_expor
     features.CabooseMemoryAudit.setEnabled(memoryAuditRequested);
 #endif
     features.VulkanNullOptionalStrings.setEnabled(true);
-    // No batched descriptor sets (docs/gpu-live.md): with them on, gfxstream hides inline
-    // uniform blocks from every guest, and DXVK requires inline uniform blocks.
-    features.VulkanBatchedDescriptorSetUpdate.setEnabled(false);
+    // Batched descriptor sets (docs/gpu-live.md): each pool's set ids exist from its creation,
+    // for guests that allocate and write sets themselves, inline uniform blocks included, and
+    // commit them with a submit. Inline uniform blocks stay offered (the fork), which DXVK
+    // requires; guests that allocate sets per call are served as before.
+    features.VulkanBatchedDescriptorSetUpdate.setEnabled(true);
 #ifdef CABOOSE_GPU_PRESENTATION_LEASE
     features.CabooseVirtualWsi.setEnabled(virtualWsi);
 #endif
@@ -96,7 +98,7 @@ static int startRuntime(PFN_vkGetInstanceProcAddr get, caboose_gpu_resolve_expor
 #ifdef CABOOSE_GPU_MEMORY_AUDIT
         (actual.CabooseMemoryAudit.enabled() != memoryAuditRequested) ||
 #endif
-        !actual.VulkanNullOptionalStrings.enabled() || actual.VulkanBatchedDescriptorSetUpdate.enabled()
+        !actual.VulkanNullOptionalStrings.enabled() || !actual.VulkanBatchedDescriptorSetUpdate.enabled()
 #ifdef CABOOSE_GPU_PRESENTATION_LEASE
         || actual.CabooseVirtualWsi.enabled() != virtualWsi
 #endif

@@ -24,7 +24,7 @@ repo=$(cd "$here/../../../../.." && pwd)
 name=caboose-bind-retry-$$
 cpus=${CPUS:-4}
 dir=/tmp/$name
-phone=guest-handles,guest-handle-arrays,completion-feed,ordered-present,guest-images,guest-query-pools,executor-resume,zstd-stream,guest-buffer-views
+phone=guest-handles,guest-handle-arrays,completion-feed,ordered-present,guest-images,guest-query-pools,executor-resume,zstd-stream,guest-buffer-views,batched-descriptor-sets-inline
 cleanup() {
   docker logs "$name" > "$out/executor.log" 2>&1 || true
   docker rm -f "$name" > /dev/null 2>&1 || true

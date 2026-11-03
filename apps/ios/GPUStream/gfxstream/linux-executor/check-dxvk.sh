@@ -6,8 +6,8 @@
 # COMPUTER is a running computer with the Steam Flatpak, its Steam Linux Runtime 4 and a Proton
 # (PROTON, default /opt/caboose-games/GE-Proton11-11/proton). BENCH_DIR, inside Steam's
 # Flatpak data (default /home/caboose/.var/app/com.valvesoftware.Steam/caboose-bench), holds
-# triangle.exe, DXVK's d3d11 triangle test. For each feature list (the phone's and an older
-# phone's) the real Linux executor (WORK/build) joins the
+# triangle.exe, DXVK's d3d11 triangle test. For each feature list (the phone's, with batched
+# descriptor sets; the same without them; an older phone's) the real Linux executor (WORK/build) joins the
 # computer's network namespace and serves it, replacing any executor it had, with
 # caboose-display-probe as the viewer (DISPLAY_SHAPE, default a phone's 932x1356@60x2); the triangle runs through the computer's own guest
 # driver for SECONDS (default 20). Each case requires DXVK to report the device without
@@ -34,11 +34,12 @@ cleanup() {
 trap cleanup EXIT INT TERM
 fail() { echo "FAIL: $*" >&2; exit 1; }
 token=$(docker exec "$computer" cat /run/caboose/display-token)
-phone=guest-handles,guest-handle-arrays,completion-feed,ordered-present,guest-images,guest-query-pools,shader-cache,executor-resume,zstd-stream,upload-cache,guest-buffer-views
+phone=guest-handles,guest-handle-arrays,completion-feed,ordered-present,guest-images,guest-query-pools,shader-cache,executor-resume,zstd-stream,upload-cache,guest-buffer-views,batched-descriptor-sets-inline
+unbatched=${phone%,batched-descriptor-sets-inline}
 older=guest-handles,guest-handle-arrays,completion-feed,ordered-present,guest-images,guest-query-pools,executor-resume
 docker exec -d -u caboose "$computer" sh -c "exec caboose-display-probe --token-file /run/caboose/display-token --duration 9$$ --display ${DISPLAY_SHAPE:-932x1356@60x2} > /dev/null 2>&1"
-for case in phone older; do
-  case $case in phone) features=$phone ;; older) features=$older ;; esac
+for case in phone unbatched older; do
+  case $case in phone) features=$phone ;; unbatched) features=$unbatched ;; older) features=$older ;; esac
   docker rm -f "$name" > /dev/null 2>&1 || true
   docker run -d --name "$name" --init --network "container:$computer" --cpus 4 --memory 3g \
     -v "$work/build:/build:ro" -v "$repo/guest/gpu:/repo/guest/gpu:ro" -v "$here:/repo/apps/ios/GPUStream/gfxstream/linux-executor:ro" \

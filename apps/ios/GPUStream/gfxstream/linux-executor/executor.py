@@ -40,7 +40,7 @@ from surfaces import FrameLog, NativeError, ProtocolViolation, SerialQueue, Surf
 PROTOCOL = 'caboose.gpu.live.v1'
 # The phone's capabilities (LiveGPUConnection.features).
 FEATURES = ('guest-handles,guest-handle-arrays,completion-feed,ordered-present,guest-images,guest-query-pools,'
-            'shader-cache,executor-resume,zstd-stream,upload-cache,guest-buffer-views')
+            'shader-cache,executor-resume,zstd-stream,upload-cache,guest-buffer-views,batched-descriptor-sets-inline')
 HELLO = (b'CBGLREF1' + struct.pack('<II', 4, 0x70) +
          bytes.fromhex('20d3bb2e30337cabf0febb006ed102ab25ccf6d9ddbfaf624c7e68f9040969c0'))
 MAX_MESSAGE = 256 * 1024
