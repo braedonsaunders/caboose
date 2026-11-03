@@ -2558,9 +2558,12 @@ The observation and action contract of a task:
   subtree, joined to its window record by process and geometry, after the seat settles;
   each element id names its window. Busy, empty, ambiguous and completed observations are
   decided in code, never by a model.
-- **Actions are semantic.** A choice presses a control through its own accessibility
-  action or replaces an editable text's contents. A control is re-observed after the
-  decision and must be unchanged before input goes in.
+- **Actions are semantic first.** A choice presses a control through its own accessibility
+  action or replaces an editable text's contents. A menu on screen, whose own action can
+  open a different menu of its bar, and selectable items a toolkit gives no action (notebook
+  tabs, list and tree items) are pressed with the seat's pointer at their own coordinates,
+  never at positions read from pixels. A control is re-observed after the decision and must
+  be unchanged before input goes in.
 - **Success is observed.** The caller's postcondition is up to eight conditions on
   controls (name, role, value, state) or on window titles of the task's windows; it is
   checked before every decision and after every action.

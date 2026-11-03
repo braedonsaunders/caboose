@@ -2,8 +2,9 @@ import os
 import sys
 import types
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 sys.path.insert(0, os.path.dirname(__file__))
+import a11y
 from a11y import Tree, dispatch_accessibility_events
 
 
@@ -50,3 +51,32 @@ class EventDispatchTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class PressTests(unittest.TestCase):
+    def setUp(self):
+        self.tree = Tree.__new__(Tree)
+        self.tree.Atspi = types.SimpleNamespace(Role=types.SimpleNamespace(MENU='MENU', PUSH_BUTTON='PUSH_BUTTON'), Action=Mock())
+        self.tree.has = lambda states, name: name in states
+        self.tree.press_actions = ('click', 'press')
+        self.tree.actions = lambda node: ('iface', ['click'])
+        self.tree.bounds = lambda node, origin: {'x': 34, 'y': 0, 'width': 36, 'height': 26}
+        self.node, self.screen = Mock(), Mock()
+
+    def press(self, role, states=frozenset({'ENABLED', 'SHOWING'})):
+        self.node.get_role.return_value = role
+        with patch.object(a11y, 'resolve', return_value=(self.screen, 1, self.tree, self.node, set(states), None)):
+            a11y.act(':101', 'id', 'press', None)
+
+    def test_a_menu_on_screen_is_clicked_at_its_own_coordinates(self):
+        # A menu's own action can open another menu of its bar.
+        self.press('MENU')
+        self.screen.click.assert_called_once_with(1, 52, 13)
+        self.tree.Atspi.Action.do_action.assert_not_called()
+
+    def test_other_controls_and_off_screen_menus_use_their_own_action(self):
+        self.tree.Atspi.Action.do_action.return_value = True
+        self.press('PUSH_BUTTON')
+        self.press('MENU', {'ENABLED'})
+        self.assertEqual(self.tree.Atspi.Action.do_action.call_count, 2)
+        self.screen.click.assert_not_called()

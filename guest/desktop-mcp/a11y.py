@@ -16,7 +16,8 @@ by id. Wayland and X11 applications are read alike. It always prints one JSON ob
         optionally of one role ("button" matches "push button" and "toggle button").
     a11y.py act --display :101 --element ID --action press|focus|set-text [--text T]
         {"ok": true}. press uses the element's own action (click, press, activate, jump),
-        else a pointer click at its centre; set-text replaces an editable text's contents.
+        else a pointer click at its centre; a menu on screen is always clicked, since its own
+        action can open another menu of its bar. set-text replaces an editable text's contents.
         An unknown, stale or vanished element exits 3 with {"ok": false, "error": "element
         not found"}.
     a11y.py text --display :101
@@ -800,6 +801,9 @@ class Tree:
             "DOCUMENT_FRAME", "DOCUMENT_TEXT", "FILLER", "TOOL_BAR", "MENU_BAR", "PAGE_TAB_LIST", "GROUPING",
             "DESCRIPTION_LIST", "DESCRIPTION_TERM", "DESCRIPTION_VALUE", "CAPTION", "COMMENT", "FOOTNOTE")
         self.press_actions = ("click", "press", "activate", "jump", "toggle", "open")
+        # Selectable items a toolkit gives no action (GTK 3 notebook tabs): on screen, a press is
+        # the seat's pointer at their coordinates.
+        self.pointer_roles = _roles(Atspi, "PAGE_TAB", "LIST_ITEM", "TREE_ITEM")
         self.state_labels = [
             ("FOCUSED", "focused"), ("CHECKED", "checked"), ("PRESSED", "pressed"), ("SELECTED", "selected"),
             ("EXPANDED", "expanded"), ("EDITABLE", "editable"), ("INDETERMINATE", "mixed"),
@@ -1152,7 +1156,8 @@ def collect(target, query=None, role=None):
         # Expose capabilities rather than asking a policy to infer them from pixels.
         _, native_actions = tree.actions(node)
         supported = []
-        if any(name in tree.press_actions for name in native_actions): supported.append("press")
+        if any(name in tree.press_actions for name in native_actions) or (node_role in tree.pointer_roles and tree.has(states, "SHOWING")):
+            supported.append("press")
         if tree.has(states, "EDITABLE"): supported.append("set-text")
         if tree.has(states, "FOCUSABLE"): supported.append("focus")
         found[-1]["actions"] = supported
@@ -1298,6 +1303,17 @@ def act(display_name, element, action, text):
         if not (tree.has(states, "ENABLED") or tree.has(states, "SENSITIVE")):
             raise Failure("element is disabled")
         iface, names = tree.actions(node)
+        try:
+            opens_menu = node.get_role() in _roles(tree.Atspi, "MENU")
+        except Exception:
+            opens_menu = False
+        bounds = tree.bounds(node, origin)
+        # A menu's own action can open another menu of its bar (GTK 3 opens the first one), and
+        # a menu left open that way does not yield to the next press: a menu on screen is
+        # pressed with the seat's pointer at its own coordinates, like a person would.
+        if opens_menu and bounds is not None and tree.has(states, "SHOWING"):
+            screen.click(xid, bounds["x"] + bounds["width"] // 2, bounds["y"] + bounds["height"] // 2)
+            return
         for wanted in tree.press_actions:
             if wanted in names:
                 try:
@@ -1306,7 +1322,6 @@ def act(display_name, element, action, text):
                 except Exception:
                     pass
                 break
-        bounds = tree.bounds(node, origin)
         if bounds is None or not tree.has(states, "SHOWING"):
             raise Failure("element has no action and is not on screen")
         screen.click(xid, bounds["x"] + bounds["width"] // 2, bounds["y"] + bounds["height"] // 2)
