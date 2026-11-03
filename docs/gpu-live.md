@@ -513,6 +513,31 @@ sets keepalive probes (after 10 s idle, every 5 s, 3 of them) and ends a connect
 data stays unacknowledged for 30 s, so neither the lease nor clients waiting for replies
 are held for the kernel's retransmission timeout.
 
+## Memory budget
+
+Before every guest `vkAllocateMemory` the decoder asks the phone's budget, which refuses the
+allocation with `VK_ERROR_OUT_OF_DEVICE_MEMORY` when it would take the GPU device past three
+quarters of Metal's recommended working set, leave the app less than 384 MiB before the
+system ends it (`os_proc_available_memory`), or take what guests hold past an explicit limit
+(the Linux executor's `--gpu-memory-limit BYTES`; the phone sets none). For a process with
+guest-assigned handles a refused allocation is the loss of its device. Each refusal (the
+first 64, then every 64th) is logged as `CABOOSE_GPU_MEMORY_REFUSED` with the request, what
+guests hold, the device's figures and the reason (`limit`, `device`, `headroom`). While memory
+is short (past 85% of a limit, or under twice the 384 MiB reserve left) presented-picture
+capture rings are given up.
+
+## Teardown report
+
+A finished process's teardown never waits without bound. Its streams' decoders get 5 s to
+return; one that has not keeps its stream, and the others retire. The decoder gives a
+device's queues 1 s to go idle, then releases the semaphores and events nothing of the
+process will signal and gives them 2 s more, and gives presentation leases 2 s; whatever is
+still in use then (a device, an instance, a completion marker) is handed to a deferred list
+whose worker frees it once the GPU is done (`CABOOSE_GPU_TEARDOWN_DEFERRED`, `_FREED`,
+`_PENDING` every 30 s), and the teardown goes on. When cleanup has not returned by its
+deadline, and every 10 s after, the phone prints where each process stands
+(`CABOOSE_GPU_TEARDOWN_STEP`, `CABOOSE_GPU_TEARDOWN_PROCESS`).
+
 ## Resuming an executor
 
 A phone that declares `executor-resume` keeps its executor across a lost socket. The host

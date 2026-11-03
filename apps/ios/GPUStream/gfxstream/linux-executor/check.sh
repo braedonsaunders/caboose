@@ -99,6 +99,14 @@ else
   status=1; echo 'FAIL allocator lifetime (allocator-lifetime.log)'
 fi
 drain "$out/executor-sync-check.log"
+# The abandoned_work case's process left a batch waiting for a timeline value nothing signals:
+# the executor releases that wait and finishes the process within 5 s.
+if grep -q 'case=abandoned_work' "$out/sync-check.log"; then
+  released=$(grep -c 'CABOOSE_GPU_RELEASED' "$out/executor-sync-check.log" || true)
+  slow=$(awk -F'seconds=' '/process finished/ { if ($2 + 0 >= 5) n++ } END { print n + 0 }' "$out/executor-sync-check.log")
+  if [ "$released" -ge 1 ] && [ "$slow" = 0 ]; then echo "PASS abandoned work: its wait released, every process finished within 5 s"
+  else status=1; echo "FAIL abandoned work: released=$released slow_finishes=$slow"; fi
+fi
 # The probe's child windows (a covering and an inset child of one top-level, an inset child
 # of another) each bind a surface of their own and present every frame on the executor.
 children=$(grep 'case=child_windows' "$out/sync-check.log" | sed -n 's/.* windows=\([^ ]*\).*/\1/p')

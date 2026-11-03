@@ -42,6 +42,11 @@ int caboose_gfx_process_stop(caboose_gfx_registry* registry, uint64_t puid);
 // Destroy waits for all pending cleanups; callers must serialize destroy against calls.
 // Returns EBUSY instead of waiting for active decoder threads.
 int caboose_gfx_process_finish(caboose_gfx_registry* registry, uint64_t puid);
+// The same, giving the process's upstream context, whose cleanup the caller may wait for.
+int caboose_gfx_process_finish_context(caboose_gfx_registry* registry, uint64_t puid, uint32_t* context);
+// Prints, to standard error, every process's state (CABOOSE_GPU_TEARDOWN_PROCESS) and what
+// the decoder's teardown is doing and has deferred, with every queue's pending waits.
+void caboose_gfx_registry_report(caboose_gfx_registry* registry);
 #ifdef __cplusplus
 }
 #endif

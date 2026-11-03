@@ -24,11 +24,14 @@ protocol LiveGPURuntimeBackend: Sendable {
     /// it stopping. ENOTSUP when the runtime cannot suspend.
     func suspend(timeoutMilliseconds: UInt32) -> Int32
     func resume() -> Int32
+    /// Prints the native teardown report (caboose_gpu_runtime_report_teardown).
+    func reportTeardown()
 }
 
 extension LiveGPURuntimeBackend {
     func suspend(timeoutMilliseconds: UInt32) -> Int32 { ENOTSUP }
     func resume() -> Int32 { ENOTSUP }
+    func reportTeardown() {}
 }
 
 /// Suspend in place (docs/gpu-live.md, "Suspending an executor"). Serial worker calls.
@@ -97,6 +100,11 @@ private struct LinkedLiveGPURuntime: LiveGPURuntimeBackend {
         return caboose_gpu_runtime_stop(token)
         #else
         return ENODEV
+        #endif
+    }
+    func reportTeardown() {
+        #if canImport(CabooseGPULive)
+        caboose_gpu_runtime_report_teardown()
         #endif
     }
     func suspend(timeoutMilliseconds: UInt32) -> Int32 {
@@ -226,6 +234,14 @@ private final class LiveGPUDuplex: @unchecked Sendable {
             nudgeNativeReaderIfDisconnected()
         }
     }
+    /// True once both workers have returned, false at `deadline` (they are still owed).
+    func waitForWorkers(until deadline: DispatchTime) -> Bool {
+        while workers.wait(timeout: .now() + .milliseconds(2)) == .timedOut {
+            if DispatchTime.now() >= deadline { return false }
+            nudgeNativeReaderIfDisconnected()
+        }
+        return true
+    }
     func closeAfterJoin() { waitForWorkers(); Darwin.close(bridge); Darwin.close(native) }
     func write(_ bytes: Data) throws {
         try bytes.withUnsafeBytes { buffer in
@@ -246,6 +262,10 @@ private final class LiveGPUProcess: @unchecked Sendable {
     var streams: [UInt64: LiveGPUDuplex] = [:]
     var stopped = false
     var cleanupError: Error?
+    /// Where its retirement stands, for the teardown report (under `lock`).
+    var teardownStep = "running"
+    var teardownSince = Date()
+    func enter(_ step: String) { lock.withLock { teardownStep = step; teardownSince = Date() } }
     init(_ token: UInt64) { self.token = token }
     func stop(_ backend: LiveGPURuntimeBackend) {
         lock.withLock {
@@ -260,7 +280,7 @@ private final class LiveGPUProcess: @unchecked Sendable {
 
 /// One authenticated CGLV lease. start/consume/finish are serial worker calls;
 /// revoke may run concurrently, including before start. No presentation claim is made.
-public final class LiveGPUNativeBinding: LiveGPUByteConsumer, LiveGPURetirementReporting, LiveGPUSurfaceRevoking, LiveGPUIngressAccounting, LiveGPUSuspending, @unchecked Sendable {
+public final class LiveGPUNativeBinding: LiveGPUByteConsumer, LiveGPURetirementReporting, LiveGPUSurfaceRevoking, LiveGPUIngressAccounting, LiveGPUSuspending, LiveGPUTeardownReporting, @unchecked Sendable {
     private let backend: LiveGPURuntimeBackend
     private let decoder: LiveGPUEnvelopeDecoder
     private let surfaces: LiveGPUSurfaceController?
@@ -721,22 +741,52 @@ public final class LiveGPUNativeBinding: LiveGPUByteConsumer, LiveGPURetirementR
         try send(.streamReady, process: frame.process, stream: frame.stream)
     }
     private func retire(_ id: UInt64, _ process: LiveGPUProcess) throws {
+        process.enter("stopping")
         process.stop(backend)
+        process.enter("joining streams")
         let streams = process.lock.withLock { Array(process.streams.values) }
-        for stream in streams { stream.waitForWorkers() }
+        // Bounded: a decoder that does not return (blocked in the driver) keeps its stream and
+        // descriptors, and the process stays unfinished, but the others' retirement goes on.
+        let deadline = DispatchTime.now() + .seconds(Self.streamJoinSeconds)
+        let unjoined = streams.filter { !$0.waitForWorkers(until: deadline) }
+        if !unjoined.isEmpty {
+            print("CABOOSE_GPU_TEARDOWN_STREAMS token=\(process.token) unjoined=\(unjoined.count)")
+            backend.reportTeardown()
+            let error = LiveGPUBindingError.native(operation: "join streams", code: ETIMEDOUT)
+            process.enter("streams not returned")
+            lock.withLock { retirementError = error }; throw error
+        }
         process.lock.withLock {
             for stream in process.streams.values { stream.closeAfterJoin() }
             process.streams.removeAll()
         }
+        process.enter("retiring surfaces")
         do { try surfaceLock.withLock { try surfaces?.retireProcess(id) } }
-        catch { lock.withLock { retirementError = error }; throw error }
+        catch {
+            process.enter("surfaces not retired")
+            lock.withLock { retirementError = error }; throw error
+        }
+        process.enter("native finish")
         let result = backend.finish(process.token)
+        process.enter("finished")
         lock.withLock { _ = processes.removeValue(forKey: id); retiring.remove(id) }
         if result != 0 {
             let error = LiveGPUBindingError.native(operation: "finish", code: result)
             lock.withLock { retirementError = error }; throw error
         }
         if let error = process.lock.withLock({ process.cleanupError }) { lock.withLock { retirementError = error }; throw error }
+    }
+    /// How long retirement waits for a process's streams' decoders to return.
+    static let streamJoinSeconds = 5
+    func reportTeardown() {
+        let snapshot = lock.withLock { processes }
+        let now = Date()
+        for (id, process) in snapshot.sorted(by: { $0.key < $1.key }) {
+            let (step, since, streams) = process.lock.withLock { (process.teardownStep, process.teardownSince, process.streams.count) }
+            print("CABOOSE_GPU_TEARDOWN_STEP process=\(id) token=\(process.token) step=\"\(step)\" " +
+                  "age_ms=\(Int(now.timeIntervalSince(since) * 1000)) streams=\(streams)")
+        }
+        backend.reportTeardown()
     }
     private func fail(_ error: Error) {
         let callback = lock.withLock { () -> (@Sendable (Error) -> Void)? in
