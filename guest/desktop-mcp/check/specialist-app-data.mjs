@@ -12,10 +12,15 @@ const traces = (await readFile(resultsPath + '.traces.jsonl', 'utf8')).trim().sp
 const good = new Set(results.filter(r => r.model === 'oracle' && r.completed).map(r => r.case))
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b)
 const rows = []
+// The values each case has shown so far, as the controller's `entered` (steps are in order).
+const seen = new Map()
 for (const t of traces) {
   if (t.policy !== 'oracle' || !good.has(t.case)) continue
   const spec = cases[t.case]
-  const request = actionChoices({ objective: t.objective, goal: t.goal, elements: t.before, ...(spec.values.length ? { values: spec.values } : {}), ...(t.window ? { window: t.window } : {}) })
+  const entered = seen.get(t.case) ?? new Set()
+  seen.set(t.case, entered)
+  for (const element of t.before) if (element.value) entered.add(element.value)
+  const request = actionChoices({ objective: t.objective, goal: t.goal, elements: t.before, entered: [...entered], ...(spec.values.length ? { values: spec.values } : {}), ...(t.window ? { window: t.window } : {}) })
   const expected = request.candidates.findIndex(c => same(c.action, t.action))
   if (expected < 0) throw new Error(`case ${t.case}: the oracle's action is not a grounded choice`)
   rows.push({ split: spec.split, case: t.case, family: spec.family, kind: 'recorded-action', prompt: request.prompt, state: request.state,
@@ -23,7 +28,7 @@ for (const t of traces) {
   // Explicit synthetic negatives: the value a SET step needs, or a control the objective names,
   // is gone, so the step cannot be taken and the answer is BLOCKED.
   const blocked = (kind, elements, values) => {
-    const negative = actionChoices({ objective: t.objective, goal: t.goal, elements, ...(values.length ? { values } : {}), ...(t.window ? { window: t.window } : {}) })
+    const negative = actionChoices({ objective: t.objective, goal: t.goal, elements, entered: [...entered].filter(v => values.some(s => s.value === v)), ...(values.length ? { values } : {}), ...(t.window ? { window: t.window } : {}) })
     const index = negative.candidates.findIndex(c => c.action.action === 'blocked')
     rows.push({ split: spec.split, case: t.case, family: spec.family, kind, prompt: negative.prompt, state: negative.state,
                 choices: negative.candidates.map(c => c.label), expected: index, acceptable: [index] })

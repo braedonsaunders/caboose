@@ -19,7 +19,9 @@ export function decisionPrompt(objective, elements, labels, window) {
     ...labels.map((label, i) => `${LETTERS[i]} ${label}`), 'Next:'].join('\n')
 }
 
-export function actionChoices({ objective, goal, elements, values = [], window }) {
+// `entered`: values the task has already seen a control show, in this window or another of its
+// windows (a dialog does not show what its parent window holds).
+export function actionChoices({ objective, goal, elements, values = [], window, entered = [] }) {
   const supplied = [...values]
   for (const part of goal.all ?? [goal]) {
     if (part.value !== undefined && !supplied.some(v => v.name === part.name && v.value === part.value))
@@ -29,7 +31,7 @@ export function actionChoices({ objective, goal, elements, values = [], window }
   const editable = elements.filter(e => e.states?.includes('editable') && !e.states.includes('read-only') && !e.states.includes('disabled'))
   // Never offered while the task has something not yet entered, whatever any model decides: a
   // supplied value no observed control shows, or an empty field the objective names exactly.
-  const unentered = [...supplied.filter(v => !elements.some(e => e.value === v.value)).map(v => v.name),
+  const unentered = [...supplied.filter(v => !entered.includes(v.value) && !elements.some(e => e.value === v.value)).map(v => v.name),
     ...editable.filter(e => e.name.length > 1 && !e.value && String(objective).includes(e.name)).map(e => e.name)]
   // A source named after an editable control is bound to it; other sources may fill any editable control.
   const bound = source => editable.some(e => e.name === source.name)

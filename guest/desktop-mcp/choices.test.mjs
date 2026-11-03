@@ -74,6 +74,10 @@ test('exactly decidable observations return without invoking the model', async t
   assert.deepEqual(await decide({ ...input, elements: input.elements.map(e => ({ ...e, states: [...e.states, 'busy'] })) }), { action: 'wait' })
   assert.equal((await decide({ ...input, elements: input.elements.map(e => ({ ...e, states: ['disabled'] })) })).action, 'blocked')
   assert.equal(fetch.mock.callCount(), 0)
+  // A value the task saw entered in another of its windows counts.
+  const dialog = actionChoices({ objective: 'Write hi and save as a.txt', goal: { title: 'a.txt' }, values: [{ name: 'text', value: 'hi' }, { name: 'file', value: 'a.txt' }],
+    entered: ['hi'], elements: [{ id: 'n', name: 'Name', role: 'text', value: 'a.txt', states: ['editable'] }, { id: 's', name: 'Save', role: 'button', states: [] }] })
+  assert.ok(dialog.candidates.some(c => c.label === 'PRESS Save (button)'))
   // No value supplied, but the objective names an empty field: still nothing is submitted.
   const unnamed = actionChoices({ objective: 'Set Routing code to 856, then press Commit', goal: { name: 'Done', role: 'button' },
     elements: [{ id: 'r', name: 'Routing code', role: 'text', value: '', states: ['editable'] }, { id: 'c', name: 'Commit', role: 'button', states: [] }] })

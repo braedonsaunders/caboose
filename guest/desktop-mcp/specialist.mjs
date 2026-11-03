@@ -82,11 +82,14 @@ export async function runSpecialist(task, { observe, decide, act, trace = () => 
     if (!family.some(w => w.id === state.focused)) throw new Error('focused window changed; no input sent')
     if (!Array.isArray(state.elements)) throw new Error('invalid accessibility observation')
     titles = family.flatMap(w => typeof w.title === 'string' ? [w.title] : [])
+    for (const element of state.elements) if (element.value) seen.add(element.value)
     const focused = state.windows?.find(w => w.id === state.focused)
     windowLabel = focused && focused.id !== task.window ? `${focused.kind ?? 'window'} ${JSON.stringify(focused.title ?? '')}` : undefined
     return state.elements.slice(0, 200)
   }
   let titles = [], windowLabel
+  // Every value any observation of this task has shown: what has been entered across its windows.
+  const seen = new Set()
   try {
     let elements = await read()
     for (let step = 0; ; step++) {
@@ -99,7 +102,7 @@ export async function runSpecialist(task, { observe, decide, act, trace = () => 
       const before = now()
       let choice
       const decidedIn = windowLabel
-      try { choice = await decide({ objective: task.objective, goal: task.goal, elements, ...(decidedIn ? { window: decidedIn } : {}), ...(task.values ? { values: task.values } : {}) }, signal) }
+      try { choice = await decide({ objective: task.objective, goal: task.goal, elements, entered: [...seen], ...(decidedIn ? { window: decidedIn } : {}), ...(task.values ? { values: task.values } : {}) }, signal) }
       finally { metrics.modelMs += now() - before }
       check()
       if (choice?.action === 'blocked') return result('needs_clarification', choice.reason ?? 'specialist cannot select a grounded action')
