@@ -331,3 +331,44 @@ profile persistence, crash-lock release, unknown-version and redirection checks.
 use disposable directories and synthetic sign-in bytes, never owner state. Real browser
 window routing and browser-specific crash recovery require a disposable Linux display
 check; these unit tests do not establish those outcomes.
+
+### Bounded computer specialist
+
+Setting `CABOOSE_SPECIALIST_MODEL` in the desktop MCP process advertises
+`computer_task`. The model uses the guest's loopback OpenAI endpoint at port 11434.
+The caller supplies `objective`, the currently focused agent `window`, and a `goal`
+with an exact control `name` and `role`, plus optional exact `value` or `state`.
+The goal is the completion contract; prose in the objective is not independently
+verified. Duplicate goal matches do not establish completion.
+
+The controller observes controls, asks the model for one accessibility action,
+reobserves the target, executes through the existing batch validator, and observes
+its effect. Only observed IDs and `click_element`, `set_text`, or `focus_element`
+are accepted. It permits at most 20 actions (8 by default), bounds model calls to
+10 seconds, and stops the delegate at 60 seconds. It does not retry a lost action
+response. `verified` includes observed evidence and separate observation, model,
+action and total timings; failures return control to the delegating agent.
+An empty tree or model escalation returns `needs_visual` with an annotated
+window screenshot when available. The caller handles visual tasks; this controller
+does not autonomously click screenshots.
+
+The tool stays within the existing agent seat and task process. It does not change
+owner focus, start a display client, or resume a paused task. Model unavailability
+ends this delegate; it does not stop the Linux computer or require a phone for
+other desktop tools. No raw task traces are saved in product use.
+
+`node --test guest/desktop-mcp/specialist.test.mjs` checks grounding, stale IDs,
+focus changes, cancellation, completion and budgets. `check/specialist.sh` runs in
+a disposable Linux container with Caboose Display, GTK3, AT-SPI and Node, with this
+directory mounted at `/src`. Run it under `dbus-run-session`; the shell creates its
+own runtime directory, home and compositor. The default oracle policy measures
+harness overhead only. `--model MODEL` evaluates an actual model through loopback
+port 11434, or `CABOOSE_SPECIALIST_ENDPOINT` in the benchmark process. Never point
+its compositor at an owner's runtime or profile. Bound the container run and remove
+that named container when finished.
+
+The benchmark uses generated GTK controls, separates development and held-out
+labels/layouts, verifies effects independently from the fixture's event log, and
+counts wrong-control actions. Its opt-in trace sink writes only generated fixture
+observations/actions to `/tmp/specialist-traces.jsonl`. The four microtasks do not
+establish general computer-use accuracy or weight-training gains.

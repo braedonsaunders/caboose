@@ -13,6 +13,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createInterface } from 'node:readline'
 import { Worker } from './worker.mjs'
+import { runSpecialist, phoneDecision, validateTask } from './specialist.mjs'
 import { controlAlive, ensureAgentSeat } from './ensure-agent-seat.mjs'
 
 const DISPLAY = process.env.CABOOSE_AGENT_DISPLAY ?? ':101'
@@ -292,6 +293,48 @@ for (const name of mutations) {
       catch (error) { result.push({ type: 'text', text: JSON.stringify({ observationError: error.message }) }) }
     }
     return result
+  }
+}
+
+// Opt-in: do not advertise an unavailable model as a product capability.
+if (process.env.CABOOSE_SPECIALIST_MODEL) {
+  tools.push({ name: 'computer_task',
+    description: 'Delegate a bounded accessibility task in the currently focused agent window. Supply an objective and exact observable goal. Returns verified only after observing that goal; otherwise returns a structured failure or screenshot for the caller. At most 20 actions and 60 seconds. Does not run shell commands or choose arbitrary coordinates.',
+    inputSchema: { type: 'object', properties: {
+      objective: { type: 'string', maxLength: 2000 }, window: { type: 'integer', minimum: 1 },
+      goal: { type: 'object', properties: { name: { type: 'string' }, role: { type: 'string' }, value: { type: 'string' }, state: { type: 'string' } }, required: ['name', 'role'] },
+      maxActions: { type: 'integer', minimum: 1, maximum: 20, default: 8 },
+    }, required: ['objective', 'window', 'goal'] },
+  })
+  handlers.computer_task = async task => {
+    validateTask(task)
+    const controller = new AbortController()
+    const timer = setTimeout(() => {
+      controller.abort(new Error('specialist deadline exceeded; an in-flight action may have executed'))
+      a11yWorker.close(); seatWorker.close()
+    }, 60_000)
+    try {
+      const outcome = await runSpecialist(task, {
+        signal: controller.signal,
+        observe: async () => {
+          const listing = await seat('windows')
+          if (listing.focused !== task.window) return { focused: listing.focused, elements: [] }
+          const state = await observe()
+          return { ...state, focused: (await seat('windows')).focused }
+        },
+        decide: phoneDecision(process.env.CABOOSE_SPECIALIST_MODEL),
+        act: async step => {
+          const reply = JSON.parse((await handlers.batch({ steps: [step], observe: false }))[0].text)
+          if (reply.completed !== 1) throw new Error(reply.error ?? 'action outcome unknown')
+        },
+      })
+      const content = [{ type: 'text', text: JSON.stringify(outcome) }]
+      if (outcome.status === 'needs_visual' && !controller.signal.aborted) {
+        try { content.push(...await handlers.screenshot({ window: task.window, annotate: true })) }
+        catch { content.push({ type: 'text', text: 'Screenshot unavailable; inspect the agent seat before continuing.' }) }
+      }
+      return content
+    } finally { clearTimeout(timer) }
   }
 }
 

@@ -9,6 +9,7 @@
   "components/container-services.sh",
   "components/version.py",
   "desktop-mcp/caboose-desktop-mcp.mjs",
+  "desktop-mcp/specialist.mjs",
   "desktop-mcp/a11y.py",
   "desktop-mcp/seat.py",
   "desktop-mcp/ensure-agent-seat.mjs",

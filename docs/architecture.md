@@ -2539,6 +2539,15 @@ owner and an agent never type into the same application at once.
 
 ### Desktop tools
 
+The desktop MCP process can opt into `computer_task` with
+`CABOOSE_SPECIALIST_MODEL`. A bounded model loop acts only on freshly observed
+accessibility IDs in one focused agent window and verifies the caller’s explicit
+control postcondition. Missing model service, changed focus, deadlines and
+unsupported visual tasks return control to the parent agent. The ordinary desktop
+tools remain available without phone inference; this does not change seat
+ownership, task takeover, or unattended computer lifetime. See the
+[desktop specialist contract](../guest/desktop-mcp/README.md#bounded-computer-specialist).
+
 `caboose-desktop-mcp` is a stdio MCP server. The runner passes it to every agent as
 `caboose-desktop` in ACP `session/new`, with the seat's launch environment:
 `CABOOSE_AGENT_DISPLAY` (the seat's `DISPLAY`), `WAYLAND_DISPLAY`, `CABOOSE_DISPLAY_CONTROL`,
