@@ -69,6 +69,17 @@ public struct LaptopFill: Sendable {
         return Layout(frame: WindowSizePolicy.centred(fitted, in: screen), maximized: true, held: true)
     }
 
+    /// The least content a window in a snap other than the whole screen is laid out at, in
+    /// pixels: its own `minimum`, or the content of a usable window (`usable`, from
+    /// `TilePolicy.required`), whichever is larger on each axis. A snap smaller than a usable
+    /// window so still gets one, at the snap's shape, shown scaled down into it
+    /// (`TilePolicy.fittedScale`).
+    public static func snappedMinimum(_ minimum: CGSize?, usable: CGSize) -> CGSize {
+        func valid(_ value: CGFloat?) -> CGFloat { value.flatMap { $0.isFinite && $0 > 0 ? $0 : nil } ?? 0 }
+        return CGSize(width: max(valid(minimum?.width), valid(usable.width)).rounded(.up),
+                      height: max(valid(minimum?.height), valid(usable.height)).rounded(.up))
+    }
+
     /// Whether a window of `size` is larger than the screen on either axis, beyond rounding.
     public static func exceeds(_ size: CGSize, _ screen: CGSize) -> Bool {
         size.width > screen.width + tolerance || size.height > screen.height + tolerance

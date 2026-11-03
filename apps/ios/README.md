@@ -297,7 +297,11 @@ model serves Switchyard and the floating desktop (iPad set to Free, a TV, Laptop
 - **Reflow.** Closing a snapped window, pulling it out by its title bar, or minimizing it
   lets the others fill its space; bringing a minimized one back returns it to its slot.
 - **The rules hold.** A slot is offered only to a window it obeys the window layout rules
-  for, at the desktop's scale. An arrangement that no longer obeys them after a rotation or
+  for, at the desktop's scale. Laptop shows each window fitted into its snap, so there a slot
+  may be as small as three quarters of a usable window (`TilePolicy.fittedScale`): the window
+  is laid out at a usable size in the slot's shape (`LaptopFill.snappedMinimum`) and drawn
+  scaled down. Above an iPhone Duo's hinge that offers the halves and two-thirds layouts, not
+  thirds or quarters. An arrangement that no longer obeys them after a rotation or
   a new screen ends, and its windows return to their own frames (on the floating desktop) or
   to the automatic layout (in Switchyard).
 

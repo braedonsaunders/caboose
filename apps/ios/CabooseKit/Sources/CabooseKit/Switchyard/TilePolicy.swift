@@ -49,6 +49,19 @@ public enum TilePolicy {
         return CGSize(width: max(0, min(width, area.width)), height: max(0, min(height, area.height)))
     }
 
+    /// How much smaller than a usable window a tile may be where its window is shown fitted
+    /// into it, as Laptop shows every window: the window is laid out at the tile's shape grown
+    /// to what it requires (`LaptopFill.snappedMinimum`) and drawn scaled down, never below
+    /// this. Above an iPhone Duo's hinge in Laptop the halves pass; thirds and quarters, which
+    /// would show a window at barely two thirds of its size or less, do not.
+    public static let fittedScale: CGFloat = 0.75
+
+    /// What a window shown fitted into its tile (`fittedScale`) requires of the tile, for a
+    /// window that needs `required` at its own size.
+    public static func fitted(_ required: CGSize) -> CGSize {
+        CGSize(width: required.width * fittedScale, height: required.height * fittedScale)
+    }
+
     /// Whether a `tile` obeys the rules for a window that needs `required`, in `area`.
     public static func allows(_ tile: CGSize, required: CGSize, in area: CGSize) -> Bool {
         guard tile.width + slack >= required.width, tile.height + slack >= required.height,

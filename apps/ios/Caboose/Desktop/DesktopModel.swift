@@ -204,10 +204,17 @@ final class DesktopModel {
     }
 
     /// The least a snapped window is given, title bar included (`TilePolicy.required`).
+    /// Laptop shows a window fitted into its snap, laid out at a usable size and scaled down,
+    /// so there a snap may be as small as `TilePolicy.fitted` allows.
     func tileMinimum(_ window: RemoteWindow) -> CGSize {
+        let required = usableTile(contentLimits(window).minimum)
+        return detachedChrome ? TilePolicy.fitted(required) : required
+    }
+
+    /// A usable window, title bar included, for content of at least `minimum` points.
+    private func usableTile(_ minimum: CGSize?) -> CGSize {
         let floor = CGSize(width: TilePolicy.floor.width * ui, height: TilePolicy.floor.height * ui)
-        return TilePolicy.required(minimum: contentLimits(window).minimum, titleBar: titleBarHeight,
-                                   in: workArea.size, floor: floor)
+        return TilePolicy.required(minimum: minimum, titleBar: titleBarHeight, in: workArea.size, floor: floor)
     }
 
     /// Where the window belongs on this desktop by its place, in Linux pixels, if it has one.
@@ -215,8 +222,13 @@ final class DesktopModel {
     func placedFrame(_ window: RemoteWindow) -> CGRect? {
         var minimum = minimumChrome(window)
         if layout.snap(of: window.id) != nil {
-            let tile = tileMinimum(window)
-            minimum = CGSize(width: max(minimum.width, tile.width), height: max(minimum.height, tile.height))
+            // Laptop fits a snapped window into its snap rather than growing the snap.
+            if detachedChrome {
+                minimum = .zero
+            } else {
+                let tile = tileMinimum(window)
+                minimum = CGSize(width: max(minimum.width, tile.width), height: max(minimum.height, tile.height))
+            }
         }
         return layout.frame(for: window.id, app: app(window), in: workArea, minimum: minimum).map(linuxFrame)
     }
@@ -433,7 +445,7 @@ final class DesktopModel {
         // window still at its Tablet size, or one that cannot grow, is fitted inside it rather
         // than hanging off the top or stopping short of the hinge.
         if detachedChrome, !window.isAuxiliary, layout.place(for: window.id, app: app(window))?.snap != nil,
-           let snapped = layout.frame(for: window.id, app: app(window), in: workArea, minimum: minimumChrome(window)) {
+           let snapped = layout.frame(for: window.id, app: app(window), in: workArea) {
             return CGRect(x: snapped.minX, y: snapped.minY + titleBarHeight,
                           width: snapped.width, height: max(1, snapped.height - titleBarHeight))
         }
@@ -952,8 +964,8 @@ final class DesktopModel {
     private func required(_ session: any DisplaySession) -> (Int?) -> CGSize {
         { [self] id in
             if let window = id.flatMap({ session.windows[$0] }) { return tileMinimum(window) }
-            let floor = CGSize(width: TilePolicy.floor.width * ui, height: TilePolicy.floor.height * ui)
-            return TilePolicy.required(minimum: nil, titleBar: titleBarHeight, in: workArea.size, floor: floor)
+            let free = usableTile(nil)
+            return detachedChrome ? TilePolicy.fitted(free) : free
         }
     }
 
@@ -1060,8 +1072,14 @@ final class DesktopModel {
         guard !window.isFullscreen, let frame = placedFrame(window) else { return nil }
         let snap = layout.snap(of: window.id)
         if detachedChrome {
-            return LaptopFill.layout(frame, snap: snap, screen: laptopScreen,
-                                     minimum: window.minimumSize, maximum: window.maximumSize)
+            // A half or a quarter is laid out at a usable window, shown scaled into the snap.
+            var minimum = window.minimumSize
+            if let snap, snap != .maximized {
+                let usable = usableTile(contentLimits(window).minimum)
+                minimum = LaptopFill.snappedMinimum(minimum, usable: CGSize(width: usable.width * pixelsPerPoint,
+                                                                            height: max(1, usable.height - titleBarHeight) * pixelsPerPoint))
+            }
+            return LaptopFill.layout(frame, snap: snap, screen: laptopScreen, minimum: minimum, maximum: window.maximumSize)
         }
         guard snap != nil else { return LaptopFill.Layout(frame: frame, maximized: false, held: false) }
         guard let fitted = WindowSizePolicy.fitting(frame, minimum: window.minimumSize,
