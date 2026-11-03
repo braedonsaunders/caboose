@@ -417,6 +417,9 @@ class XScreen:
     def x11(self, xid):
         return False
 
+    def window_count(self, pid):
+        return 1
+
     def popup_origin(self, pid, size):
         return None
 
@@ -543,6 +546,9 @@ class SeatScreen:
 
     def x11(self, wid):
         return bool((self.records.get(wid) or {}).get("x11"))
+
+    def window_count(self, pid):
+        return sum(1 for r in self.records.values() if r.get("pid") == pid and r.get("kind") != "popup")
 
     def popup_origin(self, pid, size):
         """The surface origin of the Wayland popup of `pid` whose surface is `size` (w, h)."""
@@ -1198,6 +1204,9 @@ def match_frame(tree, app, screen, wid, active):
     origin = screen.origin(wid)
     pid = screen.pid(wid)
     title = _norm(screen.title(wid))
+    # Titles of the application's other windows: a top-level named like one of them is that
+    # window, not this one.
+    others = {_norm(screen.title(w)) for w in screen.clients if w != wid and screen.pid(w) == pid} - {title}
     best, best_score, popups, showing = None, 0, [], []
     for index, top in tree.children(app):
         if top is None:
@@ -1220,6 +1229,8 @@ def match_frame(tree, app, screen, wid, active):
                     popups.append((index, top, tree.bounds(top, at), at))
         if role not in tree.top_roles:
             continue
+        if name and name in others:
+            continue
         showing.append((index, top))
         bounds = tree.bounds(top, origin)
         score = 0
@@ -1234,7 +1245,9 @@ def match_frame(tree, app, screen, wid, active):
             score += 2
         if score > best_score:
             best, best_score = (index, top), score
-    if best is None and len(showing) == 1:
+    # The one top-level shown stands for the window only when it is the application's only
+    # window: a dialog that has just mapped is not yet in the tree, and its parent is not it.
+    if best is None and len(showing) == 1 and screen.window_count(pid) <= 1:
         best = showing[0]
     frame_index = best[0] if best else None
     popups = [popup for popup in popups if popup[0] != frame_index]

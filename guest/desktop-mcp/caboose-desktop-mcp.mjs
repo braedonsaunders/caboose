@@ -118,8 +118,23 @@ const BUTTONS = { 1: 'left', 2: 'middle', 3: 'right' }
 // The display as the observer renders it: everything (`full`), or what changed since the last time.
 let lastState
 async function view(full) {
-  const state = lastState = JSON.parse((await a11y('elements', {}))[0].text)
-  const listing = await seat('windows')
+  let state = JSON.parse((await a11y('elements', {}))[0].text)
+  let listing = await seat('windows')
+  // A window that has just opened may not be in its application's tree yet, and a read that
+  // raced the focus change describes the window before: read again, for up to 1.5 s, until
+  // the read is of the focused window and, for one not seen before, shows controls.
+  const stale = () => {
+    const focused = listing.windows.find(w => w.id === listing.focused)
+    if (!focused) return false
+    if ((state.window?.title ?? '') !== (focused.title ?? '')) return true
+    return !(state.elements ?? []).length && !observer.seen.has(listing.focused)
+  }
+  for (let retry = 0; retry < 15 && stale(); retry++) {
+    await new Promise(resolve => setTimeout(resolve, 100))
+    state = JSON.parse((await a11y('elements', {}))[0].text)
+    listing = await seat('windows')
+  }
+  lastState = state
   return observer.render(listing, state, { full })
 }
 
