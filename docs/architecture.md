@@ -2556,8 +2556,13 @@ The observation and action contract of a task:
   input (`interrupted`). Each step names the window it acts in when that is not the task's
   own.
 - **Controls come from AT-SPI.** An observation is the focused window's accessibility
-  subtree, joined to its window record by process and geometry, after the seat settles;
-  each element id names its window. Busy, empty, ambiguous and completed observations are
+  subtree, joined to its window record by process and geometry; each element id names its
+  window. Settling is driven by the compositor's commit record, not by timeouts: after an
+  action the read waits for the first commit after it (the application applied it; a new
+  window mapped), at most 150 ms, and a picture waits until no window committed for 30 ms.
+  When focus moves to another of the task's windows, reads repeat until two agree (at most
+  1 s). AT-SPI change events arrive after the change itself, so they never stand in for a
+  read. Busy, empty, ambiguous and completed observations are
   decided in code, never by a model.
 - **Actions are semantic first.** A choice presses a control through its own accessibility
   action or replaces an editable text's contents. A menu on screen, whose own action can

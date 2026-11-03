@@ -168,6 +168,7 @@ async function workerRequest(worker, request) {
   }
 }
 async function a11y(command, options) {
+  if (command === 'act') actedAt = Number(process.hrtime.bigint() / 1000n)
   const answer = await workerRequest(a11yWorker, { op: command, ...options })
   return [{ type: 'text', text: JSON.stringify(answer) }]
 }
@@ -247,8 +248,11 @@ const handlers = {
   },
 }
 
-async function observe() {
-  await seat('settle')
+// When the last action went in, on the compositor's clock (CLOCK_MONOTONIC): the next
+// settled observation waits for the seat to react to it.
+let actedAt
+async function observe({ settle = true } = {}) {
+  if (settle) { await seat('settle', 'react', ...(actedAt === undefined ? [] : [String(actedAt)])); actedAt = undefined }
   return JSON.parse((await handlers.elements())[0].text)
 }
 handlers.batch = async ({ steps, observe: observing = true }) => {
@@ -330,12 +334,12 @@ if (process.env.CABOOSE_SPECIALIST_MODEL || specialistBackend === 'choices') {
     try {
       const outcome = await runSpecialist(task, {
         signal: controller.signal,
-        observe: async () => {
+        observe: async (_window, options) => {
           // The compositor's window records decide which windows are the task's (its own, and
           // dialogs and menus whose parent chain reaches it); AT-SPI reads only the focused one.
           const listing = await seat('windows')
           if (!taskWindows(task.window, listing.windows).some(w => w.id === listing.focused)) return { focused: listing.focused, windows: listing.windows, elements: [] }
-          const state = await observe()
+          const state = await observe(options)
           const after = await seat('windows')
           return { ...state, focused: after.focused, windows: after.windows }
         },

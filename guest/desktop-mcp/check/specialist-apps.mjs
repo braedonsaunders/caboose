@@ -17,8 +17,12 @@ const seat = new Worker(new URL('../seat.py', import.meta.url).pathname, [], 10_
 const env = { ...process.env }
 const call = async (worker, body) => { const r = await worker.request(body, env); if (r.error) throw new Error(r.error); return r }
 const sleep = ms => new Promise(r => setTimeout(r, ms))
-const observe = async () => {
-  await call(seat, { args: ['settle'] })
+// When the last action went in, on the compositor's clock (CLOCK_MONOTONIC), so the next
+// observation waits for the seat to react to it.
+let actedAt
+const observe = async (_window, { settle = true } = {}) => {
+  if (settle) await call(seat, { args: ['settle', 'react', ...(actedAt === undefined ? [] : [String(actedAt)])] })
+  if (settle) actedAt = undefined
   const state = await call(a11y, { op: 'elements' })
   const listing = await call(seat, { args: ['windows'] })
   return { ...state, focused: listing.focused, windows: listing.windows }
@@ -49,6 +53,7 @@ try {
       result = await runSpecialist(task, {
         observe, decide: policy,
         act: async action => {
+          actedAt = Number(process.hrtime.bigint() / 1000n)
           const r = await call(a11y, { op: 'act', element: action.id, action: action.action === 'set_text' ? 'set-text' : action.action === 'focus_element' ? 'focus' : 'press', ...(action.text !== undefined ? { text: action.text } : {}) })
           if (!r.ok) throw new Error('action outcome unknown')
         },

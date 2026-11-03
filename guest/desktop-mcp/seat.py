@@ -135,14 +135,35 @@ class Seat:
         if text:
             self.request("type " + text.replace("\\", "\\\\").replace("\n", "\\n").replace("\t", "\\t"))
 
-    def settle(self, rounds=3, pause=0.05):
-        """Let applications draw what they have: a seat nobody watches paces them at once a
-        second, so a picture taken right after an action could show the moment before it."""
-        for _ in range(rounds):
-            answer, _ = self.request("settle")
-            if answer.get("released") == 0:
-                break
-            time.sleep(pause)
+    def settle(self, quiet=0.03, limit=0.3, after_us=None, react=0.15, until="quiet"):
+        """Let applications draw what they have, then return once the seat is quiet: a seat
+        nobody watches paces them at once a second, so a picture or an accessibility read right
+        after an action could show the moment before it. Driven by the compositor's own record
+        of commits: no window committed for `quiet` seconds (at most `limit` for an animating
+        one). With `after_us` (CLOCK_MONOTONIC microseconds, when an action went in), it first
+        waits for a commit after that moment, or `react` seconds for an action nothing redraws.
+        `until="react"` is for accessibility reads: it returns at the first commit after the
+        action (the application has applied it and drawn once; a new window has mapped), without
+        waiting out the redraw's animation, and at once when no action is given.
+        Returns the seconds it waited."""
+        started = time.monotonic()
+        quiet_us = int(quiet * 1e6)
+        since = self.request("frames 18446744073709551615")[0]["now_us"] - quiet_us
+        if after_us is not None:
+            since = min(since, int(after_us))
+        while True:
+            released = self.request("settle")[0].get("released", 0)
+            frames = self.request(f"frames {max(0, since)}")[0]
+            commits = [c for w in frames["windows"] for c in w["commits"]]
+            last = max(commits, default=None)
+            reacted = after_us is None or any(c > after_us for c in commits) or time.monotonic() - started >= react
+            if until == "react" and reacted:
+                return time.monotonic() - started
+            if reacted and not released and (last is None or frames["now_us"] - last >= quiet_us):
+                return time.monotonic() - started
+            if time.monotonic() - started >= limit:
+                return time.monotonic() - started
+            time.sleep(0.004)
 
     def screenshot(self, window=None):
         self.settle()
@@ -195,7 +216,10 @@ def serve():
                     result = seat.windows()
                     result.pop("ok", None)
                 elif op == "settle":
-                    seat.settle()
+                    # settle [react|quiet] [AFTER_US]
+                    until = args[1] if len(args) > 1 and args[1] in ("react", "quiet") else "quiet"
+                    after = [a for a in args[1:] if a not in ("react", "quiet")]
+                    seat.settle(after_us=float(after[0]) if after else None, until=until)
                     result = {"ok": True}
                 elif op == "screenshot":
                     window = int(args[args.index("--window") + 1]) if "--window" in args else None

@@ -51,26 +51,30 @@ export async function runSpecialist(task, { observe, decide, act, trace = () => 
   const result = (status, reason) => ({ status, ...(reason ? { reason } : {}), metrics: { ...metrics, elapsedMs: now() - started } })
   const check = () => { signal?.throwIfAborted(); if (now() - started > 60_000) throw new Error('task deadline exceeded') }
   // A window that just took focus may still be building its accessibility tree: after focus
-  // moves, observe again until two observations agree (at most 10 more, 100 ms apart).
+  // moves, observe again until two observations agree (each observation already waits for the
+  // seat's commits to go quiet; at most 1 s in all).
   // Between a menu closing and its dialog mapping, focus can briefly be on no window of the
   // task; that too gets the same bounded wait before input stops.
   let lastFocused
   const ours = state => !state.windows || taskWindows(task.window, state.windows).some(w => w.id === state.focused)
-  const settled = async () => {
-    let state = await observe(task.window)
+  // `settle: false` skips waiting for the seat to go quiet: nothing has acted since the last
+  // observation, so only a fresh accessibility read is needed.
+  const settled = async settle => {
+    let state = await observe(task.window, { settle })
     const ids = s => JSON.stringify((s.elements ?? []).map(e => [e.id, e.name, e.value, e.states]))
-    for (let tries = 0; lastFocused !== undefined && (state.focused !== lastFocused || !ours(state)) && tries < 10; tries++) {
-      await new Promise(resolve => setTimeout(resolve, 100))
-      const again = await observe(task.window)
+    const limit = now() + 1000
+    while (lastFocused !== undefined && (state.focused !== lastFocused || !ours(state)) && now() < limit) {
+      await new Promise(resolve => setTimeout(resolve, 20))
+      const again = await observe(task.window, { settle: false })
       if (ours(again) && again.focused === state.focused && (again.elements ?? []).length && ids(again) === ids(state)) { state = again; break }
       state = again
     }
     lastFocused = state.focused
     return state
   }
-  const read = async () => {
+  const read = async (settle = true) => {
     check()
-    const before = now(), state = await settled()
+    const before = now(), state = await settled(settle)
     metrics.observationMs += now() - before; metrics.observations++
     check()
     const family = state.windows ? taskWindows(task.window, state.windows) : [{ id: task.window }]
@@ -113,7 +117,7 @@ export async function runSpecialist(task, { observe, decide, act, trace = () => 
       }
       // Reobserve after inference: stale or renamed controls cannot inherit an action.
       const previous = elements.find(e => e.id === choice.id)
-      elements = await read()
+      elements = await read(false)
       const target = elements.find(e => e.id === choice.id)
       if (goalSatisfied(task.goal, elements, titles)) return { ...result('verified'), evidence: (task.goal.all ?? [task.goal]).map(g => g.title !== undefined ? { title: g.title } : elements.find(e => e.name === g.name && e.role === g.role)) }
       if (!target || target.name !== previous.name || target.role !== previous.role || target.value !== previous.value ||
