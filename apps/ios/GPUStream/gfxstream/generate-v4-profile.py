@@ -31,8 +31,12 @@ RESOURCE_CACHE_INPUTS = {
     'host/vulkan/vk_decoder_global_state.cpp': '5cf20f6c1cbcf96ca1fbaad7853309fe0c777dc77f4bc49ef3f5e2f16edaa89d',
     'host/vulkan/caboose_pipeline_cache.h': '3450de5a914b57557b5df681ec0221386b92c67d7d58f10788dc9470da90aa0c',
 }
+# Queue commands a v4 stream may carry. vkQueueCommitDescriptorSetUpdatesGOOGLE carries the
+# descriptor sets a process allocated and wrote in the guest since its last submit (hello
+# feature 0x40000, docs/gpu-live.md "Batched descriptor sets"); it is synchronous like a
+# submit. Every other vkQueue* command stays forbidden.
 SAFE_QUEUE = {'vkQueueSubmit', 'vkQueueSubmit2', 'vkQueueSubmit2KHR',
-              'vkQueueBindSparse', 'vkQueueWaitIdle'}
+              'vkQueueBindSparse', 'vkQueueWaitIdle', 'vkQueueCommitDescriptorSetUpdatesGOOGLE'}
 
 
 def main():

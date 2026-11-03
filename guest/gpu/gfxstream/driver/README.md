@@ -137,6 +137,7 @@ Each patch is one feature. Several change Mesa's generated encoder
 | 0064 persistent-physical-capabilities | Exact format/image-format answers shared across processes, scoped to the current backend, driver, protocol and guest source identity; unsafe or corrupt files fall back to real queries |
 | 0065 external-semaphore-capabilities | A device's external-semaphore answers (empty chain, or exactly a semaphore type) join the same per-session capability cache; the tracker's adjustment applies to cached and asked answers alike |
 | 0066 device-constant-capabilities | Physical-device properties (with chains of known, pointer-free structures), queue families and the device's extension list join the per-session capability cache (`../bounded-memory/capability_chains.h`); the first properties query in a process is still asked. Features and memory properties are not shared: the encoder adjusts them per process |
+| 0067 batched-descriptor-sets | With hello `0x40000`, descriptor sets are allocated and written in the guest (a pool asks for its set ids once) and the sets a submit binds go just before it in one `vkQueueCommitDescriptorSetUpdatesGOOGLE` |
 
 The patch messages describe each change. To change the driver, prepare a tree, commit
 the prepared state, edit, and regenerate the affected patch with `git format-patch`
@@ -173,6 +174,7 @@ hello for the completion feed. The rest of the series requires the `0x70` contra
 | 14 (`0x4000`) | The executor resumes across a lost socket and suspends in the background: surface waits have no 10 s deadline (`../virtual-wsi/mesa_surface.inc`) |
 | 15 (`0x8000`) | Flushed memory goes as pieces the phone's upload store holds (patch 0047) |
 | 16 (`0x10000`) | Buffer views use guest-assigned handles (requires bit 7; patch 0057) |
+| 18 (`0x40000`) | Descriptor sets allocated and written in the guest and committed with the next submit (patch 0067) |
 
 ## Runtime switches
 

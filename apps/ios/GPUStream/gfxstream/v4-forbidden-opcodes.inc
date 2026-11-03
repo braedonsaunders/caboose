@@ -31,7 +31,6 @@
 249625009u, // vkReleaseSwapchainImagesKHR
 252133608u, // vkTransitionImageLayout
 263029492u, // vkCopyMemoryToImage
-267932433u, // vkQueueCommitDescriptorSetUpdatesGOOGLE
 286553566u, // vkTraceAsyncGOOGLE
 287960452u, // vkGetSwapchainGrallocUsage2ANDROID
 290633483u, // vkQueueFlushCommandsFromAuxMemoryGOOGLE

@@ -217,7 +217,8 @@ The phone app names the capabilities of its native decoder in the
 only known names, lowercased and sorted: `guest-handles`, `guest-handle-arrays`,
 `completion-feed`, `ordered-present`, `guest-images`, `guest-query-pools`,
 `shader-cache`, `executor-resume`, `zstd-stream` ([Compressed commands](#compressed-commands)),
-`upload-cache` ([Upload cache](#upload-cache)) and `guest-buffer-views`.
+`upload-cache` ([Upload cache](#upload-cache)), `guest-buffer-views` and
+`batched-descriptor-sets` ([Batched descriptor sets](#batched-descriptor-sets)).
 The broker reads them from the authenticated upgrade request.
 
 A local process on the indexed v4 path may offer optional features in its 48-byte
@@ -225,13 +226,29 @@ hello by setting bits above the required mask `0x70`: `0x80` (guest-assigned han
 `0x100` (guest-assigned descriptor sets and command buffers; requires `0x80`) and
 `0x200` (completion feed), `0x400` (ordered presents), `0x800` (guest-owned swapchain
 images), `0x1000` (guest-assigned query pools; requires `0x80`) and `0x2000` (shader
-cache), `0x8000` (upload cache) and `0x10000` (guest-assigned buffer views; requires `0x80`).
+cache), `0x8000` (upload cache), `0x10000` (guest-assigned buffer views; requires `0x80`) and
+`0x40000` (batched descriptor sets).
 The broker replies with the required mask plus the offered bits whose capability
 the phone declared (`guest-handles`, `guest-handle-arrays`, `completion-feed`,
 `ordered-present`, `guest-images`, `guest-query-pools`, `shader-cache`, `upload-cache`,
-`guest-buffer-views` respectively); it drops `0x100`, `0x1000` and `0x10000` when it does not
+`guest-buffer-views`, `batched-descriptor-sets` respectively); it drops `0x100`, `0x1000` and `0x10000` when it does not
 grant `0x80`. An offer with unknown bits, one of those without `0x80`, or any other difference from the v4
 hello closes the local connection. A process falls back to offering fewer features.
+
+### Batched descriptor sets
+
+With `0x40000` the process allocates and writes descriptor sets itself. A descriptor
+pool asks the phone once, at creation, for the ids of its sets
+(`vkCollectDescriptorPoolIdsGOOGLE`); allocations, frees and writes then stay in the
+process. Just before a submit, on the same stream, one `vkQueueCommitDescriptorSetUpdatesGOOGLE`
+carries every set the submit's command buffers bind that was allocated or written since:
+the pending allocations (pool, layout and set id) and the writes, one descriptor each. The
+decoder's v4 allow-list admits this one queue command besides the submits, sparse binds and
+`vkQueueWaitIdle`; every other `vkQueue*` command stays forbidden. A phone that does not
+declare `batched-descriptor-sets` leaves the process on per-call `vkAllocateDescriptorSets`
+and `vkUpdateDescriptorSet*`. The process's first connection decides: a later executor that
+does not take batched sets cannot serve a process that uses them (its connection fails
+with `CABOOSE_GPU_CONNECT_FAILED`), while one that does serves a process that does not.
 
 ### Guest-assigned handles
 

@@ -69,6 +69,19 @@ int main(int argc, char** argv) {
     constexpr uint32_t restricted[] = {
 #include "v4-forbidden-opcodes.inc"
     };
+    // The batched descriptor-set commit is the one queue command added to the allow-list; the
+    // other GOOGLE queue commands stay rejected.
+    constexpr uint32_t kCommitDescriptorSets = 267932433u, kQueueFlushCommands = 20340u, kQueueHostSync = 20329u;
+    bool commit = false, flush = false, hostSync = false;
+    for (uint32_t opcode : restricted) {
+        commit |= opcode == kCommitDescriptorSets;
+        flush |= opcode == kQueueFlushCommands;
+        hostSync |= opcode == kQueueHostSync;
+    }
+    if (commit || !flush || !hostSync) {
+        std::fprintf(stderr, "v4 allow-list: commit=%d flush=%d host_sync=%d\n", commit, flush, hostSync);
+        return 1;
+    }
     for (uint32_t opcode : restricted) if (!run(opcode)) return 1;
     std::printf("real decoder rejected %zu restricted opcodes before entry\n", sizeof(restricted) / sizeof(restricted[0]));
     return 0;
