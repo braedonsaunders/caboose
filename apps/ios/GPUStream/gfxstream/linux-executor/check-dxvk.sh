@@ -25,6 +25,8 @@ mkdir -p "$out"; out=$(cd "$out" && pwd)
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$(cd "$here/../../../../.." && pwd)
 proton=${PROTON:-/opt/caboose-games/GE-Proton11-11/proton}
+# Steam inside its Flatpak (STEAM_ROOT), beside BENCH_DIR in the Flatpak data by default.
+steam=${STEAM_ROOT:-$(dirname "$bench")/.local/share/Steam}
 seconds=${SECONDS_RUNNING:-20}
 name=caboose-dxvk-check-$$
 dir=$bench/.check-$$
@@ -63,7 +65,7 @@ for case in phone unbatched older; do
     CABOOSE_GFXSTREAM_SOCKET=$dir/gpu-$case/gpu.sock CABOOSE_GFXSTREAM_SURFACE_SOCKET=$dir/gpu-$case/surface.sock \
     DXVK_LOG_LEVEL=info DXVK_LOG_PATH=none timeout $((seconds + 60)) flatpak run --env=VK_DRIVER_FILES=$dir/icd.json \
     --env=VK_ICD_FILENAMES=$dir/icd.json '--env=VK_LOADER_LAYERS_DISABLE=*' --command=sh com.valvesoftware.Steam -c '
-    export STEAM_COMPAT_DATA_PATH=$bench/compat/0 STEAM_COMPAT_CLIENT_INSTALL_PATH=\$HOME/.local/share/Steam
+    export STEAM_COMPAT_DATA_PATH=$bench/compat/0 STEAM_COMPAT_CLIENT_INSTALL_PATH=$steam
     mkdir -p $bench/compat/0
     exec $proton waitforexitandrun $bench/triangle.exe'" > "$out/$case.log" 2>&1 &
   sleep "$seconds"
