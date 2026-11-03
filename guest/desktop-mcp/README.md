@@ -339,7 +339,8 @@ Setting `CABOOSE_SPECIALIST_MODEL` in the desktop MCP process advertises
 The caller supplies `objective`, the currently focused agent `window`, and a `goal`
 with an exact control `name` and `role`, plus optional exact `value` or `state`.
 The goal is the completion contract; prose in the objective is not independently
-verified. Duplicate goal matches do not establish completion.
+verified. A goal may instead contain `all`, an array of 1–8 such conditions. All must hold
+in the same observation. Duplicate goal matches return `needs_clarification`.
 
 The controller observes controls, asks the model for one accessibility action,
 reobserves the target, executes through the existing batch validator, and observes
@@ -372,3 +373,23 @@ labels/layouts, verifies effects independently from the fixture's event log, and
 counts wrong-control actions. Its opt-in trace sink writes only generated fixture
 observations/actions to `/tmp/specialist-traces.jsonl`. The four microtasks do not
 establish general computer-use accuracy or weight-training gains.
+
+`check/specialist-cases.py --split train --count 400 --output cases.json` generates
+synthetic form workflows. The `validation` and `heldout` splits use disjoint labels
+and layout seeds; held-out forms add a third field. Run
+`check/specialist-workflow.sh CASES_JSON OUTPUT_JSONL [--model MODEL]` under the same
+disposable-container setup to measure multi-action completion, wrong controls,
+incorrect field values, premature submission and separate timing categories.
+The oracle writes explicit fixture traces alongside results. Save the fixture's
+`/tmp/workflow-effects.jsonl` as independent evidence.
+
+`node check/specialist-dataset.mjs INPUT_DIR OUTPUT_DIR` validates successful oracle
+results named `{train,validation,heldout}-results.jsonl` and their `.traces.jsonl`
+files, then exports chat training splits without mixing trajectories. Only generated
+fixture data belongs in this pipeline. `specialist-mlx-eval.py` replays observations
+through MLX and reports exact next-action agreement and latency; this is not closed-loop
+GUI success, and an alternative valid ordering can differ from the oracle.
+`specialist-mlx-train.py` wraps MLX LoRA with non-thinking templates, masked prompts,
+and a 5 GiB MLX allocation limit. It accepts the ordinary `mlx_lm.lora` arguments.
+Training requires a separate Python environment with `mlx-lm[train]`; these tools
+are development checks and are not installed in the guest product.

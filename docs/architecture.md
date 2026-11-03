@@ -2542,7 +2542,8 @@ owner and an agent never type into the same application at once.
 The desktop MCP process can opt into `computer_task` with
 `CABOOSE_SPECIALIST_MODEL`. A bounded model loop acts only on freshly observed
 accessibility IDs in one focused agent window and verifies the caller’s explicit
-control postcondition. Missing model service, changed focus, deadlines and
+control postcondition (or conjunction of up to eight conditions). Ambiguous
+completion controls return `needs_clarification`. Missing model service, changed focus, deadlines and
 unsupported visual tasks return control to the parent agent. The ordinary desktop
 tools remain available without phone inference; this does not change seat
 ownership, task takeover, or unattended computer lifetime. See the

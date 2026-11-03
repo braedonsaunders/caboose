@@ -38,7 +38,7 @@ test('unsupported accessibility requests visual escalation without clicking', as
 })
 test('ambiguous goal never counts as verified', async () => {
   const f = fixture({ observe: async () => ({ focused: 7, elements: [element, { ...element, id: 'other', value: 'ready' }] }), decide: async () => ({ action: 'escalate' }) })
-  assert.equal((await runSpecialist(task, f.options)).status, 'needs_visual')
+  assert.equal((await runSpecialist(task, f.options)).status, 'needs_clarification')
 })
 test('an unsuccessful action is not retried', async () => {
   let attempts = 0
@@ -60,4 +60,18 @@ test('raw trace is opt-in and observes actual effects', async () => {
   const traces = []; const f = fixture({ trace: row => traces.push(row) })
   await runSpecialist(task, f.options)
   assert.equal(traces.length, 1); assert.equal(traces[0].after[0].value, 'ready')
+})
+test('all completion conditions must hold in one observation', async () => {
+  const other = { id: 'toggle', name: 'Enabled', role: 'check box', states: [] }
+  const combined = { ...task, goal: { all: [task.goal, { name: 'Enabled', role: 'check box', state: 'checked' }] } }
+  const f = fixture({ observe: async () => ({ focused: 7, elements: [{ ...element, value: 'ready' }, other] }),
+    decide: async () => ({ action: 'click_element', id: 'toggle' }), act: async () => { other.states = ['checked'] } })
+  const r = await runSpecialist(combined, f.options)
+  assert.equal(r.status, 'verified'); assert.equal(r.evidence.length, 2); assert.equal(r.metrics.actions, 1)
+})
+test('failed model calls retain their latency and send no input', async () => {
+  let time = 0
+  const f = fixture({ now: () => time, decide: async () => { time = 700; throw new Error('unavailable') } })
+  const r = await runSpecialist(task, f.options)
+  assert.equal(r.status, 'interrupted'); assert.equal(r.metrics.modelMs, 700); assert.equal(r.metrics.actions, 0)
 })

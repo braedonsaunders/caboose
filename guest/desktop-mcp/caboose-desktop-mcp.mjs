@@ -302,7 +302,10 @@ if (process.env.CABOOSE_SPECIALIST_MODEL) {
     description: 'Delegate a bounded accessibility task in the currently focused agent window. Supply an objective and exact observable goal. Returns verified only after observing that goal; otherwise returns a structured failure or screenshot for the caller. At most 20 actions and 60 seconds. Does not run shell commands or choose arbitrary coordinates.',
     inputSchema: { type: 'object', properties: {
       objective: { type: 'string', maxLength: 2000 }, window: { type: 'integer', minimum: 1 },
-      goal: { type: 'object', properties: { name: { type: 'string' }, role: { type: 'string' }, value: { type: 'string' }, state: { type: 'string' } }, required: ['name', 'role'] },
+      goal: { anyOf: [
+        { type: 'object', properties: { name: { type: 'string' }, role: { type: 'string' }, value: { type: 'string' }, state: { type: 'string' } }, required: ['name', 'role'] },
+        { type: 'object', properties: { all: { type: 'array', minItems: 1, maxItems: 8, items: { type: 'object', properties: { name: { type: 'string' }, role: { type: 'string' }, value: { type: 'string' }, state: { type: 'string' } }, required: ['name', 'role'] } } }, required: ['all'] },
+      ] },
       maxActions: { type: 'integer', minimum: 1, maximum: 20, default: 8 },
     }, required: ['objective', 'window', 'goal'] },
   })
