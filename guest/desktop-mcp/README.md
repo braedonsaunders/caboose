@@ -258,6 +258,18 @@ Apps build an accessibility tree only when asked. The computer asks them through
   override), which at-spi-bus-launcher reports as `org.a11y.Status.IsEnabled`, so apps
   started without that environment still expose a tree;
 
+What `launch` starts also gets `XDG_SESSION_TYPE=wayland`: the seat is a Wayland session,
+and Chromium and Electron then run as Wayland clients rather than through Xwayland.
+
+`set_text` uses the toolkit's EditableText when the field then reads the new text. Where it
+does not (Chromium and Electron have none; Firefox's web fields accept it and change
+nothing), the field is focused through AT-SPI, or with the seat's pointer when that does not
+take, cleared only if it holds text, typed into once the clearing keys have landed (keys and
+an input method's text reach an application by different paths), and read back. A field
+that does not read the new text within a second says so in the reply. Element ids name a
+control by its place in the tree; when a page moves it, the one showing control of the
+window with the same role and name is used.
+
 `press` on an element without an action that is not on screen, and `set-text` on a field
 that cannot take focus, say so instead of pretending.
 

@@ -414,6 +414,9 @@ class XScreen:
     def origin(self, xid):
         return None
 
+    def x11(self, xid):
+        return False
+
     def popup_origin(self, pid, size):
         return None
 
@@ -535,11 +538,11 @@ class SeatScreen:
         if record is None:
             return None
         if record.get("x11"):
-            # Xwayland draws a scaled seat's X11 windows at its scale: their screen
-            # coordinates are the seat's logical ones times it.
-            scale = record.get("scale") or 1
-            return Scale(scale) if scale != 1 else None
+            return None
         return (record["surface"][0], record["surface"][1])
+
+    def x11(self, wid):
+        return bool((self.records.get(wid) or {}).get("x11"))
 
     def popup_origin(self, pid, size):
         """The surface origin of the Wayland popup of `pid` whose surface is `size` (w, h)."""
@@ -772,14 +775,19 @@ class Bus:
     def application(self, pid):
         if not self.address:
             return None
+        # A process can register more than once (Qt's bridge beside another toolkit's, one of
+        # them empty): the registration with windows is the application.
+        best, most = None, -1
         for index in range(self.desktop.get_child_count()):
             try:
                 app = self.desktop.get_child_at_index(index)
                 if app is not None and app.get_process_id() == pid:
-                    return app
+                    count = app.get_child_count()
+                    if count > most:
+                        best, most = app, count
             except Exception:
                 continue
-        return None
+        return best
 
 
 class ServedResult(Exception):
@@ -1107,8 +1115,8 @@ def match_frame(tree, app, screen, wid, active):
         except Exception:
             continue
         if role in tree.popup_roles and not name and tree.has(states, "SHOWING"):
-            if origin is None or isinstance(origin, Scale):
-                popups.append((index, top, tree.bounds(top, origin), origin))
+            if origin is None:
+                popups.append((index, top, tree.bounds(top), None))
             else:
                 size = tree.window_size(top)
                 at = screen.popup_origin(pid, size) if size else None
@@ -1134,14 +1142,36 @@ def match_frame(tree, app, screen, wid, active):
         best = showing[0]
     frame_index = best[0] if best else None
     popups = [popup for popup in popups if popup[0] != frame_index]
+    scale = x11_scale(screen, wid, tree, best[1]) if best else None
+    if scale is not None:
+        origin = scale
+        popups = [(index, top, tree.bounds(top, scale), scale) for index, top, _, _ in popups]
     return ((best[0], best[1], origin) if best else None), popups, rect
+
+
+def x11_scale(screen, wid, tree, top):
+    """For an X11 window on a scaled seat, how its accessible's screen coordinates relate to
+    the seat's: a Scale when the toolkit reports Xwayland's pixels (Chromium), None when it
+    reports the seat's logical ones already (Qt). Read off the window's own size."""
+    if not screen.x11(wid) or top is None:
+        return None
+    frame = screen.frame_rect(wid)
+    if not frame or frame["width"] <= 0 or frame["height"] <= 0:
+        return None
+    # The window's own extents, and those of its first child: Chromium reports its frame in
+    # the seat's pixels and everything inside it in Xwayland's.
+    sizes = [tree.window_size(top)] + [tree.window_size(child) for _, child in tree.children(top)[:1] if child is not None]
+    ratio = max([(w / frame["width"] + h / frame["height"]) / 2 for w, h in filter(None, sizes) if w > 0 and h > 0], default=1)
+    return Scale(ratio) if ratio > 1.25 else None
 
 
 def top_origin(screen, wid, pid, tree, top):
     """Where the top-level accessible `top` (the window, or one of its popups) is placed:
     None for screen coordinates."""
     origin = screen.origin(wid)
-    if origin is None or isinstance(origin, Scale) or top is None:
+    if screen.x11(wid):
+        return x11_scale(screen, wid, tree, top)
+    if origin is None or top is None:
         return origin
     size = tree.window_size(top)
     frame = screen.frame_rect(wid)
@@ -1464,24 +1494,25 @@ def act(display_name, element, action, text):
         except Exception:
             pass
         # Otherwise (Chromium's and Electron's fields have no EditableText): focus its window
-        # and the field, then replace the text with keys sent to that window. A field on screen
-        # is clicked with the seat's pointer, which gives the application keyboard focus the
-        # way a person does (an AT-SPI focus can leave an X11 browser's keyboard elsewhere);
-        # one off screen is focused through AT-SPI.
+        # and the field through AT-SPI, or with the seat's pointer at the field when that does
+        # not take, then replace the text with keys sent to that window.
         if not tree.has(states, "EDITABLE"):
             raise Failure("element is not editable")
         screen.activate(xid)
         bounds = tree.bounds(node, origin)
         on_screen = bounds is not None and tree.has(states, "SHOWING")
 
-        def focus():
-            if on_screen:
-                screen.click(xid, bounds["x"] + bounds["width"] // 2, bounds["y"] + bounds["height"] // 2)
-                return True
+        def grab():
             try:
                 return node.get_component_iface() is not None and tree.Atspi.Component.grab_focus(node)
             except Exception:
                 return False
+
+        def click():
+            if not on_screen:
+                return False
+            screen.click(xid, bounds["x"] + bounds["width"] // 2, bounds["y"] + bounds["height"] // 2)
+            return True
 
         def focused(seconds):
             # States are cached per process until an event says otherwise: read them fresh.
@@ -1493,8 +1524,7 @@ def act(display_name, element, action, text):
                 time.sleep(0.01)
             return True
 
-        # A window's first click can go to activating it: one more before giving up.
-        if not (focus() and focused(0.4)) and not (focus() and focused(0.4)):
+        if not (grab() and focused(0.4)) and not (click() and focused(0.4)):
             raise Failure("element did not take focus to type into")
         # Keys and typed text reach an application by different paths (key events; an input
         # method's commit), which it may handle out of order: the text goes in only once the

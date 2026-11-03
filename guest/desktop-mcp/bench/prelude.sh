@@ -9,7 +9,7 @@ mkdir -p "$HOME"
 SEAT=${SEAT:-/opt/caboose/seat.py}
 # Start an application on the agent seat as desktop MCP's launch does.
 start() {
-  ACCESSIBILITY_ENABLED=1 GNOME_ACCESSIBILITY=1 QT_LINUX_ACCESSIBILITY_ALWAYS_ON=1 \
+  ACCESSIBILITY_ENABLED=1 GNOME_ACCESSIBILITY=1 QT_LINUX_ACCESSIBILITY_ALWAYS_ON=1 XDG_SESSION_TYPE=wayland \
     setsid "$@" >>"$BENCH/app.log" 2>&1 < /dev/null &
 }
 # A form page whose submit sets the title to COMPLETE only when the expected values are in.
