@@ -41,8 +41,8 @@ static double now(void) {
 // as the driver's patches 0024, 0052, 0065 and 0066 build them).
 enum {
     kFormat = 20004, kImage = 20005, kFormat2 = 20149, kImage2 = 20150, kFormat2KHR = 20200, kImage2KHR = 20201,
-    kSemaphore = 20163, kProperties = 20006, kQueueFamilies = 20007, kMemory = 20008, kExtensions = 20014,
-    kFeatures2 = 20147, kProperties2 = 20148, kFeatures2KHR = 20198, kProperties2KHR = 20199, kMaxChain = 64,
+    kSemaphore = 20163, kProperties = 20006, kQueueFamilies = 20007, kExtensions = 20014,
+    kProperties2 = 20148, kProperties2KHR = 20199, kMaxChain = 64,
     kMaxQuestions = 8192, kProcesses = 8, kMaxIdentities = 16,
 };
 // A chained query's shape: each structure's sType and size, root first (capability_chains.h).
@@ -67,9 +67,7 @@ static PFN_vkGetPhysicalDeviceImageFormatProperties2KHR imageProperties2KHR;
 static PFN_vkGetPhysicalDeviceExternalSemaphoreProperties semaphoreProperties;
 static PFN_vkGetPhysicalDeviceProperties deviceProperties;
 static PFN_vkGetPhysicalDeviceQueueFamilyProperties queueFamilies;
-static PFN_vkGetPhysicalDeviceMemoryProperties memoryProperties;
 static PFN_vkEnumerateDeviceExtensionProperties deviceExtensions;
-static PFN_vkGetPhysicalDeviceFeatures2 features2, features2KHR;
 static PFN_vkGetPhysicalDeviceProperties2 properties2, properties2KHR;
 
 // Builds the recorded chain in zeroed memory and asks it as recorded.
@@ -90,9 +88,7 @@ static void ask_chain(VkPhysicalDevice device, const Question* q) {
         previous = link;
         at += (q->chain[i].size + 15) & ~(size_t)15;
     }
-    if (q->op == kFeatures2) features2(device, (VkPhysicalDeviceFeatures2*)memory);
-    else if (q->op == kFeatures2KHR) features2KHR(device, (VkPhysicalDeviceFeatures2*)memory);
-    else if (q->op == kProperties2) properties2(device, (VkPhysicalDeviceProperties2*)memory);
+    if (q->op == kProperties2) properties2(device, (VkPhysicalDeviceProperties2*)memory);
     else properties2KHR(device, (VkPhysicalDeviceProperties2*)memory);
     free(memory);
 }
@@ -137,8 +133,7 @@ static void read_log(const char* path) {
         memcpy(&question.op, query, 4);
         uint32_t fields[5] = {0};
         if (length > 4 && length - 4 <= sizeof(fields)) memcpy(fields, query + 4, length - 4);
-        const int chained = question.op == kFeatures2 || question.op == kProperties2 ||
-                            question.op == kFeatures2KHR || question.op == kProperties2KHR;
+        const int chained = question.op == kProperties2 || question.op == kProperties2KHR;
         switch (question.op) {
         case kFormat: if (length != 8) continue; question.format = fields[0]; break;
         case kFormat2: case kFormat2KHR: if (length != 12) continue;
@@ -150,7 +145,7 @@ static void read_log(const char* path) {
             // handle type, whether a semaphore type is chained, the type, its initial value
             question.usage = fields[0]; question.three = fields[1]; question.type = fields[2];
             memcpy(&question.initial, &fields[3], 8); break;
-        case kProperties: case kMemory: if (length != 4) continue; break;
+        case kProperties: if (length != 4) continue; break;
         case kQueueFamilies: case kExtensions: if (length != 8) continue; question.usage = fields[0]; break;
         default:
             if (!chained || length < 12 || (length - 4) % 8 || (length - 4) / 8 > kMaxChain) continue;
@@ -178,9 +173,6 @@ static void ask(size_t first, size_t step) {
             } else if (q->op == kProperties) {
                 VkPhysicalDeviceProperties value;
                 deviceProperties(devices[d], &value);
-            } else if (q->op == kMemory) {
-                VkPhysicalDeviceMemoryProperties value;
-                memoryProperties(devices[d], &value);
             } else if (q->op == kQueueFamilies || q->op == kExtensions) {
                 uint32_t count = q->usage;
                 const size_t each = q->op == kQueueFamilies ? sizeof(VkQueueFamilyProperties) : sizeof(VkExtensionProperties);
@@ -250,17 +242,13 @@ static int ask_share(size_t first, size_t step) {
     semaphoreProperties = (PFN_vkGetPhysicalDeviceExternalSemaphoreProperties)proc(instance, "vkGetPhysicalDeviceExternalSemaphoreProperties");
     deviceProperties = (PFN_vkGetPhysicalDeviceProperties)proc(instance, "vkGetPhysicalDeviceProperties");
     queueFamilies = (PFN_vkGetPhysicalDeviceQueueFamilyProperties)proc(instance, "vkGetPhysicalDeviceQueueFamilyProperties");
-    memoryProperties = (PFN_vkGetPhysicalDeviceMemoryProperties)proc(instance, "vkGetPhysicalDeviceMemoryProperties");
     deviceExtensions = (PFN_vkEnumerateDeviceExtensionProperties)proc(instance, "vkEnumerateDeviceExtensionProperties");
-    features2 = (PFN_vkGetPhysicalDeviceFeatures2)proc(instance, "vkGetPhysicalDeviceFeatures2");
-    features2KHR = (PFN_vkGetPhysicalDeviceFeatures2)proc(instance, "vkGetPhysicalDeviceFeatures2KHR");
     properties2 = (PFN_vkGetPhysicalDeviceProperties2)proc(instance, "vkGetPhysicalDeviceProperties2");
     properties2KHR = (PFN_vkGetPhysicalDeviceProperties2)proc(instance, "vkGetPhysicalDeviceProperties2KHR");
     PFN_vkDestroyInstance destroy = (PFN_vkDestroyInstance)proc(instance, "vkDestroyInstance");
     if (!enumerate || !properties || !formatProperties || !formatProperties2 || !imageProperties || !imageProperties2 ||
         !formatProperties2KHR || !imageProperties2KHR || !semaphoreProperties || !deviceProperties ||
-        !queueFamilies || !memoryProperties || !deviceExtensions || !features2 || !features2KHR ||
-        !properties2 || !properties2KHR ||
+        !queueFamilies || !deviceExtensions || !properties2 || !properties2KHR ||
         enumerate(instance, &deviceCount, NULL) != VK_SUCCESS || !deviceCount) {
         if (destroy) destroy(instance, NULL);
         return 1;

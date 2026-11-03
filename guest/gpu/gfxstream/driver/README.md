@@ -136,7 +136,7 @@ Each patch is one feature. Several change Mesa's generated encoder
 | 0063 presentation-retirement | Retains pending frames asynchronously and retires native IDs after ordered presentation, while completing guest allocator cleanup synchronously |
 | 0064 persistent-physical-capabilities | Exact format/image-format answers shared across processes, scoped to the current backend, driver, protocol and guest source identity; unsafe or corrupt files fall back to real queries |
 | 0065 external-semaphore-capabilities | A device's external-semaphore answers (empty chain, or exactly a semaphore type) join the same per-session capability cache; the tracker's adjustment applies to cached and asked answers alike |
-| 0066 device-constant-capabilities | Physical-device properties and features (with chains of known, pointer-free structures), queue families, memory properties and the device's extension list join the per-session capability cache (`../bounded-memory/capability_chains.h`); the first properties query in a process is still asked |
+| 0066 device-constant-capabilities | Physical-device properties (with chains of known, pointer-free structures), queue families and the device's extension list join the per-session capability cache (`../bounded-memory/capability_chains.h`); the first properties query in a process is still asked. Features and memory properties are not shared: the encoder adjusts them per process |
 
 The patch messages describe each change. To change the driver, prepare a tree, commit
 the prepared state, edit, and regenerate the affected patch with `git format-patch`

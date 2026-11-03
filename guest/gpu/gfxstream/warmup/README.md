@@ -19,8 +19,8 @@ pay one round trip per capability question.
   where it is the copy in the "host" GL extension.
 - `caboose-gpu-warmup --replay LOG...` reads the questions recorded in earlier sessions'
   logs, with checksummed records only: format, image-format and external-semaphore queries,
-  physical-device properties and features (each chain rebuilt from the sTypes and sizes in
-  its key), queue families, memory properties and the device's extension list.
+  physical-device properties (each chain rebuilt from the sTypes and sizes in its key),
+  queue families and the device's extension list.
   Eight processes ask the new executor all of them, each taking a share; the executor
   answers separate processes side by side. Answers are never carried over from an earlier
   session, only which questions were asked. It asks only devices whose name appears in a
@@ -66,5 +66,6 @@ broker's log shows each warm-up's `CABOOSE_GPU_WARMUP` line.
 
 A GL start still makes the round trips the cache cannot cover: instance creation and
 enumeration, its first physical-device properties query (which identifies the device),
-device creation and descriptor-layout support. A short-lived process that starts GL just
+features and memory properties (which the driver adjusts per process), device creation and
+descriptor-layout support. A short-lived process that starts GL just
 before it exits still pays them.

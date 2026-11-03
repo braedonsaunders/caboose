@@ -6,16 +6,15 @@
 #include <string>
 
 namespace caboose::memory {
-// Physical-device answers that are a root structure and its pNext chain (properties and
-// features), kept by the static query cache as plain bytes. The key holds the chain's
+// Physical-device answers that are a root structure and its pNext chain (properties),
+// kept by the static query cache as plain bytes. The key holds the chain's
 // shape: each structure's sType and size, root first, so an answer only ever fills a chain
 // of exactly the same structures, and a replay can rebuild the chain from the key alone.
 // The answer holds every structure's members after sType and pNext.
 using ChainSize = size_t (*)(VkStructureType root, const void* extension);
 
 // Structures extending VkPhysicalDeviceProperties2 whose members point into application
-// memory (from the Vulkan registry the driver is built from; no VkPhysicalDeviceFeatures2
-// extension has any). A chain holding one is always asked.
+// memory (from the Vulkan registry the driver is built from). A chain holding one is always asked.
 inline bool chainPointerFree(VkStructureType type) {
     switch (type) {
     case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_LAYERED_API_PROPERTIES_LIST_KHR:
