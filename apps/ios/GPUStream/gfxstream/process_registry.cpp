@@ -16,11 +16,8 @@
 #include <string>
 #include <thread>
 #include <cerrno>
-#include <cstdint>
-#ifdef CABOOSE_GPU_MEMORY_AUDIT
-#include <cstdio>
 #include <cinttypes>
-#endif
+#include <cstdint>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -283,6 +280,15 @@ static int runProcess(caboose_gfx_registry* registry, uint64_t puid, int fd,
             // the TLS object is destroyed before that lock is released.
             if (result != 0) shutdown(fd, SHUT_RDWR);
             lock.lock();
+            // A command the decoder refused is device loss for the whole process: its other
+            // streams end too, so the guest sees the loss on each (docs/gpu-live.md,
+            // "Invalid commands"). The runtime and every other process go on.
+            if (result == caboose::gpuv2::kGuestFaultResult) {
+                std::fprintf(stderr, "CABOOSE_GPU_PROCESS_LOST token=%" PRIu64 " context=%u streams=%zu\n",
+                             puid, process->context, process->sockets.size());
+                for (int other : process->sockets)
+                    if (other != fd) shutdown(other, SHUT_RDWR);
+            }
             threadInfo.setProcessResources(nullptr);
             threadInfo.setPuid(0);
             caboose::gpuv2::currentDecodeProgress() = nullptr;

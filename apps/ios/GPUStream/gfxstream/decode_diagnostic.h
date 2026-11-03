@@ -9,7 +9,7 @@ namespace caboose::gpuv2 {
 enum class DecodeStage : uint32_t {
     validation = 1, flags = 2, input = 3, profile = 4, framing = 5,
     unsupportedFrame = 6, decoder = 7, consumption = 8, flush = 9,
-    allocation = 10, stopped = 11, eof = 12, exception = 13,
+    allocation = 10, stopped = 11, eof = 12, exception = 13, guestInput = 14,
 };
 struct DecodeDiagnostic {
     DecodeStage stage = DecodeStage::validation;

@@ -2,6 +2,7 @@
 // Real decoder/provider socketpair regression. Run under an external watchdog.
 #include "native_runtime.h"
 #include "socket_stream.h"
+#include "decode_connection.h"
 #include "decode_diagnostic.h"
 #include <cerrno>
 #include <cstdint>
@@ -106,6 +107,40 @@ bool runCase(const char* label, size_t flagsBytes, size_t packetBytes,
     std::printf("%s passed (result=%d)\n", label, result);
     return true;
 }
+// A command naming a device the decoder never created: the decoder refuses it without
+// running it, the stream ends with kGuestFaultResult, and the runtime goes on.
+bool runGuestFault() {
+    uint64_t token = 0;
+    if (caboose_gpu_runtime_open(&token)) return false;
+    int fd[2];
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, fd)) return false;
+    const uint32_t flags = 0;
+    // Pinned vkDestroySampler: opcode, length, device, sampler, then a null pAllocator.
+    const uint32_t packet[] = {20071, 32, 0x00000001u, 0xCA000001u, 0x00000002u, 0xCA000001u, 0, 0};
+    bool ok = sendAll(fd[0], &flags, sizeof(flags)) && sendAll(fd[0], packet, sizeof(packet));
+    int result = EIO;
+    caboose::gpuv2::DecodeDiagnostic diagnostic;
+    std::thread worker([&] {
+        result = caboose_gpu_runtime_run(token, fd[1], 65536, 65536);
+        diagnostic = caboose::gpuv2::lastDecodeDiagnosticForTesting();
+    });
+    // The decoder ends the stream itself; nothing is written back.
+    unsigned char byte = 0;
+    const bool ended = recv(fd[0], &byte, 1, 0) == 0;
+    worker.join();
+    close(fd[0]);
+    close(fd[1]);
+    const int stop = caboose_gpu_runtime_stop(token);
+    const int finish = stop ? stop : caboose_gpu_runtime_finish(token);
+    if (!ok || !ended || result != caboose::gpuv2::kGuestFaultResult || finish ||
+        diagnostic.stage != caboose::gpuv2::DecodeStage::guestInput || diagnostic.opcode != 20071) {
+        std::fprintf(stderr, "guest fault result=%d ended=%d cleanup=%d io=%d stage=%u opcode=%u\n",
+                     result, ended, finish, ok, static_cast<unsigned>(diagnostic.stage), diagnostic.opcode);
+        return false;
+    }
+    std::printf("unknown device refused (result=%d)\n", result);
+    return true;
+}
 }
 int main(int argc, char** argv) {
     if (argc != 2) return 2;
@@ -120,6 +155,8 @@ int main(int argc, char** argv) {
         if (!runCase("truncated header/body", 4, n, EPROTO, false)) return 1;
     if (!runCase("query then EOF and reply", 4, 12, 0, true)) return 1;
     if (!runCase("closed peer before decoder entry", 4, 12, 0, false, true)) return 1;
+    if (!runGuestFault()) return 1;
+    if (!runCase("query after a refused command", 4, 12, 0, true)) return 1;
     int fd[2];
     if (socketpair(AF_UNIX, SOCK_STREAM, 0, fd)) return 1;
     caboose::gpuv2::SocketStream stream(fd[1], 4096);

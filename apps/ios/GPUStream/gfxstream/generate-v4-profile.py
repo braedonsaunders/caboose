@@ -7,12 +7,12 @@ from pathlib import Path
 
 PIN = 'f0ce013371a68e85b5a1a1b0cf14ac9ad729f4be'
 PRISTINE_DECODER = '5d1e1b5e5603e4f05aa72f11002beb37e3e258ae5f67f66b176d3848574a56a7'
-PATCHED_DECODER = '6c40153db55ce276d98e9bdc5983bb4231baa50d281bd268b74783034569b584'
+PATCHED_DECODER = '0badee02d73dab5935eb720732cb821a1ad57d2597c36ada84de92467e4b61fe'
 MARSHALING = '2174da9a4aaf50d228c36537c6b6fc3c66ccec8e8ce1c6c761e225da1488a302'
 PATCHED_INPUTS = {
     'host/vulkan/vk_decoder_global_state.cpp': '5cf20f6c1cbcf96ca1fbaad7853309fe0c777dc77f4bc49ef3f5e2f16edaa89d',
     'host/vulkan/vk_decoder_global_state.h': 'ad7c64a4154b1c59819d116c93c16a34a5327bbde19e5fbea9955d8bd1f85025',
-    'host/vulkan/vk_decoder_internal_structs.h': 'd08b344afa298426beb7a8ce8ac0c4b2bbfd835b17ccef4c64e966ce463fbc8f',
+    'host/vulkan/vk_decoder_internal_structs.h': '659f26ccfba079d5ad1ec8637ae8cac89161921115624ceb23a3796a4485173d',
     'host/vulkan/caboose_guest_gpu_completion.h': '4729d0b4ceac83b8304eabf709d2e9346a9c48b4d1ad5275cc52b9c6127e8c4d',
     'host/features/include/gfxstream/host/features.h': '8c4e029e5717c102711a278c912dc9f1062b97155194f34cbcc1efede7c2c59b',
 }

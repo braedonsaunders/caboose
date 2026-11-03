@@ -236,6 +236,20 @@ assigned never fails for lack of pool space: when the application's pool reports
 sets from an overflow pool it creates with the same flags and sizes. Overflow pools are
 reset and destroyed with their application pool, and their sets are freed back to them.
 
+### Invalid commands
+
+Nothing a process sends ends the phone's runtime or another process. A command the
+decoder cannot run as sent is refused unrun: one naming a handle the decoder does not
+hold (a create that failed, an object already destroyed) or naming it as another kind
+of object, a guest-assigned handle already in use, an unknown structure, a malformed
+stream. The phone prints `CABOOSE_GPU_GUEST_FAULT context=… opcode=… reason="…"` and
+`CABOOSE_GPU_PROCESS_LOST`, and ends every stream of that process. The process reads
+the end as the loss of its device (`CABOOSE_GPU_EXECUTOR_LOST`): its calls return
+`VK_ERROR_DEVICE_LOST` from then on, and an application that recovers creates a new
+instance. Its objects are released when it retires, as for any process; every other
+process on the executor goes on. The broker treats a process socket that ends while
+replies are pending as closed, so that loss never ends the executor session.
+
 ### Completion feed
 
 With `0x200`, the process opens one more local stream with the same hello. After the
@@ -342,8 +356,9 @@ creating the module, and keeps the code of every module it creates from code, on
 if the file cannot be written, in memory. Nothing is removed while the app runs, so every
 key an inventory listed and every module created from code stays resolvable; the store is
 trimmed to 256 MiB and 16384 modules, least recently used first, when the app next opens
-it. A token the decoder cannot resolve (a damaged file) fails that module's creation; with
-guest-assigned handles that is device loss for the process. A new executor connection
+it. A token the decoder cannot resolve (a damaged file, or an executor without a store) fails
+that module's creation; with guest-assigned handles that is device loss for the process
+([Invalid commands](#invalid-commands)). A new executor connection
 discards what the process knew, and it asks again.
 
 The decoder seeds that cache into every `VkPipelineCache` an application creates, so the

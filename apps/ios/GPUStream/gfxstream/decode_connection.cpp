@@ -15,14 +15,15 @@
 #include "gfxstream/host/GfxApiLogger.h"
 #include <cerrno>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
+#include <exception>
 #include <limits>
 #include <new>
 #include <vector>
 #ifdef CABOOSE_GPU_MEMORY_AUDIT
 #include "decode_timing_aggregate.h"
 #include <chrono>
-#include <cstdio>
 #endif
 
 namespace caboose::gpuv2 {
@@ -401,7 +402,20 @@ int decodeConnection(int fd, size_t max_packet, size_t max_reply_buffer,
             }
         }
     } catch (const std::bad_alloc&) { return finish(DecodeStage::allocation, ENOMEM); }
-      catch (...) { finish(DecodeStage::exception, EIO); throw; }
+      catch (const std::exception& fault) {
+        // The decoder refused a command it could not run (gfxstream's GuestInputFault: an
+        // unknown or mistyped handle, an unknown structure, a malformed stream) without
+        // running it. That ends this guest process's device, never the runtime.
+        uint32_t opcode = 0;
+        if (diagnostic && diagnostic->headerPresent) opcode = diagnostic->opcode;
+        if (DecodeProgress* progress = currentDecodeProgress()) opcode = progress->opcode.load();
+        std::fprintf(stderr, "CABOOSE_GPU_GUEST_FAULT context=%u opcode=%u reason=\"%s\"\n",
+                     contextId, opcode, fault.what());
+        return finish(DecodeStage::guestInput, kGuestFaultResult);
+    } catch (...) {
+        std::fprintf(stderr, "CABOOSE_GPU_GUEST_FAULT context=%u reason=\"unknown exception\"\n", contextId);
+        return finish(DecodeStage::guestInput, kGuestFaultResult);
+    }
     return finish(DecodeStage::stopped, 0);
 }
 }

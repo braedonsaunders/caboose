@@ -70,8 +70,19 @@ length. `packet_framing.*` buffers its null-`pNext` metadata and complete range
 payloads before entering the decoder once. Unknown opcodes, malformed framing,
 unsupported flush extensions and zero decoder progress terminate the connection.
 `decoder-opcodes.inc` is generated from hash-verified pinned decoder source.
-General generated field unmarshalling and object handles are not validated by
-this framing check. This is not a safe public endpoint for hostile payloads.
+
+Inside the decoder, nothing a guest sends aborts the runtime (fork change
+`guest-input-never-fatal`). The decoder holds a guest-input scope while it decodes, and
+there gfxstream's fatal conditions throw instead of aborting: an unknown handle (of any
+kind but `VkFence`, which the decoder treats as no fence), a handle named as another kind
+of object than it was created as, a guest-assigned handle already in use, an unknown
+structure or command-buffer opcode, a malformed stream or a failed pool allocation. The
+command is dropped unrun; `decodeConnection` prints `CABOOSE_GPU_GUEST_FAULT`, ends the
+stream with `kGuestFaultResult` (`EBADMSG`), and the registry ends the process's other
+streams too (`CABOOSE_GPU_PROCESS_LOST`), which is device loss for that process alone.
+Generated field unmarshalling reads the packet without bounds checks, so a packet whose
+declared counts and sizes exceed its own length is still read past its end: the endpoint
+is for the Caboose guest driver, not for arbitrary hostile payloads.
 
 The GPU-independent fragmentation fixture covers every prefix of a two-range
 flush, with and without sequence numbers, and rejects unknown opcodes and
@@ -83,6 +94,12 @@ c++ -std=c++17 -I apps/ios/GPUStream/gfxstream \
   apps/ios/GPUStream/gfxstream/packet_framing.cpp -o /tmp/caboose-framing-test
 /tmp/caboose-framing-test
 ```
+
+The runtime fixtures (`-DCABOOSE_GFXSTREAM_RUNTIME_TESTS=ON`) include
+`caboose_gpu_native_stream_eof LOADER`, which, among its end-of-stream cases, sends a command
+naming a device the decoder never created and requires the refusal (`kGuestFaultResult`,
+stage `guestInput`), clean process cleanup and a working runtime afterwards. On Linux it
+builds beside the executor (`linux-executor/`) and runs against lavapipe's loader.
 
 The standalone framing fixture passes on macOS with assertions enabled. It does
 not invoke the upstream decoder or validate arbitrary Vulkan command fields;
@@ -184,7 +201,8 @@ registry destruction and framebuffer finalization against every API call. A run
 call uses one socket on its calling thread. Stop revokes admission, signals guest
 process death and shuts down active sockets. Finish rejects processes with active
 runs; destruction waits for upstream asynchronous cleanup. A connection error is
-returned to its caller and does not stop unrelated processes. The registry is linked into the iOS reference and its two-process lifecycle is
+returned to its caller and does not stop unrelated processes; a refused command
+(`kGuestFaultResult`) also ends that process's other connections. The registry is linked into the iOS reference and its two-process lifecycle is
 exercised by the Linux reference. The bounded physical-phone fixture observes decoder cleanup before process termination;
 this does not establish retirement of future presentation resources.
 
