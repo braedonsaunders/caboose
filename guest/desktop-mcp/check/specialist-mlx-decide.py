@@ -54,8 +54,10 @@ class Decider:
         probabilities = mx.softmax(allowed.astype(mx.float32))
         mx.eval(probabilities)
         self.tokens = ids
+        ranked = sorted(probabilities.tolist(), reverse=True)
         choice = int(mx.argmax(probabilities).item())
-        return {'revision': request.get('revision'), 'choice': choice, 'confidence': round(float(probabilities[choice].item()), 4),
+        # `margin`: the chosen letter's probability less the runner-up's, the fast path's confidence.
+        return {'revision': request.get('revision'), 'choice': choice, 'confidence': round(ranked[0], 4), 'margin': round(ranked[0] - ranked[1], 4),
                 'elapsedMs': (time.perf_counter() - started) * 1000, 'promptTokens': len(ids), 'cachedTokens': common}
 
 

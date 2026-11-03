@@ -1,9 +1,11 @@
 // Real applications, real trajectories: each case launches its application in a fresh home,
 // runs the product controller (runSpecialist) with the oracle or --choices, and checks the
-// effect independently (window title or control state, plus the file it wrote).
+// effect independently (window title or control state, plus the file it wrote). A case
+// without a goal is one stage of a longer task, recorded for its steps: the oracle run is
+// complete when every oracle step was taken and the effect check passes.
 // usage: node specialist-apps.mjs CASES OUTPUT [--choices]
-import { spawn } from 'node:child_process'
-import { readFile, appendFile, mkdir, rm, writeFile } from 'node:fs/promises'
+import { spawn, spawnSync } from 'node:child_process'
+import { readFile, appendFile, mkdir, rm, stat, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { Worker } from '../worker.mjs'
 import { actionChoices, choiceDecision } from '../choices.mjs'
@@ -35,18 +37,22 @@ try {
     for (const dir of ['.config', '.local', '.cache', 'Documents']) await rm(join(home, dir), { recursive: true, force: true })
     for (const [path, content] of Object.entries(spec.files)) { await mkdir(dirname(join(home, path)), { recursive: true }); await writeFile(join(home, path), content) }
     const app = spawn(spec.app, spec.args, { env, detached: true, stdio: 'ignore' })
+    const appId = spec.app_id ?? spec.app
     let window
     for (let retry = 0; retry < 150 && !window; retry++) {
       await sleep(100)
       const listing = await call(seat, { args: ['windows'] }).catch(() => ({ windows: [] }))
-      window = listing.windows.find(w => w.kind === 'toplevel' && w.app_id === spec.app && w.focused && w.title)
+      window = listing.windows.find(w => w.kind === 'toplevel' && w.app_id === appId && w.focused && w.title)
     }
-    let result, oracleStep = 0
+    let result, oracleStep = 0, waited = 0
     if (!window) result = { status: 'interrupted', reason: 'application window did not appear', metrics: {} }
     else {
       await sleep(400)
-      const task = { objective: spec.objective, goal: spec.goal, window: window.id, maxActions: 12, ...(spec.values.length ? { values: spec.values } : {}) }
+      const task = { objective: spec.objective, goal: spec.goal ?? { title: '(one stage of a longer task)' }, window: window.id, maxActions: 12, ...(spec.values.length ? { values: spec.values } : {}) }
       const policy = choices ? choiceDecision(process.env.CABOOSE_SPECIALIST_ENDPOINT) : async observation => {
+        if (!spec.goal && oracleStep === spec.oracle.length) return { action: 'blocked', reason: 'oracle complete' }
+        // After its last step the oracle lets a goal that shows asynchronously (a page's title) arrive.
+        if (oracleStep === spec.oracle.length && waited++ < 10) return { action: 'wait' }
         const pattern = new RegExp(spec.oracle[oracleStep] ?? '^$')
         const chosen = actionChoices(observation).candidates.find(c => pattern.test(c.label))
         if (!chosen) return { action: 'blocked', reason: `oracle step ${oracleStep} has no matching choice` }
@@ -65,16 +71,22 @@ try {
     }
     let checked = true
     if (spec.check?.file) checked = await readFile(join(home, spec.check.file), 'utf8').then(text => text.replace(/\n$/, '') === spec.check.content, () => false)
-    const completed = result.status === 'verified' && checked
+    if (spec.check?.dir) checked = await stat(join(home, spec.check.dir)).then(s => s.isDirectory(), () => false)
+    const completed = checked && (result.status === 'verified' || (!choices && !spec.goal && result.reason === 'oracle complete'))
     // A failure records the seat's windows, so focus and ownership problems can be read back.
     const windows = completed ? undefined : (await call(seat, { args: ['windows'] }).catch(() => ({}))).windows?.map(w => ({ id: w.id, parent: w.parent, kind: w.kind, pid: w.pid, app: w.app_id, title: w.title, focused: w.focused }))
     await appendFile(output, JSON.stringify({ split: spec.split, case: index, family: spec.family, model: choices ? 'choices' : 'oracle', task: window?.id, ...result, checked, completed, ...(windows ? { windows } : {}) }) + '\n')
     if (!completed) process.exitCode = 1
     try { process.kill(-app.pid, 'SIGTERM') } catch {}
+    // An application may hand its window to an existing or forked process.
+    for (const w of (await call(seat, { args: ['windows'] }).catch(() => ({ windows: [] }))).windows)
+      if (w.app_id === appId && w.pid) try { process.kill(w.pid, 'SIGTERM') } catch {}
     for (let retry = 0; retry < 50; retry++) {
       const listing = await call(seat, { args: ['windows'] }).catch(() => ({ windows: [] }))
-      if (!listing.windows.some(w => w.app_id === spec.app)) break
+      if (!listing.windows.some(w => w.app_id === appId)) break
       await sleep(100)
     }
+    // Settings an application keeps outside the case's home (its settings daemon) are reset.
+    if (spec.reset) spawnSync(spec.reset[0], spec.reset.slice(1), { env, stdio: 'ignore', timeout: 5000 })
   }
 } finally { a11y.close(); seat.close() }

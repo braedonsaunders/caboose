@@ -836,7 +836,7 @@ class Tree:
             "BLOCK_QUOTE", "ARTICLE", "FOOTER", "HEADER", "LANDMARK", "PANEL", "SEPARATOR", "DOCUMENT_WEB",
             "DOCUMENT_FRAME", "DOCUMENT_TEXT", "FILLER", "TOOL_BAR", "MENU_BAR", "PAGE_TAB_LIST", "GROUPING",
             "DESCRIPTION_LIST", "DESCRIPTION_TERM", "DESCRIPTION_VALUE", "CAPTION", "COMMENT", "FOOTNOTE")
-        self.press_actions = ("click", "press", "activate", "jump", "toggle", "open")
+        self.press_actions = ("click", "press", "activate", "jump", "toggle", "open", "check", "uncheck")
         # Selectable items a toolkit gives no action (GTK 3 notebook tabs): on screen, a press is
         # the seat's pointer at their coordinates.
         self.pointer_roles = _roles(Atspi, "PAGE_TAB", "LIST_ITEM", "TREE_ITEM")
