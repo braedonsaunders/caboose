@@ -2,8 +2,10 @@
 // supervised actions; --model uses exactly the product specialist protocol.
 import { readFile, appendFile } from 'node:fs/promises'
 import { Worker } from '../worker.mjs'
+import { choiceDecision } from '../choices.mjs'
 import { runSpecialist, phoneDecision } from '../specialist.mjs'
 const [casesPath, fixturePid, output] = process.argv.slice(2)
+const choices = process.argv.includes('--choices')
 const model = process.argv.includes('--model') ? process.argv[process.argv.indexOf('--model') + 1] : undefined
 const cases = JSON.parse(await readFile(casesPath, 'utf8'))
 const a11y = new Worker(new URL('../a11y.py', import.meta.url).pathname, ['--display=:101'], 10_000)
@@ -26,13 +28,13 @@ try {
       await new Promise(r => setTimeout(r, 50))
     }
     if (initial.window?.title !== `Specialist case ${index}`) throw new Error('fixture did not advance')
-    const task = { objective: spec.objective, goal: spec.goal, window: initial.focused, maxActions: 8 }
+    const task = { objective: spec.objective, goal: spec.goal, window: initial.focused, maxActions: 8, ...(choices ? { values: spec.fields } : {}) }
     let wrongTextActions = 0
     let perturb = !!spec.stale
     const options = {
       observe,
       decide: async (observation, signal) => {
-        const policy = model ? phoneDecision(model, process.env.CABOOSE_SPECIALIST_ENDPOINT) : async ({ elements }) => {
+        const policy = choices ? choiceDecision(process.env.CABOOSE_SPECIALIST_ENDPOINT) : model ? phoneDecision(model, process.env.CABOOSE_SPECIALIST_ENDPOINT) : async ({ elements }) => {
         for (const field of spec.fields) {
           const element = elements.find(e => e.name === field.name && e.role === 'text')
           if (element?.value !== field.value) return { action: 'set_text', id: element?.id, text: field.value }
@@ -58,10 +60,10 @@ try {
           const field = spec.fields.find(f => f.name === target?.name)
           if (!field || action.text !== field.value) wrongTextActions++
         }
-        const r = await call(a11y, { op: 'act', element: action.id, action: action.action === 'set_text' ? 'set-text' : 'press', ...(action.text !== undefined ? { text: action.text } : {}) })
+        const r = await call(a11y, { op: 'act', element: action.id, action: action.action === 'set_text' ? 'set-text' : action.action === 'focus_element' ? 'focus' : 'press', ...(action.text !== undefined ? { text: action.text } : {}) })
         if (!r.ok) throw new Error('action outcome unknown')
       },
-      trace: row => appendFile(output + '.traces.jsonl', JSON.stringify({ split: spec.split, case: index, policy: model ?? 'oracle', ...row }) + '\n'),
+      trace: row => appendFile(output + '.traces.jsonl', JSON.stringify({ split: spec.split, case: index, policy: choices ? 'choices' : model ?? 'oracle', ...row }) + '\n'),
     }
     let result = await runSpecialist(task, options)
     let staleResult
@@ -72,7 +74,7 @@ try {
     const effects = (await readFile('/tmp/workflow-effects.jsonl', 'utf8')).split('\n').filter(Boolean).map(JSON.parse).filter(e => e.case === index)
     const wrongActions = wrongTextActions + effects.filter(e => e.event === 'wrong_control' || e.event === 'submit' && !e.correct).length
     const completed = spec.ambiguous ? result.status === 'needs_clarification' && result.metrics.actions === 0 : result.status === 'verified' && effects.some(e => e.event === 'submit' && e.correct) && (!spec.stale || staleResult.status === 'rejected' && staleResult.metrics.actions === 0)
-    await appendFile(output, JSON.stringify({ split: spec.split, case: index, model: model ?? 'oracle', ...result, ...(staleResult ? { staleResult } : {}), completed, wrongActions }) + '\n')
+    await appendFile(output, JSON.stringify({ split: spec.split, case: index, model: choices ? 'choices' : model ?? 'oracle', ...result, ...(staleResult ? { staleResult } : {}), completed, wrongActions }) + '\n')
     if (!completed || wrongActions) process.exitCode = 1
     process.kill(Number(fixturePid), 'SIGUSR1')
   }

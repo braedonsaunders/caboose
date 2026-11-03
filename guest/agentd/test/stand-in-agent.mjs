@@ -56,7 +56,7 @@ function modelState(session) {
 }
 const sessions = new Map()
 const sessionFile = id => join(state, `session-${id}.json`)
-const save = session => writeFileSync(sessionFile(session.id), JSON.stringify({ id: session.id, history: session.history, mcp: session.mcp, model: session.model, desktopSpecialist: session.desktopSpecialist }))
+const save = session => writeFileSync(sessionFile(session.id), JSON.stringify({ id: session.id, history: session.history, mcp: session.mcp, model: session.model, desktopSpecialist: session.desktopSpecialist, desktopSpecialistBackend: session.desktopSpecialistBackend }))
 const restore = id => existsSync(sessionFile(id)) ? { ...JSON.parse(readFileSync(sessionFile(id), 'utf8')), cancelled: false } : undefined
 const needsSignIn = () => process.env.STAND_IN_AUTH === '1' && !existsSync(signedInFile)
 
@@ -85,6 +85,7 @@ const app = acp.agent({ name: 'stand-in' })
     if (needsSignIn()) throw acp.RequestError.authRequired(undefined, 'Sign in to the stand-in first')
     const session = { id: `stand-in-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`, history: [], mcp: params.mcpServers.map(server => server.name), cancelled: false }
     session.desktopSpecialist = params.mcpServers.find(server => server.name === 'caboose-desktop')?.env?.find(entry => entry.name === 'CABOOSE_SPECIALIST_MODEL')?.value
+    session.desktopSpecialistBackend = params.mcpServers.find(server => server.name === 'caboose-desktop')?.env?.find(entry => entry.name === 'CABOOSE_SPECIALIST_BACKEND')?.value
     sessions.set(session.id, session)
     save(session)
     return { ...modelState(session), sessionId: session.id, modes: { currentModeId: 'default', availableModes: [{ id: 'default', name: 'Default' }] } }

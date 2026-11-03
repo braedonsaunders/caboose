@@ -407,3 +407,66 @@ The fixture training tools are checked with MLX 0.32.4, mlx-lm 0.32.2 and
 Transformers 5.22.1. Keep baseline and adapter evaluations on the same model revision,
 non-thinking template, task cases and hardware; do not infer phone speed from Mac
 measurements. Weight training and runtime export are separate operations.
+
+### Choice backend
+
+`CABOOSE_SPECIALIST_BACKEND=choices` opts the runner's desktop child into a local
+decision service at `127.0.0.1:11435/v1/decision`. The desktop child enumerates the
+grounded choices; the service answers only with the index of one of them, bound to the
+observation's revision. No model or Python service is installed by the guest
+installer. The default generative backend uses `CABOOSE_SPECIALIST_MODEL` and the
+existing port 11434 service.
+
+A task can supply up to 12 named `values` (`name`, `value`). Exact goal values are
+also eligible sources. A source whose name equals an editable control's accessible
+name is bound to that control and is offered nowhere else; a source that names no
+editable control may fill any editable control, and its choice label names the
+source. The backend offers at most 32 choices made from observed control
+capabilities and those literal values, plus BLOCKED. Each label carries the state a
+decision depends on: a control's current value and whether a toggle is already
+checked. It never asks the model to create text, IDs or commands. Overflow or
+missing information returns to the caller; the caller can delegate a smaller step
+or supply the missing text. The ordinary fresh-target check still runs before input.
+
+Conditions the controller can establish exactly never reach the model. Completion is
+the caller's postcondition, checked before every decision. An observation with no
+controls returns `needs_visual`; one with no enabled action, or with two identical
+choice labels, returns BLOCKED; any control reporting `busy` makes the step a WAIT,
+which consumes a step and reobserves after 200 ms without asking the model. AT-SPI
+workers drain pending accessibility events before observations; the current
+interface returns full bounded observations, not event subscriptions or state
+deltas. `elements` includes supported semantic `actions` and the `busy` state when
+the application exposes them.
+
+#### Decision model
+
+`check/specialist_prompt.py` is the prompt every runtime and the trainer share: a
+`Task:` line with the objective, one line per choice under a letter, then `Next:`.
+The answer is one token, the choice's letter; runtimes read only the logits of the
+offered letters, so nothing is generated. The task line is the same for every step
+of a task, so a runtime keeps its KV cache across steps and processes only the
+changed choice lines.
+
+`check/specialist-mlx-decide.py --model MLX_MODEL` serves that decision with MLX on
+loopback (the 4-bit format the phone runs). `--data ROWS --output RESULTS` scores
+replay rows instead, repeatable in one model load; `--no-cache-reuse` prefills every
+request from empty for comparison. `apps/ios/AIProbe`'s `--decide` probe replays the
+same prompts on the phone.
+
+`check/specialist-lm-train.py --model HF_MODEL --data ROWS --validation ROWS --output
+DIR` fully fine-tunes a small causal LM on CUDA (bfloat16 autocast, AdamW, batch 16,
+two epochs by default). Only the answer position is supervised, with the target
+spread evenly over every acceptable choice. It reports validation accuracy before and
+after and writes a Hugging Face checkpoint; `mlx_lm.convert -q --q-bits 4` makes the
+runtime model.
+
+`check/specialist-cases.py --generated` draws each case from per-split label pools
+that share no field, toggle or button label with the other splits, with 0–5 fields;
+the `fresh` split, which exists only in this mode, also uses objective phrasings and
+value formats no other split uses. `node check/specialist-choice-data.mjs ROOT OUTPUT
+SPLIT...` turns verified oracle traces (`ROOT/cases/SPLIT.json` and
+`ROOT/dataset/SPLIT-results.jsonl`) into choice rows. Every step the form accepts in
+any order is a correct answer; the final control is correct only once nothing else is
+pending. One trace in six also yields two explicit synthetic BLOCKED rows: a pending
+field's value source removed, or its control removed. Synthetic rows are not live GUI
+test results.

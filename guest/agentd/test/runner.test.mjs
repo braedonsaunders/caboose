@@ -152,10 +152,12 @@ describe('a turn', () => {
   it('passes an explicitly configured specialist model to the desktop MCP child', async () => {
     const t = await task()
     t.env.CABOOSE_SPECIALIST_MODEL = 'fixture-specialist'
+    t.env.CABOOSE_SPECIALIST_BACKEND = 'choices'
     await t.prompt(1, 'hello'); t.start(); await t.turnEnd(1)
     const name = (await readdir(t.state)).find(name => name.startsWith('session-'))
     const session = JSON.parse(await readFile(join(t.state, name), 'utf8'))
     expect(session.desktopSpecialist).toBe('fixture-specialist')
+    expect(session.desktopSpecialistBackend).toBe('choices')
   })
 
   it('offers profile tools only when the host enables them on a profile task', async () => {
