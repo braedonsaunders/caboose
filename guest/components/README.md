@@ -51,7 +51,7 @@ inspection therefore run as `caboose`.
 The real process regression checks run in an isolated Linux container:
 
 ```sh
-docker run --rm --memory 512m --cpus 2 -v "$PWD/guest/components:/checks:ro" debian:trixie-slim bash -c 'apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends python3 && useradd -m -u 1000 caboose && python3 /checks/test_container_services.py -v'
+docker run --rm --memory 512m --cpus 2 -v "$PWD/guest:/guest:ro" debian:trixie-slim bash -c 'apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends python3 && useradd -m -u 1000 caboose && python3 /guest/components/test_container_services.py -v'
 ```
 
 They check replacement of loaded code with a lost pid file, preservation on an ordinary

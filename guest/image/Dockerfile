@@ -26,6 +26,8 @@ COPY container/caboose-session /builder/container/
 COPY files /builder/files
 COPY terminal /builder/terminal
 COPY ports /builder/ports
+COPY ai/caboose-ai.py ai/caboose-ai.service /builder/ai/
+COPY wine/install.sh wine/caboose-wine-dpi wine/caboose-wine-dpi.service /builder/wine/
 COPY desktop-mcp /builder/desktop-mcp
 COPY notifications /builder/notifications
 COPY scopes /builder/scopes

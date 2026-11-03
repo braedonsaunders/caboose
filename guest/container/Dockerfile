@@ -53,6 +53,8 @@ RUN printf 'deb https://deb.debian.org/debian trixie main contrib non-free non-f
     printf 'caboose ALL=(ALL) NOPASSWD:ALL\n' > /etc/sudoers.d/caboose && chmod 0440 /etc/sudoers.d/caboose
 COPY image/apps.sh image/desktop-apps.sh image/desktop-apps.tsv /tmp/
 RUN bash /tmp/apps.sh && rm /tmp/apps.sh /tmp/desktop-apps.sh /tmp/desktop-apps.tsv
+COPY ai/caboose-ai.py ai/caboose-ai.service /tmp/bundle/ai/
+COPY wine/install.sh wine/caboose-wine-dpi wine/caboose-wine-dpi.service /tmp/bundle/wine/
 COPY desktop-mcp /tmp/desktop-mcp
 RUN /tmp/desktop-mcp/install.sh
 COPY agentd/caboose-agentd.mjs agentd/agent-tools.mjs agentd/library-mcp.mjs agentd/package.json agentd/install.sh /tmp/agentd/

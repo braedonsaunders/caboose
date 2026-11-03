@@ -60,6 +60,12 @@ COPY --from=host-build /src/apps/host/dist ./apps/host/dist
 COPY apps/host/migrations ./apps/host/migrations
 COPY apps/host/scripts/recover-template-source.sh ./apps/host/scripts/recover-template-source.sh
 COPY guest/agentd/caboose-agentd.mjs guest/agentd/agent-tools.mjs guest/agentd/library-mcp.mjs guest/agentd/package.json guest/agentd/install.sh ./guest/agentd/
+COPY guest/ai/caboose-ai.py guest/ai/caboose-ai.service ./guest/ai/
+COPY guest/gpu/install-live.py guest/gpu/caboose-vgem.conf guest/gpu/caboose-gpu-broker-launcher ./guest/gpu/
+COPY guest/gpu/gfxstream/caboose-gpu-broker guest/gpu/gfxstream/gpu_admission.py guest/gpu/gfxstream/gpu_websocket.py guest/gpu/gfxstream/ipc_handoff.py guest/gpu/gfxstream/process_binding.py guest/gpu/gfxstream/executor_lease.py guest/gpu/gfxstream/control_protocol.py guest/gpu/gfxstream/surface_local_protocol.py guest/gpu/gfxstream/buffer_presentation.py ./guest/gpu/gfxstream/
+COPY guest/gpu/broker/live_protocol.py guest/gpu/broker/live_compression.py guest/gpu/broker/live_zstd.py guest/gpu/broker/live_surface_protocol.py ./guest/gpu/broker/
+COPY guest/memory/install.sh guest/memory/caboose-memory.py guest/memory/caboose-memory.service ./guest/memory/
+COPY guest/wine/install.sh guest/wine/caboose-wine-dpi guest/wine/caboose-wine-dpi.service ./guest/wine/
 COPY guest/components ./guest/components
 COPY guest/template/caboose-template.py guest/template/caboose-template.target ./guest/template/
 COPY guest/desktop-mcp ./guest/desktop-mcp
