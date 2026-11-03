@@ -364,8 +364,8 @@ async function focusedApp() {
 // The steps that have worked since the last save (the task so far), each control kept as
 // { role, name } as it was read when the step ran.
 let journal = []
-function journalStep(s) {
-  const out = { ...s }
+function journalStep(s, ms = 0) {
+  const out = { ...s, ms }
   for (const verb of ['press', 'set']) if (verb in s && typeof s[verb] !== 'object') {
     const described = observer.described.get(observer.resolve(String(s[verb])))
     if (!described) return
@@ -377,7 +377,7 @@ function journalStep(s) {
 function asRoutine(steps) {
   let texts = 0
   return steps.filter(s => !('wait' in s) && !('launch' in s)).map(s => {
-    const out = { ...s }
+    const { ms, ...out } = s
     if ('text' in s) out.text = `$${++texts}`
     if ('type' in s) out.type = `$${++texts}`
     return out
@@ -412,8 +412,13 @@ const handlers = {
       parts.push(await view(true))
       const tools = await pageTools()
       if (tools) parts.push(tools)
+      // Routines of this application come first: one replays a whole task in a single act.
       const routines = Object.entries(loadRoutines()[await focusedApp().catch(() => '')] ?? {})
-      if (routines.length) parts.push(`Routines (act {"run":name,"texts":[...]}): ${routines.map(([name, r]) => `${name}(${r.steps.filter(x => 'text' in x || 'type' in x).length} texts)`).join(', ')}`)
+      if (routines.length) parts.unshift(routines.map(([name, r]) => {
+        return `Routine ${JSON.stringify(name)}: ${r.steps.length} steps, about ${((r.ms ?? 300 * r.steps.length) / 1000).toFixed(1)} s in one call: `
+          + `act {"steps":[{"run":${JSON.stringify(name)},"texts":[…]}]}, with texts in this order (last time ${JSON.stringify(r.texts ?? [])}). `
+          + 'Use it when the task is the same.'
+      }).join('\n'))
       if (lastState?.note && !(lastState.elements ?? []).length && lastState.window) {
         const pictured = await pixelFallback().catch(() => [])
         if (pictured.length) return [{ type: 'text', text: parts.join('\n') }, ...pictured]
@@ -453,7 +458,8 @@ const handlers = {
         const began = performance.now()
         const run = s && s.replay ? await replayStep(s.replay, s.texts) : s
         const note = await step(run); if (note) notes.push(note); done++
-        journalStep(s && s.replay ? { ...s.replay, ...(s.replay.text ? { text: run.text } : {}), ...(s.replay.type ? { type: run.type } : {}) } : s)
+        journalStep(s && s.replay ? { ...s.replay, ...(s.replay.text ? { text: run.text } : {}), ...(s.replay.type ? { type: run.type } : {}) } : s,
+          Math.round(performance.now() - began))
         timing.push(`${Object.keys(s ?? {})[0]}:${Math.round(performance.now() - began)}`)
         after = s && typeof s === 'object' && 'type' in s ? 'type' : undefined
       } catch (e) { error = e.message; break }
@@ -462,7 +468,9 @@ const handlers = {
     if (save !== undefined && done === steps.length) {
       try {
         const all = loadRoutines(), app = await focusedApp()
-        all[app] = { ...(all[app] ?? {}), [save]: { steps: asRoutine(journal) } }
+        const kept = journal.filter(x => !('wait' in x) && !('launch' in x))
+        const used = kept.flatMap(x => [x.text, x.type].filter(t => typeof t === 'string'))
+        all[app] = { ...(all[app] ?? {}), [save]: { steps: asRoutine(journal), texts: used.map(t => t.slice(0, 60)), ms: kept.reduce((n, x) => n + (x.ms ?? 0), 0) + 300 * kept.length } }
         saveRoutines(all)
         journal = []
         saved = ` Saved as routine ${JSON.stringify(save)}.`
