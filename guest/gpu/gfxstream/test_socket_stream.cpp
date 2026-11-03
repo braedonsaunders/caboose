@@ -105,10 +105,10 @@ void roundTrip(CabooseSocketStream& stream) {
 }  // namespace
 
 int main() {
-    // Everything first, then without batched descriptor sets, without buffer views, without the upload cache, without executor
+    // Everything first (batched descriptor sets with inline uniform blocks, 0x80000), then without them, without buffer views, without the upload cache, without executor
     // resume, without the shader cache, without query pools, without guest images, and guest
     // handles alone for a broker that predates bits 8-16.
-    const Hello offered = hello(0x7FFF0), noBatched = hello(0x3FFF0), noCacheSession = hello(0x1FFF0), noBufferViews = hello(0xFFF0), noUpload = hello(0x7FF0), noResume = hello(0x3FF0), noShaderCache = hello(0x1FF0), noQueryPools = hello(0xFF0),
+    const Hello offered = hello(0xBFFF0), noBatched = hello(0x3FFF0), noCacheSession = hello(0x1FFF0), noBufferViews = hello(0xFFF0), noUpload = hello(0x7FF0), noResume = hello(0x3FF0), noShaderCache = hello(0x1FF0), noQueryPools = hello(0xFF0),
                 noGuestImages = hello(0x7F0), handles = hello(0xF0), plain = hello(0x70);
     unsetenv("CABOOSE_GFXSTREAM_GUEST_HANDLES");
 
@@ -188,12 +188,12 @@ int main() {
         roundTrip(*stream);
         delete stream;
     }
-    // Batched descriptor sets: the process's first connection decides. Granted, later
-    // connections that grant them too serve it; one that does not is refused, since the
-    // driver set its descriptor handling up once. Not granted first, a later grant is unused.
+    // Batched descriptor sets with inline uniform blocks (0x80000) follow each executor
+    // connection: granted, then a later executor that does not take them, then one that does
+    // again. Every connection succeeds; none is refused.
     {
         caboose_gfxstream_batched_descriptor_sets = -1;
-        Broker broker(1, [](const Hello&) { return hello(0x400F0); });
+        Broker broker(1, [](const Hello&) { return hello(0x800F0); });
         auto* stream = new CabooseSocketStream(1024);
         assert(stream->connect(broker.path.c_str()) == 0);
         assert(caboose_gfxstream_batched_descriptor_sets == 1);
@@ -201,26 +201,23 @@ int main() {
         delete stream;
     }
     {
-        Broker broker(1, [](const Hello&) { return hello(0x400F0); });
+        Broker broker(1, [](const Hello&) { return hello(0xF0); });
+        CabooseSocketStream stream(1024);
+        assert(stream.connect(broker.path.c_str()) == 0 && caboose_gfxstream_batched_descriptor_sets == 0);
+        roundTrip(stream);
+    }
+    {
+        Broker broker(1, [](const Hello&) { return hello(0x800F0); });
         CabooseSocketStream stream(1024);
         assert(stream.connect(broker.path.c_str()) == 0 && caboose_gfxstream_batched_descriptor_sets == 1);
         roundTrip(stream);
     }
+    // 0x40000 (batched without inline uniform blocks) is never offered: a broker that grants
+    // it grants what was not offered, and the offer falls back.
     {
-        Broker broker(1, [](const Hello&) { return hello(0xF0); }, [](int, int) {});
+        Broker broker(2, [answered = 0](const Hello&) mutable { return answered++ ? hello(0x3FFF0) : hello(0x400F0); });
         CabooseSocketStream stream(1024);
-        assert(stream.connect(broker.path.c_str()) == -1 && errno == ENOTSUP);
-        assert(caboose_gfxstream_batched_descriptor_sets == 1 && broker.offers.size() == 1);
-    }
-    {
-        caboose_gfxstream_batched_descriptor_sets = -1;
-        Broker broker(2, [answered = 0](const Hello&) mutable { return answered++ ? hello(0x400F0) : hello(0xF0); });
-        auto* first = new CabooseSocketStream(1024);
-        assert(first->connect(broker.path.c_str()) == 0 && caboose_gfxstream_batched_descriptor_sets == 0);
-        delete first;
-        auto* second = new CabooseSocketStream(1024);
-        assert(second->connect(broker.path.c_str()) == 0 && caboose_gfxstream_batched_descriptor_sets == 0);
-        delete second;
+        assert(stream.connect(broker.path.c_str()) == 0 && caboose_gfxstream_batched_descriptor_sets == 0);
     }
     caboose_gfxstream_batched_descriptor_sets = -1;
     // Arrays and ordered presents are granted with guest handles; a broker cannot grant
@@ -292,7 +289,7 @@ int main() {
     // An answer granting what was not offered, or any other difference, fails the
     // connection with EPROTO, after the plain retry.
     {
-        Broker broker(11, [&](const Hello&) { return hello(0x80070); });
+        Broker broker(11, [&](const Hello&) { return hello(0x100070); });
         auto* stream = new CabooseSocketStream(1024);
         errno = 0;
         assert(stream->connect(broker.path.c_str()) == -1 && errno == EPROTO);
