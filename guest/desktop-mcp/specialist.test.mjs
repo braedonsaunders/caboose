@@ -80,6 +80,8 @@ test('a task owns its window and the dialogs and menus whose parent chain reache
   const windows = [{ id: 7, parent: null }, { id: 9, parent: 7, kind: 'dialog' }, { id: 11, parent: 9, kind: 'popup' }, { id: 12, parent: null }, { id: 13, parent: 14 }, { id: 14, parent: 13 }]
   assert.deepEqual(taskWindows(7, windows).map(w => w.id), [7, 9, 11])
   assert.deepEqual(taskWindows(13, windows).map(w => w.id), [13, 14])
+  const app = [{ id: 7, parent: null, pid: 30 }, { id: 9, parent: 8, pid: 30, kind: 'dialog' }, { id: 10, parent: null, pid: 30, kind: 'toplevel' }, { id: 11, parent: null, pid: 31, kind: 'dialog' }]
+  assert.deepEqual(taskWindows(7, app).map(w => w.id), [7, 9])
 })
 test('input follows focus into the task\'s own dialog, never into another window', async () => {
   const dialog = { id: '9-123-name', name: '', role: 'text', value: '', states: ['editable'] }

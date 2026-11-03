@@ -58,7 +58,9 @@ try {
     let checked = true
     if (spec.check?.file) checked = await readFile(join(home, spec.check.file), 'utf8').then(text => text.replace(/\n$/, '') === spec.check.content, () => false)
     const completed = result.status === 'verified' && checked
-    await appendFile(output, JSON.stringify({ split: spec.split, case: index, family: spec.family, model: choices ? 'choices' : 'oracle', ...result, checked, completed }) + '\n')
+    // A failure records the seat's windows, so focus and ownership problems can be read back.
+    const windows = completed ? undefined : (await call(seat, { args: ['windows'] }).catch(() => ({}))).windows?.map(w => ({ id: w.id, parent: w.parent, kind: w.kind, pid: w.pid, app: w.app_id, title: w.title, focused: w.focused }))
+    await appendFile(output, JSON.stringify({ split: spec.split, case: index, family: spec.family, model: choices ? 'choices' : 'oracle', task: window?.id, ...result, checked, completed, ...(windows ? { windows } : {}) }) + '\n')
     if (!completed) process.exitCode = 1
     try { process.kill(-app.pid, 'SIGTERM') } catch {}
     for (let retry = 0; retry < 50; retry++) {

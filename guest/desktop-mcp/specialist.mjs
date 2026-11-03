@@ -24,13 +24,15 @@ export function validateTask(task) {
     throw new Error('maxActions must be 1–20')
 }
 
-// The task's windows: its own and every window whose parent chain reaches it (its dialogs and
-// menus), as the compositor lists them. Focus anywhere else is not the task's.
+// The task's windows, as the compositor lists them: its own, every window whose parent chain
+// reaches it, and the dialogs and popups of the same process (a dialog opened from a menu can
+// name the menu, gone by then, as its parent). Focus anywhere else is not the task's.
 export function taskWindows(window, windows = []) {
   const byId = new Map(windows.map(w => [w.id, w]))
+  const root = byId.get(window)
   return windows.filter(w => {
     for (let at = w, seen = new Set(); at && !seen.has(at.id); seen.add(at.id), at = byId.get(at.parent)) if (at.id === window) return true
-    return false
+    return root?.pid !== undefined && w.pid === root.pid && (w.kind === 'dialog' || w.kind === 'popup')
   })
 }
 
@@ -50,14 +52,17 @@ export async function runSpecialist(task, { observe, decide, act, trace = () => 
   const check = () => { signal?.throwIfAborted(); if (now() - started > 60_000) throw new Error('task deadline exceeded') }
   // A window that just took focus may still be building its accessibility tree: after focus
   // moves, observe again until two observations agree (at most 10 more, 100 ms apart).
+  // Between a menu closing and its dialog mapping, focus can briefly be on no window of the
+  // task; that too gets the same bounded wait before input stops.
   let lastFocused
+  const ours = state => !state.windows || taskWindows(task.window, state.windows).some(w => w.id === state.focused)
   const settled = async () => {
     let state = await observe(task.window)
     const ids = s => JSON.stringify((s.elements ?? []).map(e => [e.id, e.name, e.value, e.states]))
-    for (let tries = 0; lastFocused !== undefined && state.focused !== lastFocused && tries < 10; tries++) {
+    for (let tries = 0; lastFocused !== undefined && (state.focused !== lastFocused || !ours(state)) && tries < 10; tries++) {
       await new Promise(resolve => setTimeout(resolve, 100))
       const again = await observe(task.window)
-      if (again.focused === state.focused && (again.elements ?? []).length && ids(again) === ids(state)) { state = again; break }
+      if (ours(again) && again.focused === state.focused && (again.elements ?? []).length && ids(again) === ids(state)) { state = again; break }
       state = again
     }
     lastFocused = state.focused
