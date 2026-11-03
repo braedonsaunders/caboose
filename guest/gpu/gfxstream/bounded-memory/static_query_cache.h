@@ -22,8 +22,10 @@ namespace caboose::memory {
 class StaticQueryCache {
 public:
     ~StaticQueryCache() {
-        std::lock_guard<std::mutex> lock(mutex_);
-        // One last nonblocking attempt for records a busy lock held back.
+        // One last nonblocking attempt for records a busy lock held back. Exit never
+        // waits: a mutex another thread (or a forking parent) holds skips it.
+        std::unique_lock<std::mutex> lock(mutex_,std::try_to_lock);
+        if (!lock.owns_lock()) return;
         for (auto& file:files_) if (file.second.pid==getpid()) flushLocked(file.first,file.second);
         if (std::getenv("CABOOSE_CAPABILITY_CACHE_DIAGNOSTICS"))
             std::fprintf(stderr,"CABOOSE_CAPABILITY_CACHE hits=%llu misses=%llu scopes=%zu writes=%llu write_bytes=%llu write_us=%llu contended=%llu\n",
