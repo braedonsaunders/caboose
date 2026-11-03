@@ -90,7 +90,10 @@ runs a guest driver release end to end: a disposable container of the computer i
 namespace, the [synchronization probe](../../../../../guest/gpu/gfxstream/driver/sync-check/README.md)
 `SYNC_CHECK` runs on the driver `DRIVER` against an executor with the phone's capabilities,
 and vkcube presents 300 frames through another with the same capabilities. Both
-executors must drain cleanly. Each window bind is answered 0.4 s late (`BIND_DELAY`), as a
+executors must drain cleanly, and each of the probe's child windows (a covering and an inset
+child of one top-level, an inset child of another) must retire its surface with every frame
+on the executor: `broker_host.py` grants each window its own bind, as the compositor grants
+a child window its own. Each window bind is answered 0.4 s late (`BIND_DELAY`), as a
 phone waiting for its window's layer is, and surfaces report the R8G8B8A8 formats besides
 lavapipe's two (`EXTRA_FORMATS`), as the phone does, so the answers a window gets before and
 after its bind differ; `broker_host.py --bind-delay` and `executor.py --extra-formats` do
@@ -98,7 +101,8 @@ this. With `caboose-computer:flathub-79f46a1` and the driver of
 `guest/gpu/gfxstream/driver/build.sh`:
 
 ```
-PASS sync-check: 13 cases
+PASS sync-check: 15 cases
+PASS child windows: 3 surfaces presented 30 frames each
 PASS vkcube: window=0x200000 swapchain=1 frames=300 captured=300 distinct=50 chain=e51ca5e4
 ```
 

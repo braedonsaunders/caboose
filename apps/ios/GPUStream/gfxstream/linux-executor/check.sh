@@ -89,6 +89,17 @@ else
 fi
 grep 'note=surface_enumeration' "$out/sync-check.log" || true
 drain "$out/executor-sync-check.log"
+# The probe's child windows (a covering and an inset child of one top-level, an inset child
+# of another) each bind a surface of their own and present every frame on the executor.
+children=$(grep 'case=child_windows' "$out/sync-check.log" | sed -n 's/.* windows=\([^ ]*\).*/\1/p')
+if [ -n "$children" ]; then
+  shown=0
+  for window in $(echo "$children" | tr ',' ' '); do
+    grep -q "swapchain retired window=$window swapchain=[0-9]* frames=30 " "$out/executor-sync-check.log" && shown=$((shown + 1))
+  done
+  if [ "$shown" = 3 ]; then echo "PASS child windows: 3 surfaces presented 30 frames each"
+  else status=1; echo "FAIL child windows: $shown of 3 surfaces presented 30 frames ($children)"; fi
+fi
 
 executor "$phone"
 if app timeout 600 /shared/vkcube --c 300 > "$out/vkcube.log" 2>&1; then :; else status=1; echo 'FAIL vkcube did not finish'; fi
