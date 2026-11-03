@@ -12,6 +12,8 @@ granted. It does not check that the bound process made the window, as the compos
 
 --bind-delay answers each bind that much later, as a compositor waiting for a window's layer
 does, so the queries an application makes before its window is bound are exercised.
+SIGUSR1 replaces the broker with a new one, as a display restart does: the executor's session
+and every guest stream end, and the executor may connect again.
 
 DIR (created mode 0700) receives token, gpu.sock and surface.sock. Applications reach the
 broker with CABOOSE_GFXSTREAM_SOCKET=DIR/gpu.sock and CABOOSE_GFXSTREAM_SURFACE_SOCKET=DIR/surface.sock.
@@ -50,14 +52,28 @@ def main():
     fd = os.open(token, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     os.write(fd, os.urandom(16).hex().encode())
     os.close(fd)
-    parent, child = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
     # The broker's modules, as the installed launcher puts them on its path.
     modules = [str(options.broker.resolve().parent), str(BROKER_DIR.parent / 'broker')]
-    broker = subprocess.Popen(
-        [sys.executable, str(options.broker), '--control-fd=0', '--token-file', str(token),
-         '--socket', str(directory / 'gpu.sock'), '--surface-socket', str(directory / 'surface.sock'),
-         '--private-indexed'], stdin=child, env=dict(os.environ, PYTHONPATH=os.pathsep.join(modules)))
-    child.close()
+
+    def start_broker():
+        parent, child = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+        broker = subprocess.Popen(
+            [sys.executable, str(options.broker), '--control-fd=0', '--token-file', str(token),
+             '--socket', str(directory / 'gpu.sock'), '--surface-socket', str(directory / 'surface.sock'),
+             '--private-indexed'], stdin=child, env=dict(os.environ, PYTHONPATH=os.pathsep.join(modules)))
+        child.close()
+        return broker, parent
+
+    def stop_broker(broker):
+        if broker.poll() is None:
+            broker.terminate()
+            try:
+                broker.wait(10)
+            except subprocess.TimeoutExpired:
+                broker.kill()
+                broker.wait()
+
+    broker, parent = start_broker()
     host, port = options.listen.rsplit(':', 1)
     listener = socket.socket()
     listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -67,11 +83,20 @@ def main():
     epoch = os.urandom(16)
     generation = 0
     stopping = []
+    restarts = []
     delayed = []  # (due, record bytes, log line) of bind results not yet answered
     signal.signal(signal.SIGTERM, lambda *_: stopping.append(True))
     signal.signal(signal.SIGINT, lambda *_: stopping.append(True))
+    signal.signal(signal.SIGUSR1, lambda *_: restarts.append(True))
     try:
         while not stopping and broker.poll() is None:
+            if restarts:
+                restarts.clear()
+                stop_broker(broker)
+                parent.close()
+                delayed.clear()
+                broker, parent = start_broker()
+                log(f'broker restarted pid={broker.pid}')
             now = time.monotonic()
             while delayed and delayed[0][0] <= now:
                 _, data, line = delayed.pop(0)
@@ -122,13 +147,7 @@ def main():
     finally:
         listener.close()
         parent.close()
-        if broker.poll() is None:
-            broker.terminate()
-            try:
-                broker.wait(10)
-            except subprocess.TimeoutExpired:
-                broker.kill()
-                broker.wait()
+        stop_broker(broker)
         log(f'broker exited {broker.returncode}')
 
 

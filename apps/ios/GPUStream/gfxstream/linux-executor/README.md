@@ -55,7 +55,9 @@ acquisitions and ordered presents through the presentation drafts. `--cache-root
 the shader and upload caches a directory; without it the computer sends every module and
 upload. A window bound with no extent takes `--display` (default 1920x1080), the extent of
 the executor's offscreen display. SIGTERM or SIGINT drains the executor (`EXECUTOR_DRAIN`);
-it exits 0 after a normal close that followed its `REVOKED`.
+it exits 0 after a normal close that followed its `REVOKED`. `--sessions N` connects again
+after a session ends, as the phone does, for N sessions in all, on the same runtime; each end
+logs how long cleanup took and the executor's resident memory.
 
 Each line it logs starts with `CABOOSE_LINUX_EXECUTOR`: the session, processes, streams,
 surface binds and queries, swapchains, and presented frames. A presented frame is one whose
@@ -78,6 +80,7 @@ socket and a fresh token, hands each TCP connection on `--listen` to the broker 
 display hands it the relayed phone, and answers the broker's compositor records. It grants
 every surface bind to the window it names and every revoke, without the compositor's check
 that the bound process made the window, so it belongs on disposable test computers only.
+SIGUSR1 replaces its broker with a new one, as a display restart does.
 
 ## Check
 

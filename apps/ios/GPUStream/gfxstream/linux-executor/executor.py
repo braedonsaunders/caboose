@@ -298,7 +298,9 @@ class Executor:
         except Exception as error:
             if not self.failure:
                 self.fail(error)
+        started = time.monotonic()
         self.finish()
+        log(f'cleanup took {time.monotonic() - started:.2f} s rss={resident_bytes() // (1 << 20)} MiB')
         if normal and self.receipt_sent and not self.failure:
             log('session ended: normal close after REVOKED')
             return 0
@@ -619,6 +621,18 @@ class Executor:
         self.ws.close()
 
 
+def resident_bytes():
+    """The executor process's resident memory, which holds the decoder's objects and, on
+    lavapipe, their memory."""
+    try:
+        for line in Path('/proc/self/status').read_text().splitlines():
+            if line.startswith('VmRSS:'):
+                return int(line.split()[1]) * 1024
+    except OSError:
+        pass
+    return 0
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
     parser.add_argument('--connect', required=True, metavar='HOST:PORT', help="the broker's WebSocket endpoint")
@@ -634,25 +648,48 @@ def main():
     parser.add_argument('--extra-formats', default='', metavar='FORMAT:SPACE,...',
                         help='surface formats to report beyond the implementation\'s (VkFormat:VkColorSpaceKHR numbers)')
     parser.add_argument('--no-checksums', action='store_true', help='do not capture presented pictures')
+    parser.add_argument('--sessions', type=int, default=1, metavar='N',
+                        help='connect again after a session ends, as the phone does, for N sessions in all')
     options = parser.parse_args()
     surfaces.EXTRA_FORMATS[:] = [tuple(int(n) for n in pair.split(':')) for pair in options.extra_formats.split(',') if pair]
     width, _, height = options.display.partition('x')
     options.display = (int(width), int(height))
     runtime = native.Runtime(str(options.library))
-    token = options.token_file.read_bytes().strip()
-    executor_id = uuid.uuid4()
-    socket_ = WebSocket.connect(options.connect, token, options.computer, executor_id, options.features)
-    log(f'connected to {options.connect} executor={executor_id} features={options.features}')
-    executor = Executor(runtime, socket_, options)
+    current = []
+    draining = []
 
     def drain(*_):
-        executor.inbox.put('drain')
+        draining.append(True)
+        if current:
+            current[-1].inbox.put('drain')
     signal.signal(signal.SIGTERM, drain)
     # SIGUSR1 prints every thread's stack, for a session that stops making progress.
     faulthandler.register(signal.SIGUSR1, all_threads=True)
     faulthandler.enable(all_threads=True)
     signal.signal(signal.SIGINT, drain)
-    code = executor.run()
+    code = 1
+    for session in range(options.sessions):
+        # A later session waits for the broker to come back, as the phone reconnects.
+        deadline = time.monotonic() + (0 if session == 0 else 60)
+        while True:
+            try:
+                token = options.token_file.read_bytes().strip()
+                executor_id = uuid.uuid4()
+                socket_ = WebSocket.connect(options.connect, token, options.computer, executor_id, options.features)
+                break
+            except OSError:
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.5)
+        log(f'connected to {options.connect} executor={executor_id} features={options.features} '
+            f'session={session + 1} rss={resident_bytes() // (1 << 20)} MiB')
+        executor = Executor(runtime, socket_, options)
+        current.append(executor)
+        if draining:
+            executor.inbox.put('drain')
+        code = executor.run()
+        if draining:
+            break
     time.sleep(0.1)
     os._exit(code)
 
