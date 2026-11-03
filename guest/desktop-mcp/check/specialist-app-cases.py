@@ -4,32 +4,36 @@
 Each case names the application to launch with files to create first, an objective, an
 observable goal, literal value sources, an oracle (the choice labels a correct run presses,
 in order, as regular expressions) and an independent check of the effect. Splits use disjoint
-names and options; the holdout adds a task family training never sees (`thunar-open`).
+names, folders, phrasings and options; `holdout2` is kept for one final measurement.
 """
 import argparse
 import json
 import random
 
 p = argparse.ArgumentParser()
-p.add_argument('--split', choices=['train', 'validation', 'holdout'], required=True)
+p.add_argument('--split', choices=['train', 'validation', 'holdout', 'holdout2'], required=True)
 p.add_argument('--count', type=int, default=40)
 p.add_argument('--output', required=True)
 a = p.parse_args()
 assert 1 <= a.count <= 500
-rng = random.Random({'train': 7, 'validation': 77, 'holdout': 777}[a.split])
+rng = random.Random({'train': 7, 'validation': 77, 'holdout': 777, 'holdout2': 7777}[a.split])
 HOME = '/tmp/specialist-home'
 WORDS = {'train': ['harvest', 'lantern', 'meadow', 'orbit', 'pebble', 'quill', 'ripple', 'summit'],
-         'validation': ['tundra', 'violet', 'willow'], 'holdout': ['zephyr', 'yonder', 'xylem', 'cobble']}[a.split]
+         'validation': ['tundra', 'violet', 'willow'], 'holdout': ['zephyr', 'yonder', 'xylem', 'cobble'],
+         'holdout2': ['basalt', 'cinder', 'drift', 'fjord']}[a.split]
 # Mousepad preference check boxes that start unchecked, by tab; split so holdout options are unseen.
 OPTIONS = {'train': [('View', 'Show line numbers'), ('View', 'Display whitespace'), ('Editor', 'Enable automatic indentation')],
            'validation': [('View', 'Highlight current line')],
-           'holdout': [('View', 'Display line endings'), ('View', 'Highlight matching brackets'), ('View', 'Wrap long lines')]}[a.split]
+           'holdout': [('View', 'Display line endings'), ('View', 'Highlight matching brackets'), ('View', 'Wrap long lines')]}.get(
+               a.split, [('View', 'Display line endings'), ('View', 'Highlight matching brackets'), ('View', 'Wrap long lines')])
 SAVE_PHRASES = {'train': ['Write "{text}" into the document and save it as {name}.', 'Replace the text with "{text}", then save the file as {name}.'],
                 'validation': ['Put "{text}" in the document and use Save As to call it {name}.'],
-                'holdout': ['Make the document say "{text}" and store it under the name {name}.']}[a.split]
+                'holdout': ['Make the document say "{text}" and store it under the name {name}.'],
+                'holdout2': ['Type "{text}" as the whole document, then save a copy named {name}.']}[a.split]
 PREF_PHRASES = {'train': ['In Mousepad preferences, turn on {option}.', 'Enable the {option} setting in the preferences.'],
                 'validation': ['Open the preferences and switch on {option}.'],
-                'holdout': ['Make sure {option} is enabled in Mousepad\'s settings.']}[a.split]
+                'holdout': ['Make sure {option} is enabled in Mousepad\'s settings.'],
+                'holdout2': ['Go into the editor settings and tick {option}.']}[a.split]
 
 
 def word():
@@ -59,15 +63,21 @@ def preference(i):
             'values': [], 'goal': {'name': option, 'role': 'check box', 'state': 'checked'}, 'oracle': oracle, 'check': None}
 
 
+FOLDERS = {'train': ['Clients', 'Reports', 'Media', 'Invoices'], 'validation': ['Drafts'], 'holdout': ['Projects', 'Archive', 'Shared'],
+           'holdout2': ['Library', 'Workshop']}[a.split]
+OPEN_PHRASES = {'train': ['Open the folder {path} in the file manager.', 'Go to {path} in Thunar.'], 'validation': ['Show the folder {path}.'],
+                'holdout': ['Open the folder {path} in the file manager.'], 'holdout2': ['Navigate the file manager to {path}.']}[a.split]
+
+
 def thunar_open(i):
-    parent, child = rng.choice(['Projects', 'Archive', 'Shared']), f'{word().capitalize()}{rng.randrange(1, 9)}'
+    parent, child = rng.choice(FOLDERS), f'{word().capitalize()}{rng.randrange(1, 9)}'
     path = f'{HOME}/Documents/{parent}/{child}'
     return {'family': 'thunar-open', 'app': 'thunar', 'args': [f'{HOME}/Documents'], 'files': {f'Documents/{parent}/{child}/.keep': ''},
-            'objective': f'Open the folder {path} in the file manager.', 'values': [{'name': 'folder', 'value': path}],
+            'objective': rng.choice(OPEN_PHRASES).format(path=path), 'values': [{'name': 'folder', 'value': path}],
             'goal': {'title': f'{child} - Thunar'}, 'oracle': [rf'^SET text from .* to "{path}"', r'^PRESS text \(text\)$'], 'check': None}
 
 
-families = [save_as, preference] + ([thunar_open] if a.split == 'holdout' else [])
+families = [save_as, preference, thunar_open]
 cases = [dict(families[i % len(families)](i), split=a.split) for i in range(a.count)]
 with open(a.output, 'w') as f:
     json.dump(cases, f, indent=1)
