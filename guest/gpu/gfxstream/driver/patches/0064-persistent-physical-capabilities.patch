@@ -1,3 +1,14 @@
+From: Caboose <caboose@local>
+Subject: [PATCH 64/64] Share exact physical capability answers within an executor session
+
+Format and image-format answers are kept in the seat's capability cache, scoped to the
+physical device's real backend identity (device and driver UUIDs, versions and names,
+pipeline cache UUID), the accepted protocol, the executor session's nonce and the guest
+driver's prepared source. The identity is read before the guest-facing driver name is
+projected, and an identity reply that arrives after a reconnect is ignored. Answers read
+after the executor was lost, and image-format errors other than success or an unsupported
+format, are not kept.
+---
 diff --git a/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp b/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp
 --- a/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp
 +++ b/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp

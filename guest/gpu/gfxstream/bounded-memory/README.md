@@ -143,12 +143,13 @@ never pointers or object handles. Bounds are 8192 entries, 64 device scopes, 409
 values and 8 MiB per file.
 
 A process opens a scope's directory, lock and file once. Each new answer is appended as
-one record under a nonblocking exclusive lock, after adopting records other processes
+one record under the exclusive lock, which every reader and writer takes for at most 5 ms
+(holders keep it for one read or append), after adopting records other processes
 appended since and cutting any torn tail; nothing already written is rewritten and there
 is no fsync, since the cache is optional. While another process holds the lock, new
 records wait in a 256 KiB per-scope buffer and go out with the next append, or in one
 last attempt when the process exits. A forked child opens its own lock before writing.
-Unsafe paths, a busy lock at load, oversized or corrupt records produce cache misses.
+Unsafe paths, a lock held past 5 ms, oversized or corrupt records produce cache misses.
 Current connection/device identity always comes from real queries.
 `CABOOSE_CAPABILITY_CACHE_DIAGNOSTICS=1` prints hits, misses, appended records and bytes,
 time spent appending and contended locks at exit; `CABOOSE_CAPABILITY_CACHE_DISABLE=1`

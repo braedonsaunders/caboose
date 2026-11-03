@@ -2,6 +2,7 @@
 #include "static_query_cache.h"
 #include <cassert>
 #include <cstdlib>
+#include <chrono>
 #include <dirent.h>
 #include <sys/wait.h>
 using caboose::memory::StaticQueryCache;
@@ -167,6 +168,46 @@ int main() {
         for (uint32_t i=0;i<5;++i)
             assert(later.lookup(Cache::key(uint32_t(20005),uint64_t(0x41),i),&out) && out.values[0]==i);
     }
+    // Single flight: a process that misses a question another process has claimed waits
+    // for that answer instead of asking again; a lapsed claim stops holding it back, and a
+    // process never waits on its own claims.
+    {
+        const auto shared=[](uint64_t handle){ return Cache::key(uint32_t(30004),handle,uint32_t(77)); };
+        int ready[2]; assert(!pipe(ready));
+        child=fork(); assert(child>=0);
+        if (!child) {
+            close(ready[0]);
+            Cache asker; identify(asker,0x50,identity,directory);
+            Answer none{}; if (asker.lookup(shared(0x50),&none)) _exit(1);
+            if (write(ready[1],"c",1)!=1) _exit(3);
+            struct timespec pause{0,200000000}; nanosleep(&pause,nullptr);
+            asker.store(shared(0x50),Answer{0,{77,0,0,0}});
+            _exit(asker.claims()==1 ? 0 : 2);
+        }
+        close(ready[1]); char signal=0; if (read(ready[0],&signal,1)!=1) { waitpid(child,&status,0); std::fprintf(stderr,"child status %d\n",status); abort(); } close(ready[0]);
+        Cache joiner; identify(joiner,0x51,identity,directory);
+        const auto before=std::chrono::steady_clock::now();
+        assert(joiner.lookup(shared(0x51),&out) && out.values[0]==77);
+        const auto waited=std::chrono::steady_clock::now()-before;
+        assert(waited>=std::chrono::milliseconds(100) && waited<std::chrono::milliseconds(1500));
+        assert(joiner.joined()==1 && joiner.claims()==0);
+        assert(waitpid(child,&status,0)==child && status==0);
+
+        child=fork(); assert(child>=0);
+        if (!child) {
+            Cache quitter; identify(quitter,0x52,identity,directory);
+            Answer none{}; _exit(quitter.lookup(Cache::key(uint32_t(30004),uint64_t(0x52),uint32_t(78)),&none) ? 1 : 0);
+        }
+        assert(waitpid(child,&status,0)==child && status==0);
+        Cache after; identify(after,0x53,identity,directory);
+        const auto lapsed=std::chrono::steady_clock::now();
+        assert(!after.lookup(Cache::key(uint32_t(30004),uint64_t(0x53),uint32_t(78)),&out));
+        const auto held=std::chrono::steady_clock::now()-lapsed;
+        assert(held>=std::chrono::milliseconds(1500) && held<std::chrono::milliseconds(2600) && after.claims()==1);
+        const auto own=std::chrono::steady_clock::now();
+        assert(!after.lookup(Cache::key(uint32_t(30004),uint64_t(0x53),uint32_t(78)),&out));
+        assert(std::chrono::steady_clock::now()-own<std::chrono::milliseconds(100));
+    }
     assert(!unlink(path.c_str()));
     // Symlinked cache files are never read or written.
     assert(!symlink("/dev/null",path.c_str()));
@@ -178,5 +219,5 @@ int main() {
         assert(!unlinkat(dirfd(contents),entry->d_name,0));
     }
     closedir(contents); assert(!rmdir(directory.c_str()));
-    std::puts("static capabilities: exact keys, process reuse, identity/protocol isolation, bounds, locks, append-only writes and corruption passed");
+    std::puts("static capabilities: exact keys, process reuse, identity/protocol isolation, bounds, locks, append-only writes, single flight and corruption passed");
 }

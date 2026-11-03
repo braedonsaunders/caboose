@@ -11,6 +11,7 @@
 #include <string>
 #include <sys/file.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 #include <unordered_map>
 #include <vector>
@@ -28,13 +29,19 @@ public:
         if (!lock.owns_lock()) return;
         for (auto& file:files_) if (file.second.pid==getpid()) flushLocked(file.first,file.second);
         if (std::getenv("CABOOSE_CAPABILITY_CACHE_DIAGNOSTICS"))
-            std::fprintf(stderr,"CABOOSE_CAPABILITY_CACHE hits=%llu misses=%llu scopes=%zu writes=%llu write_bytes=%llu write_us=%llu contended=%llu\n",
+            std::fprintf(stderr,"CABOOSE_CAPABILITY_CACHE hits=%llu misses=%llu scopes=%zu writes=%llu write_bytes=%llu write_us=%llu contended=%llu"
+                         " claims=%llu joined=%llu join_us=%llu discovery_us=%llu\n",
                          (unsigned long long)hits_,(unsigned long long)misses_,identities_.size(),(unsigned long long)writes_,
-                         (unsigned long long)writeBytes_,(unsigned long long)writeMicros_,(unsigned long long)contended_);
+                         (unsigned long long)writeBytes_,(unsigned long long)writeMicros_,(unsigned long long)contended_,
+                         (unsigned long long)claims_,(unsigned long long)joined_,(unsigned long long)(joinNanos_/1000),
+                         (unsigned long long)(firstLookup_ ? (lastLookup_-firstLookup_)/1000 : 0));
         closeAll();
     }
     static constexpr size_t kMaxEntries=8192, kMaxKeyBytes=4096, kMaxValueBytes=4096;
     static constexpr size_t kMaxScopes=64, kMaxFileBytes=8u<<20, kMaxPendingBytes=256u<<10;
+    // How long a claim holds other processes back from asking the same question: far
+    // longer than one round trip, short enough that a claimant that died costs little.
+    static constexpr uint64_t kClaimNanos=2000000000ull, kJoinPollNanos=500000ull;
     template<class... Parts> static std::string key(uint32_t query,const Parts&... parts) {
         std::string out; append(&out,query); (append(&out,parts),...); return out;
     }
@@ -63,20 +70,49 @@ public:
     // its handles reuse the old numeric values. Persistent files stay identity scoped.
     void connection(const void* bytes,size_t count) {
         std::lock_guard<std::mutex> lock(mutex_);
-        ++epoch_; identities_.clear(); closeAll(); entries_.clear();
+        ++epoch_; identities_.clear(); closeAll(); entries_.clear(); waits_.clear();
         connection_.assign(static_cast<const char*>(bytes),count<=256 ? count : 0);
     }
     void reset() {
         std::lock_guard<std::mutex> lock(mutex_);
-        ++epoch_; identities_.clear(); closeAll(); entries_.clear(); connection_.clear();
+        ++epoch_; identities_.clear(); closeAll(); entries_.clear(); waits_.clear(); connection_.clear();
     }
+    // A miss in a persistent scope first takes the answers other processes appended since.
+    // When another process has claimed the same question and its answer is still due, the
+    // lookup joins it: it waits for that answer (at most until the claim lapses) instead
+    // of asking again. Otherwise it claims the question and the caller asks it, then
+    // `store`s the answer. A process never waits for questions it did not ask.
     template<class T> bool lookup(const std::string& input,T* out) {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::unique_lock<std::mutex> lock(mutex_);
         if (disabled()) { ++misses_; return false; }
-        auto it=entries_.find(normalize(input).second);
-        if (it==entries_.end() || it->second.size()!=sizeof(T)) { ++misses_; return false; }
-        ++hits_;
-        std::memcpy(out,it->second.data(),sizeof(T)); return true;
+        auto scoped=normalize(input);
+        auto found=[&]() {
+            auto it=entries_.find(scoped.second);
+            if (it==entries_.end() || it->second.size()!=sizeof(T)) return false;
+            std::memcpy(out,it->second.data(),sizeof(T)); return true;
+        };
+        if (!scoped.first.empty()) lastLookup_=monotonic(), firstLookup_=firstLookup_ ? firstLookup_ : lastLookup_;
+        if (found()) { ++hits_; return true; }
+        if (scoped.first.empty() || !files_.count(scoped.first)) { ++misses_; return false; }
+        const uint64_t epoch=epoch_, started=monotonic();
+        for (;;) {
+            auto file=files_.find(scoped.first);
+            if (epoch!=epoch_ || file==files_.end()) { ++misses_; return false; }
+            adoptLocked(scoped.first,file->second);
+            if (found()) {
+                const uint64_t waited=monotonic()-started;
+                if (waited>kJoinPollNanos/2) { ++joined_; joinNanos_+=waited; }
+                ++hits_; return true;
+            }
+            auto wait=waits_.find(scoped.second);
+            if (wait==waits_.end() || wait->second.token==token() || wait->second.deadline<=monotonic()) break;
+            lock.unlock();
+            struct timespec pause{0,long(kJoinPollNanos)}; nanosleep(&pause,nullptr);
+            lock.lock();
+        }
+        joinNanos_+=monotonic()-started;
+        claimLocked(scoped.first,scoped.second);
+        ++misses_; return false;
     }
     template<class T> void store(const std::string& input,const T& value) {
         if (disabled()) return;
@@ -86,13 +122,15 @@ public:
         const bool known=entries_.count(scoped.second);
         if (!known && entries_.size()>=kMaxEntries) return;
         std::string bytes(reinterpret_cast<const char*>(&value),sizeof(T));
-        entries_[scoped.second]=bytes;
+        entries_[scoped.second]=bytes; waits_.erase(scoped.second);
         if (!known && !scoped.first.empty()) appendLocked(scoped.first,scoped.second,bytes);
     }
     uint64_t epoch() { std::lock_guard<std::mutex> lock(mutex_); return epoch_; }
     size_t size() { std::lock_guard<std::mutex> lock(mutex_); return entries_.size(); }
     uint64_t writes() { std::lock_guard<std::mutex> lock(mutex_); return writes_; }
     uint64_t writeBytes() { std::lock_guard<std::mutex> lock(mutex_); return writeBytes_; }
+    uint64_t claims() { std::lock_guard<std::mutex> lock(mutex_); return claims_; }
+    uint64_t joined() { std::lock_guard<std::mutex> lock(mutex_); return joined_; }
 private:
     // One append-only record log per device scope. Descriptors are opened once per
     // scope and process; each new answer appends one record under an exclusive lock.
@@ -104,8 +142,24 @@ private:
         uint64_t end=0;   // bytes of the data file known to be header + valid records
         bool synced=false;
         std::string pending; // records not yet appended because the lock was busy
-        uint64_t pendingRecords=0;
+        uint64_t pendingRecords=0,pendingClaims=0;
     };
+    // An unanswered claim another process (or thread) made: who, and until when.
+    struct Wait { uint64_t deadline=0,token=0; };
+    static uint64_t monotonic() {
+        // CLOCK_MONOTONIC is one clock for every process of the computer, sandboxed or not.
+        struct timespec now{}; clock_gettime(CLOCK_MONOTONIC,&now);
+        return uint64_t(now.tv_sec)*1000000000ull+uint64_t(now.tv_nsec);
+    }
+    // This process's claim token; a forked child is a different claimant.
+    uint64_t token() {
+        if (tokenPid_!=getpid()) {
+            tokenPid_=getpid();
+            token_=(uint64_t(uint32_t(tokenPid_))<<32)^monotonic()^uint64_t(reinterpret_cast<uintptr_t>(this));
+            if (!token_) token_=1;
+        }
+        return token_;
+    }
     static bool disabled() { const char* value=std::getenv("CABOOSE_CAPABILITY_CACHE_DISABLE"); return value && !std::strcmp(value,"1"); }
     template<class T> static void append(std::string* out,const T& value) {
         out->append(reinterpret_cast<const char*>(&value),sizeof(T));
@@ -154,6 +208,18 @@ private:
         }
         return fd;
     }
+    // Holders keep the lock for one read or one append, microseconds, so a short retry
+    // nearly always gets it; one that stopped while holding it costs at most kLockNanos.
+    static constexpr uint64_t kLockNanos=5000000ull;
+    static bool lockFile(int fd,int operation) {
+        const uint64_t deadline=monotonic()+kLockNanos;
+        for (;;) {
+            if (!flock(fd,operation|LOCK_NB)) return true;
+            if (errno!=EWOULDBLOCK && errno!=EINTR) return false;
+            if (monotonic()>=deadline) return false;
+            struct timespec pause{0,50000}; nanosleep(&pause,nullptr);
+        }
+    }
     static void closeScope(Scope& scope) {
         for (int* fd:{&scope.data,&scope.lock,&scope.dir}) if (*fd>=0) { close(*fd); *fd=-1; }
         scope.synced=false; scope.end=0; scope.pid=0;
@@ -192,16 +258,66 @@ private:
             if (keys<=scope.size() || keys>kMaxKeyBytes*2+16 || !values || values>kMaxValueBytes ||
                 size_t(keys)+values>bytes.size()-at-16) break;
             std::string key=bytes.substr(at+16,keys),value=bytes.substr(at+16+keys,values);
-            if (digest(key+value)!=checksum || key.compare(0,scope.size(),scope)) break;
-            if (entries_.size()<kMaxEntries || entries_.count(key)) entries_.emplace(std::move(key),std::move(value));
+            // An answer's key is the scoped key ('P'...); a claim's is the same with 'C'.
+            if (digest(key+value)!=checksum || (key[0]!='P' && key[0]!='C') ||
+                key.compare(1,scope.size()-1,scope,1,scope.size()-1)) break;
             at+=16+size_t(keys)+values;
+            if (key[0]=='C') {
+                if (value.size()!=16) break;
+                key[0]='P';
+                Wait wait; std::memcpy(&wait.deadline,value.data(),8); std::memcpy(&wait.token,value.data()+8,8);
+                if (!entries_.count(key) && (waits_.size()<kMaxEntries || waits_.count(key))) waits_[key]=wait;
+                continue;
+            }
+            waits_.erase(key);
+            if (entries_.size()<kMaxEntries || entries_.count(key)) entries_.emplace(std::move(key),std::move(value));
         }
         return from+at;
     }
+    // With the shared lock: take records other processes appended since this process last
+    // looked. A reader never cuts the file; a damaged tail waits for the next writer.
+    void adoptLocked(const std::string& identity,Scope& scope) {
+        if (!openScope(scope) || !lockFile(scope.lock,LOCK_SH)) return;
+        const auto prefix=header(identity);
+        if (scope.data<0) {
+            int fd=openat(scope.dir,scope.name.c_str(),O_RDWR|O_CLOEXEC|O_NOFOLLOW|O_NONBLOCK);
+            struct stat opened{};
+            if (fd>=0 && !regularOwned(fd,&opened)) { close(fd); fd=-1; }
+            if (fd>=0) { scope.data=fd; scope.device=opened.st_dev; scope.inode=opened.st_ino; scope.synced=false; }
+        }
+        struct stat named{},info{};
+        if (scope.data>=0 && !fstatat(scope.dir,scope.name.c_str(),&named,AT_SYMLINK_NOFOLLOW) &&
+            named.st_dev==scope.device && named.st_ino==scope.inode && regularOwned(scope.data,&info)) {
+            const uint64_t size=uint64_t(info.st_size);
+            if (!scope.synced || size<scope.end) {
+                std::string head(prefix.size(),'\0');
+                if (size>=prefix.size() && pread(scope.data,head.data(),head.size(),0)==ssize_t(head.size()) && head==prefix) {
+                    scope.end=decodeLocked(scope.data,identity,prefix.size(),size);
+                    scope.synced=scope.end==size;
+                }
+            } else if (size>scope.end) {
+                scope.end=decodeLocked(scope.data,identity,scope.end,size);
+                scope.synced=scope.end==size;
+            }
+        }
+        flock(scope.lock,LOCK_UN);
+    }
+    void claimLocked(const std::string& identity,const std::string& key) {
+        auto file=files_.find(identity); if (file==files_.end()) return;
+        Scope& scope=file->second;
+        std::string claim=key; claim[0]='C';
+        std::string value; append(&value,monotonic()+kClaimNanos); append(&value,token());
+        std::string record;
+        append(&record,uint32_t(claim.size())); append(&record,uint32_t(value.size()));
+        append(&record,digest(claim+value)); record+=claim; record+=value;
+        if (scope.pending.size()+record.size()>kMaxPendingBytes) return;
+        scope.pending+=record; ++scope.pendingClaims;
+        flushLocked(identity,scope);
+    }
     void loadLocked(const std::string& identity,Scope& scope) {
         if (!openScope(scope)) return;
-        // Non-blocking locks: another writer is a cache miss, never startup latency.
-        if (flock(scope.lock,LOCK_SH|LOCK_NB)) return;
+        // Bounded locks: a writer that keeps the lock is a cache miss, never startup latency.
+        if (!lockFile(scope.lock,LOCK_SH)) return;
         int fd=openat(scope.dir,scope.name.c_str(),O_RDWR|O_CLOEXEC|O_NOFOLLOW|O_NONBLOCK);
         struct stat info{};
         if (fd>=0 && regularOwned(fd,&info)) {
@@ -281,17 +397,18 @@ private:
     }
     void flushLocked(const std::string& identity,Scope& scope) {
         if (scope.pending.empty() || !openScope(scope)) return;
-        if (flock(scope.lock,LOCK_EX|LOCK_NB)) { ++contended_; return; }
+        if (!lockFile(scope.lock,LOCK_EX)) { ++contended_; return; }
         if (!syncLocked(identity,scope)) {
             scope.synced=false;
         } else if (scope.end+scope.pending.size()>kMaxFileBytes) {
-            scope.pending.clear(); scope.pendingRecords=0;
+            scope.pending.clear(); scope.pendingRecords=0; scope.pendingClaims=0;
         } else if (pwrite(scope.data,scope.pending.data(),scope.pending.size(),off_t(scope.end))==ssize_t(scope.pending.size())) {
             // Cache durability is optional, so there is no fsync. A crash or failed
             // write leaves at most a partial final record, which readers ignore and
             // the next writer cuts away.
             scope.end+=scope.pending.size(); writes_+=scope.pendingRecords; writeBytes_+=scope.pending.size();
-            scope.pending.clear(); scope.pendingRecords=0;
+            claims_+=scope.pendingClaims;
+            scope.pending.clear(); scope.pendingRecords=0; scope.pendingClaims=0;
         } else {
             scope.synced=false;
             (void)ftruncate(scope.data,off_t(scope.end));
@@ -299,11 +416,14 @@ private:
         flock(scope.lock,LOCK_UN);
     }
     uint64_t epoch_=1,hits_=0,misses_=0,writes_=0,writeBytes_=0,writeMicros_=0,contended_=0;
+    uint64_t claims_=0,joined_=0,joinNanos_=0,firstLookup_=0,lastLookup_=0,token_=0;
+    pid_t tokenPid_=0;
     std::string connection_;
     std::mutex mutex_;
     std::unordered_map<uint64_t,std::string> identities_;
     std::unordered_map<std::string,Scope> files_;
     std::unordered_map<std::string,std::string> entries_;
+    std::unordered_map<std::string,Wait> waits_;
 };
 inline StaticQueryCache staticQueryCache;
 } // namespace caboose::memory

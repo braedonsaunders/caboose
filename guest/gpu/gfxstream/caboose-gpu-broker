@@ -18,6 +18,7 @@ import socket
 import stat
 import struct
 import sys
+import signal
 import time
 
 import buffer_presentation as buffers
@@ -420,6 +421,76 @@ class SurfaceStats:
                   f'results={self.results} released={self.released} gap_max_ms={self.gap_max // 1_000_000} '
                   f'to_phone_bytes={to_phone} from_phone_bytes={from_phone}', file=sys.stderr, flush=True)
         self.restart(now)
+
+
+HISTORY_LOGS = 4
+
+
+def retire_capabilities(directory):
+    """Moves earlier executor sessions' capability logs (static_query_cache.h) from the
+    seat's `capabilities/` into `capabilities/history/`, keeping the newest HISTORY_LOGS.
+    Their answers belonged to those sessions and are never read as answers again; the
+    warm-up asks the new executor the same questions (warmup/README.md)."""
+    try:
+        fd = os.open(directory / 'capabilities', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except OSError:
+        return
+    history = -1
+    try:
+        if os.fstat(fd).st_uid != os.getuid():
+            return
+        with contextlib.suppress(FileExistsError):
+            os.mkdir('history', 0o700, dir_fd=fd)
+        history = os.open('history', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=fd)
+        info = os.fstat(history)
+        if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o077:
+            return
+        for name in os.listdir(fd):
+            if not name.startswith('formats-') or len(name) > 64:
+                continue
+            with contextlib.suppress(OSError):
+                if name.endswith('.bin') and stat.S_ISREG(os.stat(name, dir_fd=fd, follow_symlinks=False).st_mode):
+                    os.rename(name, name, src_dir_fd=fd, dst_dir_fd=history)
+                else:
+                    os.unlink(name, dir_fd=fd)
+        logs = []
+        for name in os.listdir(history):
+            with contextlib.suppress(OSError):
+                logs.append((os.stat(name, dir_fd=history, follow_symlinks=False).st_mtime_ns, name))
+        for _, name in sorted(logs, reverse=True)[HISTORY_LOGS:]:
+            with contextlib.suppress(OSError):
+                os.unlink(name, dir_fd=history)
+    except OSError:
+        return
+    finally:
+        if history >= 0:
+            os.close(history)
+        os.close(fd)
+
+
+async def start_warmup(program, socket_path):
+    """Starts `program SOCKET` in its own process group, detached from the session's
+    progress: nothing waits for it. It starts the computer's GL implementations once each,
+    so their capability discovery is in the new session's cache before applications ask
+    (warmup/README.md). Its output goes to the broker's log."""
+    if program is None or not program.is_file():
+        return None
+    env = dict(os.environ, CABOOSE_GFXSTREAM_SOCKET=str(socket_path))
+    try:
+        process = await asyncio.create_subprocess_exec(
+            str(program), str(socket_path), stdin=asyncio.subprocess.DEVNULL, stdout=sys.stderr.fileno(),
+            stderr=sys.stderr.fileno(), env=env, start_new_session=True, close_fds=True)
+    except OSError as error:
+        print(f'CABOOSE_GPU_BROKER warm-up not started: {error}', file=sys.stderr, flush=True)
+        return None
+    asyncio.get_running_loop().create_task(process.wait())
+    return process
+
+
+def stop_warmup(process):
+    if process is not None and process.returncode is None:
+        with contextlib.suppress(OSError):
+            os.killpg(process.pid, signal.SIGKILL)
 
 
 class Session:
@@ -1427,6 +1498,7 @@ class Broker:
     listener = None
     lifecycle = None
     stale_epochs = frozenset()
+    warmup = None
 
     def __init__(self, control, token_file, socket_path, surface_path=None, indexed=False, listener=None):
         if os.environ.get("CABOOSE_PRIVATE_GPU_DEFLATE") == "1" and not indexed:
@@ -1435,6 +1507,8 @@ class Broker:
         self.listener = listener
         self.surface_path = surface_path
         self.indexed = indexed
+        # Installed beside the broker's own modules (README.md); absent, sessions start cold.
+        self.warmup = Path(__file__).resolve().parent / 'caboose-gpu-warmup-session'
         self.compositor_pid = self.compositor_start = None
         if control is not None:
             self.compositor_pid = os.getppid()
@@ -1888,6 +1962,7 @@ class Broker:
         session = executor = generation = None
         sender = receiver = stop_wait = drain_wait = None
         owned_socket = None
+        warmup = None
         try:
             reader, writer = await asyncio.open_connection(sock=stream, limit=MAX_REQUEST + 4)
             raw = await asyncio.wait_for(reader.readuntil(b'\r\n\r\n'), 5)
@@ -1929,6 +2004,7 @@ class Broker:
             if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or
                 stat.S_IMODE(info.st_mode) != 0o700 or os.path.lexists(self.socket_path)):
                 raise PermissionError('unsafe local socket directory or existing path')
+            retire_capabilities(directory)
             def start_local(local_reader, local_writer):
                 if len(session.local_tasks) >= MAX_QUEUED_MESSAGES:
                     local_writer.transport.abort(); return
@@ -1965,11 +2041,14 @@ class Broker:
                         session.local_tasks.add(task)
                         task.add_done_callback(session.local_tasks.discard)
                 surface_accept = asyncio.create_task(accept_surfaces())
+            # Only once the session is serving, so it never delays the session or a first frame.
+            warmup = await start_warmup(self.warmup, self.socket_path)
             stop_wait = asyncio.create_task(self.closing.wait())
             drain_wait = asyncio.create_task(session.drain_requested.wait())
             watchers = (sender, receiver, stop_wait, drain_wait) + ((surface_accept,) if surface_accept else ())
             done, _ = await asyncio.wait(watchers, return_when=asyncio.FIRST_COMPLETED)
             if stop_wait in done or drain_wait in done:
+                stop_warmup(warmup)
                 server.close()
                 with contextlib.suppress(OSError, asyncio.TimeoutError):
                     await self.report_lifecycle(session, 5)
@@ -1993,6 +2072,7 @@ class Broker:
             # Every executor session that is refused or ends abnormally says why.
             print(f'CABOOSE_GPU_BROKER executor session ended: {type(error).__name__}: {error}', file=sys.stderr, flush=True)
         finally:
+            stop_warmup(warmup)
             if surface_listener:
                 surface_listener.close()
                 if surface_accept:
