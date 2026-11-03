@@ -191,6 +191,25 @@ an exact match, not a subset of bits. `caboose_gpu_live_start_v4` strongly links
 actual indexed runtime; a version-3 artifact cannot authorize version 4. These
 wire fixtures do not initialize a provider or activate the driver.
 
+## Guest capability-cache session scope
+
+The local broker hello supports optional bit `0x20000`. It is a guest/broker feature,
+not a phone decoder feature. When granted, the 48-byte hello reply is immediately
+followed by a 32-byte random nonce, generated once for that broker executor session.
+Every guest process in the session receives the same nonce; a new executor session gets
+a new nonce even if its supplied executor UUID and generation repeat. Old guests receive
+only the original reply. A new guest that falls back to an older broker keeps physical
+capability answers process-local. Completion-feed connections omit this bit and keep
+their existing framing. The trailer is consumed locally and is never forwarded to the
+native decoder.
+
+The guest scopes its exact format/image-format cache to this nonce, negotiated protocol
+and features, queried backend/device/driver properties, and guest source fingerprint.
+Consequently a replacement executor or backend cannot reuse a previous session's file.
+The seat-owned files contain bounded scalar query results, not authorization data;
+[`static_query_cache.h`](../guest/gpu/gfxstream/bounded-memory/README.md#physical-capability-cache)
+describes validation and the existing sandbox mount used for storage.
+
 ## Phone capabilities and local features
 
 The phone app names the capabilities of its native decoder in the

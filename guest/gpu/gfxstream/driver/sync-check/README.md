@@ -63,3 +63,13 @@ cc -std=c11 -O2 -Wall -Wextra -Wno-missing-field-initializers -Werror \
 Run `linux-executor/check-wayland.sh IMAGE WORK RELEASE DRIVER WAYLAND_PROBE OUT` to
 exercise the release's packaged session/display/broker and require one and 30 frames
 on the real Linux executor. Both disposable containers are removed on exit.
+
+`capability_queries.c` measures 184 format/image-format pairs and 16 descriptor-layout
+support queries, reporting separate setup, format, device and descriptor timings and an
+answer hash. Build with `cc -std=c11 -O2 capability_queries.c -lvulkan -o capability_queries`.
+`linux-executor/check-capabilities.sh IMAGE WORK DRIVER PROBE OUT [RELEASE]` runs a cold
+process and two fresh processes warmed within the same executor session. With RELEASE,
+it uses that payload's session, display and broker. A private empty cache directory keeps
+the cold probe independent of compositor queries. Cache diagnostics must show cold misses
+and warmed hits; all answer hashes must agree. This is session-warm reuse, not reuse across
+executor replacement, and Linux timing does not establish phone timing.

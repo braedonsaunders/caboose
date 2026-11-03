@@ -133,6 +133,9 @@ Each patch is one feature. Several change Mesa's generated encoder
 | 0061 empty-application-pipeline-caches | An application's pipeline cache is empty in the guest: created without its saved data, and `vkGetPipelineCacheData` answers the device's header without a round trip, since the phone's own cache, which it seeds into every application cache, holds the pipelines |
 | 0062 traffic-detail | The traffic report also splits the coherent upkeep (written blocks or whole mappings), staging uploads, upload-cache pieces and what each kind of shadow considered and sent |
 
+| 0063 presentation-retirement | Retains pending frames asynchronously and retires native IDs after ordered presentation, while completing guest allocator cleanup synchronously |
+| 0064 persistent-physical-capabilities | Exact format/image-format answers shared across processes, scoped to the current backend, driver, protocol and guest source identity; unsafe or corrupt files fall back to real queries |
+
 The patch messages describe each change. To change the driver, prepare a tree, commit
 the prepared state, edit, and regenerate the affected patch with `git format-patch`
 against the commit before it; then rebuild and run the tests below.
@@ -141,11 +144,11 @@ against the commit before it; then rebuild and run the tests below.
 
 Before Mesa's first command, `SocketStream.cpp` sends a 48-byte hello: `CBGLREF1`, a
 little-endian version (4) and feature mask, and the source fingerprint documented in
-[docs/gpu-live.md](../../../../docs/gpu-live.md). The driver offers mask `0x1FFF0`; the
+[docs/gpu-live.md](../../../../docs/gpu-live.md). The driver offers mask `0x3FFF0`; the
 broker answers with the required `0x70` plus the offered bits the connected phone
 supports, and the driver prints `CABOOSE_GPU_HELLO features=0x…` with what it was granted. A
 broker that predates a bit closes the connection, and the driver reconnects offering fewer:
-`0xFFF0`, `0x7FF0`, `0x3FF0`, `0x1FF0`, `0xFF0`, `0x7F0`, `0xF0`, then `0x70`. An answer with bits the driver did not offer, or
+`0x1FFF0`, `0xFFF0`, `0x7FF0`, `0x3FF0`, `0x1FF0`, `0xFF0`, `0x7F0`, `0xF0`, then `0x70`. An answer with bits the driver did not offer, or
 any other difference, fails the connection, and with it Vulkan instance creation.
 `CABOOSE_GFXSTREAM_GUEST_HANDLES=0` offers `0x70` only. Patches 0013 and 0014, the
 creates and allocations of 0016 and the fence, semaphore and pipeline handles of 0018

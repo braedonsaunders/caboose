@@ -110,6 +110,44 @@ left are never sent. A free releases its share of the asynchronous allocation bu
 (`async_allocation.h`) when it is sent, so an allocation decided meanwhile still sees it. At
 most 8192 are held; past that a destroy waits up to a second for the oldest.
 
+## Physical capability cache
+
+`static_query_cache.h` reuses exact format and image-format answers across processes.
+A physical handle is associated with an identity only after the current executor has
+answered its properties query. The identity includes the accepted protocol fingerprint
+and feature mask, a broker-issued executor-session nonce, actual backend device/driver UUIDs, versions and names, pipeline-cache
+UUID, architecture, and the guest driver's complete prepared-source fingerprint. A new
+connection clears all handle associations. Cache records are reusable only within one
+executor session; a newly connected executor gets a fresh nonce even if its advertised
+identifiers match. Without the nonce extension, the cache remains process-local. The broker socket path selects storage only;
+it does not establish device identity.
+
+The seat cache is `capabilities/` beside `CABOOSE_GFXSTREAM_SOCKET`, inside the directory
+already exposed to Flatpak and pressure-vessel. Without an absolute socket path, storage
+uses `$XDG_CACHE_HOME/caboose-gpu` or `~/.cache/caboose-gpu`. No additional sandbox mount
+is added. Format queries accept no extension chain or exactly `VkFormatProperties3`;
+image-format queries require empty input and output extension chains. Other chains go
+to the executor. Image answers persist only success or format-not-supported results.
+Logical-device descriptor-layout support queries remain real queries: enabled device
+features affect their answers.
+
+Files are untrusted seat-user data, not an authorization source. Readers require a
+private directory and regular private files owned by the effective user, reject symlinks
+in every path component, and validate the complete identity, record sizes and checksums
+before publishing any answer. Checksums detect damaged records, not malicious writes by
+the same user. Values contain only fixed-size capability scalars, never pointers or
+object handles. Bounds are 8192 entries, 64 device scopes, 4096-byte values and 8 MiB per
+file. Writers use a nonblocking per-file lock and atomic replacement; a reader sees one
+complete snapshot. Unsafe paths, lock contention, oversized or corrupt records produce
+cache misses. Current connection/device identity always comes from real queries.
+
+`test_static_query_cache.cpp` covers fresh-process reuse, changed identities/protocols,
+concurrent writers, lock contention, unsafe permissions, symlinks, size limits and corrupt
+records. `../../../../apps/ios/GPUStream/gfxstream/linux-executor/check-capabilities.sh`
+measures a genuinely empty cache and two fresh warmed processes, with separate format,
+device-creation and descriptor-query timings. A warmed result does not measure first-use
+latency.
+
 ## Executor loss
 
 The phone executor's streams end only when it leaves (the app goes to the background or

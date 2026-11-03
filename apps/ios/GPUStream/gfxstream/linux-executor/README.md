@@ -125,3 +125,18 @@ the same build and settings give the same chain.
 - Phone-decoded video: the runtime's portable media reports no formats, so guests decode
   every video stream themselves.
 - Display timing for frame lab and the memory-audit receipts are not collected.
+
+## Capability-query latency
+
+Build `guest/gpu/gfxstream/driver/sync-check/capability_queries.c` with the Vulkan headers
+and `-lvulkan`, then run:
+
+```sh
+sh apps/ios/GPUStream/gfxstream/linux-executor/check-capabilities.sh IMAGE WORK DRIVER CAPABILITY_PROBE OUT
+```
+
+This creates a fresh broker/cache directory and runs three independent probe processes.
+The first is cold; the next two reuse the seat cache. Each reports setup, format queries,
+device creation and descriptor-support queries separately. All answer hashes must match,
+and the executor must drain cleanly. These Linux measurements do not establish phone
+latency.

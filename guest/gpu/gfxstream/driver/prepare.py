@@ -101,7 +101,11 @@ def prepare(root):
         target = root / destination
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(GFXSTREAM / source, target)
-    (root / 'src/gfxstream/caboose-driver.json').write_text(json.dumps(manifest(), indent=2) + '\n')
+    inputs = manifest()
+    source_identity = hashlib.sha256(json.dumps(inputs, sort_keys=True).encode()).hexdigest()
+    (root / 'src/gfxstream/guest/vulkan_enc/caboose-bounded-memory/source_identity.h').write_text(
+        '#pragma once\n#define CABOOSE_DRIVER_SOURCE_ID "' + source_identity + '"\n')
+    (root / 'src/gfxstream/caboose-driver.json').write_text(json.dumps(inputs, indent=2) + '\n')
 
 
 if __name__ == '__main__':

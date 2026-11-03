@@ -17,6 +17,7 @@
 #include "caboose-bounded-memory/deferred_replies.h"
 #include "caboose-bounded-memory/memory_traffic.h"
 #include "caboose-bounded-memory/upload_cache.h"
+#include "caboose-bounded-memory/static_query_cache.h"
 #include "caboose-shader-cache/shader_cache.h"
 
 // Private diagnostic framing, not the Caboose display protocol. The peer only
@@ -27,6 +28,7 @@
 #if defined(CABOOSE_GFXSTREAM_PRIVATE_INDEXED_WSI) && (!defined(CABOOSE_GFXSTREAM_PRIVATE_LIVE) || !defined(CABOOSE_GFXSTREAM_PRIVATE_ICD))
 #error Private indexed WSI requires the private live diagnostic ICD build
 #endif
+static constexpr uint32_t kCacheSession = 0x20000;
 static constexpr unsigned char kHello[48] = {
 #if defined(CABOOSE_GFXSTREAM_PRIVATE_INDEXED_WSI)
     'C','B','G','L','R','E','F','1', 4,0,0,0, 0x70,0,0,0,
@@ -59,7 +61,7 @@ static constexpr uint32_t kGuestHandles = 0x80, kGuestHandleArrays = 0x100, kCom
                           kOrderedPresent = 0x400, kGuestImages = 0x800, kGuestQueryPools = 0x1000,
                           kShaderCache = 0x2000, kExecutorResume = 0x4000, kUploadCache = 0x8000,
                           kGuestBufferViews = 0x10000;
-static const uint32_t kOffers[] = {kGuestHandles | kGuestHandleArrays | kCompletionFeed | kOrderedPresent | kGuestImages |
+static const uint32_t kOffers[] = {0x3ff80, kGuestHandles | kGuestHandleArrays | kCompletionFeed | kOrderedPresent | kGuestImages |
                                        kGuestQueryPools | kShaderCache | kExecutorResume | kUploadCache |
                                        kGuestBufferViews,
                                    kGuestHandles | kGuestHandleArrays | kCompletionFeed | kOrderedPresent | kGuestImages |
@@ -193,6 +195,8 @@ void startCompletionFeed(const char* path, const unsigned char* granted) {
     std::string socketPath(path);
     std::array<unsigned char, sizeof(kHello)> offer{};
     std::memcpy(offer.data(), granted, sizeof(kHello));
+    uint32_t feedFeatures=0; std::memcpy(&feedFeatures,offer.data()+12,4);
+    feedFeatures &= ~kCacheSession; std::memcpy(offer.data()+12,&feedFeatures,4);
     std::thread([socketPath, offer, generation] {
         int fd = connectSocket(socketPath.c_str());
         unsigned char reply[sizeof(kHello)];
@@ -305,7 +309,11 @@ int CabooseSocketStream::connectWith(const char* path, const unsigned char* offe
     unsigned char reply[sizeof(kHello)];
     const bool exchanged = writeFully(offer, sizeof(kHello)) == 0 && readFully(reply, sizeof(reply));
     uint32_t features = 0;
-    if (!exchanged || !acceptedFeatures(offer, reply, guestHandles, &features)) {
+    unsigned char cacheSession[32]{};
+    const unsigned char emptySession[32]{};
+    if (!exchanged || !acceptedFeatures(offer, reply, guestHandles, &features) ||
+        ((features & kCacheSession) && (!readFully(cacheSession,sizeof(cacheSession)) ||
+         !std::memcmp(cacheSession,emptySession,sizeof(cacheSession))))) {
         invalidate();
         close(fd_);
         fd_ = -1;
@@ -338,6 +346,13 @@ int CabooseSocketStream::connectWith(const char* path, const unsigned char* offe
     // A new executor, perhaps another phone, holds its own shader modules.
     caboose::shader_cache::known().reset();
     caboose::upload_cache::inventory().reset();
+    if (features & kCacheSession) {
+        std::string identity(reinterpret_cast<const char*>(reply),sizeof(reply));
+        identity.append(reinterpret_cast<const char*>(cacheSession),sizeof(cacheSession));
+        caboose::memory::staticQueryCache.connection(identity.data(),identity.size());
+    } else {
+        caboose::memory::staticQueryCache.reset();
+    }
     caboose::completion::executorConnected();
     caboose::completion::noteExecutorSocket();
 #if defined(CABOOSE_GFXSTREAM_PRIVATE_INDEXED_WSI)

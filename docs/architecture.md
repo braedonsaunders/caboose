@@ -3088,7 +3088,7 @@ finish before decoder process cleanup, as specified in [gpu-live.md](gpu-live.md
 Layout does not rewrite buffer dimensions during native extent configuration;
 an uncertain mutation leaves the layer quarantined rather than restoring old dimensions.
 The owner AppModel connects every owner computer's display to the authenticated host GPU
-endpoint: it is the only way window pictures reach the phone. Each session selects the paired computer's GPU caches
+endpoint: it is the only way window pictures reach the phone. Physical format capability reuse is fenced by a broker-issued executor-session nonce and current backend identity ([gpu-live.md](gpu-live.md#guest-capability-cache-session-scope)); a replacement executor cannot inherit cached answers. Each session selects the paired computer's GPU caches
 (`LiveGPUCacheRoot`, [gpu-live.md](gpu-live.md#shader-cache)) before its first process;
 signing out removes them. Backgrounding suspends it in place when the computer resumes
 executors ([gpu-live.md](gpu-live.md#suspending-an-executor)) and drains it otherwise;

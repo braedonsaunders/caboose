@@ -354,6 +354,7 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
                  (frozenset(), broker.HELLO_V4_GUEST_HANDLES, broker.HELLO_V4),
                  (everything, broker.HELLO_V4, broker.HELLO_V4),
                  (everything, hello(0x3F0), hello(0x3F0)),
+                 (frozenset(), hello(0x20070), hello(0x20070)),
                  (frozenset({'guest-handles'}), hello(0x3F0), hello(0xF0)))
         for supported, offered, expected in cases:
             with self.subTest(supported=sorted(supported), offered=offered[12:14].hex()):
@@ -382,9 +383,17 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
                         if len(writer.data) >= 48: break
                         await asyncio.sleep(0.01)
                     self.assertEqual(writer.data[:48], expected)
+                    trailer=session.cache_session if struct.unpack_from('<I',expected,12)[0] & broker.CACHE_SESSION else b''
+                    self.assertEqual(writer.data[48:],trailer)
                     task.cancel()
                     with contextlib.suppress(asyncio.CancelledError): await task
                 session.bindings.finish(session.binding_generation)
+
+    async def test_cache_scope_changes_even_when_executor_identifiers_repeat(self):
+        sessions=[broker.Session(None,b'a'*16,1,None,Writer(),indexed=True) for _ in range(2)]
+        self.assertEqual(len(sessions[0].cache_session),32)
+        self.assertNotEqual(sessions[0].cache_session,sessions[1].cache_session)
+        for session in sessions: session.bindings.finish(session.binding_generation)
 
     async def test_plain_session_refuses_the_guest_handle_hello(self):
         session = broker.Session(None, b'a' * 16, 1, None, Writer(), features=frozenset({'guest-handles'}))
@@ -410,7 +419,8 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
         # Unknown bits, missing required bits, other versions and other sources are refused.
         self.assertEqual(negotiate(hello(0x470), everything), hello(0x470))
         self.assertIsNone(negotiate(hello(0x1070), everything))
-        self.assertIsNone(negotiate(hello(0x20070), everything))
+        self.assertEqual(negotiate(hello(0x20070), frozenset()), hello(0x20070))
+        self.assertIsNone(negotiate(hello(0x40070), everything))
         # Buffer view handles need guest handles too.
         self.assertEqual(negotiate(hello(0x100F0), everything), hello(0x100F0))
         self.assertEqual(negotiate(hello(0x100F0), everything - {'guest-buffer-views'}), hello(0xF0))
