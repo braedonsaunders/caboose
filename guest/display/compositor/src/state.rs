@@ -708,7 +708,12 @@ impl State {
                 }
             }
             Record::BufferReleased { request, status } => {
-                let Some((window, held)) = self.remote_presents.released(request) else { self.gpu_control_failed(); return };
+                // A release for a present already returned (all of them are on an executor
+                // loss, before the broker's last answers for that executor arrive) is stale.
+                let Some((window, held)) = self.remote_presents.released(request) else {
+                    tracing::debug!("stale remote buffer release {request}");
+                    return;
+                };
                 self.free_held(window, held);
                 if status != 0 { self.stats.unshown += 1; }
                 // A frame went to the phone: the application may draw the next one.
@@ -727,7 +732,10 @@ impl State {
                 let Some(grants) = self.gpu_grants.as_mut() else { self.gpu_control_failed(); return };
                 match kind {
                     4 => {
-                        if grants.ready(executor, generation).is_err() { self.gpu_control_failed(); }
+                        // The previous executor's lost or retired report may never come (it
+                        // crossed a broker restart): a ready executor supersedes it.
+                        if grants.epoch_if_ready().is_some() || grants.supersede().is_err() ||
+                            grants.ready(executor, generation).is_err() { self.gpu_control_failed(); }
                         else {
                             self.reconnect_for_gpu_epoch();
                             // The phone's GPU is there: render on it.
@@ -735,10 +743,12 @@ impl State {
                         }
                     }
                     5 => {
-                        let revokes = match grants.lost(executor, generation) {
-                            Ok(revokes) => revokes,
-                            Err(_) => { self.gpu_control_failed(); return; }
-                        };
+                        // A loss of an executor that is no longer the current one (already
+                        // lost, or superseded) has nothing left to revoke.
+                        let revokes = grants.lost(executor, generation).unwrap_or_else(|_| {
+                            tracing::debug!("stale executor loss, generation {generation}");
+                            Vec::new()
+                        });
                         for grant in revokes {
                             if self.queue_gpu_revoke(grant).is_err() { self.gpu_control_failed(); return; }
                         }
@@ -747,7 +757,10 @@ impl State {
                         self.rebuild_gpu_after_loss();
                     }
                     6 => {
-                        if grants.retired(executor, generation).is_err() { self.gpu_control_failed(); }
+                        // A retirement for an executor a later ready already superseded is stale.
+                        if grants.retired(executor, generation).is_err() {
+                            tracing::debug!("stale executor retirement, generation {generation}");
+                        }
                     }
                     _ => self.gpu_control_failed(),
                 }

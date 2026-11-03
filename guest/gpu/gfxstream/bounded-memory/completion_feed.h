@@ -676,10 +676,42 @@ inline std::unordered_set<std::string>& lostCallsTold() {
     static auto* instance = new std::unordered_set<std::string>;
     return *instance;
 }
+// The executor generation this process is connected to: 1 for its first executor, one more
+// for each executor it connected to after losing the one before (docs/gpu-live.md, Executor
+// generations). Every dispatchable object records the generation it was made under; a call on
+// an object of an earlier generation reports VK_ERROR_DEVICE_LOST and never reaches the
+// executor, which does not know its handles.
+inline std::atomic<uint64_t> connectionGeneration{1};
+// What a new executor generation resets: every cache of an executor's answers and every
+// table of its objects that is not itself keyed by generation registers here, so one place
+// re-establishes the process for the new executor (docs/gpu-live.md, Executor generations).
+// Hooks run on the reconnecting thread, after the generation has advanced and before the
+// first call of the new generation.
+using GenerationHook = void (*)();
+inline std::mutex& generationHooksMutex() {
+    static std::mutex* instance = new std::mutex;
+    return *instance;
+}
+inline std::vector<GenerationHook>& generationHooks() {
+    static auto* instance = new std::vector<GenerationHook>;
+    return *instance;
+}
+inline bool onNewGeneration(GenerationHook hook) {
+    std::lock_guard<std::mutex> lock(generationHooksMutex());
+    generationHooks().push_back(hook);
+    return true;
+}
 // A device stream connected to a (new) executor.
 inline void executorConnected() {
     lostSocketInode.store(0, std::memory_order_release);
     if (executorLost.exchange(false, std::memory_order_acq_rel)) {
+        connectionGeneration.fetch_add(1, std::memory_order_acq_rel);
+        std::vector<GenerationHook> hooks;
+        {
+            std::lock_guard<std::mutex> lock(generationHooksMutex());
+            hooks = generationHooks();
+        }
+        for (GenerationHook hook : hooks) hook();
         {
             std::lock_guard<std::mutex> lock(lostCallsMutex());
             lostCallsTold().clear();
@@ -769,6 +801,20 @@ inline bool lostCall(const char* caller = __builtin_FUNCTION()) {
             std::fprintf(stderr, "CABOOSE_GPU_LOST_CALL %s returned without the device (executor lost)\n", caller);
     }
     return true;
+}
+// A call on an object made under executor `generation` (0: an object no generation was
+// recorded for): true when it must not reach the stream, either because the executor is gone
+// or because the object belongs to an executor this process has since replaced.
+inline bool lostCall(uint64_t generation, const char* caller = __builtin_FUNCTION()) {
+    if (generation && generation != connectionGeneration.load(std::memory_order_acquire)) {
+        std::lock_guard<std::mutex> lock(lostCallsMutex());
+        auto& told = lostCallsTold();
+        if (told.size() < 512 && told.insert(std::string("stale:") + caller).second)
+            std::fprintf(stderr, "CABOOSE_GPU_LOST_CALL %s on an object of executor generation %llu, now %llu\n", caller,
+                         (unsigned long long)generation, (unsigned long long)connectionGeneration.load());
+        return true;
+    }
+    return lostCall(caller);
 }
 inline void markExecutorLost() {
     if (executorLost.exchange(true, std::memory_order_acq_rel)) return;

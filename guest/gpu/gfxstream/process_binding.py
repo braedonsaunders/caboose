@@ -16,7 +16,7 @@ import threading
 SO_PEERCRED = getattr(socket, "SO_PEERCRED", 17)
 SO_PEERPIDFD = 77
 MAX_ID = (1 << 64) - 1
-MAX_PROCESSES = 16
+MAX_PROCESSES = 64
 MAX_STREAMS = 64
 
 

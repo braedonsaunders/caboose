@@ -181,6 +181,17 @@ impl Grants {
         Ok(())
     }
 
+    /// A new executor is ready while the previous one's retirement never arrived: the
+    /// previous executor is gone with all of its surfaces (a new one is admitted only after
+    /// the old lease ended), so its grants end and a new epoch starts.
+    pub fn supersede(&mut self) -> io::Result<()> {
+        if self.phase == Phase::Idle { return Ok(()); }
+        self.phase = Phase::Lost;
+        self.retirement_received = true;
+        self.windows.clear();
+        self.finish_retirement()
+    }
+
     /// IPC failure cannot prove native retirement, so remain latched unavailable.
     pub fn fail(&mut self) {
         if self.phase == Phase::Ready { self.phase = Phase::Lost; }

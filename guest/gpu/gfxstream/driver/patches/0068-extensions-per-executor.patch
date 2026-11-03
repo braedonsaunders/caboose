@@ -1,5 +1,5 @@
 From: Caboose <caboose@local>
-Subject: [PATCH 68/76] Ask the connected executor for its extensions after the executor changed
+Subject: [PATCH 68/77] Ask the connected executor for its extensions after the executor changed
 
 The tracker kept the host's instance and device extension lists from the first time a
 process asked, for its whole life. A long-running process that outlives its executor (the

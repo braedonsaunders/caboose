@@ -2035,9 +2035,6 @@ class Broker:
             finally:
                 if not ready_wait.done(): ready_wait.cancel()
                 await asyncio.gather(ready_wait, return_exceptions=True)
-            await self.report_lifecycle(session, 4)
-            self.lease.ready(executor.bytes, generation)
-            self.session = session
             directory = self.socket_path.parent
             info = directory.lstat()
             if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or
@@ -2080,6 +2077,11 @@ class Broker:
                         session.local_tasks.add(task)
                         task.add_done_callback(session.local_tasks.discard)
                 surface_accept = asyncio.create_task(accept_surfaces())
+            # Ready only once both sockets exist: the compositor rebuilds its renderer on the
+            # report, and a renderer that found no socket would stay on the computer's device.
+            self.session = session
+            await self.report_lifecycle(session, 4)
+            self.lease.ready(executor.bytes, generation)
             # Only once the session is serving, so it never delays the session or a first frame.
             warmup = await start_warmup(self.warmup, self.socket_path)
             stop_wait = asyncio.create_task(self.closing.wait())
@@ -2131,6 +2133,9 @@ class Broker:
                     with contextlib.suppress(OSError, asyncio.TimeoutError):
                         await self.report_lifecycle(session, 5)
                 session.failed = True
+                # Buffer binds and retries of this executor end with it: nothing it held is
+                # answered after its loss is reported.
+                for task in tuple(session.buffer_tasks): task.cancel()
                 for task in tuple(session.local_tasks): task.cancel()
                 if session.local_tasks:
                     try:

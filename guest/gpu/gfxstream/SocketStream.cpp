@@ -218,6 +218,10 @@ void startCompletionFeed(const char* path, const unsigned char* granted) {
             !sendAll(fd, &clientFlags, sizeof(clientFlags)) || !sendAll(fd, command, sizeof(command))) {
             std::fprintf(stderr, "CABOOSE_COMPLETION_FEED unavailable errno=%d\n", errno);
             if (fd >= 0) close(fd);
+            // The current generation has no feed: its waits ask the device. An older feed
+            // still marked active would leave watches nobody completes.
+            if (feedGeneration.load(std::memory_order_acquire) == generation)
+                caboose::completion::feedActive.store(false, std::memory_order_release);
             uint64_t own = generation;
             activeFeedGeneration.compare_exchange_strong(own, 0, std::memory_order_acq_rel);
             return;

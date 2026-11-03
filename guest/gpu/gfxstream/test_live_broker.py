@@ -1307,7 +1307,7 @@ class TransportNegotiationTests(unittest.IsolatedAsyncioTestCase):
                     await session.message(Envelope(Kind.TRANSPORT_READY,b'a'*16,1,0,0,2,broker.TRANSPORT_CONFIG))
             finally: session.bindings.finish(session.binding_generation)
 
-    async def test_remote_does_not_report_ready_or_publish_socket_before_transport_ack(self):
+    async def test_remote_reports_ready_only_after_transport_ack_and_its_sockets(self):
         import uuid
         acknowledged=asyncio.Event(); hello_received=asyncio.Event(); published=asyncio.Event()
         class TestSession(broker.Session):
@@ -1339,8 +1339,10 @@ class TransportNegotiationTests(unittest.IsolatedAsyncioTestCase):
                     acknowledged.set()
                     await asyncio.wait_for(task,1)
                     self.assertTrue(published.is_set())
-                    self.assertEqual(instance.report_lifecycle.await_args_list[0].args[1],4)
-                    instance.lease.ready.assert_called_once()
+                    # Ready is reported only once the sockets exist: a publication that fails
+                    # never reports it.
+                    self.assertNotIn(4,[call.args[1] for call in instance.report_lifecycle.await_args_list])
+                    instance.lease.ready.assert_not_called()
                 finally:
                     task.cancel(); await asyncio.gather(task,return_exceptions=True)
 

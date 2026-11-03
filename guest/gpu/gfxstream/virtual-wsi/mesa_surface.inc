@@ -69,6 +69,9 @@ struct Surface {
     std::vector<std::shared_ptr<DeviceSwapchain>> remoteSwaps;
     VkInstance instance;
     uint64_t boxedInstance;
+    // The executor generation of the surface's instance: a surface of an instance made under
+    // an earlier executor is lost, and never binds or queries on the current one.
+    uint64_t instanceGeneration=0;
     uint32_t object;
     Client::Space space=Client::WaylandSurface;
     VkAllocationCallbacks allocator{};
@@ -163,8 +166,13 @@ constexpr auto kFirstPresentBindWait=std::chrono::seconds(2);
 // Without guest-owned images a query has no local answer, so it waits for a bind in flight as
 // long as the broker does for the compositor's answer: a slow bind is not a lost surface.
 constexpr auto kQueryBindPatience=std::chrono::seconds(5);
+static bool staleGeneration(const Surface& surface) {
+    return surface.instanceGeneration &&
+           surface.instanceGeneration!=caboose::completion::connectionGeneration.load(std::memory_order_acquire);
+}
 static bool tryBind(Surface& surface, bool present=false,
                     std::chrono::steady_clock::duration wait=std::chrono::steady_clock::duration::zero()) {
+    if (staleGeneration(surface)) return false;
     if (surface.bound) return true;
     const auto now=std::chrono::steady_clock::now();
     try {
@@ -230,7 +238,8 @@ static VkResult query(VkPhysicalDevice physical, VkSurfaceKHR handle, Bytes& cap
     auto& surface=*retained;
     std::lock_guard<std::recursive_mutex> lock(surface.operationMutex);
     VK_FROM_HANDLE(gfxstream_vk_physical_device, device, physical);
-    if (surface.instance!=gfxstream_vk_instance_to_handle(device->instance) || surface.poisoned)
+    if (surface.instance!=gfxstream_vk_instance_to_handle(device->instance) || surface.poisoned ||
+        staleGeneration(surface))
         return VK_ERROR_SURFACE_LOST_KHR;
     try {
         if (surface.workerStarted) {
@@ -283,6 +292,7 @@ static VkResult VKAPI_CALL create(VkInstance instance, const VkWaylandSurfaceCre
         surface->instance=instance;
         VK_FROM_HANDLE(gfxstream_vk_instance, owner, instance);
         surface->boxedInstance=get_host_u64_VkInstance(owner->internal_object);
+        surface->instanceGeneration=cabooseGenerationOf(owner->internal_object);
         surface->object=wl_proxy_get_id(proxy);
         if (allocator) { surface->allocator=*allocator; surface->customAllocator=true; }
         // The private WSI never creates a Linux presentation buffer. Keep the
@@ -312,6 +322,7 @@ static VkResult VKAPI_CALL createXcb(VkInstance instance, const VkXcbSurfaceCrea
         surface->instance=instance;
         VK_FROM_HANDLE(gfxstream_vk_instance, owner, instance);
         surface->boxedInstance=get_host_u64_VkInstance(owner->internal_object);
+        surface->instanceGeneration=cabooseGenerationOf(owner->internal_object);
         surface->object=info->window;
         surface->space=Client::X11Window;
         if (allocator) { surface->allocator=*allocator; surface->customAllocator=true; }
@@ -356,6 +367,7 @@ static VkResult VKAPI_CALL createXlib(VkInstance instance, const XlibSurfaceCrea
         surface->instance=instance;
         VK_FROM_HANDLE(gfxstream_vk_instance, owner, instance);
         surface->boxedInstance=get_host_u64_VkInstance(owner->internal_object);
+        surface->instanceGeneration=cabooseGenerationOf(owner->internal_object);
         surface->object=static_cast<uint32_t>(info->window);
         surface->space=Client::X11Window;
         if (allocator) { surface->allocator=*allocator; surface->customAllocator=true; }

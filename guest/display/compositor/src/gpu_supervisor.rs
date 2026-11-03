@@ -12,6 +12,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 const BROKER: &str = "/usr/local/libexec/caboose-gpu-broker";
 
+/// The broker the supervisor starts: `CABOOSE_GPU_BROKER` names another installation of it
+/// (a release check runs its candidate broker in a seat of its own this way).
+fn broker() -> std::ffi::OsString {
+    std::env::var_os("CABOOSE_GPU_BROKER").filter(|path| !path.is_empty()).unwrap_or_else(|| BROKER.into())
+}
+
 pub struct GpuSupervisor {
     // None after close: do not leave a live channel across child teardown.
     ipc: Option<UnixStream>,
@@ -49,7 +55,7 @@ impl GpuSupervisor {
         // SAFETY: into_raw_fd transfers sole ownership into Stdio. The descriptor
         // becomes fd 0 in the child and is closed in this process after spawn.
         let input = unsafe { Stdio::from_raw_fd(child_ipc.into_raw_fd()) };
-        let mut command = Command::new(BROKER);
+        let mut command = Command::new(broker());
         // The broker is not a client of the phone's GPU: the compositor's own settings stay its own.
         for key in crate::render::OWN_ENV {
             command.env_remove(key);

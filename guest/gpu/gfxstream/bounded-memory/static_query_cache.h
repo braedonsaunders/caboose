@@ -92,10 +92,14 @@ public:
     template<class T> void store(const std::string& input,const T& value) {
         storeBytes(input,std::string(reinterpret_cast<const char*>(&value),sizeof(T)));
     }
+    // Stores the answer to the question this thread last looked up, only while the connection
+    // it was asked on is still current: an answer read as lost (its executor left) and stored
+    // after another thread connected a new executor would otherwise be the new one's.
     void storeBytes(const std::string& input,const std::string& bytes) {
         if (disabled()) return;
         if (input.size()>kMaxKeyBytes || bytes.empty() || bytes.size()>kMaxValueBytes) return;
         std::lock_guard<std::mutex> lock(mutex_);
+        if (lookupEpoch()!=~0ull && lookupEpoch()!=epoch_) return;
         auto scoped=normalize(input);
         const bool known=entries_.count(scoped.second);
         if (!known && entries_.size()>=kMaxEntries) return;
@@ -105,8 +109,11 @@ public:
     uint64_t epoch() { std::lock_guard<std::mutex> lock(mutex_); return epoch_; }
 private:
     // `expected` is the answer's size, or 0 for any.
+    // The connection epoch of this thread's last lookup.
+    static uint64_t& lookupEpoch() { static thread_local uint64_t epoch=~0ull; return epoch; }
     bool lookupValue(const std::string& input,size_t expected,std::string* out) {
         std::unique_lock<std::mutex> lock(mutex_);
+        lookupEpoch()=epoch_;
         if (disabled()) { ++misses_; return false; }
         auto scoped=normalize(input);
         auto found=[&]() {
