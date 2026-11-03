@@ -80,7 +80,7 @@ class ProcessBindingsTests(unittest.TestCase):
         new_process, new_stream = registry.bind(gen, FakePeer(10, 1))
         self.assertGreater(new_process, process)
         self.assertGreater(new_stream, first)
-        for pid in range(20, 35): registry.bind(gen, FakePeer(pid, 1))
+        for pid in range(20, 20 + binding.MAX_PROCESSES - 1): registry.bind(gen, FakePeer(pid, 1))
         extra = FakePeer(100, 1)
         with self.assertRaises(OverflowError): registry.bind(gen, extra)
         self.assertTrue(extra.open)
