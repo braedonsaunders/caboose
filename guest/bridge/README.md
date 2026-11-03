@@ -43,16 +43,16 @@ written by the host.
 
 - **File choosing** for applications that use the FileChooser portal, from the phone's
   Files, Photos, camera or document scanner: GTK 4, GTK 3 applications that use
-  `GtkFileChooserNative`, Chromium and Electron applications such as VS Code, and Firefox. Applications that draw their own dialog (GTK 3's
+  `GtkFileChooserNative`, Chromium, and Electron applications such as VS Code. Applications that draw their own dialog (GTK 3's
   `GtkFileChooserDialog`, Qt through its GTK platform theme, LibreOffice's GTK 3 dialogs)
   keep it.
 - **Appearance** live for Wayland GTK and libadwaita applications and for applications
-  that read `org.freedesktop.appearance` (Chromium, Firefox, Electron); X11 GTK
+  that read `org.freedesktop.appearance` (Chromium, Electron); X11 GTK
   applications follow from their next start. Light mode uses WhiteSur-Light where the image
   has it and Adwaita otherwise; high contrast is reported through the portal's `contrast`
   for applications that honour it.
 - **Now Playing** for any MPRIS player: Spotify, mpv, VLC, Rhythmbox, and web media in
-  Chromium and Firefox.
+  Chromium.
 - **Scanning** from a terminal or a script: `caboose-scan` shows the phone's document
   scanner and prints where the scan was saved (`~/Caboose Documents/<uuid>/`, or
   `--output`). PDF is the default; `--format jpeg` writes one image per page. It needs

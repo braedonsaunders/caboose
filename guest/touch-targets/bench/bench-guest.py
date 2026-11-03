@@ -277,7 +277,6 @@ SURVEY = {
     "xfce4-terminal": ["xfce4-terminal"],
     "mousepad": ["mousepad"],
     "thunar": ["thunar", "/usr/share"],
-    "firefox": ["firefox-esr", "--new-instance", "--profile", "{scratch}/firefox", "about:preferences"],
     "code": ["code", "--no-sandbox", "--user-data-dir", "{scratch}/code", "--disable-workspace-trust"],
     "libreoffice": ["libreoffice", "--writer", "--norestore"],
     "chromium-x11": ["chromium", "--ozone-platform=x11", "--force-renderer-accessibility", "--no-first-run",

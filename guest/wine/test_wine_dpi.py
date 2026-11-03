@@ -109,7 +109,7 @@ class Prefixes(unittest.TestCase):
     def test_running_processes_name_their_prefixes(self):
         with tempfile.TemporaryDirectory() as proc:
             for pid, environ in (("10", b"HOME=/h\0WINEPREFIX=/games/x/pfx\0"), ("11", b"WINEPREFIX=relative\0"),
-                                 ("self", b"WINEPREFIX=/not/a/pid\0")):
+                                 ("self", b"WINEPREFIX=/not/a/pid\0"), ("12", b"CABOOSE_SEAT=agent\0WINEPREFIX=/agent/pfx\0")):
                 Path(proc, pid).mkdir()
                 Path(proc, pid, "environ").write_bytes(environ)
             self.assertEqual(wine_dpi.running_prefixes(proc), {Path("/games/x/pfx")})

@@ -62,6 +62,7 @@ install -Dm755 "$root/ports/caboose-ports.py" /opt/caboose/ports/caboose-ports.p
 install -Dm755 "$root/desktop-mcp/caboose-desktop-mcp.mjs" /opt/caboose/desktop-mcp.mjs
 install -Dm755 "$root/desktop-mcp/a11y.py" /opt/caboose/a11y.py
 install -Dm755 "$root/desktop-mcp/seat.py" /opt/caboose/seat.py
+install -Dm755 "$root/desktop-mcp/launcher.py" /opt/caboose/launcher.py
 install -Dm644 "$root/desktop-mcp/ensure-agent-seat.mjs" /opt/caboose/ensure-agent-seat.mjs
 # desktop-mcp.mjs imports these beside itself.
 install -Dm644 "$root/desktop-mcp/worker.mjs" /opt/caboose/worker.mjs
@@ -75,6 +76,7 @@ install -Dm755 "$root/desktop-mcp/agent-profile.py" /opt/caboose/agent-profile.p
 rm -rf /opt/caboose/media-handoff
 rm -f /etc/chromium.d/caboose-scroll /etc/chromium.d/zz-caboose-extensions /usr/share/chromium/extensions/caboose-media-handoff /etc/chromium/native-messaging-hosts/com.caboose.media.json
 sh "$root/notifications/install.sh"
+sh "$root/webmcp/install.sh"
 bash "$root/phone/install.sh"
 sh "$root/bridge/install.sh"
 sh "$root/keyring/install.sh"

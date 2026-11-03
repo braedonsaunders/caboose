@@ -16,14 +16,14 @@ TERMINAL = 'app-xfce4\\x2dterminal-2.scope'
 
 class Names(unittest.TestCase):
     def test_escapes_like_systemd(self):
-        self.assertEqual(core.escape('firefox-esr'), 'firefox\\x2desr')
+        self.assertEqual(core.escape('xfce4-terminal'), 'xfce4\\x2dterminal')
         self.assertEqual(core.escape('org.gnome.TextEditor'), 'org.gnome.TextEditor')
         self.assertEqual(core.escape('.hidden'), '\\x2ehidden')
         self.assertEqual(core.escape('Portal 2'), 'Portal\\x202')
         self.assertEqual(core.escape('café'), 'caf\\xc3\\xa9')
 
     def test_names_round_trip(self):
-        for key in ('firefox-esr', 'org.gnome.TextEditor', 'Portal 2', 'café', 'a\\b', '.x'):
+        for key in ('xfce4-terminal', 'org.gnome.TextEditor', 'Portal 2', 'café', 'a\\b', '.x'):
             name = core.scope_name(key, 7)
             self.assertEqual(core.parse_scope_name(name), (key, 7))
             self.assertTrue(core.valid_scope_id(name))

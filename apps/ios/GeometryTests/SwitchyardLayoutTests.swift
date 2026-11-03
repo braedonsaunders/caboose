@@ -30,9 +30,9 @@ final class SwitchyardLayoutTests: XCTestCase {
     private static let sets: [[(title: String, minimum: CGSize?)]] = [
         [("File System - Thunar", nil), ("Settings", CGSize(width: 660, height: 480))],
         [("File System - Thunar", nil), ("Settings", CGSize(width: 660, height: 480)), ("Terminal", nil)],
-        [("Firefox", CGSize(width: 900, height: 600)), ("File System - Thunar", nil), ("Terminal", nil),
+        [("Chromium", CGSize(width: 900, height: 600)), ("File System - Thunar", nil), ("Terminal", nil),
          ("Mousepad", nil)],
-        [("Firefox", CGSize(width: 900, height: 600)), ("File System - Thunar", nil), ("Terminal", nil),
+        [("Chromium", CGSize(width: 900, height: 600)), ("File System - Thunar", nil), ("Terminal", nil),
          ("Mousepad", nil), ("GIMP", CGSize(width: 1600, height: 1000)), ("Settings", CGSize(width: 660, height: 480))],
     ]
 

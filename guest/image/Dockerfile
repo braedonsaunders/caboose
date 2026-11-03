@@ -28,6 +28,7 @@ COPY terminal /builder/terminal
 COPY ports /builder/ports
 COPY desktop-mcp /builder/desktop-mcp
 COPY notifications /builder/notifications
+COPY webmcp /builder/webmcp
 COPY scopes /builder/scopes
 
 COPY phone /builder/phone

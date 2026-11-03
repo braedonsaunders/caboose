@@ -68,31 +68,31 @@ function fixture(entries: Record<string, string>, overrides: Record<string, stri
   return { run, recorded, root }
 }
 
-const FIREFOX = `[Desktop Entry]
+const CHROMIUM = `[Desktop Entry]
 Type=Application
-Name=Firefox
-Exec=firefox %u
-StartupWMClass=FirefoxWindow
+Name=Chromium
+Exec=chromium %u
+StartupWMClass=ChromiumWindow
 Actions=new-window;new-private-window;bad id;new-window;no-exec;nameless;undeclared;
 
 [Desktop Action new-window]
 Name=New Window
 Name[de]=Neues Fenster
-Exec=firefox --new-window
+Exec=chromium --new-window
 
 [Desktop Action new-private-window]
 Name=New Private Window
-Exec=firefox --private-window
+Exec=chromium --private-window
 
 [Desktop Action no-exec]
 Name=No Exec
 
 [Desktop Action nameless]
-Exec=firefox
+Exec=chromium
 
 [Desktop Action bad id]
 Name=Bad
-Exec=firefox
+Exec=chromium
 `
 
 const MANY = `[Desktop Entry]
@@ -103,7 +103,7 @@ Actions=${Array.from({ length: 20 }, (_, i) => `a${i}`).join(';')}
 ${Array.from({ length: 20 }, (_, i) => `\n[Desktop Action a${i}]\nName=${'n'.repeat(150)}\nExec=many ${i}\n`).join('')}`
 
 const ENTRIES = {
-  'firefox.desktop': FIREFOX,
+  'chromium.desktop': CHROMIUM,
   'many.desktop': MANY,
   'portal.desktop': '[Desktop Entry]\nType=Application\nName=Portal\nExec=portal\nDBusActivatable=true\nActions=open;\n\n[Desktop Action open]\nName=Open\n',
   'plain.desktop': '[Desktop Entry]\nType=Application\nName=Plain\nExec=plain\n',
@@ -116,11 +116,11 @@ describe('guest-apps.py', () => {
     const result = run('list', '0')
     expect(result.stderr).toBe('')
     const apps = JSON.parse(result.stdout) as { id: string; actions: { id: string; name: string }[] }[]
-    expect(apps.find(app => app.id === 'firefox.desktop')).toHaveProperty('startupWMClass', 'FirefoxWindow')
+    expect(apps.find(app => app.id === 'chromium.desktop')).toHaveProperty('startupWMClass', 'ChromiumWindow')
     expect(apps.find(app => app.id === 'plain.desktop')).toHaveProperty('startupWMClass', null)
     const byId = Object.fromEntries(apps.map(app => [app.id, app.actions]))
-    expect(Object.keys(byId).sort()).toEqual(['firefox.desktop', 'many.desktop', 'plain.desktop', 'portal.desktop'])
-    expect(byId['firefox.desktop']).toEqual([{ id: 'new-window', name: 'New Window' }, { id: 'new-private-window', name: 'New Private Window' }])
+    expect(Object.keys(byId).sort()).toEqual(['chromium.desktop', 'many.desktop', 'plain.desktop', 'portal.desktop'])
+    expect(byId['chromium.desktop']).toEqual([{ id: 'new-window', name: 'New Window' }, { id: 'new-private-window', name: 'New Private Window' }])
     expect(byId['many.desktop']).toHaveLength(16)
     expect(byId['many.desktop']!.every(action => action.name.length === 100)).toBe(true)
     // A D-Bus activated application's action needs no Exec.
@@ -131,21 +131,21 @@ describe('guest-apps.py', () => {
   it('lists an installed entry that a personal copy with a missing TryExec program would shadow', () => {
     const { run } = fixture(ENTRIES, {
       'plain.desktop': '[Desktop Entry]\nType=Application\nName=Stale\nExec=/nonexistent/stale\nTryExec=/nonexistent/stale\n',
-      'firefox.desktop': '[Desktop Entry]\nType=Application\nName=Firefox\nExec=firefox\nHidden=true\n',
+      'chromium.desktop': '[Desktop Entry]\nType=Application\nName=Chromium\nExec=chromium\nHidden=true\n',
     })
     const apps = JSON.parse(run('list', '0').stdout) as { id: string; name: string; exec: string }[]
     // The stale copy is absent, so the installed entry shows; a Hidden copy still hides its entry.
     expect(apps.find(app => app.id === 'plain.desktop')).toMatchObject({ name: 'Plain', exec: 'plain' })
-    expect(apps.find(app => app.id === 'firefox.desktop')).toBeUndefined()
+    expect(apps.find(app => app.id === 'chromium.desktop')).toBeUndefined()
   })
 
   it('launches a listed action through GLib, and refuses actions and entries it does not list', () => {
     const { run, recorded } = fixture(ENTRIES)
-    expect(run('action', 'firefox.desktop', 'new-private-window').status).toBe(0)
-    expect(run('launch', 'firefox.desktop').status).toBe(0)
-    expect(recorded()).toEqual([{ launch: 'firefox.desktop', action: 'new-private-window' }, { launch: 'firefox.desktop', files: [] }])
+    expect(run('action', 'chromium.desktop', 'new-private-window').status).toBe(0)
+    expect(run('launch', 'chromium.desktop').status).toBe(0)
+    expect(recorded()).toEqual([{ launch: 'chromium.desktop', action: 'new-private-window' }, { launch: 'chromium.desktop', files: [] }])
     for (const action of ['no-exec', 'undeclared', 'bad id', 'missing']) {
-      const refused = run('action', 'firefox.desktop', action)
+      const refused = run('action', 'chromium.desktop', action)
       expect(refused.status).not.toBe(0)
       expect(refused.stderr).toContain('Application action not found')
     }
@@ -168,10 +168,10 @@ describe('app launch requests', () => {
   it('builds the guest command and reports a missing entry or action as not found', async () => {
     expect(guestLaunchArgs('gimp.desktop')).toEqual(['launch', 'gimp.desktop'])
     expect(guestLaunchArgs('gimp.desktop', 'Pictures/a.png')).toEqual(['launch', 'gimp.desktop', 'Pictures/a.png'])
-    expect(guestLaunchArgs('firefox.desktop', undefined, 'new-window')).toEqual(['action', 'firefox.desktop', 'new-window'])
-    expect(() => guestLaunchArgs('firefox.desktop', 'a.html', 'new-window')).toThrow(AgentInputError)
+    expect(guestLaunchArgs('chromium.desktop', undefined, 'new-window')).toEqual(['action', 'chromium.desktop', 'new-window'])
+    expect(() => guestLaunchArgs('chromium.desktop', 'a.html', 'new-window')).toThrow(AgentInputError)
     const failing = (stderr: string) => async () => { throw new Error(`Guest command failed: ${stderr}`) }
-    await expect(guestLaunch(failing('Application action not found'), 'firefox.desktop', undefined, 'x')).rejects.toEqual(new AgentNotFoundError('Application action not found'))
+    await expect(guestLaunch(failing('Application action not found'), 'chromium.desktop', undefined, 'x')).rejects.toEqual(new AgentNotFoundError('Application action not found'))
     await expect(guestLaunch(failing('Application not found'), 'gone.desktop')).rejects.toBeInstanceOf(AgentNotFoundError)
     await expect(guestLaunch(failing('Application could not be started'), 'gimp.desktop')).rejects.not.toBeInstanceOf(AgentNotFoundError)
   })
@@ -179,35 +179,35 @@ describe('app launch requests', () => {
 
 describe('desktop shortcuts', () => {
   it('copies a standard installed entry atomically and refuses collisions', () => {
-    const f = fixture({ 'firefox.desktop': FIREFOX })
-    expect(f.run('desktop-shortcut', 'firefox.desktop').status).toBe(0)
-    const path = join(f.root, 'Desktop', 'firefox.desktop')
+    const f = fixture({ 'chromium.desktop': CHROMIUM })
+    expect(f.run('desktop-shortcut', 'chromium.desktop').status).toBe(0)
+    const path = join(f.root, 'Desktop', 'chromium.desktop')
     const text = readFileSync(path, 'utf8')
-    expect(text).toContain('Exec=firefox %u')
-    expect(text).toContain('X-Caboose-AppId=firefox.desktop')
-    expect(f.run('desktop-shortcut', 'firefox.desktop').stderr).toContain('already exists')
+    expect(text).toContain('Exec=chromium %u')
+    expect(text).toContain('X-Caboose-AppId=chromium.desktop')
+    expect(f.run('desktop-shortcut', 'chromium.desktop').stderr).toContain('already exists')
     expect(readFileSync(path, 'utf8')).toBe(text)
     expect(f.recorded()).toEqual([])
   })
   it('rejects unknown IDs, traversal, hidden entries and a symlink Desktop', () => {
-    const f = fixture({ 'firefox.desktop': FIREFOX, 'hidden.desktop': FIREFOX.replace('Type=Application', 'Type=Application\nHidden=true') })
-    expect(f.run('desktop-shortcut', '../firefox.desktop').status).not.toBe(0)
+    const f = fixture({ 'chromium.desktop': CHROMIUM, 'hidden.desktop': CHROMIUM.replace('Type=Application', 'Type=Application\nHidden=true') })
+    expect(f.run('desktop-shortcut', '../chromium.desktop').status).not.toBe(0)
     expect(f.run('desktop-shortcut', 'missing.desktop').stderr).toContain('Application not found')
     expect(f.run('desktop-shortcut', 'hidden.desktop').stderr).toContain('Application not found')
     const outside = join(f.root, 'elsewhere')
     mkdirSync(outside)
     symlinkSync(outside, join(f.root, 'Desktop'))
-    expect(f.run('desktop-shortcut', 'firefox.desktop').status).not.toBe(0)
-    expect(existsSync(join(outside, 'firefox.desktop'))).toBe(false)
+    expect(f.run('desktop-shortcut', 'chromium.desktop').status).not.toBe(0)
+    expect(existsSync(join(outside, 'chromium.desktop'))).toBe(false)
   })
   it('bounds copied content and refuses destination symlinks', () => {
-    const f = fixture({ 'big.desktop': FIREFOX + '#'.repeat(262144), 'firefox.desktop': FIREFOX })
+    const f = fixture({ 'big.desktop': CHROMIUM + '#'.repeat(262144), 'chromium.desktop': CHROMIUM })
     expect(f.run('desktop-shortcut', 'big.desktop').stderr).toContain('too large')
     mkdirSync(join(f.root, 'Desktop'))
     const target = join(f.root, 'keep')
     writeFileSync(target, 'keep')
-    symlinkSync(target, join(f.root, 'Desktop', 'firefox.desktop'))
-    expect(f.run('desktop-shortcut', 'firefox.desktop').status).not.toBe(0)
+    symlinkSync(target, join(f.root, 'Desktop', 'chromium.desktop'))
+    expect(f.run('desktop-shortcut', 'chromium.desktop').status).not.toBe(0)
     expect(readFileSync(target, 'utf8')).toBe('keep')
   })
 })

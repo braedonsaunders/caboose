@@ -4,8 +4,8 @@ import Testing
 /// A held dock app always offers something real to do.
 struct DockMenuTests {
     @Test func anAppThatIsNotRunningOpensAndPins() {
-        #expect(DockMenu.actions(appName: "Firefox", pinned: false, windows: []) == [.open, .pin])
-        #expect(DockMenu.actions(appName: "Firefox", pinned: true, windows: []) == [.open, .unpin])
+        #expect(DockMenu.actions(appName: "Chromium", pinned: false, windows: []) == [.open, .pin])
+        #expect(DockMenu.actions(appName: "Chromium", pinned: true, windows: []) == [.open, .unpin])
     }
 
     @Test func aWindowsOwnApplicationOpensAndClosesButDoesNotPin() {

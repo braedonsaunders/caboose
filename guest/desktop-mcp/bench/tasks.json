@@ -60,13 +60,6 @@
       "verify": "window_title 'Claimed - Chromium'"
     },
     {
-      "id": "firefox-form",
-      "app": "firefox-esr",
-      "setup": "page $HOME/Documents/form.html 'Shipping' 'Claimed'; mkdir -p $HOME/firefox; start /usr/lib/firefox-esr/firefox-esr --no-remote --new-instance --profile $HOME/firefox file://$HOME/Documents/form.html",
-      "prompt": "In the open Firefox window, fill the form: Recipient \"Iris Moss\", City \"Granite Falls\", tick Gift wrap, then press Ship order.",
-      "verify": "window_title 'Claimed \u2014 Mozilla Firefox'"
-    },
-    {
       "id": "writer-save",
       "app": "libreoffice-writer",
       "setup": "mkdir -p $HOME/Documents; start soffice --norestore --nologo --writer",
@@ -118,10 +111,108 @@
     },
     {
       "id": "impress-title",
-      "app": "libreoffice-impress",
+      "app": "soffice",
       "setup": "mkdir -p $HOME/Documents; start soffice --norestore --nologo --impress",
       "prompt": "In the open LibreOffice Impress window, start an empty presentation, give the first slide the title \"Harbor plan\" and save it in ODF format as plan.odp in the Documents folder of the home directory.",
       "verify": "unzip -p $HOME/Documents/plan.odp content.xml | grep -q 'Harbor plan'"
+    },
+    {
+      "id": "thunar-copy",
+      "app": "Thunar",
+      "setup": "mkdir -p $HOME/Documents/Archive; printf 'q3\\n' > $HOME/Documents/report.txt; start thunar $HOME/Documents",
+      "prompt": "In the open file manager window, copy the file report.txt into the Archive folder, keeping the original where it is.",
+      "verify": "test -f $HOME/Documents/Archive/report.txt && test -f $HOME/Documents/report.txt"
+    },
+    {
+      "id": "thunar-trash",
+      "app": "Thunar",
+      "setup": "mkdir -p $HOME/Documents; printf 'old\\n' > $HOME/Documents/draft.txt; printf 'keep\\n' > $HOME/Documents/final.txt; start thunar $HOME/Documents",
+      "prompt": "In the open file manager window, delete the file draft.txt. Leave final.txt alone.",
+      "verify": "test ! -e $HOME/Documents/draft.txt && test -f $HOME/Documents/final.txt"
+    },
+    {
+      "id": "chromium-select",
+      "app": "Chromium",
+      "setup": "mkdir -p $HOME/Documents; printf '%s' '<!doctype html><html><head><title>Order</title></head><body><form onsubmit=\"event.preventDefault(); document.title = (s.value === &#39;express&#39; && document.querySelector(&#39;input[name=size]:checked&#39;)?.value === &#39;large&#39;) ? &#39;Placed&#39; : &#39;Incomplete&#39;\"><p><label for=s>Shipping</label> <select id=s><option value=standard>Standard</option><option value=express>Express</option><option value=pickup>Pickup</option></select></p><p><label><input type=radio name=size value=small checked> Small</label> <label><input type=radio name=size value=large> Large</label></p><button type=submit>Place order</button></form></body></html>' > $HOME/Documents/order.html; start chromium --no-first-run --no-default-browser-check --user-data-dir=$HOME/chromium file://$HOME/Documents/order.html",
+      "prompt": "In the open Chromium window, choose Express shipping and the Large size, then press Place order.",
+      "verify": "window_title 'Placed - Chromium'"
+    },
+    {
+      "id": "writer-docx",
+      "app": "libreoffice-writer",
+      "setup": "mkdir -p $HOME/Documents; start soffice --norestore --nologo --writer",
+      "prompt": "In the open LibreOffice Writer window, write two lines, \"Harbor minutes\" and \"Next meeting Tuesday\", and save the document in Word format as minutes.docx in the Documents folder of the home directory.",
+      "verify": "unzip -p $HOME/Documents/minutes.docx word/document.xml | grep -q 'Harbor minutes' && unzip -p $HOME/Documents/minutes.docx word/document.xml | grep -q 'Next meeting Tuesday'"
+    },
+    {
+      "id": "calc-csv-total",
+      "app": "libreoffice-calc",
+      "setup": "mkdir -p $HOME/Documents; printf 'item,amount\\nrope,12\\nsail,30\\nanchor,58\\n' > $HOME/Documents/costs.csv; start soffice --norestore --nologo --calc --infilter=CSV:44,34,76 $HOME/Documents/costs.csv",
+      "prompt": "In the open LibreOffice Calc window showing costs.csv, put the word total in A5 and a formula summing the amounts in B5, then save it, keeping the CSV format.",
+      "verify": "grep -qx 'total,100' $HOME/Documents/costs.csv"
+    },
+    {
+      "id": "terminal-mkdir",
+      "app": "xfce4-terminal",
+      "setup": "mkdir -p $HOME/Documents; start xfce4-terminal --disable-server --working-directory=$HOME/Documents",
+      "prompt": "In the open terminal window, create a directory named logs-2026 with an empty file named today.log inside it, in the current directory.",
+      "verify": "test -f $HOME/Documents/logs-2026/today.log"
+    },
+    {
+      "id": "keepassxc-add-entry",
+      "app": "KeePassXC",
+      "setup": "export XDG_CONFIG_HOME=$HOME/.config; mkdir -p $HOME/Documents; printf 'heron-basalt-42\\nheron-basalt-42\\n' | keepassxc-cli db-create -p $HOME/Documents/vault.kdbx >/dev/null 2>&1; start keepassxc $HOME/Documents/vault.kdbx",
+      "prompt": "In the open KeePassXC window, unlock the database with the password \"heron-basalt-42\", add an entry titled Mail with the username iris and the password \"cinder-77\", and save the database.",
+      "verify": "printf 'heron-basalt-42\\n' | keepassxc-cli show -q -s $HOME/Documents/vault.kdbx Mail 2>/dev/null | grep -q 'UserName: iris' && printf 'heron-basalt-42\\n' | keepassxc-cli show -q -s $HOME/Documents/vault.kdbx Mail 2>/dev/null | grep -q 'Password: cinder-77'"
+    },
+    {
+      "id": "zenity-list",
+      "app": "zenity",
+      "setup": "start sh -c 'zenity --list --title=Fruit --text=Pick --column=Fruit --column=Colour apple red banana yellow cherry dark-red > \"$BENCH/zenity.out\"'",
+      "prompt": "In the open Fruit dialog, choose banana and confirm with OK.",
+      "verify": "test \"$(cat $BENCH/zenity.out)\" = banana"
+    },
+    {
+      "id": "zenity-calendar",
+      "app": "zenity",
+      "setup": "start sh -c 'zenity --calendar --title=Booking --text=Date --day=3 --month=11 --year=2026 --date-format=%Y-%m-%d > \"$BENCH/zenity.out\"'",
+      "prompt": "In the open Booking dialog, pick the date 19 November 2026 and confirm with OK.",
+      "verify": "test \"$(cat $BENCH/zenity.out)\" = 2026-11-19"
+    },
+    {
+      "id": "vscode-new-file",
+      "app": "com.microsoft.VSCode",
+      "setup": "mkdir -p $HOME/Documents/site; start /usr/share/code/code --user-data-dir $HOME/vscode --extensions-dir $HOME/vscode-extensions --disable-workspace-trust --skip-welcome --new-window $HOME/Documents/site",
+      "prompt": "In the open Visual Studio Code window, create a file named notes.md in the open site folder containing the line \"# Harbor\", and save it.",
+      "verify": "grep -qx '# Harbor' $HOME/Documents/site/notes.md"
+    },
+    {
+      "id": "file-roller-extract",
+      "app": "org.gnome.FileRoller",
+      "setup": "mkdir -p $HOME/Documents; python3 -c \"import zipfile, os; z = zipfile.ZipFile(os.environ['HOME'] + '/Documents/photos.zip', 'w'); z.writestr('photos/one.txt', 'a'); z.writestr('photos/two.txt', 'b'); z.close()\"; start file-roller $HOME/Documents/photos.zip",
+      "prompt": "In the open archive manager window showing photos.zip, extract all of its files into a new folder named extracted inside the Documents folder of the home directory.",
+      "verify": "test -f $HOME/Documents/extracted/photos/two.txt || test -f $HOME/Documents/extracted/two.txt"
+    },
+    {
+      "id": "webmcp-shop",
+      "app": "Chromium",
+      "setup": "mkdir -p $HOME/Documents; cat > $HOME/Documents/shop.html <<'HTML'\n<!doctype html><html><head><title>Harbor shop</title></head><body><h1>Harbor shop</h1><ul id=cart></ul><p><label>Quantity <input id=q type=number value=1></label> <button onclick=\"add('rope')\">Add rope</button> <button onclick=\"add('sail')\">Add sail</button> <button onclick=\"add('anchor')\">Add anchor</button></p><button id=buy>Checkout</button>\n<script>\nconst cart = []\nconst add = item => { cart.push({ item, qty: Number(document.getElementById('q').value) }); render() }\nconst render = () => { document.getElementById('cart').innerHTML = cart.map(i => '<li>' + i.qty + ' ' + i.item + '</li>').join('') }\ndocument.modelContext.registerTool({ name: 'add_to_cart', description: 'Add an item to the cart', inputSchema: { type: 'object', properties: { item: { type: 'string', enum: ['rope', 'sail', 'anchor'] }, qty: { type: 'number' } }, required: ['item', 'qty'] },\n  execute: ({ item, qty }) => { cart.push({ item, qty }); render(); return { content: [{ type: 'text', text: 'cart: ' + cart.map(i => i.qty + ' ' + i.item).join(', ') }] } } })\ndocument.modelContext.registerTool({ name: 'checkout', description: 'Place the order for the cart', inputSchema: { type: 'object', properties: {} },\n  execute: () => { document.title = 'Ordered ' + cart.map(i => i.qty + ' ' + i.item).join(', '); return { content: [{ type: 'text', text: document.title }] } } })\ndocument.getElementById('buy').onclick = () => { document.title = 'Ordered ' + cart.map(i => i.qty + ' ' + i.item).join(', ') }\n</script></body></html>\nHTML\nstart python3 -m http.server 18761 --bind 127.0.0.1 --directory $HOME/Documents; sleep 0.5; start chromium --no-first-run --no-default-browser-check --user-data-dir=$HOME/chromium http://127.0.0.1:18761/shop.html",
+      "prompt": "In the open Chromium window, put 3 rope and 1 anchor in the cart and check out.",
+      "verify": "window_title 'Ordered 3 rope, 1 anchor - Chromium'"
+    },
+    {
+      "id": "webmcp-berth",
+      "app": "Chromium",
+      "setup": "mkdir -p $HOME/Documents; cat > $HOME/Documents/berth.html <<'HTML'\n<!doctype html><html><head><title>Marina</title></head><body><h1>Marina</h1>\n<form toolname=\"book_berth\" toolautosubmit tooldescription=\"Book a berth for a boat\" onsubmit=\"event.preventDefault(); document.title = 'Booked ' + this.boat.value + ' for ' + this.nights.value + ' nights'\">\n<p><label>Boat <input name=boat toolparamdescription=\"The boat's name\"></label></p><p><label>Nights <input name=nights type=number toolparamdescription=\"How many nights\"></label></p><button type=submit>Book</button></form></body></html>\nHTML\nstart python3 -m http.server 18761 --bind 127.0.0.1 --directory $HOME/Documents; sleep 0.5; start chromium --no-first-run --no-default-browser-check --user-data-dir=$HOME/chromium http://127.0.0.1:18761/berth.html",
+      "prompt": "In the open Chromium window, book a berth for the boat Heron for 4 nights.",
+      "verify": "window_title 'Booked Heron for 4 nights - Chromium'"
+    },
+    {
+      "id": "webmcp-derived-form",
+      "app": "Chromium",
+      "setup": "page $HOME/Documents/form.html 'Shipping' 'Claimed'; start python3 -m http.server 18761 --bind 127.0.0.1 --directory $HOME/Documents; sleep 0.5; start chromium --no-first-run --no-default-browser-check --user-data-dir=$HOME/chromium http://127.0.0.1:18761/form.html",
+      "prompt": "In the open Chromium window, fill the form: Recipient \"Iris Moss\", City \"Granite Falls\", tick Gift wrap, then press Ship order.",
+      "verify": "window_title 'Claimed - Chromium'"
     }
   ]
 }

@@ -21,41 +21,46 @@ seat, never through X.
 
 ## Tools
 
-The accessibility tools come first in the tool list, and their descriptions tell the model
-to prefer them: they answer quickly, need no screenshot and no image tokens, and act on a
-control by id rather than by guessed coordinates.
+Three tools, with short definitions: they go to the model on every turn.
 
 | Tool | Arguments | Does |
 | --- | --- | --- |
-| `elements` | — | the seat's windows and the focused window's controls, one line each (below) |
-| `find` | `query`, `role?` | the lines of controls whose name contains `query` (case-insensitive), optionally of one role |
-| `click_element` | `id` | press it: its AT-SPI action, else a click at its centre |
-| `set_text` | `id`, `text` | replace an editable element's text |
-| `batch` | `steps`, `observe?` | 1–20 sequential actions, stopping at the first failure, then what changed |
-| `read_text` | — | the focused window's readable text, page text included |
-| `screenshot` | `window?`, `annotate?` | PNG; annotation adds numbered accessibility bounds and a legend |
-| `list_windows`, `focus` | `window` | windows bottom to top with id, kind, title, app, geometry and focus; give one the keyboard |
-| `click`, `drag`, `type`, `key`, `scroll` | coordinates, text, keys | the seat's pointer and keyboard; `click` takes `button` 1–3 and `count` 1–3, `scroll` wheel clicks |
-| `launch` | `command` | start an app on the agent seat with the accessibility environment below |
+| `look` | `find?`, `text?`, `windows?` | the focused window's controls, one line each (below); `find` keeps those whose name contains it (case-insensitive); `text` adds the window's readable text (documents, pages, terminals); `windows` lists every window with its id and position |
+| `act` | `steps`, `observe?` | 1–30 steps in order, stopping at the first failure, then what changed |
+| `screenshot` | `window?`, `marks?` | PNG of the seat or one window; `marks` numbers the controls on it and lists them with their ids and centres |
 
-A failure comes back as a tool error with a sentence the model can act on; an id that no
-longer resolves says to list the window again.
+A step is an object with one verb: `{"press": id}` (the control's AT-SPI action, else a
+click at its centre), `{"set": id, "text": t}` (replace a field's text; a number for a spin
+button or slider goes in through its Value), `{"key": "ctrl+s"}`, `{"type": t}`,
+`{"click": [x, y], "button": 1-3, "count": 1-3}`, `{"scroll": [x, y], "dx": n, "dy": n}`,
+`{"drag": [x1, y1, x2, y2]}`, `{"focus": window}`, `{"wait": ms}` (10–5000: until the windows
+stop drawing, then at most 200 ms more, never longer than `ms`; every step already waits for
+the application's reaction) and
+`{"launch": "command"}` (an application on the agent seat, with the accessibility
+environment below). An element step whose id no longer names that control (the window lost
+focus, or the control changed or went) fails as a `stale id` and does nothing, so it is safe
+to retry with the ids of a new `look`. A pointer step at a control first checks that no other
+application's window covers it. `act` replies `Done.` (or how many steps ran and why it stopped), then the changes;
+`observe: false` skips the settle and the read.
 
-The server's `initialize` reply carries `instructions` for the agent: read with `elements`,
-act by id, batch known steps, rely on the changes each action returns, and take a
-screenshot only for what the controls do not tell. `CABOOSE_DESKTOP_TRACE=FILE` appends one
-JSON line per tool call (`tool`, `ms`, reply `chars`, `images`), for measuring.
+In a Chromium window on the agent seat, `look` also lists the page's tools (WebMCP tools the
+page declares, and tools derived from its forms, links and buttons, marked `[derived]`) as
+`name(param: type, …) — description`, and the step `{"tool": name, "args": {...}}` calls one
+and returns its result; see [guest/webmcp](../webmcp/README.md).
+
+A failure comes back as a sentence the model can act on; an id that no longer resolves says
+to look again. The server's `initialize` reply carries one line of `instructions`.
+`CABOOSE_DESKTOP_TRACE=FILE` appends one JSON line per tool call (`tool`, `ms`, reply
+`chars`, `images`), for measuring. `CABOOSE_DESKTOP_PAGE_TOOLS=0` leaves page tools out, to measure the
+accessibility path alone.
 
 ### Observations
 
-An observation is compact text (`observation.mjs`). The first one, and every `elements`
-call, lists the windows and then the focused window's controls:
+An observation is compact text (`observation.mjs`). The first one, and every `look`, names
+the focused window (the others only as a count) and lists its controls:
 
 ```
-Windows:
-  toplevel 7 "notes.txt - Mousepad" (mousepad)
-  dialog 9 "Save As" (mousepad) of 7, focused
-Controls of 9:
+In dialog 9 "Save As" (mousepad) of 7, focused (1 other window)
 e14 text "Name" = "notes.txt" [editable, focused]
 e15 button "Save"
 ```
@@ -65,8 +70,17 @@ runs; tools take short ids or the full element ids. After an action, the observa
 only the changes since the previous one: windows `Opened`, `Closed` or `Retitled`, where
 focus went, and the focused window's controls added (`+`), changed (`~`, the whole new line)
 or removed (`- e14`). A window seen for the first time is listed whole. Bounds are left
-out; `screenshot` with `annotate` gives them, with the short ids, when coordinates are
-needed.
+out; `screenshot` with `marks` gives positions when coordinates are needed.
+
+A window with no accessibility tree (SDL, games, custom-drawn toolkits) is still described:
+`look` returns its picture and, with Tesseract installed, the lines of text OCR finds in it
+with their centres in seat coordinates, both marked as read from pixels. An X11 window that
+does not report its process is matched to the one application with a window of its title.
+
+These tools are the seat's assistive technology, and say so: before the first read and
+before each launch the server sets `org.a11y.Status.ScreenReaderEnabled` on the seat's
+accessibility bus, as a screen reader does, and Chromium, Electron and other toolkits that
+build their whole tree only for one then expose it.
 
 Run `node --test guest/desktop-mcp/ensure-agent-seat.test.mjs` and
 `node guest/desktop-mcp/selftest.mjs` from the repository root to check startup coordination
@@ -87,27 +101,19 @@ seat's displays on a dark background, rendered by the compositor. A seat nobody 
 lets applications draw once a second, so `seat.py` asks the compositor to let them draw
 (`settle`) before it takes a picture. Every tool works with no client attached.
 
-Mutating tools append what changed after them (`observe`, default true; `false` skips the
-settle and the read). A batch accepts
-`click_element`, `set_text`, `focus_element`, `click`, `drag`, `type`, `key`, `scroll`,
-`focus`, and `wait` (10–5000 ms), with each step's normal arguments. It returns `Completed N of M.`
-(with the error that stopped it, if any) and then the changes. Failure stops later steps;
-a changed focused window or stale element ID fails an element step. Observation failures
-preserve the completed action count. Before the read the server lets the
+Before the read that follows an `act`, the server lets the
 seat settle on the compositor's commit record: after a press, until the first commit after
 it (at most 150 ms); after a text edit, until no window committed for 30 ms (at most
 300 ms). It does not guarantee an application has finished navigation.
 
-`elements` and `find` include optional `value` strings (up to 200 characters) for editable
-fields, selected options and numeric controls. Password/sensitive fields omit values.
-Values never contribute to ID fingerprints. `screenshot` with `annotate: true` returns an
-image and a JSON legend of `{ mark, id, role, name, center, bounds }` for the focused
-window's visible controls intersecting the capture. Window-specific captures exclude
-controls from other windows. Bounds and centers stay in seat coordinates; badges are
-translated into image coordinates. Without annotation the response remains one image.
+Control lines include an optional value (up to 200 characters) for editable fields, selected
+options and numeric controls. Password and sensitive fields omit values. Values never
+contribute to ID fingerprints. `screenshot` with `marks` numbers the focused window's
+visible controls on the picture and lists each mark with its short id, role, name and centre
+in seat coordinates.
 
 The server keeps one accessibility worker and one seat worker warm, serializes requests
-and whole batches, and closes helpers on EOF or termination. Workers restart after exit
+and whole `act` runs, and closes helpers on EOF or termination. Workers restart after exit
 or timeout on the next call. A lost response is never replayed automatically because an
 input may already have executed. Cached seat environments are checked through the control
 socket, avoiding repeated privileged startup and any watcher-replacing display hello.
@@ -250,7 +256,7 @@ id passed on the agent seat is "element not found".
 
 Apps build an accessibility tree only when asked. The computer asks them through:
 
-- `ACCESSIBILITY_ENABLED=1` (Chromium, Electron), `GNOME_ACCESSIBILITY=1` (Firefox) and
+- `ACCESSIBILITY_ENABLED=1` (Chromium, Electron), `GNOME_ACCESSIBILITY=1` (Gecko applications) and
   `QT_LINUX_ACCESSIBILITY_ALWAYS_ON=1` (Qt) in both display units and the container image's
   environment, and in what the `launch` tool starts (which also drops any inherited
   `NO_AT_BRIDGE` and `GTK_A11Y=none`);
@@ -337,16 +343,17 @@ display (default `:101`) and `CABOOSE_DISPLAY_CONTROL` the seat.
   - **The agent seat with nobody watching**: an agent app is found and pressed, the seat
     lists no owner window, an owner element's id is rejected with exit 3, and the owner's
     window is untouched.
-  - **Warm MCP contract**: batch execution, stale-ID stop, observation, field values,
-    numbered screenshots, and reported warm accessibility timing.
-  - **Coordinate tools**, through `caboose-desktop-mcp` over stdio: `list_windows` shows the
-    dialog; `click`, `key` and `type` at the elements' bounds fill its field; `click`
-    presses Save; `screenshot` shows the new window rather than a blank seat.
+  - **Warm MCP contract**: an `act` run, a stale id stopping it, the changes it reports,
+    field values, marked screenshots, and warm `look` timing.
+  - **Pointer and keyboard steps**, through `caboose-desktop-mcp` over stdio: `look` with
+    `windows` shows the dialog; `click`, `key` and `type` steps at the controls' bounds fill
+    its field; a `click` presses Save; `screenshot` shows the new window rather than a blank
+    seat.
   - **Chromium as a native Wayland client on the agent seat**, configured only by the
     installed flags file: a link, a button and a field inside a local page are listed;
     `set-text` (twice, replacing) and `press` run the page's script; a `click` at the
     link's bounds follows it; `text` returns the page text and the followed link; and the
-    server's `find` and `read_text` work against the page.
+    server's `look` with `find` and with `text` work against the page.
 
 ### Persistent agent GUI profiles
 

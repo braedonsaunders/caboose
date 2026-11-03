@@ -18,7 +18,7 @@
 # when an installed app shows no window or is not measured, or when the stand-in's
 # presents do not reach the scorecard. Apps the image lacks are reported and skipped.
 #
-# The image needs chromium, firefox-esr, gtk-4-examples, qml-qt6, code, vulkan-tools,
+# The image needs chromium, gtk-4-examples, qml-qt6, code, vulkan-tools,
 # mesa-utils, xfce4-terminal, foot, xterm, mousepad, mpv and ffmpeg. CABOOSE_CHECK_CPUS and CABOOSE_CHECK_MEMORY
 # (default 4 and 6g) bound the container.
 set -euo pipefail

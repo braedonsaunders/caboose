@@ -417,6 +417,9 @@ class XScreen:
     def x11(self, xid):
         return False
 
+    def window_count(self, pid):
+        return 1
+
     def popup_origin(self, pid, size):
         return None
 
@@ -544,6 +547,9 @@ class SeatScreen:
     def x11(self, wid):
         return bool((self.records.get(wid) or {}).get("x11"))
 
+    def window_count(self, pid):
+        return sum(1 for r in self.records.values() if r.get("pid") == pid and r.get("kind") != "popup")
+
     def popup_origin(self, pid, size):
         """The surface origin of the Wayland popup of `pid` whose surface is `size` (w, h)."""
         for wid in reversed(self.clients):
@@ -570,7 +576,31 @@ class SeatScreen:
         except self.SeatError as error:
             raise Failure(str(error)) from None
 
+    def covering(self, wid, x, y):
+        """The window over (x, y) when it is neither `wid` nor another window of its process
+        (its dialogs and menus), else None: input there would land on that window."""
+        own = (self.records.get(wid) or {}).get("pid")
+        for other in reversed(self.clients):  # bottom to top: the last one holding the point wins
+            record = self.records[other]
+            rx, ry, rw, rh = record["rect"]
+            if not (rx <= x < rx + rw and ry <= y < ry + rh):
+                continue
+            if own is not None and record.get("pid") == own:
+                return None
+            chain, seen = other, set()
+            while chain is not None and chain not in seen:
+                if chain == wid:
+                    return None
+                seen.add(chain)
+                chain = (self.records.get(chain) or {}).get("parent")
+            return record
+        return {"id": None, "title": "", "kind": "nothing"}
+
     def click(self, wid, x, y):
+        covered = self.covering(wid, x, y)
+        if covered is not None:
+            raise Failure(f"the control is covered by {covered['kind']} {covered['id']} {json.dumps(covered.get('title') or '')} "
+                          "at its position; bring its window forward (focus) or close what covers it, then look again")
         try:
             self.seat.click(x, y)
         except self.SeatError as error:
@@ -775,6 +805,14 @@ class Bus:
     def application(self, pid):
         if not self.address:
             return None
+        found = self._application(pid)
+        if found is None:
+            proxy = sandbox_bus_proxy(pid)
+            if proxy is not None:
+                found = self._application(proxy)
+        return found
+
+    def _application(self, pid):
         # A process can register more than once (Qt's bridge beside another toolkit's, one of
         # them empty): the registration with windows is the application.
         best, most = None, -1
@@ -788,6 +826,51 @@ class Bus:
             except Exception:
                 continue
         return best
+
+
+def titled_pid(bus, title):
+    """The process of the one application on the bus with a showing window of this title."""
+    if not title or not getattr(bus, "address", None):
+        return None
+    wanted, found = _norm(title), set()
+    for index in range(bus.desktop.get_child_count()):
+        try:
+            app = bus.desktop.get_child_at_index(index)
+            for k in range(min(app.get_child_count(), 20)):
+                top = app.get_child_at_index(k)
+                if top is not None and _norm(top.get_name()) == wanted:
+                    found.add(app.get_process_id())
+        except Exception:
+            continue
+    return found.pop() if len(found) == 1 else None
+
+
+def sandbox_bus_proxy(pid):
+    """A sandboxed process (Flatpak) reaches the accessibility bus through a proxy, so the
+    registry knows it by the proxy's process: the one listening on the socket bound into the
+    sandbox at /run/flatpak/at-spi-bus. None for a process outside a sandbox."""
+    try:
+        with open(f"/proc/{pid}/mountinfo") as mounts:
+            source = next((line.split()[3] for line in mounts if line.split()[4:5] == ["/run/flatpak/at-spi-bus"]), None)
+        if source is None:
+            return None
+        with open("/proc/net/unix") as sockets:
+            inodes = {line.split()[6] for line in sockets if line.split()[-1] == source and line.split()[5] == "01"}
+        if not inodes:
+            return None
+        wanted = {f"socket:[{inode}]" for inode in inodes}
+        for candidate in os.listdir("/proc"):
+            if not candidate.isdigit():
+                continue
+            try:
+                for fd in os.listdir(f"/proc/{candidate}/fd"):
+                    if os.readlink(f"/proc/{candidate}/fd/{fd}") in wanted:
+                        return int(candidate)
+            except OSError:
+                continue
+    except (OSError, ValueError, IndexError):
+        return None
+    return None
 
 
 class ServedResult(Exception):
@@ -868,7 +951,7 @@ class Tree:
             "BLOCK_QUOTE", "ARTICLE", "FOOTER", "HEADER", "LANDMARK", "PANEL", "SEPARATOR", "DOCUMENT_WEB",
             "DOCUMENT_FRAME", "DOCUMENT_TEXT", "FILLER", "TOOL_BAR", "MENU_BAR", "PAGE_TAB_LIST", "GROUPING",
             "DESCRIPTION_LIST", "DESCRIPTION_TERM", "DESCRIPTION_VALUE", "CAPTION", "COMMENT", "FOOTNOTE")
-        self.press_actions = ("click", "press", "activate", "jump", "toggle", "open", "check", "uncheck")
+        self.press_actions = ("click", "press", "activate", "jump", "toggle", "open", "check", "uncheck", "showmenu")
         # Selectable items a toolkit gives no action (GTK 3 notebook tabs): on screen, a press is
         # the seat's pointer at their coordinates.
         self.pointer_roles = _roles(Atspi, "PAGE_TAB", "LIST_ITEM", "TREE_ITEM")
@@ -879,6 +962,7 @@ class Tree:
             ("MULTI_LINE", "multi-line"), ("VISITED", "visited"), ("BUSY", "busy")]
         self.started = time.monotonic()
         self.visited = 0
+        self.partial = []  # child counts of containers read in part
 
     def exhausted(self):
         return self.visited >= MAX_NODES or time.monotonic() - self.started > BUDGET_SECONDS
@@ -908,18 +992,66 @@ class Tree:
             names.append("disabled")
         return names
 
+    # A container this large (a spreadsheet's cells, a long list) is read in part: its
+    # selected children and the first few, instead of thousands of round trips.
+    LARGE = 512
+    SAMPLE = 32
+
     def children(self, node):
         try:
             count = node.get_child_count()
         except Exception:
             return []
+        indices = range(count)
+        if count > self.LARGE:
+            chosen, active = set(), None
+            try:
+                if node.get_selection_iface() is not None:
+                    for k in range(min(self.Atspi.Selection.get_n_selected_children(node), self.SAMPLE)):
+                        child = self.Atspi.Selection.get_selected_child(node, k)
+                        if child is not None:
+                            chosen.add(child.get_index_in_parent())
+                            active = active or child
+            except Exception:
+                pass
+            # A table (a spreadsheet) is read around its selected cell: the rows and columns a
+            # person sees next to it, so values entered nearby show.
+            region = self.table_region(node, active)
+            chosen |= region if region else set(range(self.SAMPLE))
+            indices = sorted(i for i in chosen if 0 <= i < count)
+            self.partial.append(count)
         result = []
-        for index in range(min(count, 4000)):
+        for index in indices:
             try:
                 result.append((index, node.get_child_at_index(index)))
             except Exception:
                 continue
         return result
+
+    def table_region(self, table, active, rows=12, cols=6):
+        """Child indices of the cells around `active` (or the top left) of a table."""
+        try:
+            if table.get_table_iface() is None:
+                return set()
+            Table = self.Atspi.Table
+            row = col = 0
+            if active is not None:
+                index = active.get_index_in_parent()
+                row, col = Table.get_row_at_index(table, index), Table.get_column_at_index(table, index)
+            cells, filled = {}, set()
+            for r in range(max(0, row - 2), row + rows):
+                for c in range(max(0, col - 1), col + cols):
+                    cell = Table.get_accessible_at(table, r, c)
+                    if cell is not None:
+                        cells[(r, c)] = cell.get_index_in_parent()
+                        if self.text(cell, 1):
+                            filled.add((r, c))
+            # The cells holding something, the selected one, and the empty ones next to them
+            # (where the next value goes); not every blank cell of the region.
+            keep = filled | {(row, col)} | {(r + dr, c + dc) for r, c in filled for dr, dc in ((1, 0), (0, 1), (-1, 0), (0, -1))}
+            return {index for at, index in cells.items() if at in keep}
+        except Exception:
+            return set()
 
     def text(self, node, limit=None):
         try:
@@ -1102,6 +1234,9 @@ def match_frame(tree, app, screen, wid, active):
     origin = screen.origin(wid)
     pid = screen.pid(wid)
     title = _norm(screen.title(wid))
+    # Titles of the application's other windows: a top-level named like one of them is that
+    # window, not this one.
+    others = {_norm(screen.title(w)) for w in screen.clients if w != wid and screen.pid(w) == pid} - {title}
     best, best_score, popups, showing = None, 0, [], []
     for index, top in tree.children(app):
         if top is None:
@@ -1124,6 +1259,8 @@ def match_frame(tree, app, screen, wid, active):
                     popups.append((index, top, tree.bounds(top, at), at))
         if role not in tree.top_roles:
             continue
+        if name and name in others:
+            continue
         showing.append((index, top))
         bounds = tree.bounds(top, origin)
         score = 0
@@ -1138,7 +1275,9 @@ def match_frame(tree, app, screen, wid, active):
             score += 2
         if score > best_score:
             best, best_score = (index, top), score
-    if best is None and len(showing) == 1:
+    # The one top-level shown stands for the window only when it is the application's only
+    # window: a dialog that has just mapped is not yet in the tree, and its parent is not it.
+    if best is None and len(showing) == 1 and screen.window_count(pid) <= 1:
         best = showing[0]
     frame_index = best[0] if best else None
     popups = [popup for popup in popups if popup[0] != frame_index]
@@ -1196,6 +1335,9 @@ class Target:
             self.note = "No window is open on this display."
             return
         self.pid = self.screen.pid(self.xid)
+        if self.pid is None:
+            # An X11 window without _NET_WM_PID: the application whose window has its title.
+            self.pid = titled_pid(get_bus(self.screen.bus_display()), self.screen.title(self.xid))
         if self.pid is None:
             self.note = "The focused window does not report its process, so its accessibility tree cannot be matched."
             return
@@ -1282,7 +1424,8 @@ def collect(target, query=None, role=None):
         # Expose capabilities rather than asking a policy to infer them from pixels.
         _, native_actions = tree.actions(node)
         supported = []
-        if any(name in tree.press_actions for name in native_actions) or (node_role in tree.pointer_roles and tree.has(states, "SHOWING")):
+        if any(name in tree.press_actions for name in native_actions) or (node_role in tree.pointer_roles and tree.has(states, "SHOWING")) \
+                or tree.has(states, "SELECTABLE"):
             supported.append("press")
         if tree.has(states, "EDITABLE"): supported.append("set-text")
         if tree.has(states, "FOCUSABLE"): supported.append("focus")
@@ -1396,9 +1539,11 @@ def resolve(display_name, element):
     xid, pid = int(match.group(1), 16), int(match.group(2))
     path = [int(i) for i in match.group(3).split(".")]
     screen = make_screen(display_name)
-    if xid not in screen.clients or screen.pid(xid) != pid or not screen.confined(pid):
+    if xid not in screen.clients or not screen.confined(pid):
         raise Failure("element not found", NOT_FOUND)
     bus = get_bus(screen.bus_display())
+    if (screen.pid(xid) or titled_pid(bus, screen.title(xid))) != pid:
+        raise Failure("element not found", NOT_FOUND)
     app = bus.application(pid)
     if app is None:
         bus.retry(screen.bus_display())
@@ -1469,6 +1614,10 @@ def act(display_name, element, action, text):
                 except Exception:
                     pass
                 break
+        # An item of a list, table or tree without an action of its own is selected through its
+        # container's Selection, as the toolkit selects it on a click.
+        if select_in_parent(tree, node, states):
+            return
         if bounds is None or not tree.has(states, "SHOWING"):
             raise Failure("element has no action and is not on screen")
         screen.click(xid, bounds["x"] + bounds["width"] // 2, bounds["y"] + bounds["height"] // 2)
@@ -1479,16 +1628,45 @@ def act(display_name, element, action, text):
                 return
         except Exception:
             pass
+        # Toolkits without GrabFocus (GTK 4): an editable field on screen takes focus from the
+        # seat's pointer, which only places the caret; anything else is not clicked.
+        bounds = tree.bounds(node, origin)
+        if tree.has(states, "EDITABLE") and bounds is not None and tree.has(states, "SHOWING"):
+            screen.activate(xid)
+            screen.click(xid, bounds["x"] + bounds["width"] // 2, bounds["y"] + bounds["height"] // 2)
+            deadline = time.monotonic() + 0.4
+            while time.monotonic() < deadline:
+                if tree.has(tree.fresh_states(node), "FOCUSED"):
+                    return
+                screen.let_draw()
+                time.sleep(0.01)
         raise Failure("element cannot take focus")
     if action == "set-text":
         if text is None:
             raise Failure("set-text needs --text", 2)
         # The toolkit's EditableText, when the field then reads the new text: some accept the
         # call and change nothing (Firefox's web fields).
+        # A number for a numeric control (spin button, slider) goes in through its Value, which
+        # the toolkit applies at once; typed digits wait for Enter or a focus change.
+        try:
+            number = float(text)
+        except ValueError:
+            number = None
+        if number is not None and node.get_role() in _roles(tree.Atspi, "SPIN_BUTTON", "SLIDER") and node.get_value_iface() is not None:
+            try:
+                if tree.Atspi.Value.set_current_value(node, number):
+                    return
+            except Exception:
+                pass
         pid = screen.pid(xid)
         try:
             if pid not in INERT_EDITABLE and node.get_editable_text_iface() is not None and tree.Atspi.EditableText.set_text_contents(node, text):
-                if wait_text(screen, tree, node, lambda value: value == text, 0.3) in (text, None):
+                # A password field reads back masked (bullets of the same length) or not at all.
+                if node.get_role() in _roles(tree.Atspi, "PASSWORD_TEXT"):
+                    return
+                masked = lambda value: value is not None and len(value) == len(text) and text and set(value) <= set("•●*·")
+                shown = wait_text(screen, tree, node, lambda value: value == text or masked(value), 0.3)
+                if shown in (text, None) or masked(shown):
                     return
                 INERT_EDITABLE.add(pid)  # remembered for the life of this helper
         except Exception:
@@ -1544,6 +1722,34 @@ def act(display_name, element, action, text):
                 raise Failure(f"the field shows {shown[:80]!r} after typing; read it again before retrying")
         return
     raise Failure(f"unknown action {action}", 2)
+
+
+def select_in_parent(tree, node, states):
+    """Select `node` through the Selection of the nearest container that has one (its list or
+    table; GTK 4 puts a row between a list and its cells): the container's child that holds
+    `node` is selected. Whether `node` then reads selected."""
+    if not tree.has(states, "SELECTABLE"):
+        return False
+    try:
+        child, parent = node, node.get_parent()
+        for _ in range(3):
+            if parent is None:
+                return False
+            if parent.get_selection_iface() is not None:
+                if not tree.Atspi.Selection.select_child(parent, child.get_index_in_parent()):
+                    return False
+                break
+            child, parent = parent, parent.get_parent()
+        else:
+            return False
+    except Exception:
+        return False
+    deadline = time.monotonic() + 0.3
+    while not tree.has(tree.fresh_states(node), "SELECTED"):
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.02)
+    return True
 
 
 # Processes whose EditableText accepts a new text and changes nothing (Firefox's web fields).
@@ -1819,6 +2025,11 @@ def execute(args):
             return {"ok": True, **({"note": note} if note else {})}, 0
         target = Target(args.display)
         result = {"window": target.window}
+        if target.app is not None:
+            try:
+                result["toolkit"] = f"{target.app.get_toolkit_name() or ''} {target.app.get_toolkit_version() or ''}".strip()
+            except Exception:
+                pass
         if args.command == "text":
             result["text"] = read_text(target) if target.app is not None else ""
             if len(result["text"]) > MAX_TEXT:
@@ -1828,6 +2039,9 @@ def execute(args):
             query = args.query if args.command == "find" else None
             role = args.role if args.command == "find" else None
             result["elements"] = collect(target, query, role) if target.app is not None else []
+            if target.app is not None and target.tree.partial:
+                result["partial"] = (f"{len(target.tree.partial)} large container(s) ({', '.join(str(c) for c in target.tree.partial[:3])} children) "
+                                     "are read in part: their selected children and the first few")
         if target.note:
             result["note"] = target.note
         return result, 0

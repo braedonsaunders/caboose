@@ -7,7 +7,8 @@ On a display smaller than 1280x720 on either side (a phone in portrait), each pr
 a Wine virtual desktop, landscape and at least 1920x1080, which Wine reports as the screen.
 
 The prefixes are ~/.wine, winetricks' (~/.local/share/wineprefixes/*) and every prefix a
-running Wine process on this display names in WINEPREFIX, remembered once seen.
+running Wine process on the owner's display names in WINEPREFIX (never one on the agent seat),
+remembered once seen.
 
 usage: caboose-wine-dpi    the service (runs as the owner)"""
 import os
@@ -89,7 +90,9 @@ def with_settings(text, desktop):
 def running_prefixes(proc="/proc", display=None):
     """The prefixes running Wine processes of this user name in WINEPREFIX. With `display`,
     only those of processes on that X display: a prefix running on another seat (a check's
-    own, the agent's) follows that seat's display, not this one's."""
+    own) follows that seat's display, not this one's. Processes on the agent seat
+    (CABOOSE_SEAT=agent) are left out: their prefixes run on that seat, whose windows are read
+    and driven as they are, not sized for the phone's display."""
     found = set()
     for entry in Path(proc).iterdir():
         if not entry.name.isdigit():
@@ -99,6 +102,8 @@ def running_prefixes(proc="/proc", display=None):
                 continue
             environ = (entry / "environ").read_bytes().split(b"\0")
         except OSError:
+            continue
+        if b"CABOOSE_SEAT=agent" in environ:
             continue
         if display is not None and f"DISPLAY={display}".encode() not in environ:
             continue

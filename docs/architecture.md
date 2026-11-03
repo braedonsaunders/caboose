@@ -103,7 +103,7 @@ The system image builder (`guest/image/make-system-image.sh`) defaults to `CABOO
 
 The image contains:
 
-- **Applications.** Chromium, Firefox ESR, VS Code, xfce4-terminal, Thunar, Mousepad,
+- **Applications.** Chromium (the one browser and the default for web pages and links), VS Code, xfce4-terminal, Thunar, Mousepad,
   LibreOffice, Obsidian, Evince, KeePassXC, mpv and other document and media tools;
   developer tools including Git, Neovim, Lazygit, Lazydocker, btop, tmux, mise and modern
   shell tools; Docker; official Claude Desktop (including Claude Code) and ChatGPT
@@ -2133,7 +2133,7 @@ protocol used by GTK 3, with server-side decorations preferred. Ordinary GTK win
 therefore omit their automatic titlebars. `GTK_CSD=0` applies the same default to
 GTK on X11; explicit application headerbars and menus remain application content. The
 window-button layout is empty in the portal, GSettings and GTK settings, so headerbars,
-libadwaita, Firefox and Chromium/Electron caption buttons draw no window controls
+libadwaita and Chromium/Electron caption buttons draw no window controls
 (display.md).
 
 ## 5. Agents
@@ -2550,13 +2550,15 @@ its actions. Their observation and action contract:
   short id that stays with the control while the server runs, role, name, value and states,
   without bounds. After an action the agent gets only what changed: windows opened, closed,
   retitled or focused, and controls added, changed or removed in the focused window. A
-  window seen for the first time, and every `elements` call, is listed whole.
+  window seen for the first time, and every `look`, is listed whole; the first names only the
+  focused window, the others as a count.
 - **Settling is driven by the compositor's commit record, not by timeouts.** After an
   action, a read waits for the first commit after it (the application applied it; a new
   window mapped), at most 150 ms, and a picture waits until no window committed for 30 ms.
   AT-SPI change events arrive after the change itself, so they never stand in for a read.
-- **Actions are semantic first.** A press uses the control's own accessibility action and
-  `set_text` replaces an editable text's contents. A menu on screen, whose own action can
+- **Actions are semantic first.** A press uses the control's own accessibility action, a set
+  replaces an editable text's contents (a number goes into a spin button or slider through its
+  Value). A menu on screen, whose own action can
   open a different menu of its bar, and selectable items a toolkit gives no action (notebook
   tabs, list and tree items) are pressed with the seat's pointer at their own coordinates,
   never at positions read from pixels. A target is re-resolved by its id before input goes
@@ -2569,43 +2571,40 @@ its actions. Their observation and action contract:
 
 | Tool | Does |
 | --- | --- |
-| `elements` | The focused window's controls (role, name, optional value, states, bounds) from the AT-SPI tree |
-| `find` | Elements whose name contains a query, optionally of one role |
-| `click_element`, `set_text` | Press an element, or replace an editable element's text, by id |
-| `batch` | 1–20 sequential actions; stops on the first failure and returns completed/total, error when present, and updated elements by default |
-| `read_text` | The focused window's readable text, page text included |
-| `screenshot` | PNG of the seat or one window; `annotate: true` adds numbered bounds and an element legend |
-| `list_windows`, `focus` | Windows with kind, title, application, geometry and focus; give one the keyboard |
-| `click`, `drag`, `type`, `key`, `scroll` | Pointer and keyboard by coordinates |
-| `launch` | Start an application on the seat with accessibility enabled |
+| `look` | The focused window's controls (id, role, name, value, states), optionally only those whose name matches, with its readable text, or with every window |
+| `act` | 1–30 steps in order (press, set, key, type, click, scroll, drag, focus, wait, launch), stopping at the first failure, then what changed |
+| `screenshot` | PNG of the seat or one window; `marks` numbers the controls on it and lists their ids and centres |
 
-The accessibility tools come first in the list because they need no screenshot and no
-model round trip. They use `a11y.py`, which reads only applications whose windows are all on
-the seat, so an agent cannot list, read or press the owner's windows. The coordinate tools
-and `screenshot` use the seat's control socket through `seat.py`, so they reach Wayland and
-X11 applications alike and work while nobody watches the seat; coordinates are the seat's
-logical pixels, the same as the screenshot's and the elements' bounds.
+Three tools with short definitions, because they go to the model on every turn; the
+accessibility reads need no screenshot. They use `a11y.py`, which reads only applications
+whose windows are all on the seat, so an agent cannot list, read or press the owner's
+windows. Pointer and keyboard steps and `screenshot` use the seat's control socket through
+`seat.py`, so they reach Wayland and X11 applications alike and work while nobody watches the
+seat; coordinates are the seat's logical pixels. The server is the seat's assistive
+technology and sets `org.a11y.Status.ScreenReaderEnabled` on its accessibility bus, so
+toolkits that build their whole tree only for one (Chromium, Electron) expose it.
 
 The server caches a successful seat environment, checking its control socket before reuse,
 and starts the privileged helper only when the existing seat cannot be reached. It keeps
-Python workers warm and serializes calls, including whole batches. Control connections
+Python workers warm and serializes calls, including whole `act` runs. Control connections
 persist; a lost response fails the action without replaying it, and the next call reconnects.
-`settle` stops immediately when no callbacks were released, otherwise waits up to three
-50 ms rounds. This is a bounded rendering opportunity, not an application-idle guarantee.
+An element step rejects a changed focused window as well as a stale id. Observation reports
+the current state without guaranteeing navigation has completed.
 
-Mutating tools accept `observe: true` to append updated focused-window elements; its
-single-tool default is false. `batch` defaults to observation, permits coordinate actions,
-`click_element`, `set_text`, `focus_element`, `focus`, and `wait` (10–5000 ms), and returns
-`{ completed, total, error?, state?, observationError? }`. An observation failure preserves
-the action outcome. Element batch steps reject a changed focused window as well as stale
-IDs. Observation reports the current state without guaranteeing navigation has completed.
+**Page tools.** Chromium on the agent seat runs with its WebMCP (`WebMCPTesting`) and the
+Caboose WebMCP extension (`guest/webmcp`). The extension lists and runs the tools the focused
+tab declares through `document.modelContext` (imperative `registerTool` and declarative
+`<form toolname>`), and derives general tools from every page's semantics: one per form
+(fill its fields, press its button), following a link, and pressing a button outside forms.
+Its native messaging host listens on `$XDG_RUNTIME_DIR/caboose-webmcp/<browser pid>.sock`;
+desktop MCP reaches it through the focused window's process, so `look` lists the page's
+tools and an `act` step `{"tool": name, "args": {...}}` calls one. A page's tool is the page's
+code: its results are the page's word, like its text.
 
-Elements include a bounded optional string `value` for editable fields, selections and
-numeric controls. Password and sensitive fields omit it. Values do not enter element ID
-fingerprints. Annotated screenshots number the focused window's accessible controls that
-intersect the capture; a window-specific capture excludes other windows. The legend keeps
-seat-coordinate bounds and centers, while badges are translated to the captured image.
-Unannotated screenshots retain their single-image response.
+Controls include a bounded optional `value` for editable fields, selections and numeric
+controls. Password and sensitive fields omit it. Values do not enter element ID
+fingerprints. A screenshot with `marks` numbers the focused window's accessible controls
+that intersect the capture; a window-specific capture excludes other windows.
 
 When `/opt/caboose/apps/apps-mcp.mjs` is installed, the runner also passes `caboose-apps`
 with the same environment: `app_guide`, `app_publish`, `app_list`, `app_open` (on the

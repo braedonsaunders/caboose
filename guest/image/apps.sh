@@ -11,12 +11,28 @@ apt-get update
 apt-get install -y --no-upgrade --no-install-recommends \
   ca-certificates curl xz-utils python3-gi gir1.2-gtk-3.0 adwaita-icon-theme \
   mesa-vulkan-drivers libgl1-mesa-dri \
-  chromium firefox-esr xfce4-terminal thunar mousepad libreoffice libreoffice-gtk3 \
-  evince keepassxc file-roller \
+  chromium xfce4-terminal thunar mousepad libreoffice libreoffice-gtk3 \
+  evince keepassxc file-roller tesseract-ocr tesseract-ocr-eng \
   git ripgrep fd-find bat eza fzf zoxide btop lazygit neovim tmux gh git-delta \
   jq curl wget unzip zip bzip2 tree ncdu htop fastfetch ffmpeg imagemagick docker.io docker-cli docker-compose mpv yt-dlp tealdeer \
   fonts-inter fonts-jetbrains-mono fonts-noto-core fonts-noto-cjk fonts-noto-color-emoji
 if ! command -v npm >/dev/null; then apt-get install -y nodejs npm; fi
+# Chromium is the one browser: the system default for web pages and links (xdg-open,
+# GIO) and for Xfce's web-browser helper.
+install -d /etc/xdg/xfce4
+python3 - <<'PY'
+import configparser
+from pathlib import Path
+p = Path('/etc/xdg/mimeapps.list')
+c = configparser.ConfigParser(interpolation=None, strict=False)
+c.optionxform = str
+if p.exists(): c.read(p)
+if not c.has_section('Default Applications'): c.add_section('Default Applications')
+for mime in ('x-scheme-handler/http', 'x-scheme-handler/https', 'text/html', 'application/xhtml+xml'):
+    c['Default Applications'][mime] = 'chromium.desktop;'
+with p.open('w') as f: c.write(f)
+PY
+printf 'WebBrowser=chromium\n' > /etc/xdg/xfce4/helpers.rc
 # Pin the upstream tarball integrity as well as the package version. npm checks
 # the downloaded tarballs and dependency integrity while installing.
 install_npm() {
