@@ -300,6 +300,13 @@ final class DesktopModel {
     var launcherFrames: [String: CGRect] = [:]
     var launcherPage = 0
     var launcherPageFrames: [Int: CGRect] = [:]
+    /// The floating dock's bar, in the desktop's space: Launchpad stays above it.
+    var dockBarFrame: CGRect = .null
+
+    /// The full-screen window whose title bar the pointer has revealed at the top edge, as on
+    /// a Mac (`WindowTitleBar.revealsOverFullScreen`): its controls answer there, the green
+    /// one leaving full screen.
+    private(set) var revealedTitleBar: Int?
 
     /// A press being dragged: what it started on, where the pointer and the window's whole
     /// frame (in points) were when it started, or when it last left a snap.
@@ -523,6 +530,15 @@ final class DesktopModel {
             for (id, frame) in launcherFrames where frame.contains(point) { return .launcher(id) }
             return .none
         }
+        if let id = revealedTitleBar, let window = fullscreenWindow(in: windows), window.id == id,
+           point.y >= 0, point.y < titleBarHeight {
+            switch titleBar.control(at: CGPoint(x: point.x - (titleBarLeadingInsets[id] ?? 0), y: point.y)) {
+            case .close: return .close(id)
+            case .minimize: return .minimize(id)
+            case .zoom: return .zoom(id)
+            case nil: return .titleBar(id)
+            }
+        }
         let surfaces = surfaceFrames(in: windows)
         for id in stacking.reversed() where isVisible(id) {
             guard let window = windows[id], let content = surfaces[id] else { continue }
@@ -558,6 +574,7 @@ final class DesktopModel {
         cursor = CGPoint(x: min(max(0, cursor.x + delta.x), bounds.width), y: min(max(0, cursor.y + delta.y), bounds.height))
         updateLaptopDockHover()
         guard let session else { return }
+        updateRevealedTitleBar(session.windows)
         if let drag {
             dragMoved(drag, session: session)
             return
@@ -567,6 +584,19 @@ final class DesktopModel {
         if case .content(let id, let local) = hovered, let window = session.windows[id] {
             session.pointerMove(in: window, to: local)
         }
+    }
+
+    /// Shows a full-screen window's title bar while the pointer is at the top edge, and hides
+    /// it once the pointer leaves it.
+    private func updateRevealedTitleBar(_ windows: [Int: RemoteWindow]) {
+        guard showsCursor, let window = fullscreenWindow(in: windows) else {
+            revealedTitleBar = nil
+            return
+        }
+        let revealed = titleBar.revealsOverFullScreen(revealedTitleBar == window.id, pointerY: cursor.y)
+        let next = revealed ? window.id : nil
+        guard next != revealedTitleBar else { return }
+        withAnimation(UIAccessibility.isReduceMotionEnabled ? nil : .easeOut(duration: 0.2)) { revealedTitleBar = next }
     }
 
     /// Opens the context menu at the cursor; false when there is nothing to show.
@@ -709,7 +739,8 @@ final class DesktopModel {
         let hit = hitTest(cursor, windows: session.windows)
         switch hit {
         case .titleBar(let id), .resize(let id):
-            guard let window = session.windows[id] else { return }
+            // A full-screen window stays put; its revealed bar only holds its controls.
+            guard let window = session.windows[id], !window.isFullscreen else { return }
             raise(id)
             drag = (hit, cursor, chromeRect(window))
         case .divider:
@@ -902,8 +933,15 @@ final class DesktopModel {
 
     func isZoomed(_ window: Int) -> Bool { layout.snap(of: window) == .maximized }
 
-    /// The green button: fill the desktop above the dock, or go back to where it was.
+    /// The green button: fill the desktop above the dock, or go back to where it was. On a
+    /// window in full screen it leaves full screen, back to its place.
     func toggleZoom(_ id: Int, _ session: any DisplaySession) {
+        if let window = session.windows[id], window.isFullscreen {
+            revealedTitleBar = nil
+            session.exitFullscreen(window, frame: placedFrame(window) ?? maximizedFrame)
+            applyPlace(window, session, always: true)
+            return
+        }
         snap(id, isZoomed(id) ? nil : .maximized, session)
     }
 

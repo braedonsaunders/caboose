@@ -236,41 +236,50 @@ struct DesktopWindow: View {
         }
     }
 
+    /// The macOS-style bar: the window's controls, its icon and its title.
+    private var titleBar: some View {
+        let ui = desktop.ui
+        let bar = desktop.titleBar
+        return GeometryReader { geometry in
+            let clearance = EdgeInsets().inset(by: geometry.containerCornerInsets, edges: .horizontal)
+            HStack(spacing: 0) {
+                // Under a finger the symbols always show; a pointer shows them on hover.
+                WindowControls(bar: bar, hovered: hoveredControl, showsSymbols: desktop.directTouch && !desktop.pointerHovering)
+                Spacer(minLength: 8 * ui)
+                if let icon { Image(uiImage: icon).resizable().frame(width: 15 * ui, height: 15 * ui).padding(.trailing, 6 * ui) }
+                Text(model.windowTitle(window))
+                    .font(.system(size: 13 * ui, weight: .semibold))
+                    .lineLimit(1)
+                Spacer(minLength: 8 * ui)
+                // Balances the controls, so the title is centred on the window.
+                Color.clear.frame(width: bar.controlsWidth)
+            }
+            .padding(clearance)
+            .frame(height: bar.height)
+            .onChange(of: clearance.leading, initial: true) { _, inset in
+                desktop.titleBarLeadingInsets[window.id] = inset
+            }
+        }
+        .frame(height: bar.height)
+        .background(.regularMaterial)
+    }
+
     var body: some View {
         let chrome = desktop.presentedChrome(window, surface: surface)
         VStack(spacing: 0) {
-            if !window.isAuxiliary && !window.isFullscreen {
-                let ui = desktop.ui
-                let bar = desktop.titleBar
-                GeometryReader { geometry in
-                    let clearance = EdgeInsets().inset(by: geometry.containerCornerInsets, edges: .horizontal)
-                    HStack(spacing: 0) {
-                        // Under a finger the symbols always show; a pointer shows them on hover.
-                        WindowControls(bar: bar, hovered: hoveredControl, showsSymbols: desktop.directTouch && !desktop.pointerHovering)
-                        Spacer(minLength: 8 * ui)
-                        if let icon { Image(uiImage: icon).resizable().frame(width: 15 * ui, height: 15 * ui).padding(.trailing, 6 * ui) }
-                        Text(model.windowTitle(window))
-                            .font(.system(size: 13 * ui, weight: .semibold))
-                            .lineLimit(1)
-                        Spacer(minLength: 8 * ui)
-                        // Balances the controls, so the title is centred on the window.
-                        Color.clear.frame(width: bar.controlsWidth)
-                    }
-                    .padding(clearance)
-                    .frame(height: bar.height)
-                    .onChange(of: clearance.leading, initial: true) { _, inset in
-                        desktop.titleBarLeadingInsets[window.id] = inset
-                    }
-                }
-                .frame(height: bar.height)
-                .background(.regularMaterial)
-            }
+            if !window.isAuxiliary && !window.isFullscreen { titleBar }
             RemoteWindowSurface(window: window, pixelsPerPoint: desktop.pixelsPerPoint,
                                 pacer: model.session, showsLiveContent: model.desktopActive && !model.yardActive)
                 .frame(width: surface.width, height: surface.height)
                 .modifier(WindowDrop(window: window, pixelsPerPoint: desktop.pixelsPerPoint, presentedSize: surface.size))
         }
         .frame(width: chrome.width, height: chrome.height)
+        // In full screen the pointer at the top edge reveals the title bar over the window, as on a Mac.
+        .overlay(alignment: .top) {
+            if window.isFullscreen && desktop.revealedTitleBar == window.id {
+                titleBar.transition(.move(edge: .top).combined(with: .opacity))
+            }
+        }
         .modifier(WindowFrameStyle(radius: (window.isAuxiliary ? 6 : 11) * desktop.ui, fullscreen: window.isFullscreen,
                                    bevel: !window.isAuxiliary))
         .onDisappear { desktop.titleBarLeadingInsets[window.id] = nil }

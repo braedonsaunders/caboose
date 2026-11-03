@@ -55,4 +55,13 @@ public struct WindowTitleBar: Equatable, Sendable {
     public var controlsWidth: CGFloat {
         controls.isEmpty ? 0 : leading + CGFloat(controls.count - 1) * pitch + pitch / 2
     }
+
+    /// Whether a full-screen window shows its title bar, as on a Mac: the pointer pushed
+    /// against the screen's top edge reveals it, and it stays while the pointer is on it or
+    /// just below, then hides. `revealed` is whether it shows now; `y` is the pointer's
+    /// height from the top of the screen.
+    public func revealsOverFullScreen(_ revealed: Bool, pointerY y: CGFloat) -> Bool {
+        guard y.isFinite else { return false }
+        return revealed ? y <= height * 1.5 : y <= max(2, height / 8)
+    }
 }

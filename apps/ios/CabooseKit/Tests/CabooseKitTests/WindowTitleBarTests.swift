@@ -41,3 +41,18 @@ struct WindowTitleBarTests {
         #expect(bar.controlsWidth == 62)
     }
 }
+
+/// A full-screen window's title bar shows while the pointer is at the screen's top, as on a Mac.
+struct FullScreenTitleBarTests {
+    let bar = WindowTitleBar(touch: false)
+
+    @Test func theTopEdgeRevealsItAndLeavingItHidesIt() {
+        #expect(bar.revealsOverFullScreen(false, pointerY: 0))
+        #expect(!bar.revealsOverFullScreen(false, pointerY: 20))
+        // Once shown, the pointer can move down onto its controls and a little past them.
+        #expect(bar.revealsOverFullScreen(true, pointerY: 20))
+        #expect(bar.revealsOverFullScreen(true, pointerY: bar.height * 1.5))
+        #expect(!bar.revealsOverFullScreen(true, pointerY: bar.height * 2))
+        #expect(!bar.revealsOverFullScreen(true, pointerY: .nan))
+    }
+}
