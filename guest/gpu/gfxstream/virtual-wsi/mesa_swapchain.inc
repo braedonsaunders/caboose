@@ -62,7 +62,8 @@ struct DeviceSwapchain {
     std::chrono::steady_clock::time_point extentChecked{};
     VkImageUsageFlags imageUsage=0;
 };
-static std::map<VkSwapchainKHR,std::shared_ptr<DeviceSwapchain>> swapchains;
+// Never destroyed, like the surfaces.
+static std::map<VkSwapchainKHR,std::shared_ptr<DeviceSwapchain>>& swapchains=*new std::map<VkSwapchainKHR,std::shared_ptr<DeviceSwapchain>>;
 // 1 when presents are ordered behind device-stream ORDER marks and not waited for
 // (hello feature 0x400, SocketStream.cpp).
 extern "C" int caboose_gfxstream_ordered_present;

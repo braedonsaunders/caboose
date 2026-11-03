@@ -147,6 +147,8 @@ private:
     std::unordered_map<uint64_t, std::vector<Reset>> recorded_;
 };
 
-inline QueryResults queryResults;
+// Never destroyed: a process's exit runs static destructors while its other threads may
+// still be inside the driver.
+inline QueryResults& queryResults = *new QueryResults;
 
 }  // namespace caboose::memory

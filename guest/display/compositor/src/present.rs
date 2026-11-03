@@ -36,6 +36,13 @@ const FENCE_LIMIT: Duration = Duration::from_secs(5);
 const RECOVERY_INTERVAL: Duration = Duration::from_secs(10);
 /// How long after the executor leaves the next renderer is made (`rebuild_gpu_after_loss`).
 const LOSS_SETTLE: Duration = Duration::from_secs(3);
+/// A renderer made for a ready executor that landed on the computer's device (the executor's
+/// socket was replaced in between) is made again after this, at most `READY_RETRIES` times.
+const READY_RETRY: Duration = Duration::from_secs(1);
+const READY_RETRIES: u32 = 10;
+/// The routing layer's name for the computer's CPU device presented as a GPU
+/// (guest/gpu/routing-layer): a renderer on it is not on the executor.
+pub(crate) const COMPUTER_DEVICE: &str = "(no phone attached)";
 
 /// The render scale of a window's root surface: buffer pixels per logical pixel, clamped
 /// to [1, display scale]. A window's picture keeps its buffer's own density, so its pixels
@@ -84,6 +91,10 @@ impl State {
     /// Makes the renderer, again after the executor changed: the phone's GPU when one is
     /// ready, else the computer's. Every window is drawn again.
     pub fn rebuild_gpu(&mut self) {
+        self.rebuild_gpu_attempt(0);
+    }
+
+    fn rebuild_gpu_attempt(&mut self, attempt: u32) {
         self.gpu_generation += 1;
         // The old renderer and every image of it go first: its device may be lost.
         self.gpu = None;
@@ -100,7 +111,18 @@ impl State {
                     if gpu.presents() { ", window images on the phone" } else { ", window images on the computer" },
                     started.elapsed().as_millis()
                 );
+                let on_computer = gpu.name.contains(COMPUTER_DEVICE);
                 self.gpu = Some(gpu);
+                let ready = self.gpu_grants.as_ref().is_some_and(|g| g.epoch_if_ready().is_some());
+                if ready && on_computer && attempt < READY_RETRIES {
+                    let generation = self.gpu_generation;
+                    let _ = self.handle.insert_source(Timer::from_duration(READY_RETRY), move |_, _, state: &mut State| {
+                        if state.gpu_generation == generation {
+                            state.rebuild_gpu_attempt(attempt + 1);
+                        }
+                        TimeoutAction::Drop
+                    });
+                }
             }
             Err(e) => tracing::error!("no renderer: {e}"),
         }

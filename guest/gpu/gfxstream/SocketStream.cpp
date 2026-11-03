@@ -257,7 +257,8 @@ void startCompletionFeed(const char* path, const unsigned char* granted) {
 static thread_local bool handshaking = false;
 // The process's first connected stream: the shared encoder writes to it.
 static std::atomic<CabooseSocketStream*> firstStream{nullptr};
-static std::string firstPath;
+// Never destroyed: a reconnect can run while the process exits.
+static std::string& firstPath = *new std::string;
 // The executor is gone. A null read aborts the process in the encoder, so the reply reads
 // as VK_ERROR_DEVICE_LOST in every 32-bit word instead: a call's VkResult says the device
 // is lost and its other outputs go unused. A length read from such a reply is that word
@@ -386,6 +387,9 @@ int CabooseSocketStream::reconnectEnded() {
     std::lock_guard<std::mutex> epochLock(caboose::completion::transportEpochMutex);
     CabooseSocketStream* stream = firstStream.load();
     if (!stream) { errno = ENOTCONN; return -1; }
+    // A process that made no call since its executor left has not seen the loss: the
+    // broker's socket is gone or is a new executor's. Its next instance connects to that.
+    caboose::completion::executorEndedIfGone();
     // When the completion feed or a surface socket detected the executor's departure first,
     // every encoder call returned early via lostCall() without touching `stream`, so
     // `stream->indexedReady_` stayed true on the dead socket.

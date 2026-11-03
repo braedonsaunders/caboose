@@ -254,6 +254,8 @@ private:
     std::unordered_map<uint64_t, std::string> files_;    // identity -> file
 };
 
-inline RequirementsCache requirementsCache;
+// Never destroyed: a process's exit runs static destructors while its other threads may
+// still be inside the driver.
+inline RequirementsCache& requirementsCache = *new RequirementsCache;
 
 }  // namespace caboose::memory

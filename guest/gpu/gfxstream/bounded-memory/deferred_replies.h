@@ -444,6 +444,8 @@ private:
     std::atomic<size_t> signaledCount_{0};
 };
 
-inline DeferredReplies deferredReplies;
+// Never destroyed: a process's exit runs static destructors while its other threads may
+// still be inside the driver.
+inline DeferredReplies& deferredReplies = *new DeferredReplies;
 
 } // namespace caboose::memory

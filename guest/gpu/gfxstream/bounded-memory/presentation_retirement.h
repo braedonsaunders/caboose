@@ -108,5 +108,7 @@ private:
     std::map<uint64_t,std::vector<Key>> leases_;
     std::map<Key,Object> objects_;
 };
-inline PresentationRetirement presentationRetirement;
+// Never destroyed: a process's exit runs static destructors while its other threads may
+// still be inside the driver.
+inline PresentationRetirement& presentationRetirement = *new PresentationRetirement;
 }

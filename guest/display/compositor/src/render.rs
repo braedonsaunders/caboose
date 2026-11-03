@@ -225,7 +225,10 @@ impl Gpu {
         let remote_formats = [Fourcc::Argb8888, Fourcc::Xrgb8888].iter().all(|code| {
             display.dmabuf_render_formats().iter().any(|f| f.code == *code && u64::from(f.modifier) == MOD_REMOTE)
         });
-        let allocator = if remote_formats { render_node.and_then(open_allocator) } else { None };
+        // On the computer's own device (the routing layer's CPU device, which the driver's
+        // dma-buf formats can still reach) nothing registers the buffers it would draw.
+        let on_computer = name.contains(crate::present::COMPUTER_DEVICE);
+        let allocator = if remote_formats && !on_computer { render_node.and_then(open_allocator) } else { None };
         let remote = allocator.is_some();
         Ok(Gpu {
             renderer,

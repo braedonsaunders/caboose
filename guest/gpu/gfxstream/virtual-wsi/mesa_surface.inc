@@ -97,8 +97,10 @@ struct Surface {
     Client client;
 };
 static void startSurfaceWorker(const std::shared_ptr<Surface>& surface);
-static std::mutex mutex;
-static std::map<VkSurfaceKHR,std::shared_ptr<Surface>> surfaces;
+// Never destroyed: a process's exit runs static destructors while its surface workers and
+// other threads may still use them.
+static std::mutex& mutex=*new std::mutex;
+static std::map<VkSurfaceKHR,std::shared_ptr<Surface>>& surfaces=*new std::map<VkSurfaceKHR,std::shared_ptr<Surface>>;
 static std::shared_ptr<Surface> lookup(VkSurfaceKHR handle) {
     std::lock_guard<std::mutex> lock(mutex);
     auto found=surfaces.find(handle);

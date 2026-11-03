@@ -31,7 +31,9 @@ private:
     size_t maximum_;
     std::atomic<size_t> used_{0};
 };
-inline Budget processBudget;
+// Never destroyed: a process's exit runs static destructors while its other threads may
+// still be inside the driver.
+inline Budget& processBudget = *new Budget;
 struct Reservation {
     Budget& budget;
     size_t held = 0;
