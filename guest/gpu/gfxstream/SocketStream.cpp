@@ -17,6 +17,7 @@
 #include "caboose-bounded-memory/deferred_replies.h"
 #include "caboose-bounded-memory/memory_traffic.h"
 #include "caboose-bounded-memory/upload_cache.h"
+#include "caboose-bounded-memory/static_query_cache.h"
 #include "caboose-shader-cache/shader_cache.h"
 
 // Private diagnostic framing, not the Caboose display protocol. The peer only
@@ -27,6 +28,7 @@
 #if defined(CABOOSE_GFXSTREAM_PRIVATE_INDEXED_WSI) && (!defined(CABOOSE_GFXSTREAM_PRIVATE_LIVE) || !defined(CABOOSE_GFXSTREAM_PRIVATE_ICD))
 #error Private indexed WSI requires the private live diagnostic ICD build
 #endif
+static constexpr uint32_t kCacheSession = 0x20000;
 static constexpr unsigned char kHello[48] = {
 #if defined(CABOOSE_GFXSTREAM_PRIVATE_INDEXED_WSI)
     'C','B','G','L','R','E','F','1', 4,0,0,0, 0x70,0,0,0,
@@ -52,14 +54,16 @@ static constexpr unsigned char kHello[48] = {
 // socket and suspends in the background, so waits for the phone have no deadline of their own
 // (the broker ends the streams when it is lost for good); 0x8000 it names 4096-byte pieces of
 // flushed memory the phone keeps by hash (caboose-bounded-memory/upload_cache.h); 0x10000 it
-// assigns buffer view handles too (requires 0x80). The broker replies with the features both
+// assigns buffer view handles too (requires 0x80); 0x40000 it allocates and writes descriptor
+// sets itself and sends them with its next submit, in one vkQueueCommitDescriptorSetUpdatesGOOGLE
+// (docs/gpu-live.md, "Batched descriptor sets"). The broker replies with the features both
 // the process and the connected phone support. A broker that predates a feature closes
 // the connection instead, so the offer falls back to fewer features.
 static constexpr uint32_t kGuestHandles = 0x80, kGuestHandleArrays = 0x100, kCompletionFeed = 0x200,
                           kOrderedPresent = 0x400, kGuestImages = 0x800, kGuestQueryPools = 0x1000,
                           kShaderCache = 0x2000, kExecutorResume = 0x4000, kUploadCache = 0x8000,
-                          kGuestBufferViews = 0x10000;
-static const uint32_t kOffers[] = {kGuestHandles | kGuestHandleArrays | kCompletionFeed | kOrderedPresent | kGuestImages |
+                          kGuestBufferViews = 0x10000, kBatchedDescriptorSets = 0x40000;
+static const uint32_t kOffers[] = {0x3ff80 | kBatchedDescriptorSets, 0x3ff80, kGuestHandles | kGuestHandleArrays | kCompletionFeed | kOrderedPresent | kGuestImages |
                                        kGuestQueryPools | kShaderCache | kExecutorResume | kUploadCache |
                                        kGuestBufferViews,
                                    kGuestHandles | kGuestHandleArrays | kCompletionFeed | kOrderedPresent | kGuestImages |
@@ -116,6 +120,12 @@ int caboose_gfxstream_executor_resume = 0;
 // 1 when the phone keeps flushed pieces and takes their prefixes (hello feature 0x8000).
 extern "C" int caboose_gfxstream_upload_cache;
 int caboose_gfxstream_upload_cache = 0;
+// 1 when descriptor sets are allocated and written in the guest and sent with the next submit
+// (hello feature 0x40000), 0 when not, -1 before the first connection. The process's first
+// connection decides it, since the driver sets its descriptor handling up once: an executor
+// that does not take batched sets cannot serve a process that uses them.
+extern "C" int caboose_gfxstream_batched_descriptor_sets;
+int caboose_gfxstream_batched_descriptor_sets = -1;
 
 namespace {
 // The reply is the required hello with a subset of the offered features; returns them.
@@ -193,6 +203,8 @@ void startCompletionFeed(const char* path, const unsigned char* granted) {
     std::string socketPath(path);
     std::array<unsigned char, sizeof(kHello)> offer{};
     std::memcpy(offer.data(), granted, sizeof(kHello));
+    uint32_t feedFeatures=0; std::memcpy(&feedFeatures,offer.data()+12,4);
+    feedFeatures &= ~kCacheSession; std::memcpy(offer.data()+12,&feedFeatures,4);
     std::thread([socketPath, offer, generation] {
         int fd = connectSocket(socketPath.c_str());
         unsigned char reply[sizeof(kHello)];
@@ -305,7 +317,11 @@ int CabooseSocketStream::connectWith(const char* path, const unsigned char* offe
     unsigned char reply[sizeof(kHello)];
     const bool exchanged = writeFully(offer, sizeof(kHello)) == 0 && readFully(reply, sizeof(reply));
     uint32_t features = 0;
-    if (!exchanged || !acceptedFeatures(offer, reply, guestHandles, &features)) {
+    unsigned char cacheSession[32]{};
+    const unsigned char emptySession[32]{};
+    if (!exchanged || !acceptedFeatures(offer, reply, guestHandles, &features) ||
+        ((features & kCacheSession) && (!readFully(cacheSession,sizeof(cacheSession)) ||
+         !std::memcmp(cacheSession,emptySession,sizeof(cacheSession))))) {
         invalidate();
         close(fd_);
         fd_ = -1;
@@ -323,6 +339,20 @@ int CabooseSocketStream::connectWith(const char* path, const unsigned char* offe
     caboose_gfxstream_shader_cache = (features & kShaderCache) ? 1 : 0;
     caboose_gfxstream_executor_resume = (features & kExecutorResume) ? 1 : 0;
     caboose_gfxstream_upload_cache = (features & kUploadCache) ? 1 : 0;
+    {
+        int unset = -1;
+        const int batched = (features & kBatchedDescriptorSets) ? 1 : 0;
+        if (!__atomic_compare_exchange_n(&caboose_gfxstream_batched_descriptor_sets, &unset, batched, false,
+                                         __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE) && unset == 1 && !batched) {
+            std::fprintf(stderr, "CABOOSE_GPU_CONNECT_FAILED this process sends batched descriptor sets "
+                                 "and the executor does not take them\n");
+            handshaking = true;
+            close(fd_);
+            fd_ = -1;
+            errno = ENOTSUP;
+            return -1;
+        }
+    }
 #else
     caboose_gfxstream_guest_handles = 0;
 #endif
@@ -338,6 +368,13 @@ int CabooseSocketStream::connectWith(const char* path, const unsigned char* offe
     // A new executor, perhaps another phone, holds its own shader modules.
     caboose::shader_cache::known().reset();
     caboose::upload_cache::inventory().reset();
+    if (features & kCacheSession) {
+        std::string identity(reinterpret_cast<const char*>(reply),sizeof(reply));
+        identity.append(reinterpret_cast<const char*>(cacheSession),sizeof(cacheSession));
+        caboose::memory::staticQueryCache.connection(identity.data(),identity.size());
+    } else {
+        caboose::memory::staticQueryCache.reset();
+    }
     caboose::completion::executorConnected();
     caboose::completion::noteExecutorSocket();
 #if defined(CABOOSE_GFXSTREAM_PRIVATE_INDEXED_WSI)
@@ -353,6 +390,7 @@ int CabooseSocketStream::connectWith(const char* path, const unsigned char* offe
 extern "C" int caboose_gfxstream_reconnect_ended(void);
 extern "C" int caboose_gfxstream_reconnect_ended(void) { return CabooseSocketStream::reconnectEnded(); }
 int CabooseSocketStream::reconnectEnded() {
+    std::lock_guard<std::mutex> epochLock(caboose::completion::transportEpochMutex);
     CabooseSocketStream* stream = firstStream.load();
     if (!stream) { errno = ENOTCONN; return -1; }
     // When the completion feed or a surface socket detected the executor's departure first,

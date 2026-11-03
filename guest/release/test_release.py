@@ -34,7 +34,7 @@ class Releases(unittest.TestCase):
         release.KEY, public = keypair(self.tmp.name, "release")
         os.environ["CABOOSE_RELEASE_PUB"] = str(public)
         release.CHECK_CONF = Path(self.tmp.name) / "check.conf"
-        release.CHECK_CONF.write_text("repo=/r\nimage=caboose-computer:x\nwork=/w\n# a comment\nsync_check=/s\n")
+        release.CHECK_CONF.write_text("repo=/r\nimage=caboose-computer:x\nwork=/w\n# a comment\nsync_check=/s\ncapability_probe=/c\n")
         self.checked = []
         release.run_check = self.passing_check
 
@@ -71,7 +71,7 @@ class Releases(unittest.TestCase):
         release.main(["add", "r1", str(self.source), "/" + release.DRIVER, "755"])
         release.main(["seal", "r1", "first"])
         directory = release.ROOT / "r1"
-        self.assertEqual(self.checked, [("r1", {"repo": "/r", "image": "caboose-computer:x", "work": "/w", "sync_check": "/s"})])
+        self.assertEqual(self.checked, [("r1", {"repo": "/r", "image": "caboose-computer:x", "work": "/w", "sync_check": "/s", "capability_probe": "/c"})])
         self.assertEqual((directory / "check/result").read_text(), "PASS\nPASS sync-check: 12 cases\nPASS vkcube: frames=300\n")
         manifest = (directory / "MANIFEST").read_text()
         self.assertIn("check/result", manifest)
@@ -119,6 +119,20 @@ class Releases(unittest.TestCase):
         self.assertEqual(status, 1)
         self.assertIn("PASS executor", summary)
         self.assertIn("FAIL packaged broker", summary)
+
+    def test_packaged_cache_failure_fails_seal_check(self):
+        release.main(["new", "r1"])
+        release.main(["add", "r1", str(self.source), "/" + release.DRIVER, "755"])
+        repo=Path(self.tmp.name)/"repo"
+        for name,body in ((release.CHECK_SCRIPT,'echo "PASS executor"'),
+                          ("guest/release/check-packaged.sh",'echo "PASS packaged"'),
+                          ("apps/ios/GPUStream/gfxstream/linux-executor/check-capabilities.sh",
+                           'echo "FAIL packaged cache"; exit 4')):
+            script=repo/name; script.parent.mkdir(parents=True,exist_ok=True); script.write_text(body)
+        status,summary=RUN_CHECK(release.ROOT/"r1",{"repo":str(repo),"image":"i","work":"w",
+                                                       "sync_check":"s","capability_probe":"c"})
+        self.assertEqual(status,4)
+        self.assertIn("FAIL packaged cache",summary)
 
     def test_a_sealed_release_is_final_and_a_new_one_starts_from_it(self):
         release.main(["new", "r1"])

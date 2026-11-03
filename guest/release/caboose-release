@@ -42,7 +42,7 @@ CHECK_CONF = Path(os.environ.get("CABOOSE_RELEASE_CHECK", "/root/.config/caboose
 # The release's 64-bit guest driver, which the check runs.
 DRIVER = "usr/local/lib/caboose-gpu-live/libvulkan_gfxstream.so"
 CHECK_SCRIPT = "apps/ios/GPUStream/gfxstream/linux-executor/check.sh"
-CHECK_KEYS = ("repo", "image", "work", "sync_check")
+CHECK_KEYS = ("repo", "image", "work", "sync_check", "capability_probe")
 
 
 class Failure(Exception):
@@ -163,7 +163,14 @@ def run_check(directory, settings):
     packaged = subprocess.run(["sh", str(Path(settings["repo"]) / "guest/release/check-packaged.sh"),
                                settings["image"], str(directory), str(out)],
                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-    return packaged.returncode, summary + packaged.stdout.decode(errors="replace")
+    summary += packaged.stdout.decode(errors="replace")
+    if packaged.returncode:
+        return packaged.returncode, summary
+    capabilities = subprocess.run([
+        "sh", str(Path(settings["repo"]) / "apps/ios/GPUStream/gfxstream/linux-executor/check-capabilities.sh"),
+        settings["image"], settings["work"], str(driver), settings["capability_probe"],
+        str(out / "capabilities"), str(directory)], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    return capabilities.returncode, summary + capabilities.stdout.decode(errors="replace")
 
 
 def check(directory, run=None):

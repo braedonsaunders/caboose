@@ -4,6 +4,7 @@
 // when a case fails.
 #define _POSIX_C_SOURCE 200809L
 #include <stdarg.h>
+#include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -611,13 +612,7 @@ struct Presenter {
     int presented;
 };
 
-static void presenterCreate(struct Presenter* p, xcb_connection_t* connection, xcb_window_t window,
-                            uint32_t width, uint32_t height) {
-    memset(p, 0, sizeof(*p));
-    VkXcbSurfaceCreateInfoKHR surfaceInfo = {VK_STRUCTURE_TYPE_XCB_SURFACE_CREATE_INFO_KHR};
-    surfaceInfo.connection = connection;
-    surfaceInfo.window = window;
-    CHECK(vkCreateXcbSurfaceKHR(instance, &surfaceInfo, NULL, &p->surface));
+static void presenterSetup(struct Presenter* p, uint32_t width, uint32_t height) {
     VkBool32 supported = VK_FALSE;
     CHECK(vkGetPhysicalDeviceSurfaceSupportKHR(physical, family, p->surface, &supported));
     if (!supported) fail("vkGetPhysicalDeviceSurfaceSupportKHR", VK_ERROR_FEATURE_NOT_PRESENT);
@@ -648,6 +643,16 @@ static void presenterCreate(struct Presenter* p, xcb_connection_t* connection, x
     CHECK(vkCreateSemaphore(device, &semaphoreInfo, NULL, &p->rendered));
     VkFenceCreateInfo fenceInfo = {VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
     CHECK(vkCreateFence(device, &fenceInfo, NULL, &p->done));
+}
+
+static void presenterCreate(struct Presenter* p, xcb_connection_t* connection, xcb_window_t window,
+                            uint32_t width, uint32_t height) {
+    memset(p, 0, sizeof(*p));
+    VkXcbSurfaceCreateInfoKHR surfaceInfo = {VK_STRUCTURE_TYPE_XCB_SURFACE_CREATE_INFO_KHR};
+    surfaceInfo.connection = connection;
+    surfaceInfo.window = window;
+    CHECK(vkCreateXcbSurfaceKHR(instance, &surfaceInfo, NULL, &p->surface));
+    presenterSetup(p,width,height);
 }
 
 // One frame: acquire, clear to `shade`, present. Counts presents the driver accepted.
@@ -755,6 +760,30 @@ static void childWindowsCase(void) {
            presenters[0].presented, presenters[1].presented, presenters[2].presented, covering, inset, lone);
 }
 
+// Exactly one present followed by no Vulkan calls: a delayed bind must progress
+// independently. The executor verifies the frame, not merely the API return value.
+static void oneShotCase(void) {
+    if (!surfaces) return;
+    xcb_connection_t* connection=xcb_connect(NULL,NULL);
+    if (xcb_connection_has_error(connection)) fail("one-shot X11",VK_ERROR_INITIALIZATION_FAILED);
+    xcb_screen_t* screen=xcb_setup_roots_iterator(xcb_get_setup(connection)).data;
+    const xcb_window_t window=createWindow(connection,screen->root,screen->root_visual,0,0,320,240);
+    xcb_flush(connection);
+    struct Presenter presenter;
+    presenterCreate(&presenter,connection,window,320,240);
+    const uint64_t start=nowUs();
+    presenterFrame(&presenter,0.25f);
+    const uint64_t elapsed=nowUs()-start;
+    struct timespec pause={2,0};
+    nanosleep(&pause,NULL);
+    presenterDestroy(&presenter);
+    xcb_destroy_window(connection,window);
+    xcb_flush(connection);
+    xcb_disconnect(connection);
+    report("one_shot",presenter.presented==1,"accepted=%d window=%#x first_frame_ms=%.3f",
+           presenter.presented,window,elapsed/1000.0);
+}
+
 // Application pipeline caches: created with 4 MiB of saved data (another device's, so any
 // driver ignores it), a compute pipeline built into one, its data read back 200 times. The
 // data is the empty cache of this device, 32 bytes of VkPipelineCacheHeaderVersionOne with
@@ -843,9 +872,57 @@ static void pipelineCacheCase(const VkPhysicalDeviceProperties* props) {
 
 // The exit_latency child: what a launcher's splash does (Steam's update window): an instance,
 // a device, an X11 window with a surface whose capabilities it asks (which starts the bind)
-// and a swapchain; then it says so on `fd` and ends, in `mode` 0 without destroying
+// and a swapchain; then it says so on `fd`, destroys its window, presents one more frame and
+// ends, in `mode` 0 without destroying
 // anything, in mode 1 after destroying everything.
+struct AllocationProbe { atomic_size_t blocks, bytes, late; atomic_int alive; };
+struct AllocationHeader { void* base; size_t size; };
+static struct AllocationProbe allocationProbes[32];
+static struct AllocationProbe* allocationProbe;
+static void* VKAPI_PTR trackedAllocate(void* opaque, size_t size, size_t alignment, VkSystemAllocationScope scope) {
+    (void)scope;
+    struct AllocationProbe* probe=opaque;
+    if (!atomic_load(&probe->alive)) atomic_fetch_add(&probe->late,1);
+    if (!size) return NULL;
+    if (alignment<sizeof(void*)) alignment=sizeof(void*);
+    void* base=malloc(size+alignment+sizeof(struct AllocationHeader));
+    if (!base) return NULL;
+    uintptr_t address=((uintptr_t)base+sizeof(struct AllocationHeader)+alignment-1)&~(uintptr_t)(alignment-1);
+    struct AllocationHeader* header=(struct AllocationHeader*)address-1;
+    header->base=base; header->size=size;
+    atomic_fetch_add(&probe->blocks,1); atomic_fetch_add(&probe->bytes,size);
+    return (void*)address;
+}
+static void VKAPI_PTR trackedFree(void* opaque, void* memory) {
+    struct AllocationProbe* probe=opaque;
+    if (!atomic_load(&probe->alive)) atomic_fetch_add(&probe->late,1);
+    if (!memory) return;
+    struct AllocationHeader* header=(struct AllocationHeader*)memory-1;
+    atomic_fetch_sub(&probe->blocks,1); atomic_fetch_sub(&probe->bytes,header->size);
+    free(header->base);
+}
+static void* VKAPI_PTR trackedReallocate(void* opaque, void* original, size_t size, size_t alignment, VkSystemAllocationScope scope) {
+    if (!original) return trackedAllocate(opaque,size,alignment,scope);
+    if (!size) { trackedFree(opaque,original); return NULL; }
+    void* replacement=trackedAllocate(opaque,size,alignment,scope);
+    if (!replacement) return NULL;
+    size_t old=((struct AllocationHeader*)original-1)->size;
+    memcpy(replacement,original,old<size ? old : size);
+    trackedFree(opaque,original);
+    return replacement;
+}
+
 static int exitChild(int mode, int fd) {
+    VkAllocationCallbacks callbacks={0};
+    const VkAllocationCallbacks* allocator=NULL;
+    if (mode==2) {
+        atomic_store(&allocationProbe->alive,1);
+        callbacks.pUserData=allocationProbe;
+        callbacks.pfnAllocation=trackedAllocate;
+        callbacks.pfnReallocation=trackedReallocate;
+        callbacks.pfnFree=trackedFree;
+        allocator=&callbacks;
+    }
     const char* extensions[] = {VK_KHR_SURFACE_EXTENSION_NAME, VK_KHR_XCB_SURFACE_EXTENSION_NAME};
     VkApplicationInfo app = {VK_STRUCTURE_TYPE_APPLICATION_INFO};
     app.pApplicationName = "caboose-sync-check-exit";
@@ -855,7 +932,7 @@ static int exitChild(int mode, int fd) {
     instanceInfo.enabledExtensionCount = 2;
     instanceInfo.ppEnabledExtensionNames = extensions;
     VkInstance childInstance;
-    if (vkCreateInstance(&instanceInfo, NULL, &childInstance) != VK_SUCCESS) return 3;
+    if (vkCreateInstance(&instanceInfo, allocator, &childInstance) != VK_SUCCESS) return 3;
     uint32_t count = 1;
     VkPhysicalDevice childPhysical;
     VkResult enumerated = vkEnumeratePhysicalDevices(childInstance, &count, &childPhysical);
@@ -872,7 +949,7 @@ static int exitChild(int mode, int fd) {
     deviceInfo.enabledExtensionCount = 1;
     deviceInfo.ppEnabledExtensionNames = &swapchainExtension;
     VkDevice childDevice;
-    if (vkCreateDevice(childPhysical, &deviceInfo, NULL, &childDevice) != VK_SUCCESS) return 3;
+    if (vkCreateDevice(childPhysical, &deviceInfo, allocator, &childDevice) != VK_SUCCESS) return 3;
     xcb_connection_t* connection = xcb_connect(NULL, NULL);
     if (xcb_connection_has_error(connection)) return 3;
     xcb_screen_t* screen = xcb_setup_roots_iterator(xcb_get_setup(connection)).data;
@@ -885,7 +962,7 @@ static int exitChild(int mode, int fd) {
     surfaceInfo.connection = connection;
     surfaceInfo.window = window;
     VkSurfaceKHR surface;
-    if (vkCreateXcbSurfaceKHR(childInstance, &surfaceInfo, NULL, &surface) != VK_SUCCESS) return 3;
+    if (vkCreateXcbSurfaceKHR(childInstance, &surfaceInfo, allocator, &surface) != VK_SUCCESS) return 3;
     VkSurfaceCapabilitiesKHR caps;
     if (vkGetPhysicalDeviceSurfaceCapabilitiesKHR(childPhysical, surface, &caps) != VK_SUCCESS) return 3;
     VkSurfaceFormatKHR format;
@@ -905,18 +982,45 @@ static int exitChild(int mode, int fd) {
     swapInfo.presentMode = VK_PRESENT_MODE_FIFO_KHR;
     swapInfo.clipped = VK_TRUE;
     VkSwapchainKHR swapchain;
-    if (vkCreateSwapchainKHR(childDevice, &swapInfo, NULL, &swapchain) != VK_SUCCESS) return 3;
-    // Shutdown: the window goes first, as a toolkit's does.
+    if (vkCreateSwapchainKHR(childDevice, &swapInfo, allocator, &swapchain) != VK_SUCCESS) return 3;
+    // Shutdown: the window goes first, as a toolkit's does, and one more frame is presented
+    // to it (Steam's update window does), with its bind refused or still in flight.
+    const char done = 1;
+    if (fd>=0 && write(fd, &done, 1) != 1) return 3;
     xcb_destroy_window(connection, window);
     xcb_flush(connection);
-    const char done = 1;
-    if (write(fd, &done, 1) != 1) return 3;
-    if (mode == 1) {
-        vkDestroySwapchainKHR(childDevice, swapchain, NULL);
-        vkDestroySurfaceKHR(childInstance, surface, NULL);
-        vkDestroyDevice(childDevice, NULL);
-        vkDestroyInstance(childInstance, NULL);
+    VkSemaphoreCreateInfo semaphoreInfo = {VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+    VkSemaphore acquired;
+    if (vkCreateSemaphore(childDevice, &semaphoreInfo, allocator, &acquired) != VK_SUCCESS) return 3;
+    uint32_t index = 0;
+    const VkResult got = vkAcquireNextImageKHR(childDevice, swapchain, 1000000000ull, acquired, VK_NULL_HANDLE, &index);
+    if (got == VK_SUCCESS || got == VK_SUBOPTIMAL_KHR) {
+        VkQueue childQueue;
+        vkGetDeviceQueue(childDevice, 0, 0, &childQueue);
+        VkPresentInfoKHR present = {VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
+        present.waitSemaphoreCount = 1;
+        present.pWaitSemaphores = &acquired;
+        present.swapchainCount = 1;
+        present.pSwapchains = &swapchain;
+        present.pImageIndices = &index;
+        vkQueuePresentKHR(childQueue, &present);
+    }
+    if (mode != 0) {
+        vkDeviceWaitIdle(childDevice);
+        vkDestroySemaphore(childDevice, acquired, allocator);
+        vkDestroySwapchainKHR(childDevice, swapchain, allocator);
+        vkDestroySurfaceKHR(childInstance, surface, allocator);
+        vkDestroyDevice(childDevice, allocator);
+        vkDestroyInstance(childInstance, allocator);
         xcb_disconnect(connection);
+    }
+    if (mode==2) {
+        atomic_store(&allocationProbe->alive,0);
+        if (atomic_load(&allocationProbe->blocks) || atomic_load(&allocationProbe->bytes)) {
+            printf("CABOOSE_SYNC_CHECK allocator outstanding blocks=%zu bytes=%zu\n",
+                   atomic_load(&allocationProbe->blocks),atomic_load(&allocationProbe->bytes));
+            return 5;
+        }
     }
     return 0;
 }
@@ -928,9 +1032,11 @@ static void exitLatencyCase(void) {
         printf("CABOOSE_SYNC_CHECK note=exit_latency skipped (no X11 display)\n");
         return;
     }
-    char details[256] = "";
+    double worst[2]={0,0}, worstSetup[2]={0,0};
+    int failedChildren=0;
     int ok = 1;
-    for (int mode = 0; mode < 2; ++mode) {
+    for (int round = 0; round < 32; ++round) {
+        const int mode=round%2;
         int pipefd[2];
         if (pipe(pipefd) != 0) fail("pipe", VK_ERROR_INITIALIZATION_FAILED);
         fflush(stdout);
@@ -955,16 +1061,31 @@ static void exitLatencyCase(void) {
         waitpid(child, &status, 0);
         const double ms = (double)(nowUs() - shutdown) / 1000.0;
         close(pipefd[0]);
+        if (!WIFEXITED(status) || WEXITSTATUS(status))
+            printf("CABOOSE_SYNC_CHECK exit_child mode=%d wait_status=%d signal=%d\n",mode,status,WIFSIGNALED(status) ? WTERMSIG(status) : 0);
         const int clean = signalled && WIFEXITED(status) && WEXITSTATUS(status) == 0;
         if (!clean || ms >= 50.0) ok = 0;
-        snprintf(details + strlen(details), sizeof(details) - strlen(details), "%s%s_ms=%.1f setup_ms=%.0f%s",
-                 mode ? " " : "", mode ? "destroyed" : "abandoned", ms, setupMs,
-                 clean ? "" : " (child failed)");
+        if (!clean) ++failedChildren;
+        if (ms>worst[mode]) worst[mode]=ms;
+        if (setupMs>worstSetup[mode]) worstSetup[mode]=setupMs;
     }
-    report("exit_latency", ok, "%s", details);
+    report("exit_latency",ok,"cycles=32 abandoned_ms=%.1f destroyed_ms=%.1f setup_ms=%.0f/%.0f failed_children=%d",
+           worst[0],worst[1],worstSetup[0],worstSetup[1],failedChildren);
 }
 
 int main(int argc, char** argv) {
+    if (argc>1 && !strcmp(argv[1],"--lifetime-child")) {
+        for (int i=0;i<32;++i) {
+            allocationProbe=&allocationProbes[i];
+            int result=exitChild(2,-1);
+            if (result) return result;
+            struct timespec pause={0,500000000}; nanosleep(&pause,NULL);
+            for (int j=0;j<=i;++j)
+                if (atomic_load(&allocationProbes[j].late)) return 6;
+        }
+        printf("CABOOSE_SYNC_CHECK case=allocator_lifetime PASS cycles=32 outstanding=0 late_callbacks=0\n");
+        return 0;
+    }
     if (argc > 3 && !strcmp(argv[1], "--exit-child")) return exitChild(atoi(argv[2]), atoi(argv[3]));
     const char* only = argc > 1 ? argv[1] : NULL;
     VkApplicationInfo app = {VK_STRUCTURE_TYPE_APPLICATION_INFO};
@@ -1061,6 +1182,7 @@ int main(int argc, char** argv) {
     RUN("calls", callsCase());
     RUN("pipeline_cache", pipelineCacheCase(&props));
     RUN("child_windows", childWindowsCase());
+    RUN("one_shot", oneShotCase());
     RUN("coherent_rewrite", coherentRewriteCase());
     RUN("exit_latency", exitLatencyCase());
 

@@ -130,8 +130,16 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
             owner['from_phone'] += 700
             stats.event('result', 5_000_000_000)
             line = output.call_args.args[0]
-            self.assertEqual(line, 'CABOOSE_GPU_SURFACE_STATS surface=2 elapsed_ms=5000 fps=0.6 presented=3 '
-                                   'results=2 released=1 gap_max_ms=2500 to_phone_bytes=4000 from_phone_bytes=700')
+            self.assertRegex(line, r'^CABOOSE_GPU_SURFACE_STATS surface=2 elapsed_ms=5000 fps=0\.6 presented=3 '
+                                   r'results=2 released=1 gap_max_ms=2500 to_phone_bytes=4000 from_phone_bytes=700 '
+                                   r'at=\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$')
+            # With its session's link, a window also reports compressed bytes and send waits.
+            link = mock.Mock(wire_to_phone=100, send_blocked_ns=0)
+            linked = broker.SurfaceStats(3, owner, link)
+            linked.event('present', 0)
+            link.wire_to_phone, link.send_blocked_ns = 1300, 40_000_000
+            linked.event('present', 5_000_000_000)
+            self.assertIn('link_bytes=1200 link_blocked_ms=40 at=', output.call_args.args[0])
             # The next window counts afresh.
             stats.event('present', 6_000_000_000)
             stats.event('present', 10_000_000_000)
@@ -354,6 +362,7 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
                  (frozenset(), broker.HELLO_V4_GUEST_HANDLES, broker.HELLO_V4),
                  (everything, broker.HELLO_V4, broker.HELLO_V4),
                  (everything, hello(0x3F0), hello(0x3F0)),
+                 (frozenset(), hello(0x20070), hello(0x20070)),
                  (frozenset({'guest-handles'}), hello(0x3F0), hello(0xF0)))
         for supported, offered, expected in cases:
             with self.subTest(supported=sorted(supported), offered=offered[12:14].hex()):
@@ -382,9 +391,17 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
                         if len(writer.data) >= 48: break
                         await asyncio.sleep(0.01)
                     self.assertEqual(writer.data[:48], expected)
+                    trailer=session.cache_session if struct.unpack_from('<I',expected,12)[0] & broker.CACHE_SESSION else b''
+                    self.assertEqual(writer.data[48:],trailer)
                     task.cancel()
                     with contextlib.suppress(asyncio.CancelledError): await task
                 session.bindings.finish(session.binding_generation)
+
+    async def test_cache_scope_changes_even_when_executor_identifiers_repeat(self):
+        sessions=[broker.Session(None,b'a'*16,1,None,Writer(),indexed=True) for _ in range(2)]
+        self.assertEqual(len(sessions[0].cache_session),32)
+        self.assertNotEqual(sessions[0].cache_session,sessions[1].cache_session)
+        for session in sessions: session.bindings.finish(session.binding_generation)
 
     async def test_plain_session_refuses_the_guest_handle_hello(self):
         session = broker.Session(None, b'a' * 16, 1, None, Writer(), features=frozenset({'guest-handles'}))
@@ -410,7 +427,13 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
         # Unknown bits, missing required bits, other versions and other sources are refused.
         self.assertEqual(negotiate(hello(0x470), everything), hello(0x470))
         self.assertIsNone(negotiate(hello(0x1070), everything))
-        self.assertIsNone(negotiate(hello(0x20070), everything))
+        self.assertEqual(negotiate(hello(0x20070), frozenset()), hello(0x20070))
+        self.assertIsNone(negotiate(hello(0x80070), everything))
+        # Batched descriptor sets are granted only when the phone declared them; an older phone
+        # leaves the process on per-call descriptor sets.
+        self.assertEqual(negotiate(hello(0x40070), everything), hello(0x40070))
+        self.assertEqual(negotiate(hello(0x40070), everything - {'batched-descriptor-sets'}), hello(0x70))
+        self.assertEqual(negotiate(hello(0x5ff80 | 0x70), everything - {'batched-descriptor-sets'}), hello(0x1ff80 | 0x70))
         # Buffer view handles need guest handles too.
         self.assertEqual(negotiate(hello(0x100F0), everything), hello(0x100F0))
         self.assertEqual(negotiate(hello(0x100F0), everything - {'guest-buffer-views'}), hello(0xF0))

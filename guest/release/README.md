@@ -35,7 +35,9 @@ Sealing first checks the release's 64-bit driver against the
 in for the phone: its `check.sh` runs the synchronization probe, then vkcube presenting 300
 frames, in disposable containers. The check then installs the release payload in a disposable computer and starts its own
 `caboose-session`, display and packaged broker launcher, requiring an authenticated `/gpu`
-WebSocket upgrade. A release whose check fails is not sealed and stays open.
+WebSocket upgrade. The check also runs cold and fresh-process warmed capability queries
+through the packaged broker, requiring identical answers and verified cache-hit counts.
+A release whose check fails is not sealed and stays open.
 The check's logs and `check/result` (`PASS` or `FAIL`, then the check's summary lines) stay
 in the release, and the manifest covers them. The settings are `key=value` lines in
 `/root/.config/caboose-release/check.conf` (`CABOOSE_RELEASE_CHECK` overrides the path):
@@ -45,6 +47,7 @@ in the release, and the manifest covers them. The settings are `key=value` lines
 | `repo` | A checkout whose `check.sh` and broker run |
 | `image` | The computer image the broker runs in |
 | `work` | The directory the Linux executor's `build.sh` built in |
+| `capability_probe` | The built `capability_queries.c` probe; packaged broker/cache handshake validation |
 | `sync_check` | The synchronization probe ([sync-check](../gpu/gfxstream/driver/sync-check/README.md)), built |
 
 ## Signatures and the SBOM

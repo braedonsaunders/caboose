@@ -18,6 +18,7 @@ import socket
 import stat
 import struct
 import sys
+import signal
 import time
 
 import buffer_presentation as buffers
@@ -46,12 +47,15 @@ HELLO_V4 = HELLO[:8] + struct.pack('<II', 4, 0x70) + HELLO[16:]
 # that resumes and suspends (docs/gpu-live.md, "Resuming an executor"), so local waits for the
 # phone need no deadline of their own, 0x8000 4 KiB upload pieces kept by hash in the phone's
 # persistent store (docs/gpu-live.md, "Upload cache"), 0x10000 guest-assigned buffer views
-# (requires 0x80). The reply grants the offered features the phone declared.
+# (requires 0x80), 0x40000 descriptor sets allocated and written in the guest and sent with
+# the next submit in one vkQueueCommitDescriptorSetUpdatesGOOGLE (docs/gpu-live.md, "Batched
+# descriptor sets"). The reply grants the offered features the phone declared.
 HELLO_FEATURES = {'guest-handles': 0x80, 'guest-handle-arrays': 0x100, 'completion-feed': 0x200,
                   'ordered-present': 0x400, 'guest-images': 0x800, 'guest-query-pools': 0x1000,
                   'shader-cache': 0x2000, 'executor-resume': 0x4000, 'upload-cache': 0x8000,
-                  'guest-buffer-views': 0x10000}
+                  'guest-buffer-views': 0x10000, 'batched-descriptor-sets': 0x40000}
 # Features that need guest-assigned handles (0x80) granted with them.
+CACHE_SESSION = 0x20000  # broker-local reply trailer, not a native decoder feature
 NEEDS_GUEST_HANDLES = 0x100 | 0x1000 | 0x10000
 HELLO_V4_GUEST_HANDLES = HELLO[:8] + struct.pack('<II', 4, 0xF0) + HELLO[16:]
 
@@ -61,11 +65,11 @@ def negotiate_hello(offered, phone_features):
     if len(offered) != 48 or offered[:12] != HELLO_V4[:12] or offered[16:] != HELLO_V4[16:]:
         return None
     mask = struct.unpack_from('<I', offered, 12)[0]
-    known = 0
+    known = CACHE_SESSION
     for value in HELLO_FEATURES.values(): known |= value
     if mask & 0x70 != 0x70 or mask & ~(0x70 | known) or (mask & NEEDS_GUEST_HANDLES and not mask & 0x80):
         return None
-    granted = 0
+    granted = mask & CACHE_SESSION
     for name in phone_features:
         granted |= HELLO_FEATURES.get(name, 0)
     granted &= mask
@@ -384,19 +388,22 @@ def write_usage(path, record):
 class SurfaceStats:
     """Always on: every 5 s while a surface presents, one CABOOSE_GPU_SURFACE_STATS line with
     its presents per second, present results and source releases from the phone, the longest
-    gap between presents, and the bytes its process sent to and received from the phone in
-    that window (message payloads, before compression). Counters only; no payloads, handles
-    or identities."""
+    gap between presents, the bytes its process sent to and received from the phone in that
+    window (message payloads, before compression), the session's link in that window (bytes
+    written after compression, time the sender waited on the connection), and when the window
+    ended (UTC). Counters only; no payloads, handles or identities."""
     INTERVAL_NS = 5_000_000_000
 
-    def __init__(self, ordinal, owner):
-        self.ordinal, self.owner = ordinal, owner
+    def __init__(self, ordinal, owner, link=None):
+        self.ordinal, self.owner, self.link = ordinal, owner, link
         self.start = None
 
     def restart(self, now):
         self.start = now
         self.presented = self.results = self.released = self.gap_max = 0
         self.to_phone, self.from_phone = self.owner.get('to_phone', 0), self.owner.get('from_phone', 0)
+        if self.link is not None:
+            self.link_bytes, self.link_blocked = self.link.wire_to_phone, self.link.send_blocked_ns
 
     def event(self, kind, now=None):
         now = time.monotonic_ns() if now is None else now
@@ -413,12 +420,88 @@ class SurfaceStats:
         if elapsed < self.INTERVAL_NS: return
         to_phone = self.owner.get('to_phone', 0) - self.to_phone
         from_phone = self.owner.get('from_phone', 0) - self.from_phone
+        # The session's link, shared by its surfaces: bytes written to the phone after
+        # compression, and the time the sender waited for the connection to take them.
+        link = '' if self.link is None else (
+            f'link_bytes={self.link.wire_to_phone - self.link_bytes} '
+            f'link_blocked_ms={(self.link.send_blocked_ns - self.link_blocked) // 1_000_000} ')
         with contextlib.suppress(OSError):
             print(f'CABOOSE_GPU_SURFACE_STATS surface={self.ordinal} elapsed_ms={elapsed // 1_000_000} '
                   f'fps={self.presented * 1_000_000_000 / elapsed:.1f} presented={self.presented} '
                   f'results={self.results} released={self.released} gap_max_ms={self.gap_max // 1_000_000} '
-                  f'to_phone_bytes={to_phone} from_phone_bytes={from_phone}', file=sys.stderr, flush=True)
+                  f'to_phone_bytes={to_phone} from_phone_bytes={from_phone} {link}'
+                  f'at={time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}', file=sys.stderr, flush=True)
         self.restart(now)
+
+
+HISTORY_LOGS = 4
+
+
+def retire_capabilities(directory):
+    """Moves earlier executor sessions' capability logs (static_query_cache.h) from the
+    seat's `capabilities/` into `capabilities/history/`, keeping the newest HISTORY_LOGS.
+    Their answers belonged to those sessions and are never read as answers again; the
+    warm-up asks the new executor the same questions (warmup/README.md)."""
+    try:
+        fd = os.open(directory / 'capabilities', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except OSError:
+        return
+    history = -1
+    try:
+        if os.fstat(fd).st_uid != os.getuid():
+            return
+        with contextlib.suppress(FileExistsError):
+            os.mkdir('history', 0o700, dir_fd=fd)
+        history = os.open('history', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=fd)
+        info = os.fstat(history)
+        if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o077:
+            return
+        for name in os.listdir(fd):
+            if not name.startswith('formats-') or len(name) > 64:
+                continue
+            with contextlib.suppress(OSError):
+                if name.endswith('.bin') and stat.S_ISREG(os.stat(name, dir_fd=fd, follow_symlinks=False).st_mode):
+                    os.rename(name, name, src_dir_fd=fd, dst_dir_fd=history)
+                else:
+                    os.unlink(name, dir_fd=fd)
+        logs = []
+        for name in os.listdir(history):
+            with contextlib.suppress(OSError):
+                logs.append((os.stat(name, dir_fd=history, follow_symlinks=False).st_mtime_ns, name))
+        for _, name in sorted(logs, reverse=True)[HISTORY_LOGS:]:
+            with contextlib.suppress(OSError):
+                os.unlink(name, dir_fd=history)
+    except OSError:
+        return
+    finally:
+        if history >= 0:
+            os.close(history)
+        os.close(fd)
+
+
+async def start_warmup(program, socket_path):
+    """Starts `program SOCKET` in its own process group, detached from the session's
+    progress: nothing waits for it. It starts the computer's GL implementations once each,
+    so their capability discovery is in the new session's cache before applications ask
+    (warmup/README.md). Its output goes to the broker's log."""
+    if program is None or not program.is_file():
+        return None
+    env = dict(os.environ, CABOOSE_GFXSTREAM_SOCKET=str(socket_path))
+    try:
+        process = await asyncio.create_subprocess_exec(
+            str(program), str(socket_path), stdin=asyncio.subprocess.DEVNULL, stdout=sys.stderr.fileno(),
+            stderr=sys.stderr.fileno(), env=env, start_new_session=True, close_fds=True)
+    except OSError as error:
+        print(f'CABOOSE_GPU_BROKER warm-up not started: {error}', file=sys.stderr, flush=True)
+        return None
+    asyncio.get_running_loop().create_task(process.wait())
+    return process
+
+
+def stop_warmup(process):
+    if process is not None and process.returncode is None:
+        with contextlib.suppress(OSError):
+            os.killpg(process.pid, signal.SIGKILL)
 
 
 class Session:
@@ -435,6 +518,7 @@ class Session:
         self.transport_requested = False
         self.session_received = False
         self.indexed_enabled = indexed
+        self.cache_session = os.urandom(32)
         self.hello = HELLO_V4 if indexed else HELLO
         # Phone capabilities that local processes may use; none outside indexed v4.
         self.features = frozenset(features) if indexed else frozenset()
@@ -478,6 +562,8 @@ class Session:
         self.capacity_changed = asyncio.Event()
         self.credit_waiters = deque()
         self.sender_stopped = False
+        self.wire_to_phone = 0  # bytes written to the phone's connection, after compression
+        self.send_blocked_ns = 0  # time the sender waited for the connection to drain
         self.processes, self.streams, self.surfaces = {}, {}, {}
         self.surface_epoch = None
         self.surface_count = 0  # surfaces bound in this session, numbering their stats lines
@@ -628,11 +714,16 @@ class Session:
     def window_full(self):
         return self.retained_bytes >= RESUME_WINDOW_BYTES or len(self.retained) >= RESUME_WINDOW_MESSAGES
 
+    async def write_drained(self, data):
+        self.writer.write(data)
+        self.wire_to_phone += len(data)
+        started = time.monotonic_ns()
+        await self.writer.drain()
+        self.send_blocked_ns += time.monotonic_ns() - started
+
     async def write_urgent(self):
         while self.urgent:
-            data = self.urgent.popleft()
-            self.writer.write(data)
-            await self.writer.drain()
+            await self.write_drained(self.urgent.popleft())
 
     async def send_loop(self):
         try:
@@ -657,9 +748,8 @@ class Session:
                 if self.resumable and sequence is not None:
                     self.retained.append((sequence, data))
                     self.retained_bytes += len(data)
-                self.writer.write(data)
                 PRESENT_TRACE.stream(to_phone=len(data))
-                await self.writer.drain()
+                await self.write_drained(data)
                 self.pending_bytes -= charge
                 self.pending_count -= 1
                 self.pending.task_done()
@@ -1329,6 +1419,8 @@ class Session:
             await self.phone_answer(stream['ready'], 10)
             try:
                 writer.write(reply)
+                if struct.unpack_from('<I',reply,12)[0] & CACHE_SESSION:
+                    writer.write(self.cache_session)
                 await writer.drain()
             except OSError:
                 self.bindings.identity(self.binding_generation, stream_id, require_alive=False)
@@ -1423,6 +1515,7 @@ class Broker:
     listener = None
     lifecycle = None
     stale_epochs = frozenset()
+    warmup = None
 
     def __init__(self, control, token_file, socket_path, surface_path=None, indexed=False, listener=None):
         if os.environ.get("CABOOSE_PRIVATE_GPU_DEFLATE") == "1" and not indexed:
@@ -1431,6 +1524,8 @@ class Broker:
         self.listener = listener
         self.surface_path = surface_path
         self.indexed = indexed
+        # Installed beside the broker's own modules (README.md); absent, sessions start cold.
+        self.warmup = Path(__file__).resolve().parent / 'caboose-gpu-warmup-session'
         self.compositor_pid = self.compositor_start = None
         if control is not None:
             self.compositor_pid = os.getppid()
@@ -1492,7 +1587,7 @@ class Broker:
                 'process': process_id, 'window': result.window,
                 'retiring': False, 'retire_sent': False, 'revoke_requested': False,
                 'bind_sent': False, 'disconnected': False, 'retired': asyncio.Event(),
-                'stats': SurfaceStats(session.surface_count, session.processes[process_id])
+                'stats': SurfaceStats(session.surface_count, session.processes[process_id], session)
             }
             session.processes[process_id]['surfaces'].add(key)
             return result
@@ -1884,6 +1979,7 @@ class Broker:
         session = executor = generation = None
         sender = receiver = stop_wait = drain_wait = None
         owned_socket = None
+        warmup = None
         try:
             reader, writer = await asyncio.open_connection(sock=stream, limit=MAX_REQUEST + 4)
             raw = await asyncio.wait_for(reader.readuntil(b'\r\n\r\n'), 5)
@@ -1925,6 +2021,7 @@ class Broker:
             if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or
                 stat.S_IMODE(info.st_mode) != 0o700 or os.path.lexists(self.socket_path)):
                 raise PermissionError('unsafe local socket directory or existing path')
+            retire_capabilities(directory)
             def start_local(local_reader, local_writer):
                 if len(session.local_tasks) >= MAX_QUEUED_MESSAGES:
                     local_writer.transport.abort(); return
@@ -1961,11 +2058,14 @@ class Broker:
                         session.local_tasks.add(task)
                         task.add_done_callback(session.local_tasks.discard)
                 surface_accept = asyncio.create_task(accept_surfaces())
+            # Only once the session is serving, so it never delays the session or a first frame.
+            warmup = await start_warmup(self.warmup, self.socket_path)
             stop_wait = asyncio.create_task(self.closing.wait())
             drain_wait = asyncio.create_task(session.drain_requested.wait())
             watchers = (sender, receiver, stop_wait, drain_wait) + ((surface_accept,) if surface_accept else ())
             done, _ = await asyncio.wait(watchers, return_when=asyncio.FIRST_COMPLETED)
             if stop_wait in done or drain_wait in done:
+                stop_warmup(warmup)
                 server.close()
                 with contextlib.suppress(OSError, asyncio.TimeoutError):
                     await self.report_lifecycle(session, 5)
@@ -1989,6 +2089,7 @@ class Broker:
             # Every executor session that is refused or ends abnormally says why.
             print(f'CABOOSE_GPU_BROKER executor session ended: {type(error).__name__}: {error}', file=sys.stderr, flush=True)
         finally:
+            stop_warmup(warmup)
             if surface_listener:
                 surface_listener.close()
                 if surface_accept:

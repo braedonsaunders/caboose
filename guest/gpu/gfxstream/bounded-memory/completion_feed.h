@@ -651,6 +651,8 @@ inline Tracker& tracker() {
 inline std::atomic<bool> executorLost{false};
 // Counts executor losses: work asked for under one executor connection is never sent on a
 // later one.
+// Serialize reconnect with emission of generation-fenced retirement packets.
+inline std::mutex transportEpochMutex;
 inline std::atomic<uint64_t> executorGeneration{0};
 }  // namespace caboose::completion
 extern "C" void caboose_read_profile_wait(uint64_t us, uint32_t what);

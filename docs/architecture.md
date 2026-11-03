@@ -3114,6 +3114,12 @@ round trip on the same authenticated output and scale. It uses the actual return
 server geometry; this equivalence is not a general configure acknowledgment.
 A zero-pair BIND requests that trusted extent before swapchain creation; a positive
 pair only asserts equality.
+Guest-owned presentation retains a bounded set of accepted frames while a surface bind,
+native swapchain creation or mapping is pending. Its pump progresses without another
+application call. Guest destruction completes within the application allocator's lifetime;
+only copied destroy packets and native identities remain until retirement proof or executor
+loss. Generation fencing keeps those identities off a replacement executor's transport.
+
 Indexed Wayland swapchains choose render-buffer pixels separately from desktop
 placement. Variable-extent queries retain actual provider bounds. Before CREATE,
 the native surface verifies that no swapchain or work remains, configures the real
@@ -3124,7 +3130,7 @@ finish before decoder process cleanup, as specified in [gpu-live.md](gpu-live.md
 Layout does not rewrite buffer dimensions during native extent configuration;
 an uncertain mutation leaves the layer quarantined rather than restoring old dimensions.
 The owner AppModel connects every owner computer's display to the authenticated host GPU
-endpoint: it is the only way window pictures reach the phone. Each session selects the paired computer's GPU caches
+endpoint: it is the only way window pictures reach the phone. Physical format capability reuse is fenced by a broker-issued executor-session nonce and current backend identity ([gpu-live.md](gpu-live.md#guest-capability-cache-session-scope)); a replacement executor cannot inherit cached answers. Each session selects the paired computer's GPU caches
 (`LiveGPUCacheRoot`, [gpu-live.md](gpu-live.md#shader-cache)) before its first process;
 signing out removes them. Backgrounding suspends it in place when the computer resumes
 executors ([gpu-live.md](gpu-live.md#suspending-an-executor)) and drains it otherwise;
