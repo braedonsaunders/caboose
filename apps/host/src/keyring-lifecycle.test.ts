@@ -4,12 +4,21 @@ import { afterEach, expect, it, vi } from 'vitest'
 import { createCabooseServer, type Controller } from './server.js'
 import { SettingsStore, settingsLimits } from './settings.js'
 
+const upgrades = vi.hoisted(() => ({ results: [] as string[], runs: 0 }))
 vi.mock('./components.js', async importOriginal => ({
   ...await importOriginal<typeof import('./components.js')>(),
-  upgradeComponents: async (_guest: unknown, _mode: unknown, publish: (value: unknown) => void) => publish({ state: 'succeeded', version: 'test' }),
+  upgradeComponents: async (_guest: unknown, _mode: unknown, publish: (value: unknown) => void) => {
+    upgrades.runs++
+    const failed = upgrades.results.shift() === 'failed'
+    publish(failed ? { state: 'failed', message: 'The previous Caboose terminal service did not stop.' } : { state: 'succeeded', version: 'test' })
+  },
 }))
 const cleanup: Array<() => Promise<void>> = []
-afterEach(async () => { for (const close of cleanup.splice(0)) await close() })
+afterEach(async () => {
+  for (const close of cleanup.splice(0)) await close()
+  upgrades.results = []; upgrades.runs = 0
+  vi.useRealTimers()
+})
 async function fixture(prepareKeyring: () => Promise<void>, keyringWaitMs?: number) {
   const session = { state: 'running', display: { path: '/v1/display', token: 'test', protocol: 'caboose-display' as const }, computer: { name: 'Test', image: 'Debian', memoryMb: 2048, vcpus: 2 } }
   const launch = vi.fn(async () => {})
@@ -42,15 +51,31 @@ it('waits for preparation before launching an application', async () => {
   expect(launch).toHaveBeenCalledOnce()
   expect((await (await request('/v1/computer')).json()).keyring).toEqual({ state: 'ready' })
 })
-it('reports a failed preparation instead of launching, after trying it once more', async () => {
+it('launches after a failed preparation is tried once more, leaving the failure in the status', async () => {
   const prepare = vi.fn(async () => { throw new Error('Original keyring password required') })
   const { launch, request } = await fixture(prepare)
   await vi.waitFor(async () => expect((await (await request('/v1/computer')).json()).keyring.state).toBe('failed'))
-  const response = await request('/v1/apps/chromium.desktop/launch', 'POST')
-  expect(response.status).toBe(409)
-  expect(JSON.stringify(await response.json())).toContain('Original keyring password required')
+  expect((await request('/v1/apps/chromium.desktop/launch', 'POST')).status).toBe(200)
   expect(prepare).toHaveBeenCalledTimes(2)
-  expect(launch).not.toHaveBeenCalled()
+  expect(launch).toHaveBeenCalledOnce()
+  expect((await (await request('/v1/computer')).json()).keyring).toEqual({ state: 'failed', message: 'Original keyring password required' })
+})
+it('prepares the keyring after a failed component upgrade, and a launch tries the upgrade again', async () => {
+  upgrades.results = ['failed']
+  const prepare = vi.fn(async () => {})
+  const { launch, request } = await fixture(prepare)
+  await vi.waitFor(async () => expect((await (await request('/v1/computer')).json()).upgrade.state).toBe('failed'))
+  await vi.waitFor(async () => expect((await (await request('/v1/computer')).json()).keyring).toEqual({ state: 'ready' }))
+  // Within a minute of the failed attempt the launch goes ahead on the installed components.
+  expect((await request('/v1/apps/chromium.desktop/launch', 'POST')).status).toBe(200)
+  expect(upgrades.runs).toBe(1)
+  const now = Date.now()
+  vi.useFakeTimers({ toFake: ['Date'] })
+  vi.setSystemTime(now + 61_000)
+  expect((await request('/v1/apps/chromium.desktop/launch', 'POST')).status).toBe(200)
+  expect(upgrades.runs).toBe(2)
+  expect(launch).toHaveBeenCalledTimes(2)
+  expect((await (await request('/v1/computer')).json()).upgrade.state).toBe('succeeded')
 })
 it('launches once a failed preparation succeeds on the retry', async () => {
   const prepare = vi.fn().mockRejectedValueOnce(new Error('Secret Service not running')).mockResolvedValue(undefined)
@@ -60,14 +85,14 @@ it('launches once a failed preparation succeeds on the retry', async () => {
   expect(launch).toHaveBeenCalledOnce()
   expect((await (await request('/v1/computer')).json()).keyring).toEqual({ state: 'ready' })
 })
-it('refuses a launch when preparation outlasts the wait', async () => {
+it('launches anyway when preparation outlasts the wait', async () => {
   let finish!: () => void
   const prepare = vi.fn(() => new Promise<void>(resolve => { finish = resolve }))
   const { launch, request } = await fixture(prepare, 50)
   await vi.waitFor(() => expect(prepare).toHaveBeenCalledOnce())
-  const response = await request('/v1/apps/chromium.desktop/launch', 'POST')
-  expect(response.status).toBe(409)
-  expect(launch).not.toHaveBeenCalled()
+  expect((await request('/v1/apps/chromium.desktop/launch', 'POST')).status).toBe(200)
+  expect(launch).toHaveBeenCalledOnce()
+  expect((await (await request('/v1/computer')).json()).keyring.state).toBe('preparing')
   finish()
 })
 it('does not publish an old preparation result after a run generation changes', async () => {

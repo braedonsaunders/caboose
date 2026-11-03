@@ -132,8 +132,10 @@ export interface Controller extends ComputerDriver<Session> {
 
 /** Body limits: base64 inflates by a third, plus room for the JSON around it. */
 const TASK_BODY_LIMIT = 15 * 1024 * 1024
-/** How long an application launch waits for the owner keyring to be prepared. */
-const KEYRING_WAIT_MS = 60_000
+/** How long an application launch waits for the components and owner keyring before it launches anyway. */
+const KEYRING_WAIT_MS = 15_000
+/** A failed component upgrade is tried again by the next request that needs it, at most this often. */
+const UPGRADE_RETRY_MS = 60_000
 /** `POST /v1/files` holds its whole file in memory as base64; larger files stream through `PUT /v1/fs/content`. */
 const FILE_BODY_LIMIT = 16 * 1024 * 1024
 
@@ -234,6 +236,24 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
   let upgrade: UpgradeStatus | null = null
   let upgrading = false
   let upgradeWork: Promise<void> | undefined
+  let upgradeStarted = 0
+  /** Updates the guest components, then prepares the owner keyring; one at a time. */
+  function startUpgrade(): void {
+    const guest = controller.guest()
+    if (upgrading || !controller.componentsMode || !guest) return
+    upgrading = true
+    upgradeStarted = Date.now()
+    const release = computer.acquire()
+    const generation = ++keyringGeneration
+    keyring = pieces.prepareKeyring ? { state: 'preparing' } : null
+    upgradeWork = upgradeComponents(guest, controller.componentsMode, publishUpgrade)
+      .then(() => prepareKeyringFor(generation))
+      .finally(() => { upgrading = false; release() })
+  }
+  /** A failed upgrade is tried again by what needs the components, without a park and wake. */
+  function retryFailedUpgrade(): void {
+    if (upgrade?.state === 'failed' && computer.state === 'running' && Date.now() - upgradeStarted >= UPGRADE_RETRY_MS) startUpgrade()
+  }
   function publishUpgrade(status: UpgradeStatus): void {
     const warning = controller.componentsWarning?.()
     upgrade = warning && status.state === 'succeeded' ? { ...status, message: warning } : status
@@ -456,23 +476,29 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
       } finally { release() }
     })().catch(error => console.error('Could not prepare phone bridge:', error instanceof Error ? error.message : error))
   }
-  /** The terminal service is a guest component: wait for a pending update to install it. */
+  /**
+   * The terminal service is a guest component: wait for a pending update to install it. A
+   * failed update is tried again, and otherwise the installed service is used; the failure
+   * stays in the computer's status.
+   */
   async function ensureTerminalReady(): Promise<TerminalService> {
+    retryFailedUpgrade()
     await upgradeWork
-    if (upgrade?.state === 'failed') throw new ComputerConflictError(upgrade.message ?? 'Caboose components could not be updated')
     if (!controller.terminalService || !controller.guest()) throw new AgentUnavailableError()
     return controller.terminalService()
   }
   async function ensureFilesReady(): Promise<void> {
+    retryFailedUpgrade()
     await upgradeWork
-    if (upgrade?.state === 'failed') throw new ComputerConflictError(upgrade.message ?? 'Caboose components could not be updated')
     const warning = controller.componentsWarning?.()
     if (warning) throw new ComputerConflictError(warning)
   }
   /**
-   * An application starts only on an unlocked owner keyring: one started before it is ready
-   * would have GNOME prompt to create or unlock a keyring with a password of its own. The
-   * wait is bounded; a failed preparation is tried once more, then reported.
+   * An application waits, for a bounded time, for the components and an unlocked owner
+   * keyring: one started before the keyring is ready would have GNOME prompt to create or
+   * unlock one with a password of its own. It is never refused: a failed upgrade is tried
+   * again and a failed preparation once more, and past the wait it launches anyway, the
+   * problem left in the computer's status (`upgrade`, `keyring`) for the phone to show.
    */
   async function ensureKeyringReady(): Promise<void> {
     let timer: NodeJS.Timeout | undefined
@@ -480,20 +506,16 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
       work?.then(() => true, () => true) ?? Promise.resolve(true),
       new Promise<false>(resolve => { timer = setTimeout(() => resolve(false), pieces.keyringWaitMs ?? KEYRING_WAIT_MS) }),
     ]).finally(() => clearTimeout(timer))
-    if (!await bounded(upgradeWork)) throw new ComputerConflictError('The computer keyring is still being prepared; try again shortly')
-    if (!pieces.prepareKeyring || !keyring) return
-    if (keyring.state === 'failed') {
-      keyringRetry ??= prepareKeyringFor(keyringGeneration).finally(() => { keyringRetry = undefined })
-      if (!await bounded(keyringRetry)) throw new ComputerConflictError('The computer keyring is still being prepared; try again shortly')
-    }
-    if (keyring?.state === 'preparing') throw new ComputerConflictError('The computer keyring is still being prepared; try again shortly')
-    if (keyring?.state === 'failed') throw new ComputerConflictError(keyring.message ?? 'The computer keyring is unavailable')
+    retryFailedUpgrade()
+    if (!await bounded(upgradeWork)) return
+    if (!pieces.prepareKeyring || keyring?.state !== 'failed') return
+    keyringRetry ??= prepareKeyringFor(keyringGeneration).finally(() => { keyringRetry = undefined })
+    await bounded(keyringRetry)
   }
   /** Prepares the owner keyring, publishing the result only for the run that asked. */
   async function prepareKeyringFor(generation: number): Promise<void> {
     if (!pieces.prepareKeyring) return
     try {
-      if (upgrade?.state === 'failed') throw new Error('Update guest components before preparing the keyring')
       await pieces.prepareKeyring()
       if (generation === keyringGeneration && computer.state === 'running') keyring = { state: 'ready' }
     } catch (error) {
@@ -602,18 +624,7 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
     if (state === 'parking') closeSockets()
     broadcast({ type: 'computer.state', state })
     if (state !== 'running' && state !== 'frozen') { keyringGeneration++; keyring = null }
-    if (state === 'running' && !resumed && controller.componentsMode && !upgrading) {
-      const guest = controller.guest()
-      if (guest) {
-        upgrading = true
-        const release = computer.acquire()
-        const generation = ++keyringGeneration
-        keyring = pieces.prepareKeyring ? { state: 'preparing' } : null
-        upgradeWork = upgradeComponents(guest, controller.componentsMode, publishUpgrade)
-          .then(() => prepareKeyringFor(generation))
-          .finally(() => { upgrading = false; release() })
-      }
-    }
+    if (state === 'running' && !resumed) startUpgrade()
     guestEvents.setRunning(state === 'running')
     ai.setRunning(state === 'running')
     if (state === 'running') { agents.resume(); commands.resume(); if (!resumed) bridgeWake() }
