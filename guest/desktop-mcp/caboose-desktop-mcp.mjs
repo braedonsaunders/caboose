@@ -327,7 +327,7 @@ if (process.env.CABOOSE_SPECIALIST_MODEL || process.env.CABOOSE_SPECIALIST_BACKE
           const state = await observe()
           return { ...state, focused: (await seat('windows')).focused }
         },
-        decide: process.env.CABOOSE_SPECIALIST_BACKEND === 'choices' ? choiceDecision() : phoneDecision(process.env.CABOOSE_SPECIALIST_MODEL),
+        decide: process.env.CABOOSE_SPECIALIST_BACKEND === 'choices' ? choiceDecision(process.env.CABOOSE_SPECIALIST_ENDPOINT || undefined, process.env.CABOOSE_SPECIALIST_DECISION_MODEL || '') : phoneDecision(process.env.CABOOSE_SPECIALIST_MODEL),
         act: async step => {
           const reply = JSON.parse((await handlers.batch({ steps: [step], observe: false }))[0].text)
           if (reply.completed !== 1) throw new Error(reply.error ?? 'action outcome unknown')

@@ -118,6 +118,48 @@ The internal request, which the host checks and the phone runs:
 Image types are PNG, JPEG, GIF, WebP and HEIC. JSON values (schemas) are at most 32 levels
 deep and 64 KiB.
 
+### Decisions
+
+`POST /v1/decision` asks the phone's decision model for one grounded choice, as the desktop
+specialist's choice backend does (`guest/desktop-mcp/choices.mjs`):
+
+```ts
+{ model?: string /* a decision model id; empty or a default name picks the phone's first */,
+  prompt: string /* 1–16000 characters, ending with one line per choice under A, B, … */,
+  choices: integer /* 2–32 */ }
+→ { model, choice /* 0 … choices-1 */, elapsedMs? }
+```
+
+The phone reads one token: only the logits of the offered letters, so nothing is generated
+and the answer is always one of the choices. It keeps its KV cache across requests and
+reuses the longest shared prefix, so the steps of one task, whose prompts open with the same
+task line, cost only their changed lines. A phone without a decision model answers
+`404 model_not_found`; there is no fallback provider for decisions.
+
+### Computer models
+
+A computer's release can carry decision models for the phone in
+`/opt/caboose/ai/models/<name>/` (`name` matches `[a-z0-9][a-z0-9._-]{0,63}`; plain files
+only, named `[A-Za-z0-9][A-Za-z0-9._-]{0,127}`, at most 32). The release manifest signs them
+like every other file. The phone downloads them from the computer it is connected to and
+offers each as a model of type `decision`:
+
+1. It asks for the manifest: `{ type: "models", id }` →
+   `{ type: "models", id, release, models: [{ name, files: [{ path, size, sha256 }] }] }`,
+   `release` being the first line of the computer's `/etc/caboose-release`.
+2. For every file whose SHA-256 differs from its copy, it reads the file in order:
+   `{ type: "read", id, name, path, offset, length /* 1–1048576 */ }`, answered by one binary
+   message: the 32 ASCII characters of `id`, then the bytes. A failure is
+   `{ type: "models" | "read", id, error }`.
+3. It checks the whole file against the manifest's SHA-256 before moving it into place, and
+   offers the model only once every file matches. A model the computer no longer carries is
+   deleted.
+
+Files live in the app's `Application Support/Caboose/ComputerModels/<name>`, excluded from
+backups. Downloads happen while the phone's `/v1/ai` socket is open and the relay connected,
+that is while the phone offers at least one model; a download cut short resumes on the next
+connection from the first file that does not match.
+
 ## Relay
 
 caboose-ai and the host, on `ws://<computer>:14702/relay` with
@@ -128,7 +170,10 @@ The host is the client. Messages are JSON text:
 | --- | --- |
 | host | `{ type: "phone", models: [Model] }`: the phone's models; `[]` when no phone offers any |
 | guest | `{ type: "request", id, request }`: `id` is 32 lowercase hex digits |
+| guest | `{ type: "decide", id, request: { model, prompt, choices } }`: a decision |
 | guest | `{ type: "cancel", id }`: the program went away |
+| host | `{ type: "models", id }`, `{ type: "read", id, name, path, offset, length }`: a phone asks for the computer's models |
+| guest | the manifest, a read's binary message, or `{ type: "models" \| "read", id, error }` |
 | host | `{ type: "started", id }`, `{ type: "delta", id, … }`, `{ type: "done", id, … }`, `{ type: "error", id, … }`: the phone's events, below |
 
 The guest fails every pending request with `phone_unavailable` when the relay closes or the
@@ -145,8 +190,10 @@ sent `hello` most recently; that phone takes new requests. The host:
 - checks each guest request field by field (above) and re-encodes it with only those fields;
   an invalid one is answered `400 invalid_request` and never reaches the phone;
 - checks each phone message field by field; a phone that breaks the contract is closed (4400);
-- passes only events for requests it gave that phone, and forgets a request at `done` or
-  `error`;
+- passes only events for requests it gave that phone, and forgets a request at `done`,
+  `decision` or `error`;
+- passes a phone's `models` and `read` to the guest and the answer, JSON or binary, only to
+  that phone (at most 16 at once);
 - answers `503 phone_unavailable` for each request of a phone whose socket closes;
 - sends `cancel` to the phones for the guest's cancellations, and for every request when the
   relay drops.
@@ -162,7 +209,8 @@ Computer settings (on by default). It sends `hello` first:
 ```ts
 { type: "hello", models: [Model] }
 Model = { id, name /* ≤ 100 */, contextSize, capabilities: ("tools" | "vision" | "json" | "reasoning")[],
-          ownedBy?, family?, parameterSize?, quantization? }   // ≤ 16 models
+          ownedBy?, family?, parameterSize?, quantization?,
+          type?: "chat" | "embedding" | "decision" }   // ≤ 16 models; chat by default
 ```
 
 The app offers `apple-foundation`, Apple's on-device model (`SystemLanguageModel.default`),
@@ -173,6 +221,7 @@ away.
 For each `request` the phone answers `started` at once, then:
 
 ```ts
+{ type: "decision", id, choice /* 0–31 */, elapsedMs? }   // for a decide request
 { type: "delta", id, content?: string, reasoning?: string,
   toolCalls?: [{ index /* 0–63 */, id?, name?, arguments? /* JSON text fragment */ }] }
 { type: "done", id, finishReason: "stop" | "length" | "tool_calls" | "content_filter",

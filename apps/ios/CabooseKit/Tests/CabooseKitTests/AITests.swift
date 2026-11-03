@@ -73,6 +73,35 @@ private let id = "0123456789abcdef0123456789abcdef"
     }
 }
 
+@Suite struct AIDecisionTests {
+    @Test func readsDecisionsAndTheComputersModels() throws {
+        #expect(try AIRelay.incoming(#"{"type":"decide","id":"\#(id)","request":{"model":"caboose-decide","prompt":"Task: x\nA B\nNext:","choices":2}}"#)
+                == .decide(id: id, AIRelay.DecideRequest(model: "caboose-decide", prompt: "Task: x\nA B\nNext:", choices: 2)))
+        let sha = String(repeating: "f", count: 64)
+        for bad in [#"{"type":"decide","id":"\#(id)","request":{"model":"m","prompt":"x","choices":33}}"#,
+                    #"{"type":"decide","id":"\#(id)","request":{"model":"m","prompt":"","choices":2}}"#,
+                    #"{"type":"decide","id":"\#(id)","request":{"model":"m","prompt":"x","choices":2.5}}"#,
+                    #"{"type":"models","id":"\#(id)","release":"r5.14","models":[{"name":"m","files":[{"path":"../x","size":1,"sha256":"\#(sha)"}]}]}"#] {
+            #expect(throws: AIRelay.InvalidMessage.self, "\(bad)") { try AIRelay.incoming(bad) }
+        }
+        #expect(try AIRelay.incoming(#"{"type":"models","id":"\#(id)","release":"r5.14","models":[{"name":"caboose-decide","files":[{"path":"model.safetensors","size":3,"sha256":"\#(sha)"}]}]}"#)
+                == .models(id: id, AIRelay.ComputerModels(release: "r5.14", models: [.init(name: "caboose-decide", files: [.init(path: "model.safetensors", size: 3, sha256: sha)])])))
+        #expect(try AIRelay.incoming(#"{"type":"read","id":"\#(id)","error":"no such model file"}"#) == .unanswered(id: id, reason: "no such model file"))
+        let chunk = try #require(AIRelay.chunk(Data(id.utf8) + Data([1, 2, 3])))
+        #expect(chunk.id == id && [UInt8](chunk.data) == [1, 2, 3])
+        #expect(AIRelay.chunk(Data("XYZ".utf8)) == nil)
+    }
+
+    @Test func writesDecisionsAndModelRequests() throws {
+        #expect(try AIJSON.parse(AIRelay.decision(id, choice: 2, elapsedMs: 41.25)) == AIJSON.parse(#"{"type":"decision","id":"\#(id)","choice":2,"elapsedMs":41.25}"#))
+        #expect(try AIJSON.parse(AIRelay.read(id, model: "caboose-decide", path: "model.safetensors", offset: 5, length: 10_000_000))
+                == AIJSON.parse(#"{"type":"read","id":"\#(id)","name":"caboose-decide","path":"model.safetensors","offset":5,"length":1048576}"#))
+        let hello = try AIJSON.parse(AIRelay.hello([.init(id: "caboose-decide", name: "Caboose decisions", contextSize: 2048, capabilities: [], decision: true, ownedBy: "caboose")]))
+        #expect(hello["models"]?.array?.first?["type"]?.string == "decision")
+        #expect(AIRelay.safeName("tokenizer.json") && !AIRelay.safeName(".complete") && !AIRelay.safeName("a/b"))
+    }
+}
+
 private func message(_ role: AIRelay.Role, _ text: String, calls: [AIRelay.ToolCall] = [], callId: String? = nil) -> AIRelay.Message {
     AIRelay.Message(role: role, parts: text.isEmpty ? [] : [.text(text)], toolCalls: calls, toolCallId: callId)
 }

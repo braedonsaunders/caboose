@@ -85,11 +85,47 @@ public enum AIRelay {
         public init(model: String, input: [String]) { self.model = model; self.input = input }
     }
 
-    /// What the host sends: a request to run, or one to stop.
+    /// A grounded decision (docs/ai.md § Decisions): the answer is the index of one of `choices`
+    /// letters (A, B, …) offered at the end of `prompt`.
+    public struct DecideRequest: Equatable, Sendable {
+        public var model: String
+        public var prompt: String
+        public var choices: Int
+        public init(model: String, prompt: String, choices: Int) { self.model = model; self.prompt = prompt; self.choices = choices }
+    }
+
+    /// The model folders the computer's release carries (docs/ai.md § Computer models).
+    public struct ComputerModels: Equatable, Sendable {
+        public struct File: Equatable, Sendable {
+            public var path: String
+            public var size: Int64
+            public var sha256: String
+            public init(path: String, size: Int64, sha256: String) { self.path = path; self.size = size; self.sha256 = sha256 }
+        }
+        public struct Model: Equatable, Sendable {
+            public var name: String
+            public var files: [File]
+            public init(name: String, files: [File]) { self.name = name; self.files = files }
+        }
+        public var release: String
+        public var models: [Model]
+        public init(release: String, models: [Model]) { self.release = release; self.models = models }
+    }
+
+    /// The letters a decision's choices are offered under, in order.
+    public static let decisionLetters = Array("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef")
+    /// The largest model-file chunk the phone asks for at once.
+    public static let maxRead = 1024 * 1024
+
+    /// What the host sends: a request to run, one to stop, or an answer about the computer's models.
     public enum Incoming: Equatable, Sendable {
         case request(id: String, Request)
         case embed(id: String, EmbedRequest)
+        case decide(id: String, DecideRequest)
         case cancel(id: String)
+        case models(id: String, ComputerModels)
+        /// A `models` or `read` the computer could not answer.
+        case unanswered(id: String, reason: String)
     }
 
     public struct InvalidMessage: Error, Equatable {
@@ -112,11 +148,45 @@ public enum AIRelay {
                 throw InvalidMessage(id: id, reason: "an embeddings request needs a model and texts")
             }
             return .embed(id: id, EmbedRequest(model: model, input: input))
+        case "decide":
+            guard let model = json["request"]?["model"]?.string, let prompt = json["request"]?["prompt"]?.string, !prompt.isEmpty,
+                  let choices = json["request"]?["choices"]?.number, choices == choices.rounded(), (2 ... Double(decisionLetters.count)).contains(choices) else {
+                throw InvalidMessage(id: id, reason: "a decision needs a model, a prompt and 2 to 32 choices")
+            }
+            return .decide(id: id, DecideRequest(model: model, prompt: prompt, choices: Int(choices)))
+        case "models", "read":
+            if let error = json["error"]?.string { return .unanswered(id: id, reason: error) }
+            guard json["type"]?.string == "models", let release = json["release"]?.string, let list = json["models"]?.array else {
+                throw InvalidMessage(id: id, reason: "a model manifest needs a release and models")
+            }
+            let models = try list.map { model -> ComputerModels.Model in
+                guard let name = model["name"]?.string, let files = model["files"]?.array else { throw InvalidMessage(id: id, reason: "a model needs a name and files") }
+                return ComputerModels.Model(name: name, files: try files.map { file in
+                    guard let path = file["path"]?.string, let size = file["size"]?.number, let sha256 = file["sha256"]?.string,
+                          sha256.count == 64, sha256.allSatisfy({ $0.isHexDigit && !$0.isUppercase }), safeName(path) else {
+                        throw InvalidMessage(id: id, reason: "a model file needs a name, a size and a SHA-256")
+                    }
+                    return ComputerModels.File(path: path, size: Int64(size), sha256: sha256)
+                })
+            }
+            return .models(id: id, ComputerModels(release: release, models: models))
         default: throw InvalidMessage(id: id, reason: "unknown message type")
         }
     }
 
     static func invalid(_ reason: String) -> InvalidMessage { InvalidMessage(id: nil, reason: reason) }
+
+    /// A name the phone may use as one path component: no separators, no leading dot.
+    public static func safeName(_ name: String) -> Bool {
+        !name.isEmpty && name.count <= 128 && name.first != "." && name.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || "._-".contains($0)) }
+    }
+
+    /// A read's bytes as the host relays them: the request id (32 ASCII hex digits), then the data.
+    public static func chunk(_ frame: Data) -> (id: String, data: Data)? {
+        guard frame.count >= 32, let id = String(data: frame.prefix(32), encoding: .ascii),
+              id.allSatisfy({ $0.isHexDigit && !$0.isUppercase }) else { return nil }
+        return (id, frame.dropFirst(32))
+    }
 
     static func request(_ json: AIJSON?) throws -> Request {
         guard let json, let model = json["model"]?.string, let messages = json["messages"]?.array, !messages.isEmpty else { throw invalid("a request needs a model and messages") }
@@ -182,10 +252,11 @@ public enum AIRelay {
         public var capabilities: [String]
         public var family: String?
         public var embedding: Bool
+        public var decision: Bool
         public var ownedBy: String
-        public init(id: String, name: String, contextSize: Int, capabilities: [String], family: String? = nil, embedding: Bool = false, ownedBy: String = "apple") {
+        public init(id: String, name: String, contextSize: Int, capabilities: [String], family: String? = nil, embedding: Bool = false, decision: Bool = false, ownedBy: String = "apple") {
             self.id = id; self.name = name; self.contextSize = contextSize; self.capabilities = capabilities; self.family = family
-            self.embedding = embedding; self.ownedBy = ownedBy
+            self.embedding = embedding; self.decision = decision; self.ownedBy = ownedBy
         }
     }
 
@@ -223,7 +294,7 @@ public enum AIRelay {
             var pairs: [(key: String, value: AIJSON)] = [("id", .string(model.id)), ("name", .string(model.name)), ("contextSize", .number(Double(model.contextSize))),
                                                         ("capabilities", .array(model.capabilities.map(AIJSON.string))), ("ownedBy", .string(model.ownedBy))]
             if let family = model.family { pairs.append(("family", .string(family))) }
-            if model.embedding { pairs.append(("type", .string("embedding"))) }
+            if model.embedding { pairs.append(("type", .string("embedding"))) } else if model.decision { pairs.append(("type", .string("decision"))) }
             return .object(pairs)
         }))]).text
     }
@@ -258,6 +329,21 @@ public enum AIRelay {
         if let cached = usage.cachedTokens { counts.append(("cachedTokens", .number(Double(cached)))) }
         if let reasoning = usage.reasoningTokens { counts.append(("reasoningTokens", .number(Double(reasoning)))) }
         return AIJSON.object([("type", .string("done")), ("id", .string(id)), ("finishReason", .string(finish.rawValue)), ("usage", .object(counts))]).text
+    }
+
+    public static func decision(_ id: String, choice: Int, elapsedMs: Double) -> String {
+        AIJSON.object([("type", .string("decision")), ("id", .string(id)), ("choice", .number(Double(choice))), ("elapsedMs", .number((elapsedMs * 1000).rounded() / 1000))]).text
+    }
+
+    /// Asks for the computer's model manifest.
+    public static func listModels(_ id: String) -> String {
+        AIJSON.object([("type", .string("models")), ("id", .string(id))]).text
+    }
+
+    /// Asks for `length` (at most `maxRead`) bytes of a manifest file from `offset`.
+    public static func read(_ id: String, model: String, path: String, offset: Int64, length: Int) -> String {
+        AIJSON.object([("type", .string("read")), ("id", .string(id)), ("name", .string(model)), ("path", .string(path)),
+                       ("offset", .number(Double(offset))), ("length", .number(Double(min(length, maxRead))))]).text
     }
 
     public static func error(_ id: String, _ failure: Failure) -> String {

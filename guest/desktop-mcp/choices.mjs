@@ -54,7 +54,9 @@ export function actionChoices({ objective, goal, elements, values = [] }) {
   return { state, revision, candidates, prompt: decisionPrompt(objective, elements, candidates.map(c => c.label)) }
 }
 
-export function choiceDecision(endpoint = 'http://127.0.0.1:11435/v1/decision') {
+// The phone's decision model through Caboose AI (docs/ai.md § Decisions); the development MLX
+// service (check/specialist-mlx-decide.py) answers the same request on another port.
+export function choiceDecision(endpoint = 'http://127.0.0.1:11434/v1/decision', model = '') {
   return async (observation, signal) => {
     if (observation.elements.some(e => e.states?.includes('busy'))) return { action: 'wait' }
     let request
@@ -66,11 +68,11 @@ export function choiceDecision(endpoint = 'http://127.0.0.1:11435/v1/decision') 
     const response = await fetch(endpoint, {
       method: 'POST', signal: AbortSignal.any([AbortSignal.timeout(10_000), ...(signal ? [signal] : [])]),
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ prompt: request.prompt, revision: request.revision, choices: request.candidates.length }),
+      body: JSON.stringify({ model, prompt: request.prompt, revision: request.revision, choices: request.candidates.length }),
     })
     if (!response.ok) throw new Error(`decision service unavailable (HTTP ${response.status})`)
     const selected = await response.json()
-    if (selected.revision !== request.revision || !Number.isInteger(selected.choice) || !request.candidates[selected.choice])
+    if ((selected.revision !== undefined && selected.revision !== request.revision) || !Number.isInteger(selected.choice) || !request.candidates[selected.choice])
       throw new Error('decision does not identify a choice from this observation')
     return request.candidates[selected.choice].action
   }

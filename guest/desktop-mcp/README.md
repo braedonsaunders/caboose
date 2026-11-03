@@ -410,11 +410,13 @@ measurements. Weight training and runtime export are separate operations.
 
 ### Choice backend
 
-`CABOOSE_SPECIALIST_BACKEND=choices` opts the runner's desktop child into a local
-decision service at `127.0.0.1:11435/v1/decision`. The desktop child enumerates the
-grounded choices; the service answers only with the index of one of them, bound to the
-observation's revision. No model or Python service is installed by the guest
-installer. The default generative backend uses `CABOOSE_SPECIALIST_MODEL` and the
+`CABOOSE_SPECIALIST_BACKEND=choices` opts the runner's desktop child into the phone's
+decision model through Caboose AI at `127.0.0.1:11434/v1/decision`
+([docs/ai.md § Decisions](../../docs/ai.md#decisions); `CABOOSE_SPECIALIST_ENDPOINT` and
+`CABOOSE_SPECIALIST_DECISION_MODEL` override the address and model). The desktop child
+enumerates the grounded choices; the service answers only with the index of one of them.
+The model itself ships in the computer's release and the phone downloads it from the
+computer ([§ Computer models](../../docs/ai.md#computer-models)). The default generative backend uses `CABOOSE_SPECIALIST_MODEL` and the
 existing port 11434 service.
 
 A task can supply up to 12 named `values` (`name`, `value`). Exact goal values are
