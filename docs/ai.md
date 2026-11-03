@@ -253,6 +253,15 @@ Open-weight models with MLX on the phone's GPU (4-bit, from Hugging Face):
 
 An app with the increased memory limit has about 6 GB available on this phone.
 
+A computer-use decision as the desktop specialist's choice backend asks it (AIProbe
+`--decide`: 108 prompts of a median 150 tokens, one token read over the offered choice
+letters, 4-bit, thermal nominal, on battery):
+
+| Model | Prefilled from empty | KV cache kept across a task's steps | Peak memory |
+| --- | --- | --- | --- |
+| Qwen3 0.6B | 54 ms median, 72 ms p95 | 41–44 ms median (56 tokens reused), 70 ms p95 | 0.5 GB |
+| Qwen3 1.7B | 125 ms median, 155 ms p95 | 119–121 ms median, 145 ms p95 | 1.1 GB |
+
 ## Measuring
 
 `apps/ios/scripts/check-on-device-ai.sh <device> [probes]` builds and installs
