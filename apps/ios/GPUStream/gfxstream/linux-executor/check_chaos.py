@@ -139,17 +139,34 @@ class Seat:
             f"--connect 127.0.0.1:{PORT} --token-file /tmp/token --library /build/libcaboose_gpu_executor.so --features {PHONE} "
             f"--pictures /pictures --display 1280x800")
         self.executors.append(name)
-        self.wait(lambda: 'session ready' in run('docker', 'logs', name, check=False), 30, 'the executor')
         if self.o.gdb:
-            # Each executor's native stack if it faults (gdb on the host, attached to its Python).
+            # Each executor's native stacks if it faults: gdb on the host, attached to its Python
+            # as soon as it runs (a fault can come with the first connections).
             pid = run('docker', 'inspect', '-f', '{{.State.Pid}}', name).strip()
-            child = run('pgrep', '-P', pid, check=False).split()
-            target = child[-1] if child else pid
-            trace = open(os.path.join(self.o.out, f'gdb-{self.generation}.txt'), 'w')
-            subprocess.Popen(['gdb', '-p', target, '-batch', '-ex', f'set sysroot /proc/{target}/root',
-                              '-ex', 'handle SIGPIPE nostop noprint', '-ex', 'handle SIGUSR1 nostop noprint',
-                              '-ex', 'continue', '-ex', 'thread apply all bt 25'],
-                             stdout=trace, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
+            target = None
+            for _ in range(200):
+                for child in run('pgrep', '-P', pid, check=False).split():
+                    try:
+                        if b'executor.py' in open(f'/proc/{child}/cmdline', 'rb').read():
+                            target = child
+                    except OSError:
+                        pass
+                if target:
+                    break
+                time.sleep(0.02)
+            if target:
+                trace = open(os.path.join(self.o.out, f'gdb-{self.generation}.txt'), 'w')
+                subprocess.Popen(['gdb', '-p', target, '-batch', '-ex', f'set sysroot /proc/{target}/root',
+                                  '-ex', 'handle SIGPIPE nostop noprint', '-ex', 'handle SIGUSR1 nostop noprint',
+                                  '-ex', 'continue', '-ex', 'thread apply all bt 25'],
+                                 stdout=trace, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
+        try:
+            self.wait(lambda: 'session ready' in run('docker', 'logs', name, check=False), 30, 'the executor')
+        except RuntimeError:
+            # Where the broker waits, in the display log, before the seat goes.
+            self.sh(f"pkill -USR1 -f '{self.dir}/libexec/caboose-gpu-broker'", check=False)
+            time.sleep(1)
+            raise
         return name
 
     def end_executor(self):

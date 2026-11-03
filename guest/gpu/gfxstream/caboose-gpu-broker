@@ -2146,7 +2146,9 @@ class Broker:
                     with contextlib.suppress(RuntimeError): self.lease.revoke(executor.bytes, generation)
                 for task in tuple(session.lifecycle_tasks): task.cancel()
                 if session.lifecycle_tasks:
-                    await asyncio.gather(*tuple(session.lifecycle_tasks), return_exceptions=True)
+                    # Bounded: a task that does not end when cancelled must not hold the lease.
+                    with contextlib.suppress(asyncio.TimeoutError):
+                        await asyncio.wait_for(asyncio.gather(*tuple(session.lifecycle_tasks), return_exceptions=True), 2)
                 with contextlib.suppress(RuntimeError): session.bindings.finish(session.binding_generation)
                 # The phone dropped this generation's objects with its connection, and every
                 # local client of it has ended: release the lease so the executor can return.
@@ -2172,6 +2174,10 @@ class Broker:
 
 
 def main():
+    # SIGUSR1 prints every thread's stack to the log: a broker that stops answering can be
+    # seen where it waits.
+    import faulthandler
+    faulthandler.register(signal.SIGUSR1, all_threads=True)
     parser = argparse.ArgumentParser()
     control_source = parser.add_mutually_exclusive_group(required=True)
     control_source.add_argument('--control-fd', type=int,
