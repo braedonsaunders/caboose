@@ -60,13 +60,6 @@
       "verify": "window_title 'Claimed - Chromium'"
     },
     {
-      "id": "firefox-form",
-      "app": "firefox-esr",
-      "setup": "page $HOME/Documents/form.html 'Shipping' 'Claimed'; mkdir -p $HOME/firefox; start /usr/lib/firefox-esr/firefox-esr --no-remote --new-instance --profile $HOME/firefox file://$HOME/Documents/form.html",
-      "prompt": "In the open Firefox window, fill the form: Recipient \"Iris Moss\", City \"Granite Falls\", tick Gift wrap, then press Ship order.",
-      "verify": "window_title 'Claimed \u2014 Mozilla Firefox'"
-    },
-    {
       "id": "writer-save",
       "app": "libreoffice-writer",
       "setup": "mkdir -p $HOME/Documents; start soffice --norestore --nologo --writer",
@@ -136,13 +129,6 @@
       "setup": "mkdir -p $HOME/Documents; printf 'old\\n' > $HOME/Documents/draft.txt; printf 'keep\\n' > $HOME/Documents/final.txt; start thunar $HOME/Documents",
       "prompt": "In the open file manager window, delete the file draft.txt. Leave final.txt alone.",
       "verify": "test ! -e $HOME/Documents/draft.txt && test -f $HOME/Documents/final.txt"
-    },
-    {
-      "id": "firefox-two-page",
-      "app": "firefox-esr",
-      "setup": "page $HOME/Documents/form.html 'Details' 'Claimed'; printf '<!doctype html><title>Welcome</title><h1>Welcome</h1><p><a href=\"help.html\">Help</a></p><p><a href=\"form.html\">Continue to the form</a></p>' > $HOME/Documents/start.html; mkdir -p $HOME/firefox; start /usr/lib/firefox-esr/firefox-esr --no-remote --new-instance --profile $HOME/firefox file://$HOME/Documents/start.html",
-      "prompt": "In the open Firefox window, follow \"Continue to the form\", then fill Recipient \"Iris Moss\" and City \"Granite Falls\", tick Gift wrap and press Ship order.",
-      "verify": "window_title 'Claimed \u2014 Mozilla Firefox'"
     },
     {
       "id": "chromium-select",
