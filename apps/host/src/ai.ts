@@ -29,15 +29,9 @@ export interface AiModel {
   family?: string
   parameterSize?: string
   quantization?: string
-  /** `chat` (the default), `embedding`, or `decision` (docs/ai.md § Decisions). */
-  type?: 'chat' | 'embedding' | 'decision'
+  /** `chat` (the default) or `embedding`. */
+  type?: 'chat' | 'embedding'
 }
-
-/** Largest chunk of a computer model file the phone may ask for at once. */
-export const MAX_MODEL_READ = 1024 * 1024
-const MODEL_NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/
-const MODEL_FILE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/
-const SHA256 = /^[0-9a-f]{64}$/
 
 const REQUEST_ID = /^[0-9a-f]{32}$/
 const MODEL_ID = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/
@@ -176,40 +170,24 @@ export function parseAiModels(value: unknown): AiModel[] {
   return value.map(raw => {
     if (!isObject(raw)) return fail('each model must be an object')
     only(raw, ['id', 'name', 'contextSize', 'capabilities', 'ownedBy', 'family', 'parameterSize', 'quantization', 'type'], 'a model')
-    if (raw.type !== undefined && raw.type !== 'chat' && raw.type !== 'embedding' && raw.type !== 'decision') fail('type must be chat, embedding or decision')
+    if (raw.type !== undefined && raw.type !== 'chat' && raw.type !== 'embedding') fail('type must be chat or embedding')
     if (typeof raw.id !== 'string' || !MODEL_ID.test(raw.id) || seen.has(raw.id)) fail('each model needs its own id')
     seen.add(raw.id as string)
     if (!Array.isArray(raw.capabilities) || raw.capabilities.some(c => typeof c !== 'string' || !CAPABILITIES.has(c))) fail('capabilities must be tools, vision, json or reasoning')
     const model: AiModel = { id: raw.id as string, name: label(raw.name, 'model name', 100), contextSize: numberIn(raw.contextSize, 'contextSize', 1, 10_000_000, true), capabilities: [...new Set(raw.capabilities as string[])] }
     for (const key of ['ownedBy', 'family', 'parameterSize', 'quantization'] as const) if (raw[key] !== undefined) model[key] = label(raw[key], key, 64)
-    if (raw.type === 'embedding' || raw.type === 'decision') model.type = raw.type
+    if (raw.type === 'embedding') model.type = 'embedding'
     return model
   })
 }
 
-/** One message from the phone, re-encoded: `hello`, a request for the computer's models
- * (`models`, `read`), or an event for a request it was given. */
+/** One message from the phone, re-encoded: `hello`, or an event for a request it was given. */
 export function parsePhoneMessage(value: unknown): Json {
   if (!isObject(value)) return fail('a message must be an object')
   if (value.type === 'hello') { only(value, ['type', 'models'], 'hello'); return { type: 'hello', models: parseAiModels(value.models) } }
   if (typeof value.id !== 'string' || !REQUEST_ID.test(value.id)) return fail('an event needs a request id')
   const id = value.id
   switch (value.type) {
-    case 'models':
-      only(value, ['type', 'id'], 'models')
-      return { type: 'models', id }
-    case 'read':
-      only(value, ['type', 'id', 'name', 'path', 'offset', 'length'], 'read')
-      if (typeof value.name !== 'string' || !MODEL_NAME.test(value.name)) fail('name must be a model name')
-      if (typeof value.path !== 'string' || !MODEL_FILE.test(value.path)) fail('path must be a model file name')
-      return { type: 'read', id, name: value.name, path: value.path, offset: numberIn(value.offset, 'offset', 0, 2 ** 40, true),
-        length: numberIn(value.length, 'length', 1, MAX_MODEL_READ, true) }
-    case 'decision': {
-      only(value, ['type', 'id', 'choice', 'elapsedMs'], 'decision')
-      const event: Json = { type: 'decision', id, choice: numberIn(value.choice, 'choice', 0, 31, true) }
-      if (value.elapsedMs !== undefined) event.elapsedMs = numberIn(value.elapsedMs, 'elapsedMs', 0, 600_000)
-      return event
-    }
     case 'started':
       only(value, ['type', 'id'], 'started')
       return { type: 'started', id }
@@ -268,44 +246,10 @@ export function parseEmbedRequest(value: unknown): Json {
   return { model: value.model, input: (value.input as unknown[]).map(item => text(item, 'input', 32_000)) }
 }
 
-/** A decision request from caboose-ai (docs/ai.md § Decisions): a prompt whose answer is one of `choices` letters. */
-export function parseDecideRequest(value: unknown): Json {
-  if (!isObject(value)) return fail('the request must be an object')
-  only(value, ['model', 'prompt', 'choices'], 'the request')
-  if (typeof value.model !== 'string' || !MODEL_ID.test(value.model)) fail('model must be a model id')
-  const prompt = text(value.prompt, 'prompt', 16_000)
-  if (!prompt) fail('prompt must not be empty')
-  return { model: value.model, prompt, choices: numberIn(value.choices, 'choices', 2, 32, true) }
-}
-
-/** caboose-ai's answer to a phone's `models` or `read`: the computer's model manifest, or a read's failure. */
-export function parseGuestModels(value: Json): Json {
-  const id = value.id as string
-  if (value.error !== undefined) { only(value, ['type', 'id', 'error'], value.type as string); return { type: value.type, id, error: text(value.error, 'error', 2000) } }
-  if (value.type !== 'models') return fail('a read answers with bytes or an error')
-  only(value, ['type', 'id', 'release', 'models'], 'models')
-  if (!Array.isArray(value.models) || value.models.length > 8) fail('models must be a list of at most 8')
-  return { type: 'models', id, release: label(value.release, 'release', 64), models: (value.models as unknown[]).map(model => {
-    if (!isObject(model)) return fail('each model must be an object')
-    only(model, ['name', 'files'], 'a model')
-    if (typeof model.name !== 'string' || !MODEL_NAME.test(model.name)) fail('a model needs a name')
-    if (!Array.isArray(model.files) || model.files.length < 1 || model.files.length > 32) fail('files must be a list of 1 to 32')
-    return { name: model.name, files: (model.files as unknown[]).map(file => {
-      if (!isObject(file)) return fail('each file must be an object')
-      only(file, ['path', 'size', 'sha256'], 'a file')
-      if (typeof file.path !== 'string' || !MODEL_FILE.test(file.path)) fail('a file needs a name')
-      if (typeof file.sha256 !== 'string' || !SHA256.test(file.sha256)) fail('sha256 must be 64 lowercase hex digits')
-      return { path: file.path, size: numberIn(file.size, 'size', 0, 2 ** 40, true), sha256: file.sha256 }
-    }) }
-  }) }
-}
-
-/** One message from caboose-ai: a chat, embeddings or decision request, a cancellation, or an answer about the computer's models. */
-export function parseGuestMessage(value: unknown): { type: 'request' | 'embed' | 'decide'; id: string; request: Json } | { type: 'cancel'; id: string } | { type: 'models' | 'read'; id: string; answer: Json } {
+/** One message from caboose-ai: a chat or embeddings request, or a cancellation. */
+export function parseGuestMessage(value: unknown): { type: 'request' | 'embed'; id: string; request: Json } | { type: 'cancel'; id: string } {
   if (!isObject(value) || typeof value.id !== 'string' || !REQUEST_ID.test(value.id)) return fail('a message needs a request id')
   if (value.type === 'cancel') { only(value, ['type', 'id'], 'cancel'); return { type: 'cancel', id: value.id } }
-  if (value.type === 'models' || value.type === 'read') return { type: value.type, id: value.id, answer: parseGuestModels(value) }
-  if (value.type === 'decide') { only(value, ['type', 'id', 'request'], 'decide'); return { type: 'decide', id: value.id, request: parseDecideRequest(value.request) } }
   if (value.type === 'request') { only(value, ['type', 'id', 'request'], 'request'); return { type: 'request', id: value.id, request: parseAiRequest(value.request) } }
   if (value.type === 'embed') { only(value, ['type', 'id', 'request'], 'embed'); return { type: 'embed', id: value.id, request: parseEmbedRequest(value.request) } }
   return fail('unknown message type')
@@ -334,8 +278,6 @@ export class AiRelay {
   private attempts = 0
   /** Request id → the phone running it. */
   private requests = new Map<string, WebSocket>()
-  /** A phone's `models` or `read` id → that phone, until caboose-ai answers. */
-  private reads = new Map<string, WebSocket>()
   private sentModels = ''
   private sequence = 0
 
@@ -364,20 +306,12 @@ export class AiRelay {
         return
       }
       const id = parsed.id as string
-      if (parsed.type === 'models' || parsed.type === 'read') {
-        if (this.guest?.readyState !== WebSocket.OPEN) { socket.send(JSON.stringify({ type: parsed.type, id, error: 'The computer is not reachable.' })); return }
-        if (this.reads.has(id) || this.reads.size >= MAX_AI_REQUESTS) { socket.send(JSON.stringify({ type: parsed.type, id, error: 'Too many model reads at once.' })); return }
-        this.reads.set(id, socket)
-        this.toGuest(JSON.stringify(parsed))
-        return
-      }
       if (this.requests.get(id) !== socket) return
-      if (parsed.type === 'done' || parsed.type === 'error' || parsed.type === 'decision') this.requests.delete(id)
+      if (parsed.type === 'done' || parsed.type === 'error') this.requests.delete(id)
       this.toGuest(JSON.stringify(parsed))
     })
     socket.once('close', () => {
       this.phones.delete(socket)
-      for (const [id, owner] of this.reads) if (owner === socket) this.reads.delete(id)
       for (const [id, owner] of this.requests) {
         if (owner !== socket) continue
         this.requests.delete(id)
@@ -441,29 +375,13 @@ export class AiRelay {
     this.guest = guest
     guest.on('open', () => { this.attempts = 0; this.sentModels = ''; this.sync() })
     guest.on('message', (data, binary) => {
-      if (binary) {
-        // A read's bytes: the request id (32 ASCII hex digits), then at most MAX_MODEL_READ bytes.
-        const frame = Buffer.isBuffer(data) ? data : Buffer.concat(Array.isArray(data) ? data : [Buffer.from(data as ArrayBuffer)])
-        const id = frame.subarray(0, 32).toString('latin1')
-        const phone = this.reads.get(id)
-        if (!phone || frame.length > 32 + MAX_MODEL_READ) return
-        this.reads.delete(id)
-        if (phone.readyState === WebSocket.OPEN) phone.send(frame, { binary: true })
-        return
-      }
-      const parsed = (() => { try { return parseGuestMessage(json(data)) } catch (error) { return error instanceof AiInputError ? error : undefined } })()
+      const parsed = (() => { try { return binary ? undefined : parseGuestMessage(json(data)) } catch (error) { return error instanceof AiInputError ? error : undefined } })()
       if (parsed instanceof AiInputError) {
         const id = (json(data) as { id?: unknown } | undefined)?.id
         if (typeof id === 'string' && REQUEST_ID.test(id)) guest.send(phoneError(id, parsed.message, 400, 'invalid_request'))
         return
       }
       if (!parsed) return
-      if ('answer' in parsed) {
-        const phone = this.reads.get(parsed.id)
-        this.reads.delete(parsed.id)
-        if (phone?.readyState === WebSocket.OPEN) phone.send(JSON.stringify(parsed.answer))
-        return
-      }
       if (parsed.type === 'cancel') {
         const phone = this.requests.get(parsed.id)
         this.requests.delete(parsed.id)
@@ -483,8 +401,6 @@ export class AiRelay {
       // The program's requests are gone with the connection: the phones stop working on them.
       for (const [id, phone] of this.requests) if (phone.readyState === WebSocket.OPEN) phone.send(JSON.stringify({ type: 'cancel', id }))
       this.requests.clear()
-      for (const [id, phone] of this.reads) if (phone.readyState === WebSocket.OPEN) phone.send(JSON.stringify({ type: 'read', id, error: 'The computer went away.' }))
-      this.reads.clear()
       this.schedule()
     }
     guest.on('error', () => { guest.terminate(); lost() })

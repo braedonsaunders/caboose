@@ -6,16 +6,13 @@
 // seat's windows, pointer, keyboard and pictures, through its control socket). Wayland and
 // X11 applications are driven alike. caboose-agentd gives it to every ACP agent in
 // session/new, and answers the agent's permission requests itself.
-import { choiceDecision } from './choices.mjs'
 import { spawn } from 'node:child_process'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
-import { readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createInterface } from 'node:readline'
 import { Worker } from './worker.mjs'
-import { runSpecialist, phoneDecision, validateTask, taskWindows } from './specialist.mjs'
 import { controlAlive, ensureAgentSeat } from './ensure-agent-seat.mjs'
 
 const DISPLAY = process.env.CABOOSE_AGENT_DISPLAY ?? ':101'
@@ -301,63 +298,6 @@ for (const name of mutations) {
       catch (error) { result.push({ type: 'text', text: JSON.stringify({ observationError: error.message }) }) }
     }
     return result
-  }
-}
-
-// A computer whose release carries a decision model for the phone (docs/ai.md § Computer
-// models) offers computer_task on the choice backend; CABOOSE_SPECIALIST_BACKEND or
-// CABOOSE_SPECIALIST_MODEL choose explicitly. Without either there is no model to advertise.
-const carriesDecisionModel = (() => { try { return readdirSync(process.env.CABOOSE_AI_MODELS ?? '/opt/caboose/ai/models').length > 0 } catch { return false } })()
-const specialistBackend = process.env.CABOOSE_SPECIALIST_BACKEND ?? (!process.env.CABOOSE_SPECIALIST_MODEL && carriesDecisionModel ? 'choices' : undefined)
-if (process.env.CABOOSE_SPECIALIST_MODEL || specialistBackend === 'choices') {
-  tools.push({ name: 'computer_task',
-    description: 'Delegate a bounded accessibility task in an agent window and the dialogs and menus it opens. Supply an objective and exact observable goal (controls, or a window title). Returns verified only after observing that goal; otherwise returns a structured failure or screenshot for the caller. At most 20 actions and 60 seconds. Does not run shell commands or choose arbitrary coordinates.',
-    inputSchema: { type: 'object', properties: {
-      values: { type: 'array', maxItems: 12, items: { type: 'object', properties: { name: { type: 'string', maxLength: 80 }, value: { type: 'string', maxLength: 200 } }, required: ['name', 'value'] } },
-      objective: { type: 'string', maxLength: 2000 }, window: { type: 'integer', minimum: 1 },
-      goal: { anyOf: [
-        { type: 'object', properties: { name: { type: 'string' }, role: { type: 'string' }, value: { type: 'string' }, state: { type: 'string' } }, required: ['name', 'role'] },
-        { type: 'object', properties: { title: { type: 'string', description: 'Exact title of the task window or one of its dialogs' } }, required: ['title'] },
-        { type: 'object', properties: { all: { type: 'array', minItems: 1, maxItems: 8, items: { anyOf: [
-          { type: 'object', properties: { name: { type: 'string' }, role: { type: 'string' }, value: { type: 'string' }, state: { type: 'string' } }, required: ['name', 'role'] },
-          { type: 'object', properties: { title: { type: 'string' } }, required: ['title'] },
-        ] } } }, required: ['all'] },
-      ] },
-      maxActions: { type: 'integer', minimum: 1, maximum: 20, default: 8 },
-    }, required: ['objective', 'window', 'goal'] },
-  })
-  handlers.computer_task = async task => {
-    validateTask(task)
-    const controller = new AbortController()
-    const timer = setTimeout(() => {
-      controller.abort(new Error('specialist deadline exceeded; an in-flight action may have executed'))
-      a11yWorker.close(); seatWorker.close()
-    }, 60_000)
-    try {
-      const outcome = await runSpecialist(task, {
-        signal: controller.signal,
-        observe: async (_window, options) => {
-          // The compositor's window records decide which windows are the task's (its own, and
-          // dialogs and menus whose parent chain reaches it); AT-SPI reads only the focused one.
-          const listing = await seat('windows')
-          if (!taskWindows(task.window, listing.windows).some(w => w.id === listing.focused)) return { focused: listing.focused, windows: listing.windows, elements: [] }
-          const state = await observe(options)
-          const after = await seat('windows')
-          return { ...state, focused: after.focused, windows: after.windows }
-        },
-        decide: specialistBackend === 'choices' ? choiceDecision(process.env.CABOOSE_SPECIALIST_ENDPOINT || undefined, process.env.CABOOSE_SPECIALIST_DECISION_MODEL || '') : phoneDecision(process.env.CABOOSE_SPECIALIST_MODEL),
-        act: async step => {
-          const reply = JSON.parse((await handlers.batch({ steps: [step], observe: false }))[0].text)
-          if (reply.completed !== 1) throw new Error(reply.error ?? 'action outcome unknown')
-        },
-      })
-      const content = [{ type: 'text', text: JSON.stringify(outcome) }]
-      if (outcome.status === 'needs_visual' && !controller.signal.aborted) {
-        try { content.push(...await handlers.screenshot({ window: task.window, annotate: true })) }
-        catch { content.push({ type: 'text', text: 'Screenshot unavailable; inspect the agent seat before continuing.' }) }
-      }
-      return content
-    } finally { clearTimeout(timer) }
   }
 }
 

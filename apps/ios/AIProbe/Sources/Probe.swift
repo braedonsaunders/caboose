@@ -37,7 +37,7 @@ final class Probe {
         }
     }
 
-    func run(only: Set<String>?, mlx: [String] = [], decide: [String] = []) async {
+    func run(only: Set<String>?, mlx: [String] = []) async {
         let probes: [(String, () async throws -> Void)] = [
             ("info", info), ("tokens", tokens), ("throughput", throughput), ("prefill", prefill),
             ("context", context), ("session", sessionGrowth), ("guided", guided), ("tools", tools), ("toolReplay", toolReplay),
@@ -52,7 +52,6 @@ final class Probe {
             emit("\(name).done", ["seconds": Date().timeIntervalSince(started)])
         }
         if !mlx.isEmpty { await MLXProbe(probe: self).run(mlx) }
-        if !decide.isEmpty { await DecisionProbe(probe: self).run(decide) }
         emit("finished", [:])
     }
 
