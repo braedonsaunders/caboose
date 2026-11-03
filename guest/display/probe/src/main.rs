@@ -29,6 +29,7 @@ OPTIONS:
     --token-file PATH      read the token from a file
     --display WxH@HZxS     a display to announce (repeatable) [default: 1920x1080@60x1]
     --audio                play the computer's sound (decoded and measured, not heard)
+    --children             show child windows (inset GPU windows bind), as the phone does
     --wasm                 run games handed off to the client (reports game.create and
                            game.destroy; a game's window is a target like any other)
     --clipboard-types LIST MIME types to take from the computer's clipboard besides text
@@ -81,6 +82,7 @@ struct Args {
     displays: Vec<proto::Display>,
     audio: bool,
     wasm: bool,
+    children: bool,
     clipboard_types: Option<Vec<String>>,
     duration: Duration,
     /// Stop reading and sending after this long, keeping the connection open.
@@ -118,6 +120,7 @@ fn parse_args_from(argv: impl IntoIterator<Item = String>) -> Result<Args, Strin
         displays: Vec::new(),
         audio: false,
         wasm: false,
+        children: false,
         clipboard_types: None,
         duration: Duration::from_secs(10),
         stall_after: None,
@@ -149,6 +152,7 @@ fn parse_args_from(argv: impl IntoIterator<Item = String>) -> Result<Args, Strin
             }
             "--audio" => a.audio = true,
             "--wasm" => a.wasm = true,
+            "--children" => a.children = true,
             "--clipboard-types" => a.clipboard_types = Some(value()?.split(',').map(str::to_owned).collect()),
             "--duration" => a.duration = Duration::from_secs_f64(value()?.parse().map_err(|_| "bad --duration")?),
             "--stall-after" => {
@@ -507,7 +511,7 @@ fn run(args: Args) -> Result<bool, String> {
             webview: false,
             devices: false,
             targets: args.targets.is_some(),
-            children: false,
+            children: args.children,
             clipboard_types: args.clipboard_types.clone(),
         }),
     )?;
