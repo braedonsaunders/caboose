@@ -56,6 +56,8 @@ private:
     std::unordered_map<uint64_t, Entry> entries_;
 };
 
-inline EventStatusReplies eventStatusReplies;
+// Never destroyed: a process's exit runs static destructors while its other threads may
+// still be inside the driver.
+inline EventStatusReplies& eventStatusReplies = *new EventStatusReplies;
 
 }  // namespace caboose::memory

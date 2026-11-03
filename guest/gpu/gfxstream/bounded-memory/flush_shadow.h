@@ -276,7 +276,9 @@ private:
     std::unordered_map<uint64_t, Entry> entries_;
 };
 
-inline FlushShadow flushShadow;
+// Never destroyed: a process's exit runs static destructors while its other threads may
+// still be inside the driver.
+inline FlushShadow& flushShadow = *new FlushShadow;
 inline thread_local uint64_t lastFlushCallSentBytes = 0;
 
 } // namespace caboose::memory

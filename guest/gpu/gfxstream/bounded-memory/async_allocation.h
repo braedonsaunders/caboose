@@ -92,6 +92,8 @@ private:
     std::unordered_map<uint64_t, Allocation> allocations_;
 };
 
-inline AsyncAllocationBudget asyncAllocationBudget;
+// Never destroyed: a process's exit runs static destructors while its other threads may
+// still be inside the driver.
+inline AsyncAllocationBudget& asyncAllocationBudget = *new AsyncAllocationBudget;
 
 }  // namespace caboose::memory

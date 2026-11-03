@@ -36,6 +36,7 @@ run test_indexed "$gfxstream/virtual-wsi/test_indexed.cpp" "$gfxstream/virtual-w
 run test_socket_stream $config -I"$gfxstream/fixtures/iostream" -I"$scratch/include" \
     "$gfxstream/test_socket_stream.cpp" "$gfxstream/SocketStream.cpp"
 run feature_emulation_test $includes "$gfxstream/feature-emulation/feature_emulation_test.cpp"
+run registration_test "$gfxstream/dmabuf/registration_test.cpp"
 # The shader cache's keys are Mesa's BLAKE3 (portable C, as the driver's build compiles it
 # without the x86 assembly), checked against the vectors the phone's store is tested with.
 blake3=${CABOOSE_MESA:-/work/mesa}/src/util/blake3

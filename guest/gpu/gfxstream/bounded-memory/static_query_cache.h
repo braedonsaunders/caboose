@@ -22,9 +22,10 @@ namespace caboose::memory {
 // identity; without a verified scope answers remain process-local.
 class StaticQueryCache {
 public:
-    ~StaticQueryCache() {
-        // One last nonblocking attempt for records a busy lock held back. Exit never
-        // waits: a mutex another thread (or a forking parent) holds skips it.
+    ~StaticQueryCache() { finish(); }
+    // One last nonblocking attempt for records a busy lock held back, at exit. Exit never
+    // waits: a mutex another thread (or a forking parent) holds skips it.
+    void finish() {
         std::unique_lock<std::mutex> lock(mutex_,std::try_to_lock);
         if (!lock.owns_lock()) return;
         for (auto& file:files_) if (file.second.pid==getpid()) flushLocked(file.first,file.second);
@@ -444,5 +445,11 @@ private:
     std::unordered_map<std::string,std::string> entries_;
     std::unordered_map<std::string,Wait> waits_;
 };
-inline StaticQueryCache staticQueryCache;
+// Never destroyed (a process's exit runs static destructors while its other threads may still
+// be inside the driver); its held-back records get their last attempt at exit.
+inline StaticQueryCache& staticQueryCache = *[] {
+    auto* cache = new StaticQueryCache;
+    std::atexit([] { staticQueryCache.finish(); });
+    return cache;
+}();
 } // namespace caboose::memory
