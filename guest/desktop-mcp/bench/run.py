@@ -111,7 +111,7 @@ for task in tasks:
             _, lines = computer(f'cat {shlex.quote(a.trace)} 2>/dev/null; rm -f {shlex.quote(a.trace)}')
             calls_ = [json.loads(l) for l in lines.splitlines() if l.startswith('{')]
             record['server'] = {'ms': sum(c['ms'] for c in calls_), 'chars': sum(c['chars'] for c in calls_), 'images': sum(c['images'] for c in calls_),
-                                'slowest': sorted(calls_, key=lambda c: -c['ms'])[:3]}
+                                'slowest': sorted(calls_, key=lambda c: -c['ms'])[:6]}
         usage = result.get('usage', {})
         record.update(success=code == 0, said=(result.get('result') or result.get('subtype') or '')[-200:], seconds=round(seconds, 1),
                       toolCalls=calls, tools=names, turns=result.get('num_turns'), costUsd=result.get('total_cost_usd'),

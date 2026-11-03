@@ -33,7 +33,9 @@ A step is an object with one verb: `{"press": id}` (the control's AT-SPI action,
 click at its centre), `{"set": id, "text": t}` (replace a field's text; a number for a spin
 button or slider goes in through its Value), `{"key": "ctrl+s"}`, `{"type": t}`,
 `{"click": [x, y], "button": 1-3, "count": 1-3}`, `{"scroll": [x, y], "dx": n, "dy": n}`,
-`{"drag": [x1, y1, x2, y2]}`, `{"focus": window}`, `{"wait": ms}` (10–5000) and
+`{"drag": [x1, y1, x2, y2]}`, `{"focus": window}`, `{"wait": ms}` (10–5000: until the windows
+stop drawing, then at most 200 ms more, never longer than `ms`; every step already waits for
+the application's reaction) and
 `{"launch": "command"}` (an application on the agent seat, with the accessibility
 environment below). An element step whose id no longer names that control (the window lost
 focus, or the control changed or went) fails as a `stale id` and does nothing, so it is safe
