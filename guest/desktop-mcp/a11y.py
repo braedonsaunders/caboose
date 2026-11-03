@@ -956,6 +956,7 @@ class Tree:
             ("MULTI_LINE", "multi-line"), ("VISITED", "visited"), ("BUSY", "busy")]
         self.started = time.monotonic()
         self.visited = 0
+        self.partial = []  # child counts of containers read in part
 
     def exhausted(self):
         return self.visited >= MAX_NODES or time.monotonic() - self.started > BUDGET_SECONDS
@@ -985,13 +986,31 @@ class Tree:
             names.append("disabled")
         return names
 
+    # A container this large (a spreadsheet's cells, a long list) is read in part: its
+    # selected children and the first few, instead of thousands of round trips.
+    LARGE = 512
+    SAMPLE = 32
+
     def children(self, node):
         try:
             count = node.get_child_count()
         except Exception:
             return []
+        indices = range(count)
+        if count > self.LARGE:
+            chosen = set(range(self.SAMPLE))
+            try:
+                if node.get_selection_iface() is not None:
+                    for k in range(min(self.Atspi.Selection.get_n_selected_children(node), self.SAMPLE)):
+                        child = self.Atspi.Selection.get_selected_child(node, k)
+                        if child is not None:
+                            chosen.add(child.get_index_in_parent())
+            except Exception:
+                pass
+            indices = sorted(i for i in chosen if 0 <= i < count)
+            self.partial.append(count)
         result = []
-        for index in range(min(count, 4000)):
+        for index in indices:
             try:
                 result.append((index, node.get_child_at_index(index)))
             except Exception:
@@ -1582,7 +1601,10 @@ def act(display_name, element, action, text):
         pid = screen.pid(xid)
         try:
             if pid not in INERT_EDITABLE and node.get_editable_text_iface() is not None and tree.Atspi.EditableText.set_text_contents(node, text):
-                if wait_text(screen, tree, node, lambda value: value == text, 0.3) in (text, None):
+                # A password field reads back masked: the same length in bullets is the new text.
+                masked = lambda value: value is not None and len(value) == len(text) and text and set(value) <= set("•●*·")
+                shown = wait_text(screen, tree, node, lambda value: value == text or masked(value), 0.3)
+                if shown in (text, None) or masked(shown):
                     return
                 INERT_EDITABLE.add(pid)  # remembered for the life of this helper
         except Exception:
@@ -1927,6 +1949,9 @@ def execute(args):
             query = args.query if args.command == "find" else None
             role = args.role if args.command == "find" else None
             result["elements"] = collect(target, query, role) if target.app is not None else []
+            if target.app is not None and target.tree.partial:
+                result["partial"] = (f"{len(target.tree.partial)} large container(s) ({', '.join(str(c) for c in target.tree.partial[:3])} children) "
+                                     "are read in part: their selected children and the first few")
         if target.note:
             result["note"] = target.note
         return result, 0

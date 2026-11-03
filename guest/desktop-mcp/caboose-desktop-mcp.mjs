@@ -237,6 +237,13 @@ async function inFocusedWindow(id) {
   if (parseInt(id.split('-')[0], 16) !== focused) throw new Error('element not found: the focused window changed; look again')
 }
 
+// X keysym names of the printable ASCII characters that are not their own name.
+const KEYSYMS = { ' ': 'space', '!': 'exclam', '"': 'quotedbl', '#': 'numbersign', '$': 'dollar', '%': 'percent', '&': 'ampersand',
+  "'": 'apostrophe', '(': 'parenleft', ')': 'parenright', '*': 'asterisk', '+': 'plus', ',': 'comma', '-': 'minus', '.': 'period',
+  '/': 'slash', ':': 'colon', ';': 'semicolon', '<': 'less', '=': 'equal', '>': 'greater', '?': 'question', '@': 'at',
+  '[': 'bracketleft', '\\': 'backslash', ']': 'bracketright', '^': 'asciicircum', '_': 'underscore', '`': 'grave',
+  '{': 'braceleft', '|': 'bar', '}': 'braceright', '~': 'asciitilde', '\n': 'Return', '\t': 'Tab' }
+
 const point = (value, name, size) => {
   if (!Array.isArray(value) || value.length !== size) throw new Error(`${name} must be [${size === 2 ? 'x,y' : 'x1,y1,x2,y2'}]`)
   return value.map((v, i) => int(v, `${name}[${i}]`))
@@ -260,7 +267,12 @@ async function step(s) {
   } else if ('type' in s) {
     if (typeof s.type !== 'string') throw new Error('type must be a string')
     typed = true
-    await seat('type', '--', s.type)
+    // Text on the keyboard's layout goes in as key presses, in order with the steps around it;
+    // anything else (accents, other scripts) as the input method's commit.
+    const keys = [...s.type].map(c => KEYSYMS[c] ?? (/^[A-Za-z0-9]$/.test(c) ? c : null))
+    if (s.type && keys.every(Boolean)) {
+      for (let i = 0; i < keys.length; i += 200) await seat('key', '--', ...keys.slice(i, i + 200))
+    } else await seat('type', '--', s.type)
   } else if ('click' in s) {
     const [x, y] = point(s.click, 'click', 2), button = s.button ?? 1, count = s.count ?? 1
     if (!BUTTONS[button]) throw new Error('button must be 1 (left), 2 (middle) or 3 (right)')
@@ -323,8 +335,18 @@ const handlers = {
     if (!Array.isArray(steps) || steps.length < 1 || steps.length > 30) throw new Error('steps must hold 1–30 steps')
     let done = 0, error
     const notes = []
+    let after
     for (const s of steps) {
-      try { const note = await step(s); if (note) notes.push(note); done++ } catch (e) { error = e.message; break }
+      try {
+        // Typed text reaches an application as an input method's commit, keys as key events,
+        // and it may take them out of order: after typing, the next step waits until the
+        // window has drawn it.
+        if (after === 'type' && s && typeof s === 'object' && !('wait' in s)) {
+          await seat('settle', 'quiet', ...(actedAt === undefined ? [] : [String(actedAt)]))
+        }
+        const note = await step(s); if (note) notes.push(note); done++
+        after = s && typeof s === 'object' && 'type' in s ? 'type' : undefined
+      } catch (e) { error = e.message; break }
     }
     const head = done === steps.length ? (steps.length > 1 ? `Done ${done} steps.` : 'Done.') : `Did ${done} of ${steps.length}; stopped: ${error}`
     const content = [head + (notes.length ? ` (${notes.join('; ')})` : '')]

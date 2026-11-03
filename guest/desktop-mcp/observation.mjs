@@ -68,6 +68,7 @@ export class Observer {
       this.seen.delete(focused)
       return lines.join('\n')
     }
+    if (state?.partial && (full || !this.seen.has(focused))) lines.push(`(${state.partial})`)
     const current = new Map()
     for (const element of state?.elements ?? []) {
       const short = this.short(element.id)
