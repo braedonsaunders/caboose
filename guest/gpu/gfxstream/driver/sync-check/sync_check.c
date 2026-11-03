@@ -843,7 +843,8 @@ static void pipelineCacheCase(const VkPhysicalDeviceProperties* props) {
 
 // The exit_latency child: what a launcher's splash does (Steam's update window): an instance,
 // a device, an X11 window with a surface whose capabilities it asks (which starts the bind)
-// and a swapchain; then it says so on `fd` and ends, in `mode` 0 without destroying
+// and a swapchain; then it says so on `fd`, destroys its window, presents one more frame and
+// ends, in `mode` 0 without destroying
 // anything, in mode 1 after destroying everything.
 static int exitChild(int mode, int fd) {
     const char* extensions[] = {VK_KHR_SURFACE_EXTENSION_NAME, VK_KHR_XCB_SURFACE_EXTENSION_NAME};
@@ -906,12 +907,31 @@ static int exitChild(int mode, int fd) {
     swapInfo.clipped = VK_TRUE;
     VkSwapchainKHR swapchain;
     if (vkCreateSwapchainKHR(childDevice, &swapInfo, NULL, &swapchain) != VK_SUCCESS) return 3;
-    // Shutdown: the window goes first, as a toolkit's does.
-    xcb_destroy_window(connection, window);
-    xcb_flush(connection);
+    // Shutdown: the window goes first, as a toolkit's does, and one more frame is presented
+    // to it (Steam's update window does), with its bind refused or still in flight.
     const char done = 1;
     if (write(fd, &done, 1) != 1) return 3;
+    xcb_destroy_window(connection, window);
+    xcb_flush(connection);
+    VkSemaphoreCreateInfo semaphoreInfo = {VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+    VkSemaphore acquired;
+    if (vkCreateSemaphore(childDevice, &semaphoreInfo, NULL, &acquired) != VK_SUCCESS) return 3;
+    uint32_t index = 0;
+    const VkResult got = vkAcquireNextImageKHR(childDevice, swapchain, 1000000000ull, acquired, VK_NULL_HANDLE, &index);
+    if (got == VK_SUCCESS || got == VK_SUBOPTIMAL_KHR) {
+        VkQueue childQueue;
+        vkGetDeviceQueue(childDevice, 0, 0, &childQueue);
+        VkPresentInfoKHR present = {VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
+        present.waitSemaphoreCount = 1;
+        present.pWaitSemaphores = &acquired;
+        present.swapchainCount = 1;
+        present.pSwapchains = &swapchain;
+        present.pImageIndices = &index;
+        vkQueuePresentKHR(childQueue, &present);
+    }
     if (mode == 1) {
+        vkDeviceWaitIdle(childDevice);
+        vkDestroySemaphore(childDevice, acquired, NULL);
         vkDestroySwapchainKHR(childDevice, swapchain, NULL);
         vkDestroySurfaceKHR(childInstance, surface, NULL);
         vkDestroyDevice(childDevice, NULL);
