@@ -353,6 +353,7 @@ int CabooseSocketStream::connectWith(const char* path, const unsigned char* offe
 extern "C" int caboose_gfxstream_reconnect_ended(void);
 extern "C" int caboose_gfxstream_reconnect_ended(void) { return CabooseSocketStream::reconnectEnded(); }
 int CabooseSocketStream::reconnectEnded() {
+    std::lock_guard<std::mutex> epochLock(caboose::completion::transportEpochMutex);
     CabooseSocketStream* stream = firstStream.load();
     if (!stream) { errno = ENOTCONN; return -1; }
     // When the completion feed or a surface socket detected the executor's departure first,

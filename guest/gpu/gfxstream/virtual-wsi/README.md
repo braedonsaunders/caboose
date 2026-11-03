@@ -68,7 +68,8 @@ with (`presentableFormats`); its deeper and HDR formats are not. Toolkits ask ev
 so the provider's last reply for the physical device answers at once; once it is 500 ms
 old a refresh is sent without waiting (`Client::beginQuery`) and its reply is used when
 it arrives. Unknown extension chains fail
-explicitly. Uncertain retirement retains the bounded wrapper and instance lease.
+explicitly. Guest wrappers are freed synchronously with their application allocator;
+remote retirement retains only bounded numeric identities and owned destroy packets.
 
 Toolkits create a surface, query it and create a swapchain before its window exists: GTK
 for a `wl_surface` without an `xdg_toplevel` yet, X11 toolkits for windows not yet
@@ -77,12 +78,17 @@ the connection of a bind it refused; that close is not executor loss (only a bou
 connection's end is reported to `peerGone`). The surface binds lazily: a query tries
 again at most every 100 ms on a new connection (`Client::reset`), and a present always
 tries. The bind is sent at once and its reply is collected by a later call when it has
-not arrived. With guest-owned images a query never waits for it and only a swapchain's
-first present does, up to 2 s, so an application that draws once is shown; otherwise a query
-waits up to 250 ms. A surface destroyed with its bind in flight does not wait for the
-answer: its connection closes, the broker hands a later grant back, and the instance is kept
-until the process ends, so an application that makes a window and ends at once is never held
-by the phone's own wait for the window's layer. Without guest-owned images a query has no
+not arrived. With guest-owned images, queries and the first present do not wait for the
+bind. A bounded per-surface pump retains accepted frames and consumes bind, creation,
+mapping and presentation replies independently, including when an application presents
+only once. Private semaphore handoffs consume application waits before present returns.
+A refused bind ends the pending swapchain; subsequent acquisition reports out of date.
+An outstanding bind or presentation does not postpone guest object destruction. Native
+images, memory, private semaphores, devices and instances are retired only after protocol
+proof; their packets contain no application callbacks or guest pointers. Executor generation
+fences prevent sending old identities on a reconnected transport. At most 64 leases and
+26 identities per lease are retained; exhausted admission fails instead of growing a queue.
+Workers are joined before process static destruction. Without guest-owned images a query has no
 local answer and waits up to 5 s for a bind in flight, as long as the broker waits for the
 compositor. A bind the phone answered with a failure (it could not take the window's layer)
 is retried after 100 ms, doubling up to 4 s, by queries and presents alike. The first
@@ -128,8 +134,8 @@ order, a submission that waits for them and signals the presented image's own bi
 semaphore, which is all the phone waits for. The application may signal its semaphores
 again once vkQueuePresentKHR returns, before the phone runs that present; the image's
 semaphore is signaled again only when the image is presented again, after the phone has
-released it. Swapchain retirement waits up to 1 s for the surface's ordered presents to retire, since
-retirement rejects presents still waiting for their order mark.
+released it. With guest-owned images, native swapchain retirement follows final
+presentation receipts asynchronously. The compatibility path waits up to 1 s.
 
 With ordered presents and the completion feed, the next image is acquired right after
 each present, on the phone, against one of three private semaphores. The application's
@@ -139,9 +145,9 @@ the application's semaphore and fence. A private semaphore is acquired again onl
 its slot's fence shows that hand-off ran. Swapchain retirement first cancels an acquire
 made ahead of time; an image it acquired is released by native retirement.
 
-Unknown creation or retirement completion quarantines allocations and prevents
-device destruction. Source images are freed only after real swapchain or surface
-retirement. App-issued idle calls remain unchanged; the native decoder owns the
+Unknown creation or retirement completion retains bounded native identities until
+retirement or executor loss. Guest mapping and allocator cleanup completes synchronously;
+source native images remain until real swapchain or surface retirement. App-issued idle calls remain unchanged; the native decoder owns the
 observed completion proof for acquired-but-unused images. Source images use
 the first compatible memory type that is neither host-visible nor host-coherent where the
 device has one (lavapipe has none, and its first compatible type is used; a later type

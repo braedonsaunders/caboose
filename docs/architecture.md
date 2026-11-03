@@ -3072,6 +3072,12 @@ round trip on the same authenticated output and scale. It uses the actual return
 server geometry; this equivalence is not a general configure acknowledgment.
 A zero-pair BIND requests that trusted extent before swapchain creation; a positive
 pair only asserts equality.
+Guest-owned presentation retains a bounded set of accepted frames while a surface bind,
+native swapchain creation or mapping is pending. Its pump progresses without another
+application call. Guest destruction completes within the application allocator's lifetime;
+only copied destroy packets and native identities remain until retirement proof or executor
+loss. Generation fencing keeps those identities off a replacement executor's transport.
+
 Indexed Wayland swapchains choose render-buffer pixels separately from desktop
 placement. Variable-extent queries retain actual provider bounds. Before CREATE,
 the native surface verifies that no swapchain or work remains, configures the real

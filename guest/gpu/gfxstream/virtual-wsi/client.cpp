@@ -103,6 +103,7 @@ bool Client::awaitLive(uint16_t kind, uint64_t serial, Deadline deadline) {
     return false;
 }
 void Client::pump() {
+    if (retired_) return;
     require(fd_>=0);
     for (;;) {
         pollfd p{fd_,POLLIN,0};
@@ -113,6 +114,7 @@ void Client::pump() {
         if (!(p.revents & POLLIN)) fail(ECONNRESET);
         Record r;
         if (receiveReady(&r)) absorb(r,0,0);
+        if (retired_) return;
     }
 }
 bool Client::absorb(Record& r, uint16_t kind, uint64_t serial) {
@@ -161,7 +163,7 @@ bool Client::absorb(Record& r, uint16_t kind, uint64_t serial) {
     }
     if (r.kind==24) {
         retirement_=r; retired_=status(r.body,40).success();
-        if (kind!=24) fail(ECANCELED);
+        if (kind!=24) { if (!retiring_) fail(ECANCELED); return false; }
     }
     if (r.kind==30 && (kind!=30 || u64(r.body,40)!=serial)) {
         auto id=u64(r.body,40);
@@ -176,6 +178,16 @@ bool Client::absorb(Record& r, uint16_t kind, uint64_t serial) {
         if (it->second.swapchain)
             swapchains_.at(it->second.swapchain).releasedSerial.at(it->second.index)=u64(r.body,40);
         return kind==22 && (!serial || u64(r.body,40)==serial);
+    }
+    if (r.kind==33 && pendingRetire_ && u64(r.body,40)==pendingRetire_) {
+        if (retireArrived_) fail(EPROTO);
+        auto& swap=swapchains_.at(pendingRetire_);
+        swap.retired=status(r.body,48).success();
+        if (swap.retired) {
+            for (const auto& frame:sources_) if (frame.second.swapchain==pendingRetire_) fail(EPROTO);
+            swapchains_.erase(pendingRetire_);
+        }
+        retireReply_=std::move(r); retireArrived_=true; return false;
     }
     if (r.kind==26 && pendingCreate_ && u64(r.body,40)==pendingCreate_) {
         if (createArrived_) fail(EPROTO);
@@ -350,12 +362,16 @@ bool Client::waitPresentationIdleFor(Deadline until) {
 }
 Record Client::retire(Deadline deadline) {
     if (retired_) return retirement_;
-    require(bound_ && !retiring_);
-    retiring_=true;
-    if (!revoked_) send(23,{},deadline);
+    beginRetire(deadline);
     auto r=await(24,0,deadline);
     retired_=status(r.body,40).success();
     return r;
+}
+void Client::beginRetire(Deadline deadline) {
+    if (retiring_ || retired_) return;
+    require(bound_);
+    retiring_=true;
+    if (!revoked_) send(23,{},deadline);
 }
 Record Client::createSwapchain(const Bytes& p, Deadline deadline) {
     beginCreateSwapchain(p,deadline);
@@ -423,6 +439,11 @@ void Client::acquireLocally(uint64_t id, uint32_t index) {
     auto& swap=swapchains_.at(id);
     require(swap.mapped && swap.guestImages && !swap.retiring && index<swap.count && !swap.acquired[index]);
     swap.acquired[index]=true;
+}
+size_t Client::presentationsInFlight(uint64_t swapchain) const {
+    size_t count=0;
+    for (const auto& item:sources_) count+=item.second.swapchain==swapchain;
+    return count;
 }
 size_t Client::sourcesInFlight() const {
     size_t count=0;
@@ -515,14 +536,19 @@ bool Client::presentFailed(uint64_t id, Status* out) const {
     return true;
 }
 Record Client::retireSwapchain(uint64_t id, Deadline deadline) {
-    require(bound_ && swapchains_.count(id)); auto& swap=swapchains_.at(id);
+    beginRetireSwapchain(id,deadline);
+    Record reply;
+    while (!takeRetiredSwapchain(&reply)) { auto r=receive(deadline); absorb(r,0,0); }
+    return reply;
+}
+void Client::beginRetireSwapchain(uint64_t id, Deadline deadline) {
+    require(!pendingRetire_ && bound_ && swapchains_.count(id)); auto& swap=swapchains_.at(id);
     require(!swap.retired && !swap.acquire);
-    swap.retiring=true; Bytes p; put64(p,id); send(32,p,deadline);
-    auto r=await(33,id,deadline); swap.retired=status(r.body,48).success();
-    if (swap.retired) {
-        for (const auto& frame:sources_) if (frame.second.swapchain==id) fail(EPROTO);
-        swapchains_.erase(id);
-    }
-    return r;
+    swap.retiring=true; pendingRetire_=id;
+    Bytes p; put64(p,id); send(32,p,deadline);
+}
+bool Client::takeRetiredSwapchain(Record* out) {
+    if (!retireArrived_) return false;
+    *out=std::move(retireReply_); retireArrived_=false; pendingRetire_=0; return true;
 }
 }
