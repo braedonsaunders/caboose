@@ -158,8 +158,10 @@ static void pumpRemoteSurface(Surface& surface) {
     }
 }
 
-// Constructed when the first pump starts, after the API-side encoder and registries.
-// Its destructor joins pumps before static Vulkan/ledger state can be destroyed.
+// Constructed when the first pump starts, after the API-side encoder and registries. Never
+// destroyed, like the state its pumps use: a process's exit runs static destructors while its
+// pumps may still wait for an executor (one that left), and joining them there would hold
+// the exit, or end the process if the exiting thread is one of them.
 class SurfaceWorkers {
     struct Worker { std::shared_ptr<std::atomic<bool>> done; std::thread thread; };
     std::mutex mutex_;
@@ -185,7 +187,7 @@ public:
         })});
     }
 };
-static SurfaceWorkers& surfaceWorkers() { static SurfaceWorkers workers; return workers; }
+static SurfaceWorkers& surfaceWorkers() { static SurfaceWorkers& workers=*new SurfaceWorkers; return workers; }
 
 static void startSurfaceWorker(const std::shared_ptr<Surface>& surface) {
     if (surface->workerStarted) return;

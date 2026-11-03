@@ -27,7 +27,7 @@ applies one event at a random point:
 
 After each cycle the long-lived apps must present real pictures again (Chromium, and Steam once
 its window is poked), and freshly started apps must too: a Chromium with a new profile, a GL
-app (glxgears through Zink, whose window the compositor's own images show) and, with --triangle, DXVK's d3d11 triangle through
+app (glxgears through Zink, in its own window or the compositor's images) and, with --triangle, DXVK's d3d11 triangle through
 Proton. A real picture is neither noise nor one colour (surfaces.content: a repeat fraction from
 0.3 to 0.999 and at least 3 colours). The check prints one line per cycle and fails on the first
 cycle whose apps did not all present.
@@ -139,7 +139,34 @@ class Seat:
             f"--connect 127.0.0.1:{PORT} --token-file /tmp/token --library /build/libcaboose_gpu_executor.so --features {PHONE} "
             f"--pictures /pictures --display 1280x800")
         self.executors.append(name)
-        self.wait(lambda: 'session ready' in run('docker', 'logs', name, check=False), 30, 'the executor')
+        if self.o.gdb:
+            # Each executor's native stacks if it faults: gdb on the host, attached to its Python
+            # as soon as it runs (a fault can come with the first connections).
+            pid = run('docker', 'inspect', '-f', '{{.State.Pid}}', name).strip()
+            target = None
+            for _ in range(200):
+                for child in run('pgrep', '-P', pid, check=False).split():
+                    try:
+                        if b'executor.py' in open(f'/proc/{child}/cmdline', 'rb').read():
+                            target = child
+                    except OSError:
+                        pass
+                if target:
+                    break
+                time.sleep(0.02)
+            if target:
+                trace = open(os.path.join(self.o.out, f'gdb-{self.generation}.txt'), 'w')
+                subprocess.Popen(['gdb', '-p', target, '-batch', '-ex', f'set sysroot /proc/{target}/root',
+                                  '-ex', 'handle SIGPIPE nostop noprint', '-ex', 'handle SIGUSR1 nostop noprint',
+                                  '-ex', 'continue', '-ex', 'thread apply all bt 25'],
+                                 stdout=trace, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
+        try:
+            self.wait(lambda: 'session ready' in run('docker', 'logs', name, check=False), 30, 'the executor')
+        except RuntimeError:
+            # Where the broker waits, in the display log, before the seat goes.
+            self.sh(f"pkill -USR1 -f '{self.dir}/libexec/caboose-gpu-broker'", check=False)
+            time.sleep(1)
+            raise
         return name
 
     def end_executor(self):
@@ -215,6 +242,7 @@ def main():
     parser.add_argument('--steam-home', help="a home of the check's own holding a Steam Flatpak profile (never the owner's)")
     parser.add_argument('--triangle', help="DXVK's d3d11 triangle.exe, inside --steam-home's Flatpak data")
     parser.add_argument('--proton', default='/opt/caboose-games/GE-Proton11-11/proton')
+    parser.add_argument('--gdb', action='store_true', help="attach gdb to each executor; a fault's stacks go to OUT/gdb-N.txt")
     o = parser.parse_args()
     o.work, o.release = os.path.abspath(o.work), os.path.abspath(o.release)
     os.makedirs(o.out, exist_ok=True)
@@ -362,9 +390,10 @@ def main():
             wanted = dict(long_lived)
             # Chromium's Wayland window is its --window-size less its frame (32x42).
             wanted['fresh chromium'] = lambda w, h: (w, h) == FRESH_CHROMIUM
-            # glxgears draws with Zink and reaches the compositor as an X11 window's pixels; the
-            # compositor's own window images (the display's size) show it.
-            wanted['fresh gl in the compositor'] = lambda w, h: (w, h) == (1280, 800)
+            # glxgears draws with Zink and presents in its own window (its swapchain binds), or
+            # reaches the compositor as an X11 window's pixels, which the compositor's own images
+            # (the display's size) show.
+            wanted['fresh gl'] = lambda w, h: (w, h) in ((320, 240), (1280, 800))
             if 'fresh dxvk' in fresh:
                 wanted['fresh dxvk'] = lambda w, h: (w, h) == TRIANGLE
             missing, pictures = judge(mark, wanted, 60)
