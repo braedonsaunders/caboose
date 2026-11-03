@@ -128,12 +128,16 @@ async function view(full) {
   // raced the focus change describes the window before: read again, for up to 1.5 s, until
   // the read is of the focused window and, for one not seen before, shows controls.
   const stale = () => {
-    const focused = listing.windows.find(w => w.id === listing.focused)
+    // The read describes the window an open menu or tooltip belongs to, as a11y.py does.
+    let focused = listing.windows.find(w => w.id === listing.focused)
+    for (let hops = 0; focused?.kind === 'popup' && focused.parent != null && hops < 8; hops++)
+      focused = listing.windows.find(w => w.id === focused.parent) ?? focused
     if (!focused) return false
     if ((state.window?.title ?? '') !== (focused.title ?? '')) return true
     return !(state.elements ?? []).length && !observer.seen.has(listing.focused)
   }
-  for (let retry = 0; retry < 15 && stale(); retry++) {
+  const deadline = performance.now() + 1500
+  while (performance.now() < deadline && stale()) {
     await new Promise(resolve => setTimeout(resolve, 100))
     state = JSON.parse((await a11y('elements', {}))[0].text)
     listing = await seat('windows')
