@@ -13,6 +13,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createInterface } from 'node:readline'
+import { createConnection } from 'node:net'
 import { Worker } from './worker.mjs'
 import { Observer } from './observation.mjs'
 import { controlAlive, ensureAgentSeat } from './ensure-agent-seat.mjs'
@@ -22,9 +23,12 @@ const env = { ...process.env, DISPLAY }
 const PROTOCOL = '2025-06-18'
 // CABOOSE_DESKTOP_TRACE: a file that gets one line per tool call (tool, milliseconds, reply size).
 const TRACE = process.env.CABOOSE_DESKTOP_TRACE
+// CABOOSE_DESKTOP_PAGE_TOOLS=0 leaves page tools out, to measure the accessibility path alone.
+const PAGE_TOOLS = process.env.CABOOSE_DESKTOP_PAGE_TOOLS !== '0'
 // Installed side by side: /opt/caboose/desktop-mcp.mjs, a11y.py and seat.py.
 const A11Y = fileURLToPath(new URL('./a11y.py', import.meta.url))
 const SEAT = fileURLToPath(new URL('./seat.py', import.meta.url))
+const LAUNCHER = fileURLToPath(new URL('./launcher.py', import.meta.url))
 // What a launched app needs to build its accessibility tree: GTK's bridge must not be
 // switched off (NO_AT_BRIDGE, GTK_A11Y=none), Chromium and Electron read
 // ACCESSIBILITY_ENABLED, Firefox GNOME_ACCESSIBILITY, Qt QT_LINUX_ACCESSIBILITY_ALWAYS_ON.
@@ -34,111 +38,31 @@ const launchEnv = { ...env, ACCESSIBILITY_ENABLED: '1', GNOME_ACCESSIBILITY: '1'
 delete launchEnv.NO_AT_BRIDGE
 if (launchEnv.GTK_A11Y === 'none') delete launchEnv.GTK_A11Y
 
+// Three tools, kept short: their definitions go to the model on every turn.
 const tools = [
   {
-    name: 'elements',
-    description: 'The agent display\'s windows, and every control of the focused window from its accessibility tree, '
-      + 'one per line: short id (e1, e2, …), role, name, = value, [states] (at most 200, in reading order). Instant '
-      + 'and needs no screenshot: use it first, then act by id with click_element, set_text or batch. Actions return '
-      + 'what changed afterwards (windows opened or closed, controls added +, changed ~ or removed -), so call this '
-      + 'again only to see a whole window. If it returns a note instead of controls, the window has no accessibility '
-      + 'tree: use screenshot and click.',
-    inputSchema: { type: 'object', properties: {} },
+    name: 'look',
+    description: 'The focused window\'s controls from its accessibility tree, one per line: id role "name" = value [states], '
+      + 'and in a browser the page\'s tools. find: only controls whose name contains it. text: also the window\'s readable text '
+      + '(documents, pages, terminals). windows: every window, with its id and position.',
+    inputSchema: { type: 'object', properties: { find: { type: 'string' }, text: { type: 'boolean' }, windows: { type: 'boolean' } } },
   },
   {
-    name: 'find',
-    description: 'Find elements of the focused window on the agent display whose name contains the query '
-      + '(case-insensitive), optionally of one role such as "button", "link", "entry", "check box", "menu item" '
-      + 'or "page tab". Same lines as elements; prefer it to a screenshot for locating a control.',
-    inputSchema: {
-      type: 'object',
-      properties: { query: { type: 'string', description: 'Text to look for in element names' }, role: { type: 'string', description: 'Optional role, e.g. "button"' } },
-      required: ['query'],
-    },
-  },
-  {
-    name: 'click_element',
-    description: 'Press an element by its id from elements or find: performs its accessibility action (click, press, '
-      + 'activate, follow a link), or clicks its centre when it has none. Prefer this to click with coordinates.',
-    inputSchema: { type: 'object', properties: { id: { type: 'string', description: 'Element id from elements or find, e.g. e12' } }, required: ['id'] },
-  },
-  {
-    name: 'set_text',
-    description: 'Replace the text of an editable element (a field or text area) by its id from elements or find. '
-      + 'Prefer this to clicking and typing.',
-    inputSchema: { type: 'object', properties: { id: { type: 'string' }, text: { type: 'string' } }, required: ['id', 'text'] },
-  },
-  {
-    name: 'read_text',
-    description: 'Read the focused window\'s text on the agent display from its accessibility tree: labels, documents '
-      + 'and web page text, in reading order, up to about 20000 characters. Prefer this to a screenshot for reading.',
-    inputSchema: { type: 'object', properties: {} },
+    name: 'act',
+    description: 'Run steps in order, stopping at the first failure; then reply with what changed (+ added, ~ changed, - removed '
+      + 'controls; windows opened or closed). Put every step you already know in one call. A step is one of: {"press":id} '
+      + '{"set":id,"text":t} replaces a field\'s text, {"key":"ctrl+s"}, {"type":t}, {"click":[x,y],"button":1-3,"count":1-3}, '
+      + '{"scroll":[x,y],"dy":n}, {"drag":[x1,y1,x2,y2]}, {"focus":window}, {"wait":ms}, {"launch":"command"}, '
+      + '{"tool":name,"args":{...}} calls a page tool.',
+    inputSchema: { type: 'object', properties: { steps: { type: 'array', items: { type: 'object' } } }, required: ['steps'] },
   },
   {
     name: 'screenshot',
-    description: 'Capture the agent display as a PNG. Coordinates in other tools use this image\'s pixels. Slower and '
-      + 'costlier than elements, find and read_text: use it for what the accessibility tree does not show.',
-    inputSchema: { type: 'object', properties: { window: { type: 'integer', description: 'Optional window id from list_windows to capture only that window' } } },
-  },
-  {
-    name: 'list_windows',
-    description: 'List open windows on the agent display, bottom to top, with id, title, application, geometry and which has the keyboard.',
-    inputSchema: { type: 'object', properties: {} },
-  },
-  {
-    name: 'focus',
-    description: 'Raise and focus a window by id.',
-    inputSchema: { type: 'object', properties: { window: { type: 'integer' } }, required: ['window'] },
-  },
-  {
-    name: 'click',
-    description: 'Move the pointer to (x, y) and click. button: 1 left, 2 middle, 3 right. count: 2 for double-click.',
-    inputSchema: { type: 'object', properties: { x: { type: 'integer' }, y: { type: 'integer' }, button: { type: 'integer', default: 1 }, count: { type: 'integer', default: 1 } }, required: ['x', 'y'] },
-  },
-  {
-    name: 'drag',
-    description: 'Press at (x1, y1), move to (x2, y2), release.',
-    inputSchema: { type: 'object', properties: { x1: { type: 'integer' }, y1: { type: 'integer' }, x2: { type: 'integer' }, y2: { type: 'integer' } }, required: ['x1', 'y1', 'x2', 'y2'] },
-  },
-  {
-    name: 'type',
-    description: 'Type text into the focused window.',
-    inputSchema: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] },
-  },
-  {
-    name: 'key',
-    description: 'Press a key or combination, e.g. "Return", "ctrl+s", "ctrl+shift+t", "alt+F4".',
-    inputSchema: { type: 'object', properties: { combo: { type: 'string' } }, required: ['combo'] },
-  },
-  {
-    name: 'scroll',
-    description: 'Scroll at (x, y): positive dy scrolls down, positive dx scrolls right, in wheel steps.',
-    inputSchema: { type: 'object', properties: { x: { type: 'integer' }, y: { type: 'integer' }, dx: { type: 'integer', default: 0 }, dy: { type: 'integer', default: 0 } }, required: ['x', 'y'] },
-  },
-  {
-    name: 'launch',
-    description: 'Start a GUI application on the agent display, e.g. "chromium https://example.com" or "libreoffice --calc".',
-    inputSchema: { type: 'object', properties: { command: { type: 'string' } }, required: ['command'] },
+    description: 'A picture of the seat, or of one window. Only for what the controls do not tell; coordinates are its pixels. '
+      + 'marks: number the controls on it.',
+    inputSchema: { type: 'object', properties: { window: { type: 'integer' }, marks: { type: 'boolean' } } },
   },
 ]
-
-tools.find(t => t.name === 'screenshot').inputSchema.properties.annotate = { type: 'boolean', default: false, description: 'Overlay numbered accessibility bounds and return an id/bounds legend.' }
-const mutations = ['click_element', 'set_text', 'click', 'drag', 'type', 'key', 'scroll', 'focus']
-for (const tool of tools) {
-  if (mutations.includes(tool.name)) tool.inputSchema.properties.observe = { type: 'boolean', default: true, description: 'Return what changed on the display after the action (default true).' }
-}
-const stepProperties = Object.assign({}, ...tools.filter(t => mutations.includes(t.name)).map(t => t.inputSchema.properties))
-delete stepProperties.observe
-stepProperties.action = { type: 'string', enum: [...mutations, 'focus_element', 'wait'] }
-stepProperties.ms = { type: 'integer', minimum: 10, maximum: 5000 }
-tools.splice(4, 0, {
-  name: 'batch', description: 'Execute 1–20 actions sequentially, stopping at the first failure; prefer it whenever the next '
-    + 'several steps are known (fill a form, then press its button). Returns the completed count and what changed.',
-  inputSchema: { type: 'object', properties: {
-    steps: { type: 'array', minItems: 1, maxItems: 20, items: { type: 'object', properties: stepProperties, required: ['action'] } },
-    observe: { type: 'boolean', default: true },
-  }, required: ['steps'] },
-})
 
 function int(value, name) {
   if (!Number.isInteger(value) || value < -100000 || value > 100000) throw new Error(`${name} must be an integer`)
@@ -155,12 +79,22 @@ const observer = new Observer()
 const a11yWorker = new Worker(A11Y, [`--display=${DISPLAY}`], 30_000)
 const seatWorker = new Worker(SEAT)
 let seatEnvironment
+// These tools are the seat's assistive technology, and say so on its accessibility bus as a
+// screen reader does: Chromium, Electron and other toolkits that build their full tree only
+// for one then expose it to applications started afterwards.
+function announceAssistiveTechnology(seatEnv) {
+  const child = spawn('gdbus', ['call', '--session', '--dest', 'org.a11y.Bus', '--object-path', '/org/a11y/bus', '--method',
+    'org.freedesktop.DBus.Properties.Set', 'org.a11y.Status', 'ScreenReaderEnabled', '<true>'], { env: { ...env, ...seatEnv }, stdio: 'ignore' })
+  child.on('error', () => {})
+  return new Promise(resolve => { child.on('exit', resolve); child.on('error', resolve) })
+}
 async function workerRequest(worker, request) {
   const ready = await ensureAgentSeat()
   if (ready !== seatEnvironment) {
     a11yWorker.close()
     seatWorker.close()
     seatEnvironment = ready
+    await announceAssistiveTechnology(ready)
   }
   Object.assign(env, ready, { DISPLAY })
   try {
@@ -182,155 +116,268 @@ async function seat(...args) { return workerRequest(seatWorker, { args }) }
 const BUTTONS = { 1: 'left', 2: 'middle', 3: 'right' }
 
 // The display as the observer renders it: everything (`full`), or what changed since the last time.
+let lastState
 async function view(full) {
-  const state = JSON.parse((await a11y('elements', {}))[0].text)
+  const state = lastState = JSON.parse((await a11y('elements', {}))[0].text)
   const listing = await seat('windows')
   return observer.render(listing, state, { full })
 }
+
+// A window with no accessibility tree (SDL, games, custom-drawn toolkits): its picture, and the
+// words OCR finds in it (tesseract, when installed) as lines with their centres in seat
+// coordinates. Marked as read from pixels.
+async function pixelFallback() {
+  const listing = await seat('windows')
+  const window = listing.windows.find(w => w.id === listing.focused)
+  if (!window) return []
+  const dir = await mkdtemp(join(tmpdir(), 'caboose-shot-'))
+  try {
+    const file = join(dir, 'window.png')
+    const shot = await seat('screenshot', '--out', file, '--window', String(window.id))
+    const png = await readFile(file)
+    const parts = [{ type: 'text', text: `No accessibility tree in ${window.kind} ${window.id}: its picture follows (read from pixels).` },
+      { type: 'image', data: png.toString('base64'), mimeType: 'image/png' }]
+    const words = await ocr(file, shot.rect, png.readUInt32BE(16), png.readUInt32BE(20))
+    if (words) parts.push({ type: 'text', text: `Text read from pixels (OCR; x,y are seat coordinates of each line's centre):\n${words}` })
+    return parts
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+}
+function ocr(file, rect, width, height) {
+  return new Promise(resolve => {
+    const child = spawn('tesseract', [file, '-', 'tsv'], { stdio: ['ignore', 'pipe', 'ignore'] })
+    let out = ''
+    child.stdout.on('data', chunk => { out += chunk })
+    child.on('error', () => resolve(''))
+    child.on('close', () => {
+      const [x0, y0, w, h] = rect ?? [0, 0, width, height]
+      const sx = w / width, sy = h / height
+      const lines = new Map()
+      for (const row of out.split('\n').slice(1)) {
+        const f = row.split('\t')
+        if (f.length < 12 || !f[11].trim() || Number(f[10]) < 50) continue
+        const key = `${f[2]}.${f[3]}.${f[4]}`
+        const line = lines.get(key) ?? { words: [], left: Infinity, top: Infinity, right: 0, bottom: 0 }
+        line.words.push(f[11].trim())
+        line.left = Math.min(line.left, +f[6]); line.top = Math.min(line.top, +f[7])
+        line.right = Math.max(line.right, +f[6] + +f[8]); line.bottom = Math.max(line.bottom, +f[7] + +f[9])
+        lines.set(key, line)
+      }
+      resolve([...lines.values()].slice(0, 80).map(l => `${JSON.stringify(l.words.join(' '))} at ${Math.round(x0 + (l.left + l.right) / 2 * sx)},${Math.round(y0 + (l.top + l.bottom) / 2 * sy)}`).join('\n'))
+    })
+  })
+}
 const element = id => observer.resolve(text(id, 'id', 500))
 
-const handlers = {
-  elements: async () => [{ type: 'text', text: await view(true) }],
-  async find({ query, role }) {
-    const { elements, note } = JSON.parse((await a11y('find', { query: text(query, 'query', 500), ...(role === undefined ? {} : { role: text(role, 'role', 60) }) }))[0].text)
-    const lines = (elements ?? []).map(e => observer.line(observer.short(e.id), e))
-    return [{ type: 'text', text: lines.length ? lines.join('\n') : (note ?? 'No element matches.') }]
-  },
-  click_element: async ({ id }) => { await a11y('act', { element: element(id), action: 'press' }); return [{ type: 'text', text: `Pressed ${id}.` }] },
-  async set_text({ id, text: value }) {
-    if (typeof value !== 'string' || value.length > 100_000) throw new Error('text must be a string of at most 100000 characters')
-    const { note } = JSON.parse((await a11y('act', { element: element(id), action: 'set-text', text: value }))[0].text)
-    return [{ type: 'text', text: `Set the text of ${id}${note ? ` (${note})` : ''}.` }]
-  },
-  read_text: () => a11y('text', {}),
-  async screenshot({ window, annotate = false }) {
-    if (window !== undefined && !Number.isInteger(window)) throw new Error('window must be an id from list_windows')
-    if (typeof annotate !== 'boolean') throw new Error('annotate must be a boolean')
-    const dir = await mkdtemp(join(tmpdir(), 'caboose-shot-'))
-    try {
-      const file = join(dir, 'seat.png')
-      const shot = await seat('screenshot', '--out', file, ...(window === undefined ? [] : ['--window', String(window)]))
-      let legend
-      if (annotate) {
-        const state = JSON.parse((await a11y('elements', {}))[0].text)
-        ;({ legend } = await seat('annotate', file, shot.rect, state.elements, window ?? null))
-        legend = legend?.map(entry => ({ ...entry, id: observer.short(entry.id) }))
-      }
-      return [{ type: 'image', data: (await readFile(file)).toString('base64'), mimeType: 'image/png' },
-        ...(legend ? [{ type: 'text', text: JSON.stringify(legend) }] : [])]
-    } finally {
-      await rm(dir, { recursive: true, force: true })
-    }
-  },
-  async list_windows() {
-    const { windows } = await seat('windows')
-    const listed = windows.map(w => ({ id: w.id, kind: w.kind, title: w.title, app: w.app_id,
-      x: w.rect[0], y: w.rect[1], width: w.rect[2], height: w.rect[3], focused: w.focused, ...(w.parent == null ? {} : { parent: w.parent }) }))
-    return [{ type: 'text', text: listed.length ? JSON.stringify(listed, null, 2) : 'No windows are open on the agent display.' }]
-  },
-  async focus({ window }) {
-    if (!Number.isInteger(window)) throw new Error('window must be an id from list_windows')
-    await seat('focus', String(window))
-    return [{ type: 'text', text: `Focused ${window}.` }]
-  },
-  async click({ x, y, button = 1, count = 1 }) {
-    if (!BUTTONS[button]) throw new Error('button must be 1 (left), 2 (middle) or 3 (right)')
-    if (![1, 2, 3].includes(count)) throw new Error('count must be 1, 2 or 3')
-    await seat('click', int(x, 'x'), int(y, 'y'), '--button', BUTTONS[button], '--count', String(count))
-    return [{ type: 'text', text: `Clicked button ${button} at ${x},${y}.` }]
-  },
-  async drag({ x1, y1, x2, y2 }) {
-    await seat('drag', int(x1, 'x1'), int(y1, 'y1'), int(x2, 'x2'), int(y2, 'y2'))
-    return [{ type: 'text', text: `Dragged from ${x1},${y1} to ${x2},${y2}.` }]
-  },
-  async type({ text }) {
-    if (typeof text !== 'string') throw new Error('text must be a string')
-    await seat('type', '--', text)
-    return [{ type: 'text', text: `Typed ${text.length} characters.` }]
-  },
-  async key({ combo }) {
-    if (typeof combo !== 'string' || !/^[A-Za-z0-9_+]+$/.test(combo)) throw new Error('combo must look like "ctrl+s" or "Return"')
-    await seat('key', '--', combo)
-    return [{ type: 'text', text: `Pressed ${combo}.` }]
-  },
-  async scroll({ x, y, dx = 0, dy = 0 }) {
-    const clamp = (value, name) => String(Math.max(-50, Math.min(50, Number(int(value, name)))))
-    await seat('scroll', int(x, 'x'), int(y, 'y'), clamp(dx, 'dx'), clamp(dy, 'dy'))
-    return [{ type: 'text', text: `Scrolled ${dx},${dy} at ${x},${y}.` }]
-  },
-  async launch({ command }) {
-    if (typeof command !== 'string' || !command.trim()) throw new Error('command must be a non-empty string')
-    Object.assign(launchEnv, await ensureAgentSeat(), { DISPLAY })
-    const child = spawn('/bin/sh', ['-c', command], { env: launchEnv, detached: true, stdio: 'ignore' })
-    child.unref()
-    return [{ type: 'text', text: `Started: ${command}` }]
-  },
+// Page tools (guest/webmcp): the Caboose WebMCP extension's native host listens beside the
+// browser process that owns the window, at $XDG_RUNTIME_DIR/caboose-webmcp/<pid>.sock.
+function pageRequest(pid, request, timeout = 25_000) {
+  const path = join(env.XDG_RUNTIME_DIR || `/run/user/${process.getuid()}`, 'caboose-webmcp', `${pid}.sock`)
+  return new Promise((resolve, reject) => {
+    const socket = createConnection(path)
+    let data = ''
+    const timer = setTimeout(() => { socket.destroy(); reject(new Error('the page did not answer')) }, timeout)
+    socket.on('connect', () => socket.write(JSON.stringify(request) + '\n'))
+    socket.on('data', chunk => {
+      data += chunk
+      if (!data.includes('\n')) return
+      clearTimeout(timer); socket.end()
+      try { resolve(JSON.parse(data.split('\n')[0])) } catch { reject(new Error('invalid page reply')) }
+    })
+    socket.on('error', error => { clearTimeout(timer); reject(error) })
+  })
+}
+async function focusedPid() {
+  const listing = await seat('windows')
+  return listing.windows.find(w => w.id === listing.focused)?.pid
+}
+const schemaLine = schema => Object.entries(schema?.properties ?? {}).map(([key, p]) =>
+  `${key}${(schema.required ?? []).includes(key) ? '' : '?'}: ${p.enum ? p.enum.slice(0, 12).map(v => JSON.stringify(v)).join('|') + (p.enum.length > 12 ? '|…' : '') : p.type ?? 'any'}`).join(', ')
+// The focused browser tab's tools as lines, or '' where there are none to offer.
+async function pageTools() {
+  if (!PAGE_TOOLS) return ''
+  const pid = await focusedPid()
+  if (!pid) return ''
+  let reply
+  try { reply = await pageRequest(pid, { op: 'tools' }, 5000) } catch { return '' }
+  if (!reply.ok || !reply.result?.tools?.length) return ''
+  return [`Page tools (${reply.result.title || reply.result.url}):`,
+    ...reply.result.tools.map(t => `${t.name}(${schemaLine(t.inputSchema)})${t.source === 'derived' ? ' [derived]' : ''} — ${String(t.description ?? '').slice(0, 200)}`)].join('\n')
+}
+const resultText = result => (result?.content ?? []).map(part => part.text ?? (part.type ? `[${part.type}]` : '')).join(' ').slice(0, 4000) || JSON.stringify(result ?? null).slice(0, 4000)
+
+function windowLines(windows) {
+  return windows.length ? windows.map(w => `${w.kind} ${w.id} ${JSON.stringify(w.title ?? '')} (${w.app_id ?? 'unknown app'})`
+    + `${w.parent != null ? ` of ${w.parent}` : ''} at ${w.rect.join(',')}${w.focused ? ', focused' : ''}`).join('\n') : 'No windows are open on the agent seat.'
 }
 
 // When the last action went in, on the compositor's clock (CLOCK_MONOTONIC): the next
 // settled observation waits for the seat to react to it.
 let actedAt, typed = false
-async function observe({ settle = true } = {}) {
+async function changes() {
   // A text edit is processed asynchronously (completion, validation): wait for the window to
   // go quiet. After a press, the first reaction is enough for an accessibility read.
-  if (settle) { await seat('settle', typed ? 'quiet' : 'react', ...(actedAt === undefined ? [] : [String(actedAt)])); actedAt = undefined; typed = false }
+  await seat('settle', typed ? 'quiet' : 'react', ...(actedAt === undefined ? [] : [String(actedAt)]))
+  actedAt = undefined; typed = false
   return view(false)
 }
-handlers.batch = async ({ steps, observe: observing = true }) => {
-  if (!Array.isArray(steps) || steps.length < 1 || steps.length > 20) throw new Error('steps must contain 1–20 actions')
-  if (typeof observing !== 'boolean') throw new Error('observe must be a boolean')
-  const result = { completed: 0, total: steps.length }
-  for (const step of steps) {
-    try {
-      if (!step || !stepProperties.action.enum.includes(step.action)) throw new Error('unknown batch action')
-      if (['click_element', 'set_text', 'focus_element'].includes(step.action)) {
-        const id = element(step.id)
-        const listing = await seat('windows')
-        let focused = listing.focused
-        const seen = new Set()
-        while (!seen.has(focused)) {
-          seen.add(focused)
-          const window = listing.windows.find(w => w.id === focused)
-          if (window?.kind !== 'popup' || window.parent == null) break
-          focused = window.parent
-        }
-        if (parseInt(id.split('-')[0], 16) !== focused) throw new Error('element not found: focused window changed')
-      }
-      if (step.action === 'wait') {
-        if (!Number.isInteger(step.ms) || step.ms < 10 || step.ms > 5000) throw new Error('ms must be 10–5000')
-        await new Promise(resolve => setTimeout(resolve, step.ms))
-      } else if (step.action === 'focus_element') {
-        await a11y('act', { element: element(step.id), action: 'focus' })
-      } else await handlers[step.action]({ ...step, observe: false })
-      result.completed++
-    } catch (error) { result.error = error.message; break }
+
+// The window an element id names must still have the keyboard (or own the open menu that does).
+async function inFocusedWindow(id) {
+  const listing = await seat('windows')
+  let focused = listing.focused
+  const seen = new Set()
+  while (!seen.has(focused)) {
+    seen.add(focused)
+    const window = listing.windows.find(w => w.id === focused)
+    if (window?.kind !== 'popup' || window.parent == null) break
+    focused = window.parent
   }
-  const content = [{ type: 'text', text: `Completed ${result.completed} of ${result.total}.${result.error ? ` Stopped: ${result.error}` : ''}` }]
-  if (observing) {
-    try { content.push({ type: 'text', text: await observe() }) } catch (error) { content.push({ type: 'text', text: `Observation failed: ${error.message}` }) }
-  }
-  return content
+  if (parseInt(id.split('-')[0], 16) !== focused) throw new Error('element not found: the focused window changed; look again')
 }
-for (const name of mutations) {
-  const handler = handlers[name]
-  handlers[name] = async args => {
-    if (args.observe !== undefined && typeof args.observe !== 'boolean') throw new Error('observe must be a boolean')
-    const result = await handler(args)
-    if (args.observe ?? true) {
-      try { result.push({ type: 'text', text: await observe() }) }
-      catch (error) { result.push({ type: 'text', text: `Observation failed: ${error.message}` }) }
-    }
-    return result
+
+// X keysym names of the printable ASCII characters that are not their own name.
+const KEYSYMS = { ' ': 'space', '!': 'exclam', '"': 'quotedbl', '#': 'numbersign', '$': 'dollar', '%': 'percent', '&': 'ampersand',
+  "'": 'apostrophe', '(': 'parenleft', ')': 'parenright', '*': 'asterisk', '+': 'plus', ',': 'comma', '-': 'minus', '.': 'period',
+  '/': 'slash', ':': 'colon', ';': 'semicolon', '<': 'less', '=': 'equal', '>': 'greater', '?': 'question', '@': 'at',
+  '[': 'bracketleft', '\\': 'backslash', ']': 'bracketright', '^': 'asciicircum', '_': 'underscore', '`': 'grave',
+  '{': 'braceleft', '|': 'bar', '}': 'braceright', '~': 'asciitilde', '\n': 'Return', '\t': 'Tab' }
+
+const point = (value, name, size) => {
+  if (!Array.isArray(value) || value.length !== size) throw new Error(`${name} must be [${size === 2 ? 'x,y' : 'x1,y1,x2,y2'}]`)
+  return value.map((v, i) => int(v, `${name}[${i}]`))
+}
+
+// One act step; returns a note for the reply, if any.
+async function step(s) {
+  if (!s || typeof s !== 'object') throw new Error('a step is an object such as {"press":"e3"}')
+  if ('press' in s || 'set' in s) {
+    const id = element('press' in s ? s.press : s.set)
+    await inFocusedWindow(id)
+    if ('press' in s) { await a11y('act', { element: id, action: 'press' }); return }
+    if (typeof s.text !== 'string' || s.text.length > 100_000) throw new Error('set needs text, a string of at most 100000 characters')
+    const { note } = JSON.parse((await a11y('act', { element: id, action: 'set-text', text: s.text }))[0].text)
+    return note
   }
+  actedAt = Number(process.hrtime.bigint() / 1000n)
+  if ('key' in s) {
+    if (typeof s.key !== 'string' || !/^[A-Za-z0-9_+]+$/.test(s.key)) throw new Error('key must look like "ctrl+s" or "Return"')
+    await seat('key', '--', s.key)
+  } else if ('type' in s) {
+    if (typeof s.type !== 'string') throw new Error('type must be a string')
+    typed = true
+    // Text on the keyboard's layout goes in as key presses, in order with the steps around it;
+    // anything else (accents, other scripts) as the input method's commit.
+    const keys = [...s.type].map(c => KEYSYMS[c] ?? (/^[A-Za-z0-9]$/.test(c) ? c : null))
+    if (s.type && keys.every(Boolean)) {
+      for (let i = 0; i < keys.length; i += 200) await seat('key', '--', ...keys.slice(i, i + 200))
+    } else await seat('type', '--', s.type)
+  } else if ('click' in s) {
+    const [x, y] = point(s.click, 'click', 2), button = s.button ?? 1, count = s.count ?? 1
+    if (!BUTTONS[button]) throw new Error('button must be 1 (left), 2 (middle) or 3 (right)')
+    if (![1, 2, 3].includes(count)) throw new Error('count must be 1, 2 or 3')
+    await seat('click', x, y, '--button', BUTTONS[button], '--count', String(count))
+  } else if ('scroll' in s) {
+    const [x, y] = point(s.scroll, 'scroll', 2)
+    const clamp = (value, name) => String(Math.max(-50, Math.min(50, Number(int(value ?? 0, name)))))
+    await seat('scroll', x, y, clamp(s.dx, 'dx'), clamp(s.dy, 'dy'))
+  } else if ('drag' in s) {
+    await seat('drag', ...point(s.drag, 'drag', 4))
+  } else if ('focus' in s) {
+    if (!Number.isInteger(s.focus)) throw new Error('focus must be a window id')
+    await seat('focus', String(s.focus))
+  } else if ('wait' in s) {
+    if (!Number.isInteger(s.wait) || s.wait < 10 || s.wait > 5000) throw new Error('wait must be 10–5000 ms')
+    await new Promise(resolve => setTimeout(resolve, s.wait))
+  } else if ('tool' in s) {
+    const name = text(s.tool, 'tool', 200)
+    if (!PAGE_TOOLS) throw new Error('page tools are off (CABOOSE_DESKTOP_PAGE_TOOLS=0)')
+    if (s.args !== undefined && (typeof s.args !== 'object' || s.args === null || Array.isArray(s.args))) throw new Error('args must be an object')
+    const pid = await focusedPid()
+    let reply
+    try { reply = await pageRequest(pid, { op: 'call', name, args: s.args ?? {} }) } catch { throw new Error('the focused window offers no page tools') }
+    if (!reply.ok) throw new Error(`${name}: ${reply.error}`)
+    return `${name}: ${resultText(reply.result)}`
+  } else if ('launch' in s) {
+    const command = text(s.launch, 'launch', 2000)
+    const ready = await ensureAgentSeat()
+    Object.assign(launchEnv, ready, { DISPLAY })
+    await announceAssistiveTechnology(ready)
+    spawn('python3', [LAUNCHER, command], { env: launchEnv, detached: true, stdio: 'ignore' }).unref()
+  } else throw new Error('unknown step; use press, set, key, type, click, scroll, drag, focus, wait, launch or tool')
+}
+
+const handlers = {
+  async look({ find, text: withText = false, windows = false } = {}) {
+    const parts = []
+    if (windows) parts.push(windowLines((await seat('windows')).windows))
+    if (find !== undefined) {
+      const { elements, note } = JSON.parse((await a11y('find', { query: text(find, 'find', 500) }))[0].text)
+      const lines = (elements ?? []).map(e => observer.line(observer.short(e.id), e))
+      parts.push(lines.length ? lines.join('\n') : (note ?? 'No control matches.'))
+    } else {
+      parts.push(await view(true))
+      const tools = await pageTools()
+      if (tools) parts.push(tools)
+      if (lastState?.note && !(lastState.elements ?? []).length && lastState.window) {
+        const pictured = await pixelFallback().catch(() => [])
+        if (pictured.length) return [{ type: 'text', text: parts.join('\n') }, ...pictured]
+      }
+    }
+    if (withText) {
+      const { text: readable } = JSON.parse((await a11y('text', {}))[0].text)
+      parts.push(`Text:\n${readable ?? ''}`)
+    }
+    return [{ type: 'text', text: parts.join('\n') }]
+  },
+  async act({ steps, observe = true }) {
+    if (!Array.isArray(steps) || steps.length < 1 || steps.length > 30) throw new Error('steps must hold 1–30 steps')
+    let done = 0, error
+    const notes = []
+    let after
+    for (const s of steps) {
+      try {
+        // Typed text reaches an application as an input method's commit, keys as key events,
+        // and it may take them out of order: after typing, the next step waits until the
+        // window has drawn it.
+        if (after === 'type' && s && typeof s === 'object' && !('wait' in s)) {
+          await seat('settle', 'quiet', ...(actedAt === undefined ? [] : [String(actedAt)]))
+        }
+        const note = await step(s); if (note) notes.push(note); done++
+        after = s && typeof s === 'object' && 'type' in s ? 'type' : undefined
+      } catch (e) { error = e.message; break }
+    }
+    const head = done === steps.length ? (steps.length > 1 ? `Done ${done} steps.` : 'Done.') : `Did ${done} of ${steps.length}; stopped: ${error}`
+    const content = [head + (notes.length ? ` (${notes.join('; ')})` : '')]
+    if (observe) {
+      try { content.push(await changes()) } catch (e) { content.push(`Could not read the window: ${e.message}`) }
+    }
+    return [{ type: 'text', text: content.join('\n') }]
+  },
+  async screenshot({ window, marks = false }) {
+    if (window !== undefined && !Number.isInteger(window)) throw new Error('window must be a window id')
+    if (typeof marks !== 'boolean') throw new Error('marks must be a boolean')
+    const dir = await mkdtemp(join(tmpdir(), 'caboose-shot-'))
+    try {
+      const file = join(dir, 'seat.png')
+      const shot = await seat('screenshot', '--out', file, ...(window === undefined ? [] : ['--window', String(window)]))
+      let legend
+      if (marks) {
+        const state = JSON.parse((await a11y('elements', {}))[0].text)
+        ;({ legend } = await seat('annotate', file, shot.rect, state.elements, window ?? null))
+        legend = legend?.map(entry => `${entry.mark} ${observer.short(entry.id)} ${entry.role} ${JSON.stringify(entry.name ?? '')} at ${entry.center.join(',')}`)
+      }
+      return [{ type: 'image', data: (await readFile(file)).toString('base64'), mimeType: 'image/png' },
+        ...(legend ? [{ type: 'text', text: legend.join('\n') }] : [])]
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  },
 }
 
 // How to use the tools, sent once to the agent when it connects.
-const INSTRUCTIONS = 'These tools drive the agent seat, a Linux desktop of its own. Read it with elements: every window, '
-  + 'then each control of the focused window as one line with a short id (e12). Act on controls by id with click_element and '
-  + 'set_text, and put several known steps in one batch. Each action returns only what changed (windows opened, closed or '
-  + 'focused; controls added +, changed ~, removed -), so there is no need to look again after it. Keyboard shortcuts '
-  + '(key) are fine for menus and dialogs. Take a screenshot only for what the controls do not tell: a window with no '
-  + 'accessibility tree, a picture, or a layout question.'
+const INSTRUCTIONS = 'Read the agent seat with look, act on controls by id, and batch known steps in one act; each act replies with what changed.'
 
 function reply(id, result) { process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id, result }) + '\n') }
 function fail(id, code, message) { process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id, error: { code, message } }) + '\n') }
