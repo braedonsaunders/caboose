@@ -36,7 +36,7 @@ cgroup v2):
 `<key>` is the desktop id without `.desktop` (`org.gnome.TextEditor`), a window's class for
 a window that got a scope of its own (below), `caboose-terminal` for a
 phone terminal session, or `caboose-agent` for an agent task; it is escaped as `systemd-escape` escapes unit names
-(`firefox-esr` becomes `firefox\x2desr`). `<n>` counts up for the daemon's lifetime and
+(`xfce4-terminal` becomes `xfce4\x2dterminal`). `<n>` counts up for the daemon's lifetime and
 across its restarts. The memory, IO and pids controllers are enabled on `/` and
 `/owner.slice`; CPU time comes from every cgroup's `cpu.stat` without the CPU controller,
 so scheduling is unchanged.
@@ -211,7 +211,7 @@ exit 0 whatever it says, so a caller that only sees stdout on success reads why;
 
 ```
 caboose-scopes list
-caboose-scopes quit 'app-firefox\x2desr-3.scope'
+caboose-scopes quit 'app-xfce4\x2dterminal-3.scope'
 caboose-scopes force-quit 'app-steam-1.scope'
 caboose-scopes kill 'app-org.gnome.TextEditor-4.scope'
 caboose-scopes run org.example.App.desktop -- COMMAND [ARG...]   # run something in a new scope
