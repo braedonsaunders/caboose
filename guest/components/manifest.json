@@ -10,6 +10,7 @@
   "components/version.py",
   "desktop-mcp/caboose-desktop-mcp.mjs",
   "desktop-mcp/worker.mjs",
+  "desktop-mcp/observation.mjs",
   "desktop-mcp/a11y.py",
   "desktop-mcp/seat.py",
   "desktop-mcp/ensure-agent-seat.mjs",

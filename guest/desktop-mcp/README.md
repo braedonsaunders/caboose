@@ -27,11 +27,11 @@ control by id rather than by guessed coordinates.
 
 | Tool | Arguments | Does |
 | --- | --- | --- |
-| `elements` | — | the focused window's controls: `{ window: { title, app }, elements: [{ id, role, name, value?, states, bounds }] }` |
-| `find` | `query`, `role?` | elements whose name contains `query` (case-insensitive), optionally of one role |
+| `elements` | — | the seat's windows and the focused window's controls, one line each (below) |
+| `find` | `query`, `role?` | the lines of controls whose name contains `query` (case-insensitive), optionally of one role |
 | `click_element` | `id` | press it: its AT-SPI action, else a click at its centre |
 | `set_text` | `id`, `text` | replace an editable element's text |
-| `batch` | `steps`, `observe?` | 1–20 sequential actions, stopping at the first failure; updated elements by default |
+| `batch` | `steps`, `observe?` | 1–20 sequential actions, stopping at the first failure, then what changed |
 | `read_text` | — | the focused window's readable text, page text included |
 | `screenshot` | `window?`, `annotate?` | PNG; annotation adds numbered accessibility bounds and a legend |
 | `list_windows`, `focus` | `window` | windows bottom to top with id, kind, title, app, geometry and focus; give one the keyboard |
@@ -40,6 +40,33 @@ control by id rather than by guessed coordinates.
 
 A failure comes back as a tool error with a sentence the model can act on; an id that no
 longer resolves says to list the window again.
+
+The server's `initialize` reply carries `instructions` for the agent: read with `elements`,
+act by id, batch known steps, rely on the changes each action returns, and take a
+screenshot only for what the controls do not tell. `CABOOSE_DESKTOP_TRACE=FILE` appends one
+JSON line per tool call (`tool`, `ms`, reply `chars`, `images`), for measuring.
+
+### Observations
+
+An observation is compact text (`observation.mjs`). The first one, and every `elements`
+call, lists the windows and then the focused window's controls:
+
+```
+Windows:
+  toplevel 7 "notes.txt - Mousepad" (mousepad)
+  dialog 9 "Save As" (mousepad) of 7, focused
+Controls of 9:
+e14 text "Name" = "notes.txt" [editable, focused]
+e15 button "Save"
+```
+
+Each control has a short id (`e14`) that names the same control for as long as the server
+runs; tools take short ids or the full element ids. After an action, the observation holds
+only the changes since the previous one: windows `Opened`, `Closed` or `Retitled`, where
+focus went, and the focused window's controls added (`+`), changed (`~`, the whole new line)
+or removed (`- e14`). A window seen for the first time is listed whole. Bounds are left
+out; `screenshot` with `annotate` gives them, with the short ids, when coordinates are
+needed.
 
 Run `node --test guest/desktop-mcp/ensure-agent-seat.test.mjs` and
 `node guest/desktop-mcp/selftest.mjs` from the repository root to check startup coordination
@@ -60,15 +87,16 @@ seat's displays on a dark background, rendered by the compositor. A seat nobody 
 lets applications draw once a second, so `seat.py` asks the compositor to let them draw
 (`settle`) before it takes a picture. Every tool works with no client attached.
 
-Mutating tools accept `observe: true` to append the focused window's updated elements.
-The default is false for single actions and true for `batch`. A batch accepts
+Mutating tools append what changed after them (`observe`, default true; `false` skips the
+settle and the read). A batch accepts
 `click_element`, `set_text`, `focus_element`, `click`, `drag`, `type`, `key`, `scroll`,
-`focus`, and `wait` (10–5000 ms), with each step's normal arguments. It returns
-`{ completed, total, error?, state?, observationError? }`. Failure stops later steps;
+`focus`, and `wait` (10–5000 ms), with each step's normal arguments. It returns `Completed N of M.`
+(with the error that stopped it, if any) and then the changes. Failure stops later steps;
 a changed focused window or stale element ID fails an element step. Observation failures
-preserve the completed action count. Settling permits rendering for at most three 50 ms
-rounds, stopping immediately when no callbacks were released; it does not guarantee an
-application has finished navigation.
+preserve the completed action count. Before the read the server lets the
+seat settle on the compositor's commit record: after a press, until the first commit after
+it (at most 150 ms); after a text edit, until no window committed for 30 ms (at most
+300 ms). It does not guarantee an application has finished navigation.
 
 `elements` and `find` include optional `value` strings (up to 200 characters) for editable
 fields, selected options and numeric controls. Password/sensitive fields omit values.
@@ -229,6 +257,18 @@ Apps build an accessibility tree only when asked. The computer asks them through
 - `toolkit-accessibility=true` as the default of `org.gnome.desktop.interface` (a GSettings
   override), which at-spi-bus-launcher reports as `org.a11y.Status.IsEnabled`, so apps
   started without that environment still expose a tree;
+
+What `launch` starts also gets `XDG_SESSION_TYPE=wayland`: the seat is a Wayland session,
+and Chromium and Electron then run as Wayland clients rather than through Xwayland.
+
+`set_text` uses the toolkit's EditableText when the field then reads the new text. Where it
+does not (Chromium and Electron have none; Firefox's web fields accept it and change
+nothing), the field is focused through AT-SPI, or with the seat's pointer when that does not
+take, cleared only if it holds text, typed into once the clearing keys have landed (keys and
+an input method's text reach an application by different paths), and read back. A field
+that does not read the new text within a second says so in the reply. Element ids name a
+control by its place in the tree; when a page moves it, the one showing control of the
+window with the same role and name is used.
 
 `press` on an element without an action that is not on screen, and `set-text` on a field
 that cannot take focus, say so instead of pretending.

@@ -65,7 +65,10 @@ install -Dm755 "$root/desktop-mcp/seat.py" /opt/caboose/seat.py
 install -Dm644 "$root/desktop-mcp/ensure-agent-seat.mjs" /opt/caboose/ensure-agent-seat.mjs
 # desktop-mcp.mjs imports these beside itself.
 install -Dm644 "$root/desktop-mcp/worker.mjs" /opt/caboose/worker.mjs
+install -Dm644 "$root/desktop-mcp/observation.mjs" /opt/caboose/observation.mjs
 rm -f /opt/caboose/specialist.mjs /opt/caboose/choices.mjs
+# Per-application agent wrappers are gone: launch gives every application the agent profile.
+rm -rf /usr/local/libexec/caboose-agent-seat-bin
 install -Dm644 "$root/desktop-mcp/ensure-agent-seat.mjs" /opt/caboose/desktop-mcp/ensure-agent-seat.mjs
 install -Dm755 "$root/desktop-mcp/caboose-agent-seat" /usr/local/libexec/caboose-agent-seat
 install -Dm755 "$root/desktop-mcp/agent-profile.py" /opt/caboose/agent-profile.py

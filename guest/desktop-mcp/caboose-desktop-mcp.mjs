@@ -8,42 +8,48 @@
 // session/new, and answers the agent's permission requests itself.
 import { spawn } from 'node:child_process'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { appendFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createInterface } from 'node:readline'
 import { Worker } from './worker.mjs'
+import { Observer } from './observation.mjs'
 import { controlAlive, ensureAgentSeat } from './ensure-agent-seat.mjs'
 
 const DISPLAY = process.env.CABOOSE_AGENT_DISPLAY ?? ':101'
 const env = { ...process.env, DISPLAY }
 const PROTOCOL = '2025-06-18'
+// CABOOSE_DESKTOP_TRACE: a file that gets one line per tool call (tool, milliseconds, reply size).
+const TRACE = process.env.CABOOSE_DESKTOP_TRACE
 // Installed side by side: /opt/caboose/desktop-mcp.mjs, a11y.py and seat.py.
 const A11Y = fileURLToPath(new URL('./a11y.py', import.meta.url))
 const SEAT = fileURLToPath(new URL('./seat.py', import.meta.url))
 // What a launched app needs to build its accessibility tree: GTK's bridge must not be
 // switched off (NO_AT_BRIDGE, GTK_A11Y=none), Chromium and Electron read
 // ACCESSIBILITY_ENABLED, Firefox GNOME_ACCESSIBILITY, Qt QT_LINUX_ACCESSIBILITY_ALWAYS_ON.
-const launchEnv = { ...env, ACCESSIBILITY_ENABLED: '1', GNOME_ACCESSIBILITY: '1', QT_LINUX_ACCESSIBILITY_ALWAYS_ON: '1' }
+// The seat is a Wayland session; saying so makes Chromium and Electron run as Wayland
+// clients, whose fields take the seat's text and whose windows place their controls exactly.
+const launchEnv = { ...env, ACCESSIBILITY_ENABLED: '1', GNOME_ACCESSIBILITY: '1', QT_LINUX_ACCESSIBILITY_ALWAYS_ON: '1', XDG_SESSION_TYPE: 'wayland' }
 delete launchEnv.NO_AT_BRIDGE
 if (launchEnv.GTK_A11Y === 'none') delete launchEnv.GTK_A11Y
 
 const tools = [
   {
     name: 'elements',
-    description: 'List the controls of the focused window on the agent display, read from its accessibility tree: '
-      + 'buttons, links, fields, check boxes, menus, tabs, list items and headings, each with an id, role, name, '
-      + 'states and bounds in screen pixels (at most 200, in reading order). Instant and needs no screenshot, so '
-      + 'use this first to see what a window offers, then act with click_element and set_text. Ids stay valid '
-      + 'until the window changes; list again after it does. If it returns a note and no elements, the window '
-      + 'has no accessibility tree: use screenshot and click instead.',
+    description: 'The agent display\'s windows, and every control of the focused window from its accessibility tree, '
+      + 'one per line: short id (e1, e2, …), role, name, = value, [states] (at most 200, in reading order). Instant '
+      + 'and needs no screenshot: use it first, then act by id with click_element, set_text or batch. Actions return '
+      + 'what changed afterwards (windows opened or closed, controls added +, changed ~ or removed -), so call this '
+      + 'again only to see a whole window. If it returns a note instead of controls, the window has no accessibility '
+      + 'tree: use screenshot and click.',
     inputSchema: { type: 'object', properties: {} },
   },
   {
     name: 'find',
     description: 'Find elements of the focused window on the agent display whose name contains the query '
       + '(case-insensitive), optionally of one role such as "button", "link", "entry", "check box", "menu item" '
-      + 'or "page tab". Same element shape as elements; prefer it to a screenshot for locating a control.',
+      + 'or "page tab". Same lines as elements; prefer it to a screenshot for locating a control.',
     inputSchema: {
       type: 'object',
       properties: { query: { type: 'string', description: 'Text to look for in element names' }, role: { type: 'string', description: 'Optional role, e.g. "button"' } },
@@ -54,7 +60,7 @@ const tools = [
     name: 'click_element',
     description: 'Press an element by its id from elements or find: performs its accessibility action (click, press, '
       + 'activate, follow a link), or clicks its centre when it has none. Prefer this to click with coordinates.',
-    inputSchema: { type: 'object', properties: { id: { type: 'string', description: 'Element id from elements or find' } }, required: ['id'] },
+    inputSchema: { type: 'object', properties: { id: { type: 'string', description: 'Element id from elements or find, e.g. e12' } }, required: ['id'] },
   },
   {
     name: 'set_text',
@@ -119,14 +125,15 @@ const tools = [
 tools.find(t => t.name === 'screenshot').inputSchema.properties.annotate = { type: 'boolean', default: false, description: 'Overlay numbered accessibility bounds and return an id/bounds legend.' }
 const mutations = ['click_element', 'set_text', 'click', 'drag', 'type', 'key', 'scroll', 'focus']
 for (const tool of tools) {
-  if (mutations.includes(tool.name)) tool.inputSchema.properties.observe = { type: 'boolean', default: false, description: 'Return updated focused-window elements after the action.' }
+  if (mutations.includes(tool.name)) tool.inputSchema.properties.observe = { type: 'boolean', default: true, description: 'Return what changed on the display after the action (default true).' }
 }
 const stepProperties = Object.assign({}, ...tools.filter(t => mutations.includes(t.name)).map(t => t.inputSchema.properties))
 delete stepProperties.observe
 stepProperties.action = { type: 'string', enum: [...mutations, 'focus_element', 'wait'] }
 stepProperties.ms = { type: 'integer', minimum: 10, maximum: 5000 }
 tools.splice(4, 0, {
-  name: 'batch', description: 'Execute 1–20 actions sequentially, stopping at the first failure. Returns completed count and updated elements by default.',
+  name: 'batch', description: 'Execute 1–20 actions sequentially, stopping at the first failure; prefer it whenever the next '
+    + 'several steps are known (fill a form, then press its button). Returns the completed count and what changed.',
   inputSchema: { type: 'object', properties: {
     steps: { type: 'array', minItems: 1, maxItems: 20, items: { type: 'object', properties: stepProperties, required: ['action'] } },
     observe: { type: 'boolean', default: true },
@@ -144,6 +151,7 @@ function text(value, name, max) {
   return value
 }
 
+const observer = new Observer()
 const a11yWorker = new Worker(A11Y, [`--display=${DISPLAY}`], 30_000)
 const seatWorker = new Worker(SEAT)
 let seatEnvironment
@@ -173,13 +181,26 @@ async function seat(...args) { return workerRequest(seatWorker, { args }) }
 
 const BUTTONS = { 1: 'left', 2: 'middle', 3: 'right' }
 
+// The display as the observer renders it: everything (`full`), or what changed since the last time.
+async function view(full) {
+  const state = JSON.parse((await a11y('elements', {}))[0].text)
+  const listing = await seat('windows')
+  return observer.render(listing, state, { full })
+}
+const element = id => observer.resolve(text(id, 'id', 500))
+
 const handlers = {
-  elements: () => a11y('elements', {}),
-  find: ({ query, role }) => a11y('find', { query: text(query, 'query', 500), ...(role === undefined ? {} : { role: text(role, 'role', 60) }) }),
-  click_element: ({ id }) => a11y('act', { element: text(id, 'id', 500), action: 'press' }),
-  set_text: ({ id, text: value }) => {
+  elements: async () => [{ type: 'text', text: await view(true) }],
+  async find({ query, role }) {
+    const { elements, note } = JSON.parse((await a11y('find', { query: text(query, 'query', 500), ...(role === undefined ? {} : { role: text(role, 'role', 60) }) }))[0].text)
+    const lines = (elements ?? []).map(e => observer.line(observer.short(e.id), e))
+    return [{ type: 'text', text: lines.length ? lines.join('\n') : (note ?? 'No element matches.') }]
+  },
+  click_element: async ({ id }) => { await a11y('act', { element: element(id), action: 'press' }); return [{ type: 'text', text: `Pressed ${id}.` }] },
+  async set_text({ id, text: value }) {
     if (typeof value !== 'string' || value.length > 100_000) throw new Error('text must be a string of at most 100000 characters')
-    return a11y('act', { element: text(id, 'id', 500), action: 'set-text', text: value })
+    const { note } = JSON.parse((await a11y('act', { element: element(id), action: 'set-text', text: value }))[0].text)
+    return [{ type: 'text', text: `Set the text of ${id}${note ? ` (${note})` : ''}.` }]
   },
   read_text: () => a11y('text', {}),
   async screenshot({ window, annotate = false }) {
@@ -193,6 +214,7 @@ const handlers = {
       if (annotate) {
         const state = JSON.parse((await a11y('elements', {}))[0].text)
         ;({ legend } = await seat('annotate', file, shot.rect, state.elements, window ?? null))
+        legend = legend?.map(entry => ({ ...entry, id: observer.short(entry.id) }))
       }
       return [{ type: 'image', data: (await readFile(file)).toString('base64'), mimeType: 'image/png' },
         ...(legend ? [{ type: 'text', text: JSON.stringify(legend) }] : [])]
@@ -252,7 +274,7 @@ async function observe({ settle = true } = {}) {
   // A text edit is processed asynchronously (completion, validation): wait for the window to
   // go quiet. After a press, the first reaction is enough for an accessibility read.
   if (settle) { await seat('settle', typed ? 'quiet' : 'react', ...(actedAt === undefined ? [] : [String(actedAt)])); actedAt = undefined; typed = false }
-  return JSON.parse((await handlers.elements())[0].text)
+  return view(false)
 }
 handlers.batch = async ({ steps, observe: observing = true }) => {
   if (!Array.isArray(steps) || steps.length < 1 || steps.length > 20) throw new Error('steps must contain 1–20 actions')
@@ -262,7 +284,7 @@ handlers.batch = async ({ steps, observe: observing = true }) => {
     try {
       if (!step || !stepProperties.action.enum.includes(step.action)) throw new Error('unknown batch action')
       if (['click_element', 'set_text', 'focus_element'].includes(step.action)) {
-        const id = text(step.id, 'id', 500)
+        const id = element(step.id)
         const listing = await seat('windows')
         let focused = listing.focused
         const seen = new Set()
@@ -278,28 +300,37 @@ handlers.batch = async ({ steps, observe: observing = true }) => {
         if (!Number.isInteger(step.ms) || step.ms < 10 || step.ms > 5000) throw new Error('ms must be 10–5000')
         await new Promise(resolve => setTimeout(resolve, step.ms))
       } else if (step.action === 'focus_element') {
-        await a11y('act', { element: text(step.id, 'id', 500), action: 'focus' })
+        await a11y('act', { element: element(step.id), action: 'focus' })
       } else await handlers[step.action]({ ...step, observe: false })
       result.completed++
     } catch (error) { result.error = error.message; break }
   }
+  const content = [{ type: 'text', text: `Completed ${result.completed} of ${result.total}.${result.error ? ` Stopped: ${result.error}` : ''}` }]
   if (observing) {
-    try { result.state = await observe() } catch (error) { result.observationError = error.message }
+    try { content.push({ type: 'text', text: await observe() }) } catch (error) { content.push({ type: 'text', text: `Observation failed: ${error.message}` }) }
   }
-  return [{ type: 'text', text: JSON.stringify(result) }]
+  return content
 }
 for (const name of mutations) {
   const handler = handlers[name]
   handlers[name] = async args => {
     if (args.observe !== undefined && typeof args.observe !== 'boolean') throw new Error('observe must be a boolean')
     const result = await handler(args)
-    if (args.observe) {
-      try { result.push({ type: 'text', text: JSON.stringify({ state: await observe() }) }) }
-      catch (error) { result.push({ type: 'text', text: JSON.stringify({ observationError: error.message }) }) }
+    if (args.observe ?? true) {
+      try { result.push({ type: 'text', text: await observe() }) }
+      catch (error) { result.push({ type: 'text', text: `Observation failed: ${error.message}` }) }
     }
     return result
   }
 }
+
+// How to use the tools, sent once to the agent when it connects.
+const INSTRUCTIONS = 'These tools drive the agent seat, a Linux desktop of its own. Read it with elements: every window, '
+  + 'then each control of the focused window as one line with a short id (e12). Act on controls by id with click_element and '
+  + 'set_text, and put several known steps in one batch. Each action returns only what changed (windows opened, closed or '
+  + 'focused; controls added +, changed ~, removed -), so there is no need to look again after it. Keyboard shortcuts '
+  + '(key) are fine for menus and dialogs. Take a screenshot only for what the controls do not tell: a window with no '
+  + 'accessibility tree, a picture, or a layout question.'
 
 function reply(id, result) { process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id, result }) + '\n') }
 function fail(id, code, message) { process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id, error: { code, message } }) + '\n') }
@@ -308,7 +339,7 @@ async function handle(message) {
   const { id, method, params } = message
   if (method === 'initialize') {
     return reply(id, { protocolVersion: params?.protocolVersion ?? PROTOCOL, capabilities: { tools: {} },
-      serverInfo: { name: 'caboose-desktop', version: '1.0.0' } })
+      serverInfo: { name: 'caboose-desktop', version: '1.0.0' }, instructions: INSTRUCTIONS })
   }
   if (method === 'notifications/initialized' || id === undefined) return
   if (method === 'ping') return reply(id, {})
@@ -316,8 +347,12 @@ async function handle(message) {
   if (method === 'tools/call') {
     const handler = handlers[params?.name]
     if (!handler) return fail(id, -32602, `unknown tool ${params?.name}`)
+    const started = performance.now()
     try {
-      reply(id, { content: await handler(params.arguments ?? {}) })
+      const content = await handler(params.arguments ?? {})
+      reply(id, { content })
+      if (TRACE) appendFileSync(TRACE, JSON.stringify({ tool: params.name, ms: Math.round(performance.now() - started),
+        chars: content.reduce((n, part) => n + (part.text?.length ?? 0), 0), images: content.filter(part => part.type === 'image').length }) + '\n')
     } catch (error) {
       reply(id, { content: [{ type: 'text', text: String(error?.stderr || error?.message || error).trim() }], isError: true })
     }

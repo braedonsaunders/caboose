@@ -2546,6 +2546,11 @@ its actions. Their observation and action contract:
   subtree, joined to its window record from the compositor by process and geometry; each
   element id names its window. Dialogs and popup menus are their own window records with
   `kind` and `parent`.
+- **Observations are compact and incremental.** One line per window and per control: a
+  short id that stays with the control while the server runs, role, name, value and states,
+  without bounds. After an action the agent gets only what changed: windows opened, closed,
+  retitled or focused, and controls added, changed or removed in the focused window. A
+  window seen for the first time, and every `elements` call, is listed whole.
 - **Settling is driven by the compositor's commit record, not by timeouts.** After an
   action, a read waits for the first commit after it (the application applied it; a new
   window mapped), at most 150 ms, and a picture waits until no window committed for 30 ms.

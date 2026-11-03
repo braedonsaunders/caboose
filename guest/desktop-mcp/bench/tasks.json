@@ -1,0 +1,127 @@
+{
+  "note": "Each task runs inside the computer as the agent user with the agent seat's environment, HOME=$BENCH/home. setup creates files and starts the application; verify exits 0 only when the effect is there.",
+  "tasks": [
+    {
+      "id": "mousepad-save-as",
+      "app": "Mousepad",
+      "setup": "mkdir -p $HOME/Documents; printf 'hello\\n' > $HOME/Documents/notes.txt; start mousepad $HOME/Documents/notes.txt",
+      "prompt": "In the open Mousepad window, replace the whole text with \"basalt 417 cinder\" and save it as a new file named cinder-41.txt in the same Documents folder.",
+      "verify": "test \"$(cat $HOME/Documents/cinder-41.txt)\" = 'basalt 417 cinder'"
+    },
+    {
+      "id": "mousepad-find-replace",
+      "app": "Mousepad",
+      "setup": "mkdir -p $HOME/Documents; printf 'the granite and the granite again\\n' > $HOME/Documents/notes.txt; start mousepad $HOME/Documents/notes.txt",
+      "prompt": "In the open Mousepad window, use Find and Replace to replace every \"granite\" with \"heron\", then save the file.",
+      "verify": "test \"$(cat $HOME/Documents/notes.txt)\" = 'the heron and the heron again'"
+    },
+    {
+      "id": "mousepad-preference",
+      "app": "Mousepad",
+      "setup": "gsettings reset org.xfce.mousepad.preferences.view show-line-numbers; mkdir -p $HOME/Documents; printf 'hello\\n' > $HOME/Documents/notes.txt; start mousepad $HOME/Documents/notes.txt",
+      "prompt": "In the open Mousepad window, turn on line numbers in Mousepad's preferences.",
+      "verify": "test \"$(gsettings get org.xfce.mousepad.preferences.view show-line-numbers)\" = true",
+      "reset": "gsettings reset org.xfce.mousepad.preferences.view show-line-numbers"
+    },
+    {
+      "id": "thunar-create-folder",
+      "app": "Thunar",
+      "setup": "mkdir -p $HOME/Documents; touch $HOME/Documents/report.txt; start thunar $HOME/Documents",
+      "prompt": "In the open file manager window, create a new folder named Studio42 in the Documents folder it shows.",
+      "verify": "test -d $HOME/Documents/Studio42"
+    },
+    {
+      "id": "thunar-rename",
+      "app": "Thunar",
+      "setup": "mkdir -p $HOME/Documents; printf 'q3\\n' > $HOME/Documents/report.txt; start thunar $HOME/Documents",
+      "prompt": "In the open file manager window, rename the file report.txt to summary-2026.txt.",
+      "verify": "test -f $HOME/Documents/summary-2026.txt && test ! -e $HOME/Documents/report.txt"
+    },
+    {
+      "id": "thunar-preference",
+      "app": "Thunar",
+      "setup": "xfconf-query -c thunar -r -R -p / 2>/dev/null; start thunar-settings",
+      "prompt": "In the open Thunar Preferences window, turn on \"Text beside icons\".",
+      "verify": "test \"$(xfconf-query -c thunar -p /misc-text-beside-icons)\" = true",
+      "reset": "xfconf-query -c thunar -r -R -p / 2>/dev/null; true"
+    },
+    {
+      "id": "chromium-form",
+      "app": "Chromium",
+      "setup": "page $HOME/Documents/form.html 'Shipping' 'Claimed'; start chromium --no-first-run --no-default-browser-check --user-data-dir=$HOME/chromium file://$HOME/Documents/form.html",
+      "prompt": "In the open Chromium window, fill the form: Recipient \"Iris Moss\", City \"Granite Falls\", tick Gift wrap, then press Ship order.",
+      "verify": "window_title 'Claimed - Chromium'"
+    },
+    {
+      "id": "chromium-two-page",
+      "app": "Chromium",
+      "setup": "page $HOME/Documents/form.html 'Details' 'Claimed'; printf '<!doctype html><title>Welcome</title><h1>Welcome</h1><p><a href=\"help.html\">Help</a></p><p><a href=\"form.html\">Continue to the form</a></p>' > $HOME/Documents/start.html; start chromium --no-first-run --no-default-browser-check --user-data-dir=$HOME/chromium file://$HOME/Documents/start.html",
+      "prompt": "In the open Chromium window, follow \"Continue to the form\", then fill Recipient \"Iris Moss\" and City \"Granite Falls\", tick Gift wrap and press Ship order.",
+      "verify": "window_title 'Claimed - Chromium'"
+    },
+    {
+      "id": "firefox-form",
+      "app": "firefox-esr",
+      "setup": "page $HOME/Documents/form.html 'Shipping' 'Claimed'; mkdir -p $HOME/firefox; start /usr/lib/firefox-esr/firefox-esr --no-remote --new-instance --profile $HOME/firefox file://$HOME/Documents/form.html",
+      "prompt": "In the open Firefox window, fill the form: Recipient \"Iris Moss\", City \"Granite Falls\", tick Gift wrap, then press Ship order.",
+      "verify": "window_title 'Claimed \u2014 Mozilla Firefox'"
+    },
+    {
+      "id": "writer-save",
+      "app": "libreoffice-writer",
+      "setup": "mkdir -p $HOME/Documents; start soffice --norestore --nologo --writer",
+      "prompt": "In the open LibreOffice Writer window, type the text \"Quarterly report for heron\" and save the document in ODF format as report.odt in the Documents folder of the home directory.",
+      "verify": "unzip -p $HOME/Documents/report.odt content.xml | grep -q 'Quarterly report for heron'"
+    },
+    {
+      "id": "calc-sum",
+      "app": "libreoffice-calc",
+      "setup": "mkdir -p $HOME/Documents; start soffice --norestore --nologo --calc",
+      "prompt": "In the open LibreOffice Calc window, put 12 in A1, 30 in A2 and a formula adding them in A3, then save the spreadsheet in ODF format as sums.ods in the Documents folder of the home directory.",
+      "verify": "unzip -p $HOME/Documents/sums.ods content.xml | grep -q 'of:=\\[.A1\\]+\\[.A2\\]' && unzip -p $HOME/Documents/sums.ods content.xml | grep -q '>42<'"
+    },
+    {
+      "id": "terminal-command",
+      "app": "xfce4-terminal",
+      "setup": "mkdir -p $HOME/Documents; start xfce4-terminal --disable-server --working-directory=$HOME/Documents",
+      "prompt": "In the open terminal window, run a command that writes the word fjord into a file named term.txt in the current directory.",
+      "verify": "grep -qx fjord $HOME/Documents/term.txt"
+    },
+    {
+      "id": "vscode-edit",
+      "app": "com.microsoft.VSCode",
+      "setup": "mkdir -p $HOME/Documents; printf 'host = local\\nport = 8080\\n' > $HOME/Documents/app.conf; start /usr/share/code/code --user-data-dir $HOME/vscode --extensions-dir $HOME/vscode-extensions --disable-workspace-trust --skip-welcome --new-window $HOME/Documents/app.conf",
+      "prompt": "In the open Visual Studio Code window, change the port in app.conf from 8080 to 9090 and save the file.",
+      "verify": "grep -qx 'port = 9090' $HOME/Documents/app.conf && grep -qx 'host = local' $HOME/Documents/app.conf"
+    },
+    {
+      "id": "keepassxc-new-database",
+      "app": "KeePassXC",
+      "setup": "export XDG_CONFIG_HOME=$HOME/.config; mkdir -p $HOME/Documents; start keepassxc",
+      "prompt": "In the open KeePassXC window, create a new password database named Vault with the password \"heron-basalt-42\" and save it as vault.kdbx in the Documents folder of the home directory.",
+      "verify": "test \"$(head -c 4 $HOME/Documents/vault.kdbx | od -An -tx1 | tr -d ' ')\" = 03d9a29a"
+    },
+    {
+      "id": "zenity-form",
+      "app": "zenity",
+      "setup": "start sh -c 'zenity --forms --title=Signup --text=Signup --add-entry=Name --add-entry=City > \"$BENCH/zenity.out\"'",
+      "prompt": "In the open Signup dialog, enter the Name \"Iris Moss\" and the City \"Granite Falls\", then confirm it with OK.",
+      "verify": "test \"$(cat $BENCH/zenity.out)\" = 'Iris Moss|Granite Falls'"
+    },
+    {
+      "id": "keyboard-settings",
+      "app": "xfce4-keyboard-settings",
+      "setup": "xfconf-query -c xsettings -p /Net/CursorBlink -r 2>/dev/null; GDK_BACKEND=x11 start xfce4-keyboard-settings",
+      "prompt": "In the open Keyboard settings window, turn off the blinking text cursor.",
+      "verify": "test \"$(xfconf-query -c xsettings -p /Net/CursorBlink)\" = false",
+      "reset": "xfconf-query -c xsettings -p /Net/CursorBlink -r 2>/dev/null; true"
+    },
+    {
+      "id": "impress-title",
+      "app": "libreoffice-impress",
+      "setup": "mkdir -p $HOME/Documents; start soffice --norestore --nologo --impress",
+      "prompt": "In the open LibreOffice Impress window, start an empty presentation, give the first slide the title \"Harbor plan\" and save it in ODF format as plan.odp in the Documents folder of the home directory.",
+      "verify": "unzip -p $HOME/Documents/plan.odp content.xml | grep -q 'Harbor plan'"
+    }
+  ]
+}
