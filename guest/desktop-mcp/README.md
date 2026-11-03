@@ -72,6 +72,13 @@ focus went, and the focused window's controls added (`+`), changed (`~`, the who
 or removed (`- e14`). A window seen for the first time is listed whole. Bounds are left
 out; `screenshot` with `marks` gives positions when coordinates are needed.
 
+A Windows program under Wine has no AT-SPI tree; its window is read by `caboose-msaa.exe`
+(`wine/caboose-msaa.c`, built by the component install where Wine and MinGW are installed),
+which runs in the program's own prefix and lists its Win32 child controls with roles from
+their window classes, their text and states. `press` uses a control's default action and
+`set` its text by message, or for a control that takes no text by message (Scintilla), the
+seat's pointer and keyboard.
+
 A window with no accessibility tree (SDL, games, custom-drawn toolkits) is still described:
 `look` returns its picture and, with Tesseract installed, the lines of text OCR finds in it
 with their centres in seat coordinates, both marked as read from pixels. An X11 window that
