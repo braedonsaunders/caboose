@@ -178,6 +178,8 @@ pub fn all(media: &Media) -> Vec<Vector> {
         alpha: false,
         desktop_id: None,
         pid: None,
+        clip: None,
+        stack: None,
     };
     let menu = WindowCreate {
         id: 9,
@@ -195,6 +197,8 @@ pub fn all(media: &Media) -> Vec<Vector> {
         alpha: false,
         desktop_id: None,
         pid: None,
+        clip: None,
+        stack: None,
     };
     let xterm = WindowCreate {
         id: 12,
@@ -212,6 +216,8 @@ pub fn all(media: &Media) -> Vec<Vector> {
         alpha: false,
         desktop_id: None,
         pid: None,
+        clip: None,
+        stack: None,
     };
 
     vec![
@@ -277,6 +283,34 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 fullscreen: false,
                 pid: Some(2113),
                 ..xterm.clone()
+            }),
+        ),
+        one(
+            "window-create-child",
+            "An application's own GPU surface inset in its window (a browser view inside its X11 window): placed relative to the parent's geometry, clipped to what the parent shows of it, and stacked over the parent's picture.",
+            Message::WindowCreate(WindowCreate {
+                id: 16,
+                parent: Some(12),
+                kind: WindowKind::Child,
+                title: String::new(),
+                icon: None,
+                geometry: Rect::new(2, 368, 1916, 1254),
+                min: None,
+                max: None,
+                fullscreen: false,
+                clip: Some(Rect::new(2, 368, 1916, 712)),
+                stack: Some(0),
+                ..xterm.clone()
+            }),
+        ),
+        one(
+            "window-update-child",
+            "A child moved within its parent, now shown whole.",
+            Message::WindowUpdate(WindowUpdate {
+                id: 16,
+                geometry: Some(Rect::new(2, 200, 1916, 880)),
+                clip: Some(Rect::new(2, 200, 1916, 880)),
+                ..Default::default()
             }),
         ),
         one(
@@ -546,6 +580,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 webview: false,
                 targets: false,
                 devices: false,
+                children: false,
                 clipboard_types: None,
             }),
         ),
@@ -561,6 +596,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 webview: false,
                 targets: false,
                 devices: false,
+                children: false,
                 clipboard_types: None,
             }),
         ),
@@ -576,6 +612,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 webview: false,
                 targets: false,
                 devices: false,
+                children: false,
                 clipboard_types: Some(vec!["image/png".into(), "image/jpeg".into(), "text/uri-list".into()]),
             }),
         ),
@@ -591,6 +628,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 webview: false,
                 targets: false,
                 devices: false,
+                children: false,
                 clipboard_types: None,
             }),
         ),
@@ -606,6 +644,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 webview: true,
                 targets: false,
                 devices: false,
+                children: false,
                 clipboard_types: None,
             }),
         ),
@@ -621,6 +660,7 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 webview: false,
                 targets: false,
                 devices: true,
+                children: false,
                 clipboard_types: None,
             }),
         ),
@@ -636,6 +676,23 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 webview: false,
                 targets: true,
                 devices: false,
+                children: false,
+                clipboard_types: None,
+            }),
+        ),
+        one(
+            "client-hello-children",
+            "client-hello-audio from a phone that shows `child` windows inside their parents.",
+            Message::ClientHello(ClientHello {
+                version: 0,
+                token: "f3a9c1d27e8b4a6f".into(),
+                displays: vec![phone()],
+                audio_decoders: Some(vec!["opus".into()]),
+                wasm: false,
+                webview: false,
+                targets: false,
+                devices: false,
+                children: true,
                 clipboard_types: None,
             }),
         ),

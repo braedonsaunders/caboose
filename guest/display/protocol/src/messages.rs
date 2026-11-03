@@ -61,7 +61,7 @@ macro_rules! string_enum {
 
 string_enum!(
     /// A window's role. Popups and dialogs have a parent.
-    WindowKind { Toplevel => "toplevel", Popup => "popup", Dialog => "dialog" }
+    WindowKind { Toplevel => "toplevel", Popup => "popup", Dialog => "dialog", Child => "child" }
 );
 string_enum!(TouchPhase { Down => "down", Motion => "motion", Up => "up", Cancel => "cancel" });
 string_enum!(PencilPhase {
@@ -178,6 +178,10 @@ pub struct WindowCreate {
     pub desktop_id: Option<String>,
     /// The process that owns a toplevel (`_NET_WM_PID` or the Wayland client's), when known.
     pub pid: Option<u32>,
+    /// A child's visible part, relative to the parent's geometry like `geometry`.
+    pub clip: Option<Rect>,
+    /// A child's order among its parent's children, lowest first.
+    pub stack: Option<u32>,
 }
 
 /// `window.update` (0x03): the id plus whichever fields changed.
@@ -198,6 +202,8 @@ pub struct WindowUpdate {
     pub alpha: Option<bool>,
     pub desktop_id: Option<String>,
     pub pid: Option<u32>,
+    pub clip: Option<Rect>,
+    pub stack: Option<u32>,
 }
 
 impl WindowUpdate {
@@ -314,6 +320,8 @@ pub struct ClientHello {
     pub devices: bool,
     /// The client aims touches at the controls `targets` lists. Sent only when true.
     pub targets: bool,
+    /// The client shows `child` windows inside their parents. Sent only when true.
+    pub children: bool,
     /// MIME types the client takes from the computer's clipboard besides text; absent
     /// means text only.
     pub clipboard_types: Option<Vec<String>>,
@@ -863,6 +871,8 @@ impl Message {
                 .put("alpha", m.alpha)
                 .opt("desktop_id", m.desktop_id.clone())
                 .opt("pid", m.pid)
+                .opt("clip", m.clip)
+                .opt("stack", m.stack)
                 .build(),
             Message::WindowUpdate(m) => MapBuilder::new()
                 .put("id", m.id)
@@ -880,6 +890,8 @@ impl Message {
                 .opt("alpha", m.alpha)
                 .opt("desktop_id", m.desktop_id.clone())
                 .opt("pid", m.pid)
+                .opt("clip", m.clip)
+                .opt("stack", m.stack)
                 .build(),
             Message::WindowDestroy { id }
             | Message::Close { id }
@@ -997,6 +1009,7 @@ impl Message {
                 .opt("webview", m.webview.then_some(true))
                 .opt("devices", m.devices.then_some(true))
                 .opt("targets", m.targets.then_some(true))
+                .opt("children", m.children.then_some(true))
                 .opt("clipboard_types", m.clipboard_types.clone())
                 .build(),
             Message::Vsync { display, t_us } => MapBuilder::new().put("display", *display).put("t_us", *t_us).build(),
@@ -1132,6 +1145,8 @@ impl Message {
                 alpha: f.opt_bool("alpha")?.unwrap_or(false),
                 desktop_id: f.opt_string("desktop_id")?,
                 pid: f.opt_u32("pid")?,
+                clip: f.opt_rect("clip")?,
+                stack: f.opt_u32("stack")?,
             }),
             WINDOW_UPDATE => Message::WindowUpdate(WindowUpdate {
                 id: f.u64("id")?,
@@ -1152,6 +1167,8 @@ impl Message {
                 alpha: f.opt_bool("alpha")?,
                 desktop_id: f.opt_string("desktop_id")?,
                 pid: f.opt_u32("pid")?,
+                clip: f.opt_rect("clip")?,
+                stack: f.opt_u32("stack")?,
             }),
             WINDOW_DESTROY => Message::WindowDestroy { id: f.u64("id")? },
             TARGETS => Message::Targets(Targets {
@@ -1248,6 +1265,7 @@ impl Message {
                 webview: f.opt_bool("webview")?.unwrap_or(false),
                 devices: f.opt_bool("devices")?.unwrap_or(false),
                 targets: f.opt_bool("targets")?.unwrap_or(false),
+                children: f.opt_bool("children")?.unwrap_or(false),
                 clipboard_types: match f.opt("clipboard_types", fields::as_array)? {
                     None => None,
                     Some(_) => Some(f.strings("clipboard_types")?),

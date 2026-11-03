@@ -474,6 +474,7 @@ impl State {
                 WindowKind::Toplevel => "toplevel",
                 WindowKind::Dialog => "dialog",
                 WindowKind::Popup => "popup",
+                WindowKind::Child => "child",
             };
             let r = listed.rect;
             items.push(format!(

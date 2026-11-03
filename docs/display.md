@@ -153,7 +153,7 @@ Server → client (`0x01`–`0x7F`):
 | Type | Name | Fields (`?` optional) |
 | --- | --- | --- |
 | `0x01` | `hello` | `version: 0`, `displays: [uint]`, `features: [text]`, `epoch?: text`, `gpu_live_epoch?: bytes` |
-| `0x02` | `window.create` | `id`, `parent?: uint`, `kind: "toplevel"\|"popup"\|"dialog"`, `title`, `app_id`, `icon?: bytes` (PNG), `geometry: rect`, `min?: size`, `max?: size`, `fullscreen: bool`, `display?: uint`, `xwayland?: bool`, `alpha?: bool`, `desktop_id?: text`, `pid?: uint` |
+| `0x02` | `window.create` | `id`, `parent?: uint`, `kind: "toplevel"\|"popup"\|"dialog"\|"child"`, `title`, `app_id`, `icon?: bytes` (PNG), `geometry: rect`, `min?: size`, `max?: size`, `fullscreen: bool`, `display?: uint`, `xwayland?: bool`, `alpha?: bool`, `desktop_id?: text`, `pid?: uint`, `clip?: rect`, `stack?: uint` |
 | `0x03` | `window.update` | `id` plus any `window.create` field that changed |
 | `0x04` | `window.destroy` | `id` |
 | `0x17` | `game.create` | `id`, `window`, `root: text`, `entry: text`, `saves?: [{ mount, path }]` ([game-handoff.md](game-handoff.md)) |
@@ -185,7 +185,7 @@ Client → server (`0x81`–`0xFF`):
 
 | Type | Name | Fields (`?` optional) |
 | --- | --- | --- |
-| `0x81` | `hello` | `version: 0`, `token`, `displays: [display]`, `audio_decoders?: ["opus"]`, `wasm?: bool`, `webview?: bool`, `devices?: bool`, `targets?: bool`, `clipboard_types?: [mime]` (booleans present only when true) |
+| `0x81` | `hello` | `version: 0`, `token`, `displays: [display]`, `audio_decoders?: ["opus"]`, `wasm?: bool`, `webview?: bool`, `devices?: bool`, `targets?: bool`, `children?: bool`, `clipboard_types?: [mime]` (booleans present only when true) |
 | `0x82` | `vsync` | `display`, `t_us` |
 | `0x84` | `configure` | `id`, `geometry?`, `display?`, `fullscreen?`, `maximized?`, `activated?` |
 | `0x85` | `close` | `id` |
@@ -223,6 +223,28 @@ caboose-display sends named cursors (`cursor.named`) and no `cursor` images;
 `alpha: true` for windows of kind `popup` and `alpha: false` for every other; and
 `icon` only for a toplevel that gives one as pixels. It delivers `pencil` as
 tablet pen events. The computer's notifications reach the app through the host.
+
+### Child windows
+
+A `child` window is part of its parent: a region where one of the parent application's own
+GPU surfaces presents, inset in the window (a browser view in its own X11 child window,
+or a Wayland subsurface). caboose-display creates one when the application binds such a
+surface (docs/gpu-live.md, "Window identity boundary"), and only for a client whose hello
+has `children: true`; for any other client the bind is refused. Its `parent` is the
+window it is inset in, and like a popup's its `geometry` is relative to the parent's
+geometry, in display pixels. `clip` is the part of it the parent shows, in the same
+coordinates (an X11 child is cut by the windows it is nested in); it is always present on
+a child. `stack` orders the parent's children, lowest first, by the application's own
+stacking. `app_id` and `display` are the parent's, the title is empty, and a child has no
+icon, size hints or input of its own.
+
+The client shows a child inside its parent's picture, at its geometry and cut to its clip,
+above the parent's own picture and below the parent's popups and dialogs, moving and
+scaling with the parent. Its GPU surface is bound to the child's id. The compositor draws
+nothing in a child's region of the parent's picture beyond what the application gives it.
+A child takes no input: the client hit-tests through it and sends events with the
+parent's id. `window.update` carries a child's changed geometry, clip and stacking;
+`window.destroy` ends it, as does its parent's.
 
 ### Windows and launches
 

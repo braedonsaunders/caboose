@@ -1,0 +1,8 @@
+{
+  "name": "window-update-child",
+  "description": "A child moved within its parent, now shown whole.",
+  "messages": [
+    {"direction": "server", "type": "window.update", "type_id": 3, "fields": {"id": 16, "clip": [2, 200, 1916, 880], "geometry": [2, 200, 1916, 880]}}
+  ],
+  "hex": "0327000000a36269641064636c6970840218c819077c1903706867656f6d65747279840218c819077c190370"
+}

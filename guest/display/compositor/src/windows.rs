@@ -292,6 +292,8 @@ impl Windows {
             alpha: w.kind == WindowKind::Popup,
             desktop_id: w.desktop_id.clone().flatten(),
             pid: if w.parent.is_none() { w.lineage.as_ref().and_then(|l| l.first().copied()) } else { None },
+            clip: None,
+            stack: None,
         })
     }
 }
@@ -317,6 +319,8 @@ pub fn diff(before: &proto::WindowCreate, now: &proto::WindowCreate) -> proto::W
         alpha: changed(&before.alpha, &now.alpha),
         desktop_id: if before.desktop_id != now.desktop_id { now.desktop_id.clone() } else { None },
         pid: if before.pid != now.pid { now.pid } else { None },
+        clip: if before.clip != now.clip { now.clip } else { None },
+        stack: if before.stack != now.stack { now.stack } else { None },
     }
 }
 
@@ -359,6 +363,8 @@ mod tests {
             alpha: false,
             desktop_id: None,
             pid: None,
+            clip: None,
+            stack: None,
         }
     }
 

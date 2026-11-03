@@ -1,0 +1,8 @@
+{
+  "name": "window-create-child",
+  "description": "An application's own GPU surface inset in its window (a browser view inside its X11 window): placed relative to the parent's geometry, clipped to what the parent shows of it, and stacked over the parent's picture.",
+  "messages": [
+    {"direction": "server", "type": "window.create", "type_id": 2, "fields": {"id": 16, "clip": [2, 368, 1916, 712], "kind": "child", "alpha": false, "stack": 0, "title": "", "app_id": "XTerm", "parent": 12, "display": 2, "geometry": [2, 368, 1916, 1254], "xwayland": true, "fullscreen": false}}
+  ],
+  "hex": "027d000000ac6269641064636c6970840219017019077c1902c8646b696e64656368696c6465616c706861f465737461636b00657469746c6560666170705f696465585465726d66706172656e740c67646973706c6179026867656f6d65747279840219017019077c1904e668787761796c616e64f56a66756c6c73637265656ef4"
+}

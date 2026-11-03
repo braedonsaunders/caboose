@@ -503,6 +503,7 @@ fn run(args: Args) -> Result<bool, String> {
             webview: false,
             devices: false,
             targets: args.targets.is_some(),
+            children: false,
             clipboard_types: args.clipboard_types.clone(),
         }),
     )?;
