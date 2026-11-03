@@ -4,7 +4,7 @@ set -euo pipefail
 # home. Root's own commands keep root's HOME, so nothing root writes lands in the owner's.
 CABOOSE_HOME=/home/caboose
 TOKEN=/run/caboose/display-token
-# Accessibility trees for a11y.py: Chromium and Electron, Firefox, Qt.
+# Accessibility trees for a11y.py: Chromium and Electron, Gecko, Qt.
 export ACCESSIBILITY_ENABLED=1 GNOME_ACCESSIBILITY=1 QT_LINUX_ACCESSIBILITY_ALWAYS_ON=1
 case ${CABOOSE_GPU:-none} in
   wsl) export GALLIUM_DRIVER=d3d12; unset MESA_D3D12_DEFAULT_ADAPTER_NAME ;;

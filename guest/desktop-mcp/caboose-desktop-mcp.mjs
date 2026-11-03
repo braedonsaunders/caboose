@@ -24,7 +24,7 @@ const A11Y = fileURLToPath(new URL('./a11y.py', import.meta.url))
 const SEAT = fileURLToPath(new URL('./seat.py', import.meta.url))
 // What a launched app needs to build its accessibility tree: GTK's bridge must not be
 // switched off (NO_AT_BRIDGE, GTK_A11Y=none), Chromium and Electron read
-// ACCESSIBILITY_ENABLED, Firefox GNOME_ACCESSIBILITY, Qt QT_LINUX_ACCESSIBILITY_ALWAYS_ON.
+// ACCESSIBILITY_ENABLED, Gecko GNOME_ACCESSIBILITY, Qt QT_LINUX_ACCESSIBILITY_ALWAYS_ON.
 const launchEnv = { ...env, ACCESSIBILITY_ENABLED: '1', GNOME_ACCESSIBILITY: '1', QT_LINUX_ACCESSIBILITY_ALWAYS_ON: '1' }
 delete launchEnv.NO_AT_BRIDGE
 if (launchEnv.GTK_A11Y === 'none') delete launchEnv.GTK_A11Y
