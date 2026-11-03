@@ -35,8 +35,10 @@ button or slider goes in through its Value), `{"key": "ctrl+s"}`, `{"type": t}`,
 `{"click": [x, y], "button": 1-3, "count": 1-3}`, `{"scroll": [x, y], "dx": n, "dy": n}`,
 `{"drag": [x1, y1, x2, y2]}`, `{"focus": window}`, `{"wait": ms}` (10–5000) and
 `{"launch": "command"}` (an application on the agent seat, with the accessibility
-environment below). An element step fails when the focused window changed since the id was
-read. `act` replies `Done.` (or how many steps ran and why it stopped), then the changes;
+environment below). An element step whose id no longer names that control (the window lost
+focus, or the control changed or went) fails as a `stale id` and does nothing, so it is safe
+to retry with the ids of a new `look`. A pointer step at a control first checks that no other
+application's window covers it. `act` replies `Done.` (or how many steps ran and why it stopped), then the changes;
 `observe: false` skips the settle and the read.
 
 In a Chromium window on the agent seat, `look` also lists the page's tools (WebMCP tools the

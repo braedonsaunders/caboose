@@ -37,7 +37,7 @@ try {
     { press: 'e999999' },
     { set: entry, text: 'must-not-run.txt' },
   ] }))
-  assert.match(stopped, /^Did 1 of 3; stopped: element not found/)
+  assert.match(stopped, /^Did 1 of 3; stopped: stale id/)
   assert.ok(stopped.includes('"before-error.txt"') && !stopped.includes('must-not-run'), stopped)
   const plain = await call('screenshot')
   assert.equal(plain.length, 1)

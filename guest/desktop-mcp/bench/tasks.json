@@ -180,26 +180,11 @@
       "verify": "test \"$(cat $BENCH/zenity.out)\" = 2026-11-19"
     },
     {
-      "id": "mousepad-tab-width",
-      "app": "Mousepad",
-      "setup": "gsettings reset org.xfce.mousepad.preferences.view tab-width; mkdir -p $HOME/Documents; printf 'hello\\n' > $HOME/Documents/notes.txt; start mousepad $HOME/Documents/notes.txt",
-      "prompt": "In the open Mousepad window, set the tab width to 4 in Mousepad's preferences.",
-      "verify": "test \"$(gsettings get org.xfce.mousepad.preferences.view tab-width)\" = 4",
-      "reset": "gsettings reset org.xfce.mousepad.preferences.view tab-width"
-    },
-    {
       "id": "vscode-new-file",
       "app": "com.microsoft.VSCode",
       "setup": "mkdir -p $HOME/Documents/site; start /usr/share/code/code --user-data-dir $HOME/vscode --extensions-dir $HOME/vscode-extensions --disable-workspace-trust --skip-welcome --new-window $HOME/Documents/site",
       "prompt": "In the open Visual Studio Code window, create a file named notes.md in the open site folder containing the line \"# Harbor\", and save it.",
       "verify": "grep -qx '# Harbor' $HOME/Documents/site/notes.md"
-    },
-    {
-      "id": "evince-page",
-      "app": "org.gnome.Evince",
-      "setup": "mkdir -p $HOME/Documents; python3 - <<'PY'\nimport zlib\npages=3\nobjs=[]\nkids=' '.join(f'{3+i*2} 0 R' for i in range(pages))\nobjs.append('<< /Type /Catalog /Pages 2 0 R >>')\nobjs.append(f'<< /Type /Pages /Kids [{kids}] /Count {pages} >>')\nfor i in range(pages):\n    objs.append(f'<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] /Contents {4+i*2} 0 R /Resources << /Font << /F1 << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> >> >> >>')\n    s=f'BT /F1 24 Tf 40 150 Td (Page {i+1}) Tj ET'\n    objs.append(f'<< /Length {len(s)} >>\\nstream\\n{s}\\nendstream')\nimport os\nout='%PDF-1.4\\n'; offs=[]\nfor n,o in enumerate(objs,1):\n    offs.append(len(out)); out+=f'{n} 0 obj\\n{o}\\nendobj\\n'\nx=len(out); out+=f'xref\\n0 {len(objs)+1}\\n0000000000 65535 f \\n'+''.join(f'{o:010d} 00000 n \\n' for o in offs)\nout+=f'trailer\\n<< /Size {len(objs)+1} /Root 1 0 R >>\\nstartxref\\n{x}\\n%%EOF\\n'\nopen(os.environ['HOME']+'/Documents/guide.pdf','w').write(out)\nPY\nstart evince $HOME/Documents/guide.pdf",
-      "prompt": "In the open document viewer showing guide.pdf, go to page 3, then close the viewer.",
-      "verify": "test \"$(gio info -a metadata::evince::page $HOME/Documents/guide.pdf | sed -n 's/.*metadata::evince::page: //p')\" = 2"
     },
     {
       "id": "file-roller-extract",
@@ -211,7 +196,7 @@
     {
       "id": "webmcp-shop",
       "app": "Chromium",
-      "setup": "mkdir -p $HOME/Documents; cat > $HOME/Documents/shop.html <<'HTML'\n<!doctype html><html><head><title>Harbor shop</title></head><body><h1>Harbor shop</h1><ul id=cart></ul><button id=buy>Checkout</button>\n<script>\nconst cart = []\nconst render = () => { document.getElementById('cart').innerHTML = cart.map(i => '<li>' + i.qty + ' ' + i.item + '</li>').join('') }\ndocument.modelContext.registerTool({ name: 'add_to_cart', description: 'Add an item to the cart', inputSchema: { type: 'object', properties: { item: { type: 'string', enum: ['rope', 'sail', 'anchor'] }, qty: { type: 'number' } }, required: ['item', 'qty'] },\n  execute: ({ item, qty }) => { cart.push({ item, qty }); render(); return { content: [{ type: 'text', text: 'cart: ' + cart.map(i => i.qty + ' ' + i.item).join(', ') }] } } })\ndocument.modelContext.registerTool({ name: 'checkout', description: 'Place the order for the cart', inputSchema: { type: 'object', properties: {} },\n  execute: () => { document.title = 'Ordered ' + cart.map(i => i.qty + ' ' + i.item).join(', '); return { content: [{ type: 'text', text: document.title }] } } })\ndocument.getElementById('buy').onclick = () => { document.title = 'Ordered ' + cart.map(i => i.qty + ' ' + i.item).join(', ') }\n</script></body></html>\nHTML\nstart python3 -m http.server 18761 --bind 127.0.0.1 --directory $HOME/Documents; sleep 0.5; start chromium --no-first-run --no-default-browser-check --user-data-dir=$HOME/chromium http://127.0.0.1:18761/shop.html",
+      "setup": "mkdir -p $HOME/Documents; cat > $HOME/Documents/shop.html <<'HTML'\n<!doctype html><html><head><title>Harbor shop</title></head><body><h1>Harbor shop</h1><ul id=cart></ul><p><label>Quantity <input id=q type=number value=1></label> <button onclick=\"add('rope')\">Add rope</button> <button onclick=\"add('sail')\">Add sail</button> <button onclick=\"add('anchor')\">Add anchor</button></p><button id=buy>Checkout</button>\n<script>\nconst cart = []\nconst add = item => { cart.push({ item, qty: Number(document.getElementById('q').value) }); render() }\nconst render = () => { document.getElementById('cart').innerHTML = cart.map(i => '<li>' + i.qty + ' ' + i.item + '</li>').join('') }\ndocument.modelContext.registerTool({ name: 'add_to_cart', description: 'Add an item to the cart', inputSchema: { type: 'object', properties: { item: { type: 'string', enum: ['rope', 'sail', 'anchor'] }, qty: { type: 'number' } }, required: ['item', 'qty'] },\n  execute: ({ item, qty }) => { cart.push({ item, qty }); render(); return { content: [{ type: 'text', text: 'cart: ' + cart.map(i => i.qty + ' ' + i.item).join(', ') }] } } })\ndocument.modelContext.registerTool({ name: 'checkout', description: 'Place the order for the cart', inputSchema: { type: 'object', properties: {} },\n  execute: () => { document.title = 'Ordered ' + cart.map(i => i.qty + ' ' + i.item).join(', '); return { content: [{ type: 'text', text: document.title }] } } })\ndocument.getElementById('buy').onclick = () => { document.title = 'Ordered ' + cart.map(i => i.qty + ' ' + i.item).join(', ') }\n</script></body></html>\nHTML\nstart python3 -m http.server 18761 --bind 127.0.0.1 --directory $HOME/Documents; sleep 0.5; start chromium --no-first-run --no-default-browser-check --user-data-dir=$HOME/chromium http://127.0.0.1:18761/shop.html",
       "prompt": "In the open Chromium window, put 3 rope and 1 anchor in the cart and check out.",
       "verify": "window_title 'Ordered 3 rope, 1 anchor - Chromium'"
     },

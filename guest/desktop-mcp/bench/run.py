@@ -79,7 +79,7 @@ for task in tasks:
             # reachable only through the desktop server.
             command = ['codex', 'exec', '--json', '--ephemeral', '--skip-git-repo-check', '--ignore-rules', '-s', 'read-only', '-m', a.model,
                        '-c', f'mcp_servers.desktop.command={json.dumps(server[0])}', '-c', f'mcp_servers.desktop.args={json.dumps(server[1:])}',
-                       '-c', 'mcp_servers.desktop.tool_timeout_sec=180', '-c', 'approval_policy="never"', prompt]
+                       '-c', 'mcp_servers.desktop.tool_timeout_sec=180', '-c', 'mcp_servers.desktop.default_tools_approval_mode="approve"', '-c', 'approval_policy="never"', prompt]
         started = time.monotonic()
         calls, names, result = 0, {}, {}
         try:

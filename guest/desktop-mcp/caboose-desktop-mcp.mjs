@@ -234,7 +234,7 @@ async function inFocusedWindow(id) {
     if (window?.kind !== 'popup' || window.parent == null) break
     focused = window.parent
   }
-  if (parseInt(id.split('-')[0], 16) !== focused) throw new Error('element not found: the focused window changed; look again')
+  if (parseInt(id.split('-')[0], 16) !== focused) throw new Error('stale id: the focused window changed, so nothing was done; look, then retry with its ids (safe to retry)')
 }
 
 // X keysym names of the printable ASCII characters that are not their own name.
@@ -249,15 +249,23 @@ const point = (value, name, size) => {
   return value.map((v, i) => int(v, `${name}[${i}]`))
 }
 
+// An id that no longer resolves did nothing: say so, so a caller knows a retry is safe.
+async function stale(action) {
+  try { return await action() } catch (error) {
+    if (/element not found/.test(error.message)) throw new Error('stale id: the control changed or is gone, so nothing was done; look, then retry with its new id (safe to retry)')
+    throw error
+  }
+}
+
 // One act step; returns a note for the reply, if any.
 async function step(s) {
   if (!s || typeof s !== 'object') throw new Error('a step is an object such as {"press":"e3"}')
   if ('press' in s || 'set' in s) {
     const id = element('press' in s ? s.press : s.set)
     await inFocusedWindow(id)
-    if ('press' in s) { await a11y('act', { element: id, action: 'press' }); return }
+    if ('press' in s) { await stale(() => a11y('act', { element: id, action: 'press' })); return }
     if (typeof s.text !== 'string' || s.text.length > 100_000) throw new Error('set needs text, a string of at most 100000 characters')
-    const { note } = JSON.parse((await a11y('act', { element: id, action: 'set-text', text: s.text }))[0].text)
+    const { note } = JSON.parse((await stale(() => a11y('act', { element: id, action: 'set-text', text: s.text })))[0].text)
     return note
   }
   actedAt = Number(process.hrtime.bigint() / 1000n)

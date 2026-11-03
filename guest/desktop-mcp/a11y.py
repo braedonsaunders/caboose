@@ -1381,7 +1381,8 @@ def collect(target, query=None, role=None):
         # Expose capabilities rather than asking a policy to infer them from pixels.
         _, native_actions = tree.actions(node)
         supported = []
-        if any(name in tree.press_actions for name in native_actions) or (node_role in tree.pointer_roles and tree.has(states, "SHOWING")):
+        if any(name in tree.press_actions for name in native_actions) or (node_role in tree.pointer_roles and tree.has(states, "SHOWING")) \
+                or tree.has(states, "SELECTABLE"):
             supported.append("press")
         if tree.has(states, "EDITABLE"): supported.append("set-text")
         if tree.has(states, "FOCUSABLE"): supported.append("focus")
@@ -1570,6 +1571,10 @@ def act(display_name, element, action, text):
                 except Exception:
                     pass
                 break
+        # An item of a list, table or tree without an action of its own is selected through its
+        # container's Selection, as the toolkit selects it on a click.
+        if select_in_parent(tree, node, states):
+            return
         if bounds is None or not tree.has(states, "SHOWING"):
             raise Failure("element has no action and is not on screen")
         screen.click(xid, bounds["x"] + bounds["width"] // 2, bounds["y"] + bounds["height"] // 2)
@@ -1660,6 +1665,34 @@ def act(display_name, element, action, text):
                 raise Failure(f"the field shows {shown[:80]!r} after typing; read it again before retrying")
         return
     raise Failure(f"unknown action {action}", 2)
+
+
+def select_in_parent(tree, node, states):
+    """Select `node` through the Selection of the nearest container that has one (its list or
+    table; GTK 4 puts a row between a list and its cells): the container's child that holds
+    `node` is selected. Whether `node` then reads selected."""
+    if not tree.has(states, "SELECTABLE"):
+        return False
+    try:
+        child, parent = node, node.get_parent()
+        for _ in range(3):
+            if parent is None:
+                return False
+            if parent.get_selection_iface() is not None:
+                if not tree.Atspi.Selection.select_child(parent, child.get_index_in_parent()):
+                    return False
+                break
+            child, parent = parent, parent.get_parent()
+        else:
+            return False
+    except Exception:
+        return False
+    deadline = time.monotonic() + 0.3
+    while not tree.has(tree.fresh_states(node), "SELECTED"):
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.02)
+    return True
 
 
 # Processes whose EditableText accepts a new text and changes nothing (Firefox's web fields).
