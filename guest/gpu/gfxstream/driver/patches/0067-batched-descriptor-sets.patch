@@ -13,17 +13,18 @@ sets before detaching the command buffers.
 diff --git a/src/gfxstream/guest/vulkan/gfxstream_vk_device.cpp b/src/gfxstream/guest/vulkan/gfxstream_vk_device.cpp
 --- a/src/gfxstream/guest/vulkan/gfxstream_vk_device.cpp
 +++ b/src/gfxstream/guest/vulkan/gfxstream_vk_device.cpp
-@@ -74,6 +74,9 @@ static gfxstream::vk::VkEncoder* getVulkanEncoder(GfxStreamConnectionManager* mg
- 
- static GfxStreamConnectionManager* getConnectionManager(void) {
-     auto transport = renderControlGetTransport();
+@@ -24,6 +24,10 @@
+ #include "vk_sync_dummy.h"
+ #include "vk_util.h"
+ static GfxStreamConnectionManager* getConnectionManager(void);
 +#ifdef CABOOSE_GFXSTREAM_PRIVATE_ICD
++// SocketStream.cpp: 1 when the phone takes batched descriptor sets (hello feature 0x40000).
 +extern "C" int caboose_gfxstream_batched_descriptor_sets;
 +#endif
- #ifdef CABOOSE_GFXSTREAM_PRIVATE_ICD
-     if (std::getenv("CABOOSE_GFXSTREAM_SOCKET")) {
-         // One connection per process, never freed: every thread shares its encoder
-@@ -146,6 +149,9 @@ static VkResult SetupInstanceForProcess(void) {
+ #include "caboose-wsi/mesa_surface.inc"
+ static VkBaseOutStructure* caboose_extract_struct(void* start, VkStructureType sType) {
+     auto* curr = reinterpret_cast<VkBaseOutStructure*>(start);
+@@ -146,6 +150,9 @@ static VkResult SetupInstanceForProcess(void) {
          // This is a wire-format feature, not a Vulkan hardware capability.
          struct GfxStreamVkFeatureInfo features = {};
          features.hasVulkanNullOptionalStrings = true;
