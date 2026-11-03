@@ -32,6 +32,7 @@ p.add_argument('--label', help='what to call this run in its records (default: t
 p.add_argument('--output', required=True)
 p.add_argument('--task', action='append', default=[])
 p.add_argument('--timeout', type=int, default=900)
+p.add_argument('--prompt-suffix', default='', help='appended to every task prompt ({id} is the task id), e.g. to have routines saved')
 p.add_argument('--tools', default='/opt/caboose', help="directory of desktop MCP's helpers inside the computer")
 p.add_argument('--trace', help='CABOOSE_DESKTOP_TRACE file of the --mcp server inside the computer, summarised per task')
 a = p.parse_args()
@@ -69,7 +70,7 @@ for task in tasks:
         record.update(success=False, error='setup: ' + text[-300:])
     else:
         time.sleep(1.0)  # the application finishes building its first window
-        prompt = PROMPT.format(task=task['prompt'])
+        prompt = PROMPT.format(task=task['prompt']) + (' ' + a.prompt_suffix.format(id=task['id']) if a.prompt_suffix else '')
         if a.agent == 'claude':
             command = ['claude', '-p', prompt, '--model', a.model, '--output-format', 'stream-json', '--verbose',
                        '--tools', '', '--strict-mcp-config', '--mcp-config', config.name, '--allowedTools', 'mcp__desktop',

@@ -14,6 +14,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createInterface } from 'node:readline'
 import { createConnection } from 'node:net'
+import { mkdirSync, readFileSync, writeFileSync, renameSync } from 'node:fs'
 import { Worker } from './worker.mjs'
 import { Observer } from './observation.mjs'
 import { controlAlive, ensureAgentSeat } from './ensure-agent-seat.mjs'
@@ -53,9 +54,10 @@ const tools = [
       + 'controls; windows opened or closed). Put every step you already know in one call. A step is one of: {"press":id} '
       + '{"set":id,"text":t} replaces a field\'s text, {"key":"ctrl+s"}, {"type":t}, {"click":[x,y],"button":1-3,"count":1-3}, '
       + '{"scroll":[x,y],"dy":n}, {"drag":[x1,y1,x2,y2]}, {"focus":window}, {"launch":"command"}, '
-      + '{"tool":name,"args":{...}} calls a page tool. Every step waits for the application to react, so wait steps '
-      + '({"wait":ms}) are rarely needed.',
-    inputSchema: { type: 'object', properties: { steps: { type: 'array', items: { type: 'object' } } }, required: ['steps'] },
+      + '{"tool":name,"args":{...}} calls a page tool, {"run":routine,"texts":[...]} replays a saved routine. Every step waits '
+      + 'for the application to react, so wait steps ({"wait":ms}) are rarely needed. save:name, once a task is done, keeps '
+      + 'its steps as a routine of the application, replayable later with other texts.',
+    inputSchema: { type: 'object', properties: { steps: { type: 'array', items: { type: 'object' } }, save: { type: 'string' } }, required: ['steps'] },
   },
   {
     name: 'screenshot',
@@ -339,6 +341,65 @@ async function step(s) {
   } else throw new Error('unknown step; use press, set, key, type, click, scroll, drag, focus, wait, launch or tool')
 }
 
+// Routines: an act run that worked, kept per application with its controls named by role and
+// name (ids do not outlive the server) and its texts as parameters, so a repeated task replays
+// in one call. Stored in $XDG_STATE_HOME/caboose/routines.json of the agent's profile.
+function routinesFile() {
+  const state = env.XDG_STATE_HOME || join(env.HOME || '/tmp', '.local', 'state')
+  return join(state, 'caboose', 'routines.json')
+}
+function loadRoutines() {
+  try { return JSON.parse(readFileSync(routinesFile(), 'utf8')) } catch { return {} }
+}
+function saveRoutines(all) {
+  const file = routinesFile()
+  mkdirSync(join(file, '..'), { recursive: true })
+  writeFileSync(file + '.tmp', JSON.stringify(all, null, 1))
+  renameSync(file + '.tmp', file)
+}
+async function focusedApp() {
+  const listing = await seat('windows')
+  return listing.windows.find(w => w.id === listing.focused)?.app_id ?? ''
+}
+// The steps that have worked since the last save (the task so far), each control kept as
+// { role, name } as it was read when the step ran.
+let journal = []
+function journalStep(s) {
+  const out = { ...s }
+  for (const verb of ['press', 'set']) if (verb in s && typeof s[verb] !== 'object') {
+    const described = observer.described.get(observer.resolve(String(s[verb])))
+    if (!described) return
+    out[verb] = described
+  }
+  journal.push(out)
+}
+// A routine from the journal, its texts as $1, $2, …
+function asRoutine(steps) {
+  let texts = 0
+  return steps.filter(s => !('wait' in s) && !('launch' in s)).map(s => {
+    const out = { ...s }
+    if ('text' in s) out.text = `$${++texts}`
+    if ('type' in s) out.type = `$${++texts}`
+    return out
+  })
+}
+// A saved step for the window as it is: its control found again by role and name.
+async function replayStep(s, texts) {
+  const out = { ...s }
+  for (const verb of ['press', 'set']) if (verb in s && typeof s[verb] === 'object') {
+    const { elements } = JSON.parse((await a11y('find', { query: s[verb].name || ' ' }))[0].text)
+    const match = (elements ?? []).filter(e => e.role === s[verb].role && (e.name ?? '') === s[verb].name)
+    if (match.length !== 1) throw new Error(`the routine's ${s[verb].role} "${s[verb].name}" is ${match.length ? 'ambiguous' : 'not'} in the window now`)
+    out[verb] = match[0].id
+  }
+  for (const key of ['text', 'type']) if (typeof out[key] === 'string' && /^\$\d+$/.test(out[key])) {
+    const value = texts[Number(out[key].slice(1)) - 1]
+    if (typeof value !== 'string') throw new Error(`the routine needs text ${out[key]}`)
+    out[key] = value
+  }
+  return out
+}
+
 const handlers = {
   async look({ find, text: withText = false, windows = false } = {}) {
     const parts = []
@@ -351,6 +412,8 @@ const handlers = {
       parts.push(await view(true))
       const tools = await pageTools()
       if (tools) parts.push(tools)
+      const routines = Object.entries(loadRoutines()[await focusedApp().catch(() => '')] ?? {})
+      if (routines.length) parts.push(`Routines (act {"run":name,"texts":[...]}): ${routines.map(([name, r]) => `${name}(${r.steps.filter(x => 'text' in x || 'type' in x).length} texts)`).join(', ')}`)
       if (lastState?.note && !(lastState.elements ?? []).length && lastState.window) {
         const pictured = await pixelFallback().catch(() => [])
         if (pictured.length) return [{ type: 'text', text: parts.join('\n') }, ...pictured]
@@ -362,8 +425,19 @@ const handlers = {
     }
     return [{ type: 'text', text: parts.join('\n') }]
   },
-  async act({ steps, observe = true }) {
+  async act({ steps, observe = true, save }) {
     if (!Array.isArray(steps) || steps.length < 1 || steps.length > 30) throw new Error('steps must hold 1–30 steps')
+    if (save !== undefined) text(save, 'save', 80)
+    // A routine step stands for its saved steps, replayed against the window as it is.
+    const expanded = []
+    for (const s of steps) {
+      if (s && typeof s === 'object' && 'run' in s) {
+        const routine = loadRoutines()[await focusedApp()]?.[s.run]
+        if (!routine) throw new Error(`no routine ${JSON.stringify(s.run)} for this application`)
+        for (const r of routine.steps) expanded.push({ replay: r, texts: s.texts ?? [] })
+      } else expanded.push(s)
+    }
+    steps = expanded
     let done = 0, error
     const notes = []
     let after
@@ -377,12 +451,24 @@ const handlers = {
           await seat('settle', 'quiet', ...(actedAt === undefined ? [] : [String(actedAt)]))
         }
         const began = performance.now()
-        const note = await step(s); if (note) notes.push(note); done++
+        const run = s && s.replay ? await replayStep(s.replay, s.texts) : s
+        const note = await step(run); if (note) notes.push(note); done++
+        journalStep(s && s.replay ? { ...s.replay, ...(s.replay.text ? { text: run.text } : {}), ...(s.replay.type ? { type: run.type } : {}) } : s)
         timing.push(`${Object.keys(s ?? {})[0]}:${Math.round(performance.now() - began)}`)
         after = s && typeof s === 'object' && 'type' in s ? 'type' : undefined
       } catch (e) { error = e.message; break }
     }
-    const head = done === steps.length ? (steps.length > 1 ? `Done ${done} steps.` : 'Done.') : `Did ${done} of ${steps.length}; stopped: ${error}`
+    let saved = ''
+    if (save !== undefined && done === steps.length) {
+      try {
+        const all = loadRoutines(), app = await focusedApp()
+        all[app] = { ...(all[app] ?? {}), [save]: { steps: asRoutine(journal) } }
+        saveRoutines(all)
+        journal = []
+        saved = ` Saved as routine ${JSON.stringify(save)}.`
+      } catch (e) { saved = ` Not saved: ${e.message}` }
+    }
+    const head = (done === steps.length ? (steps.length > 1 ? `Done ${done} steps.` : 'Done.') : `Did ${done} of ${steps.length}; stopped: ${error}`) + saved
     const content = [head + (notes.length ? ` (${notes.join('; ')})` : '')]
     if (observe) {
       const began = performance.now()
