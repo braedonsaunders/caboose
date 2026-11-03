@@ -41,6 +41,14 @@ for (const split of splits.length ? splits : ['train', 'validation', 'heldout'])
       add(t, 'synthetic-missing-value', t.before, spec.fields.filter(f => f !== pending), [{ action: 'blocked' }])
       add(t, 'synthetic-missing-control', t.before.filter(e => e.name !== pending.name), spec.fields, [{ action: 'blocked' }])
     }
+    // The final step with one field never filled: everything else is done, only the submit is
+    // left, and it must not go in. Oracle traces never pass through this state themselves.
+    const last = !pending && spec.fields[t.case % Math.max(1, spec.fields.length)]
+    if (index % 2 === 0 && last) {
+      const cleared = t.before.map(e => e.name === last.name && e.role === 'text' ? { ...e, value: '' } : e)
+      add(t, 'synthetic-final-missing-value', cleared, spec.fields.filter(f => f !== last), [{ action: 'blocked' }])
+      add(t, 'synthetic-final-missing-control', t.before.filter(e => e.name !== last.name), spec.fields, [{ action: 'blocked' }])
+    }
   }
   await writeFile(resolve(output, `${split}.jsonl`), rows.map(r => JSON.stringify(r)).join('\n') + '\n')
   console.log(split, rows.length, Object.entries(Object.groupBy(rows, r => r.kind)).map(([k, v]) => `${k}=${v.length}`).join(' '))
