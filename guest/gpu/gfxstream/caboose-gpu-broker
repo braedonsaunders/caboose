@@ -386,9 +386,9 @@ def write_usage(path, record):
 class SurfaceStats:
     """Always on: every 5 s while a surface presents, one CABOOSE_GPU_SURFACE_STATS line with
     its presents per second, present results and source releases from the phone, the longest
-    gap between presents, and the bytes its process sent to and received from the phone in
-    that window (message payloads, before compression). Counters only; no payloads, handles
-    or identities."""
+    gap between presents, the bytes its process sent to and received from the phone in that
+    window (message payloads, before compression), and when the window ended (UTC). Counters
+    only; no payloads, handles or identities."""
     INTERVAL_NS = 5_000_000_000
 
     def __init__(self, ordinal, owner):
@@ -419,7 +419,8 @@ class SurfaceStats:
             print(f'CABOOSE_GPU_SURFACE_STATS surface={self.ordinal} elapsed_ms={elapsed // 1_000_000} '
                   f'fps={self.presented * 1_000_000_000 / elapsed:.1f} presented={self.presented} '
                   f'results={self.results} released={self.released} gap_max_ms={self.gap_max // 1_000_000} '
-                  f'to_phone_bytes={to_phone} from_phone_bytes={from_phone}', file=sys.stderr, flush=True)
+                  f'to_phone_bytes={to_phone} from_phone_bytes={from_phone} '
+                  f'at={time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}', file=sys.stderr, flush=True)
         self.restart(now)
 
 

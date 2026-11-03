@@ -130,8 +130,9 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
             owner['from_phone'] += 700
             stats.event('result', 5_000_000_000)
             line = output.call_args.args[0]
-            self.assertEqual(line, 'CABOOSE_GPU_SURFACE_STATS surface=2 elapsed_ms=5000 fps=0.6 presented=3 '
-                                   'results=2 released=1 gap_max_ms=2500 to_phone_bytes=4000 from_phone_bytes=700')
+            self.assertRegex(line, r'^CABOOSE_GPU_SURFACE_STATS surface=2 elapsed_ms=5000 fps=0\.6 presented=3 '
+                                   r'results=2 released=1 gap_max_ms=2500 to_phone_bytes=4000 from_phone_bytes=700 '
+                                   r'at=\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$')
             # The next window counts afresh.
             stats.event('present', 6_000_000_000)
             stats.event('present', 10_000_000_000)
