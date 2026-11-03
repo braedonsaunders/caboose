@@ -14,6 +14,7 @@ This directory is a Cargo workspace:
 | `probe/` | `caboose-display-probe`: a headless client that drives windows and reports windows, input, clipboard, drag and drop, sound and server CPU; also the readiness check |
 | `vectors/` | Golden vectors every client replays (see [vectors/README.md](vectors/README.md)) |
 | `scripts/check.py` | Scripted checks against real applications |
+| `wlcs/`, `scripts/check-wlcs.py` | Runs WLCS, Mir's Wayland conformance suite, against the compositor with its own adapter ([wlcs/README.md](wlcs/README.md)) |
 | `scripts/scroll-bench.py` | Wheel-scrolls a window through the control socket and reports its commits, presents, render time and upload bytes per present |
 | `scripts/gpu-windows-check.sh` | Checks the GPU compositor's window pictures and wire costs against foot, xterm, GTK 3 and Wine |
 | `systemd/`, `install.sh`, `caboose-display-ready` | Running it in a guest |

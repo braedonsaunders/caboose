@@ -12,15 +12,23 @@
 //! ```text
 //! windows                      every window, bottom to top: id, parent, kind, title, app_id,
 //!                              pid, desktop_id (the entry it was launched from, or null),
-//!                              x11 (its X window, for Xwayland), rect (the window),
+//!                              x11 (its X window, for Xwayland), client (which connection
+//!                              to the Wayland socket, counting from 1) and wl_surface (its root
+//!                              surface's id in that connection), rect (the window),
 //!                              surface (its root surface's x, y, w, h, shadows included),
 //!                              display, scale, focused
 //! focus ID                     give a window the keyboard
 //! close ID                     ask a window to close, as its close button would (quitting
 //!                              an app, guest/scopes)
-//! click X Y [BUTTON [COUNT]]   BUTTON is left, middle or right
+//! click X Y [BUTTON [COUNT]]   BUTTON is left, middle, right, back or forward
 //! press X Y [BUTTON]           and `release X Y [BUTTON]`, for a drag
-//! move X Y
+//! move X Y [BUTTON]            keeps the buttons held; over no window the pointer leaves the
+//!                              window it was over
+//! motion X Y DX DY             move to X Y with relative motion DX DY (logical pixels)
+//! place ID X Y [surface]       put a toplevel's window geometry (with `surface`, its root
+//!                              surface's corner) at X Y in the logical space
+//! touch SLOT PHASE X Y         PHASE is down, motion or up; a down lands on the window at
+//!                              X Y and the slot's later events follow that window
 //! scroll X Y DX DY             wheel clicks; positive DY scrolls down
 //! key COMBO…                   xdotool-style combos: ctrl+s, alt+F4, shift+Tab, Return
 //! type TEXT                    the rest of the line; `\n` and `\\` are escapes
@@ -161,6 +169,8 @@ fn button(name: Option<&str>) -> Result<u32, String> {
         "left" | "1" => Ok(buttons::LEFT),
         "middle" | "2" => Ok(buttons::MIDDLE),
         "right" | "3" => Ok(buttons::RIGHT),
+        "back" => Ok(buttons::BACK),
+        "forward" => Ok(buttons::FORWARD),
         other => Err(format!("unknown button {other}")),
     }
 }
@@ -313,26 +323,81 @@ impl State {
                 } else {
                     0
                 };
-                let id = self.window_at(at).ok_or("nothing is at that position")?;
-                let send = |state: &mut State, pressed: u32| state.pointer_at(id, at, pressed, None);
+                let held = self.input.pointer_buttons;
+                let Some(id) = self.window_at(at) else {
+                    // Over no window the pointer leaves the one it was over.
+                    if op == "move" {
+                        self.pointer_leaves(at);
+                        return Ok(b"{\"ok\":true,\"window\":null}\n".to_vec());
+                    }
+                    return Err("nothing is at that position".into());
+                };
+                let send = |state: &mut State, pressed: u32| state.pointer_at(id, at, pressed, None, None);
                 match op {
-                    "move" => send(self, 0),
-                    "press" => send(self, button),
-                    "release" => send(self, 0),
+                    // A move keeps the buttons held (a drag); a press and a release change one.
+                    "move" => send(self, held),
+                    "press" => send(self, held | button),
+                    "release" => send(self, held & !button),
                     _ => {
                         for _ in 0..count {
-                            send(self, button);
-                            send(self, 0);
+                            send(self, held | button);
+                            send(self, held & !button);
                         }
                     }
                 }
+                Ok(format!("{{\"ok\":true,\"window\":{id}}}\n").into_bytes())
+            })(),
+            "motion" => (|| {
+                let at: Point<f64, Logical> = (number(0)?, number(1)?).into();
+                let relative = [number(2)?, number(3)?];
+                let Some(id) = self.window_at(at) else {
+                    self.pointer_leaves(at);
+                    return Ok(b"{\"ok\":true,\"window\":null}\n".to_vec());
+                };
+                self.pointer_at(id, at, self.input.pointer_buttons, None, Some(relative));
+                Ok(format!("{{\"ok\":true,\"window\":{id}}}\n").into_bytes())
+            })(),
+            "place" => (|| {
+                let id = args.first().and_then(|a| a.parse::<u64>().ok()).ok_or("place: ID must be a number")?;
+                let (x, y) = (number(1)? as i32, number(2)? as i32);
+                let w = self.windows.get_mut(id).ok_or("no such window")?;
+                if !matches!(w.surface, Surface::Toplevel(_)) {
+                    return Err("place: only a toplevel is placed".to_owned());
+                }
+                // By default the window geometry goes to X Y; `surface` puts the root surface's
+                // own corner there (what differs when the application's geometry is inset).
+                let inset = if args.get(3) == Some(&"surface") { w.local_geometry().loc } else { (0, 0).into() };
+                let display = self.displays.resolve(Some(w.display));
+                w.position = (x - display.origin.x + inset.x, y - display.origin.y + inset.y).into();
+                w.placed = true;
+                Ok(b"{\"ok\":true}\n".to_vec())
+            })(),
+            "touch" => (|| {
+                use caboose_display_protocol::{TouchPhase, TouchPoint};
+                let slot = args.first().and_then(|a| a.parse::<u32>().ok()).ok_or("touch: SLOT must be a number")?;
+                let phase = match args.get(1).copied() {
+                    Some("down") => TouchPhase::Down,
+                    Some("motion") => TouchPhase::Motion,
+                    Some("up") => TouchPhase::Up,
+                    _ => return Err("touch: PHASE is down, motion or up".to_owned()),
+                };
+                let at: Point<f64, Logical> = (number(2)?, number(3)?).into();
+                let id = match phase {
+                    TouchPhase::Down => self.window_at(at).ok_or("nothing is at that position")?,
+                    _ => self.input.touches.get(&slot).copied().ok_or("touch: that slot is not down")?,
+                };
+                let w = self.windows.get(id).ok_or("no such window")?;
+                let display = self.displays.resolve(Some(w.display));
+                let origin = self.windows.logical_origin(id, &self.displays).to_f64();
+                let (x, y) = (display.to_pixels(at.x - origin.x), display.to_pixels(at.y - origin.y));
+                self.touch(&proto::Touch { id, points: vec![TouchPoint { slot, phase, x, y, force: None, radius: None }] });
                 Ok(format!("{{\"ok\":true,\"window\":{id}}}\n").into_bytes())
             })(),
             "scroll" => (|| {
                 let at: Point<f64, Logical> = (number(0)?, number(1)?).into();
                 let scroll = proto::Scroll { dx: number(2)?, dy: number(3)?, precise: false, seq: None, lift: None, hold: false };
                 let id = self.window_at(at).ok_or("nothing is at that position")?;
-                self.pointer_at(id, at, 0, Some(scroll));
+                self.pointer_at(id, at, 0, Some(scroll), None);
                 Ok(format!("{{\"ok\":true,\"window\":{id}}}\n").into_bytes())
             })(),
             "key" => (|| {
@@ -395,12 +460,21 @@ impl State {
     }
 
     /// A pointer event at a logical position, as the client would send it for window `id`.
-    fn pointer_at(&mut self, id: u64, at: Point<f64, Logical>, buttons: u32, scroll: Option<proto::Scroll>) {
+    fn pointer_at(
+        &mut self,
+        id: u64,
+        at: Point<f64, Logical>,
+        buttons: u32,
+        scroll: Option<proto::Scroll>,
+        relative: Option<[f64; 2]>,
+    ) {
         let Some(w) = self.windows.get(id) else { return };
         let display = self.displays.resolve(Some(w.display));
         let origin = self.windows.logical_origin(id, &self.displays).to_f64();
         let (x, y) = (display.to_pixels(at.x - origin.x), display.to_pixels(at.y - origin.y));
-        self.pointer(&proto::Pointer { id, x, y, buttons, scroll, relative: None });
+        // Relative motion is in logical pixels here, and in display pixels on the wire.
+        let relative = relative.map(|[dx, dy]| [display.info.scale * dx, display.info.scale * dy]);
+        self.pointer(&proto::Pointer { id, x, y, buttons, scroll, relative });
     }
 
     /// The keyboard's window.
@@ -477,8 +551,15 @@ impl State {
                 WindowKind::Child => "child",
             };
             let r = listed.rect;
+            let root = w.surface.wl_surface();
+            let wl_surface = root.as_ref().map(|s| smithay::reexports::wayland_server::Resource::id(s).protocol_id());
+            let client = root
+                .as_ref()
+                .and_then(|s| self.dh.get_client(smithay::reexports::wayland_server::Resource::id(s)).ok())
+                .and_then(|c| c.get_data::<crate::state::ClientState>().map(|d| d.ordinal))
+                .filter(|ordinal| *ordinal > 0);
             items.push(format!(
-                "{{\"id\":{},\"parent\":{},\"kind\":\"{kind}\",\"title\":{},\"app_id\":{},\"pid\":{},\"desktop_id\":{},\"x11\":{},\
+                "{{\"id\":{},\"parent\":{},\"kind\":\"{kind}\",\"title\":{},\"app_id\":{},\"pid\":{},\"desktop_id\":{},\"x11\":{},\"client\":{},\"wl_surface\":{},\
                  \"rect\":[{},{},{},{}],\"surface\":[{},{},{},{}],\"display\":{},\"scale\":{},\"focused\":{}}}",
                 listed.id,
                 w.parent.map_or("null".into(), |p| p.to_string()),
@@ -495,6 +576,8 @@ impl State {
                     Surface::X11(x) => x.window_id().to_string(),
                     _ => "null".into(),
                 },
+                client.map_or("null".into(), |c| c.to_string()),
+                wl_surface.map_or("null".into(), |c| c.to_string()),
                 r.loc.x,
                 r.loc.y,
                 r.size.w,
