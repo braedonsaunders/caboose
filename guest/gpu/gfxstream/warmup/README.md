@@ -18,7 +18,9 @@ pay one round trip per capability question.
   loads only `libEGL.so.1` at run time, so the same binary runs inside a Flatpak runtime,
   where it is the copy in the "host" GL extension.
 - `caboose-gpu-warmup --replay LOG...` reads the questions recorded in earlier sessions'
-  logs: format, image-format and external-semaphore queries, with checksummed records only.
+  logs, with checksummed records only: format, image-format and external-semaphore queries,
+  physical-device properties and features (each chain rebuilt from the sTypes and sizes in
+  its key), queue families, memory properties and the device's extension list.
   Eight processes ask the new executor all of them, each taking a share; the executor
   answers separate processes side by side. Answers are never carried over from an earlier
   session, only which questions were asked. It asks only devices whose name appears in a
@@ -62,7 +64,7 @@ broker's log shows each warm-up's `CABOOSE_GPU_WARMUP` line.
 
 ## Limitation
 
-One GL start still makes about 44 round trips the cache does not cover: instance and
-physical-device properties, features, queue families and extensions, device creation, and
-descriptor-layout support. A short-lived process that starts GL just before it exits still
-pays them.
+A GL start still makes the round trips the cache cannot cover: instance creation and
+enumeration, its first physical-device properties query (which identifies the device),
+device creation and descriptor-layout support. A short-lived process that starts GL just
+before it exits still pays them.
