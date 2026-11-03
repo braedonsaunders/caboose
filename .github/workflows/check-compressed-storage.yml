@@ -2,6 +2,7 @@ name: Check compressed guest storage
 
 on:
   pull_request:
+    types: [ready_for_review]
     paths:
       - '.github/workflows/check-compressed-storage.yml'
       - 'guest/image/**'

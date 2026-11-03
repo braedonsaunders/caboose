@@ -4,6 +4,7 @@ name: Check split microVM image
 on:
   workflow_dispatch:
   pull_request:
+    types: [ready_for_review]
     paths:
       - '.github/workflows/check-split-image.yml'
       - 'guest/**'
