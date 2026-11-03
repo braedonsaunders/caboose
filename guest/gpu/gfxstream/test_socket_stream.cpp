@@ -215,7 +215,7 @@ int main() {
     // 0x40000 (batched without inline uniform blocks) is never offered: a broker that grants
     // it grants what was not offered, and the offer falls back.
     {
-        Broker broker(2, [answered = 0](const Hello&) mutable { return answered++ ? hello(0x3FFF0) : hello(0x400F0); });
+        Broker broker(2, [answered = 0](const Hello&) mutable { return answered++ ? hello(0xF0) : hello(0x400F0); });
         CabooseSocketStream stream(1024);
         assert(stream.connect(broker.path.c_str()) == 0 && caboose_gfxstream_batched_descriptor_sets == 0);
     }
