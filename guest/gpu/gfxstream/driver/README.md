@@ -142,6 +142,7 @@ Each patch is one feature. Several change Mesa's generated encoder
 | 0069 read-profile-at-exit | `CABOOSE_READ_PROFILE` also reports the totals not yet reported when the process exits (`at_exit`), so a process shorter than its 2 s period reports |
 | 0070 instance-version-once | `vkEnumerateInstanceVersion` is asked once per executor connection and answered from the capability cache's process-local answers after that |
 | 0071 deferred-pool-ids | With batched descriptor sets and one encoder, a descriptor pool asks for its set ids without waiting; the reply is read with the other deferred replies or at the pool's first allocation |
+| 0072 batched-inline-uniform-blocks | A batched commit carries inline uniform block writes (the binding's bytes kept whole in the guest), and batching follows the connected executor's grant (hello `0x80000`) at every use, so a process that outlives its executor follows the next |
 
 The patch messages describe each change. To change the driver, prepare a tree, commit
 the prepared state, edit, and regenerate the affected patch with `git format-patch`
@@ -178,7 +179,8 @@ hello for the completion feed. The rest of the series requires the `0x70` contra
 | 14 (`0x4000`) | The executor resumes across a lost socket and suspends in the background: surface waits have no 10 s deadline (`../virtual-wsi/mesa_surface.inc`) |
 | 15 (`0x8000`) | Flushed memory goes as pieces the phone's upload store holds (patch 0047) |
 | 16 (`0x10000`) | Buffer views use guest-assigned handles (requires bit 7; patch 0057) |
-| 18 (`0x40000`) | Descriptor sets allocated and written in the guest and committed with the next submit (patch 0067) |
+| 18 (`0x40000`) | Batched descriptor sets without inline uniform blocks; this driver never offers it |
+| 19 (`0x80000`) | Descriptor sets, inline uniform blocks included, allocated and written in the guest and committed with the next submit (patches 0067, 0072) |
 
 ## Runtime switches
 

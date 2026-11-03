@@ -54,15 +54,16 @@ static constexpr unsigned char kHello[48] = {
 // socket and suspends in the background, so waits for the phone have no deadline of their own
 // (the broker ends the streams when it is lost for good); 0x8000 it names 4096-byte pieces of
 // flushed memory the phone keeps by hash (caboose-bounded-memory/upload_cache.h); 0x10000 it
-// assigns buffer view handles too (requires 0x80); 0x40000 it allocates and writes descriptor
-// sets itself and sends them with its next submit, in one vkQueueCommitDescriptorSetUpdatesGOOGLE
-// (docs/gpu-live.md, "Batched descriptor sets"). The broker replies with the features both
+// assigns buffer view handles too (requires 0x80); 0x80000 it allocates and writes descriptor
+// sets itself, inline uniform blocks included, and sends them with its next submit, in one
+// vkQueueCommitDescriptorSetUpdatesGOOGLE (docs/gpu-live.md, "Batched descriptor sets"). It
+// never offers 0x40000, the same without inline uniform blocks. The broker replies with the features both
 // the process and the connected phone support. A broker that predates a feature closes
 // the connection instead, so the offer falls back to fewer features.
 static constexpr uint32_t kGuestHandles = 0x80, kGuestHandleArrays = 0x100, kCompletionFeed = 0x200,
                           kOrderedPresent = 0x400, kGuestImages = 0x800, kGuestQueryPools = 0x1000,
                           kShaderCache = 0x2000, kExecutorResume = 0x4000, kUploadCache = 0x8000,
-                          kGuestBufferViews = 0x10000, kBatchedDescriptorSets = 0x40000;
+                          kGuestBufferViews = 0x10000, kBatchedDescriptorSets = 0x80000;
 static const uint32_t kOffers[] = {0x3ff80 | kBatchedDescriptorSets, 0x3ff80, kGuestHandles | kGuestHandleArrays | kCompletionFeed | kOrderedPresent | kGuestImages |
                                        kGuestQueryPools | kShaderCache | kExecutorResume | kUploadCache |
                                        kGuestBufferViews,
@@ -120,10 +121,10 @@ int caboose_gfxstream_executor_resume = 0;
 // 1 when the phone keeps flushed pieces and takes their prefixes (hello feature 0x8000).
 extern "C" int caboose_gfxstream_upload_cache;
 int caboose_gfxstream_upload_cache = 0;
-// 1 when descriptor sets are allocated and written in the guest and sent with the next submit
-// (hello feature 0x40000), 0 when not, -1 before the first connection. The process's first
-// connection decides it, since the driver sets its descriptor handling up once: an executor
-// that does not take batched sets cannot serve a process that uses them.
+// 1 while descriptor sets are allocated and written in the guest and sent with the next submit
+// (hello feature 0x80000), 0 when not, -1 before the first connection. Each executor
+// connection decides it: a process that outlives its executor (the compositor) follows the
+// next one, batched or not, and the objects it made under the last are lost with it.
 extern "C" int caboose_gfxstream_batched_descriptor_sets;
 int caboose_gfxstream_batched_descriptor_sets = -1;
 
@@ -339,20 +340,8 @@ int CabooseSocketStream::connectWith(const char* path, const unsigned char* offe
     caboose_gfxstream_shader_cache = (features & kShaderCache) ? 1 : 0;
     caboose_gfxstream_executor_resume = (features & kExecutorResume) ? 1 : 0;
     caboose_gfxstream_upload_cache = (features & kUploadCache) ? 1 : 0;
-    {
-        int unset = -1;
-        const int batched = (features & kBatchedDescriptorSets) ? 1 : 0;
-        if (!__atomic_compare_exchange_n(&caboose_gfxstream_batched_descriptor_sets, &unset, batched, false,
-                                         __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE) && unset == 1 && !batched) {
-            std::fprintf(stderr, "CABOOSE_GPU_CONNECT_FAILED this process sends batched descriptor sets "
-                                 "and the executor does not take them\n");
-            handshaking = true;
-            close(fd_);
-            fd_ = -1;
-            errno = ENOTSUP;
-            return -1;
-        }
-    }
+    __atomic_store_n(&caboose_gfxstream_batched_descriptor_sets, (features & kBatchedDescriptorSets) ? 1 : 0,
+                     __ATOMIC_RELEASE);
 #else
     caboose_gfxstream_guest_handles = 0;
 #endif

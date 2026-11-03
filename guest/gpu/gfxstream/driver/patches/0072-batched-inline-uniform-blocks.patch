@@ -1,0 +1,219 @@
+From: Caboose <caboose@local>
+Subject: [PATCH 72/72] Batch inline uniform block writes and follow each executor's batched sets
+
+A batched commit could not carry inline uniform block writes (the guest aborted
+on them), so batching had to hide inline uniform blocks, which DXVK requires.
+A binding's inline bytes are now kept whole in the guest (each write lands at its
+offset) and the commit sends them as one write with its
+VkWriteDescriptorSetInlineUniformBlock. Whether descriptor sets are batched is
+read from the connected executor's grant (hello 0x80000, SocketStream.cpp) at
+every use, so a process that outlives its executor follows the next one.
+---
+diff --git a/src/gfxstream/guest/vulkan_enc/DescriptorSetVirtualization.cpp b/src/gfxstream/guest/vulkan_enc/DescriptorSetVirtualization.cpp
+index 8491196..17eb02e 100644
+--- a/src/gfxstream/guest/vulkan_enc/DescriptorSetVirtualization.cpp
++++ b/src/gfxstream/guest/vulkan_enc/DescriptorSetVirtualization.cpp
+@@ -4,6 +4,8 @@
+  */
+ #include "DescriptorSetVirtualization.h"
+ 
++#include <cstring>
++
+ #include "Resources.h"
+ #include "util/log.h"
+ 
+@@ -174,15 +176,20 @@ void doEmulatedDescriptorWrite(const VkWriteDescriptorSet* write, ReifiedDescrip
+             mesa_loge("%s: did not find inline uniform block\n", __func__);
+             return;
+         }
++        // Caboose: the binding's bytes are kept whole: a write lands at its offset
++        // (dstArrayElement), and the next commit sends every byte written so far, so a
++        // partial write never undoes an earlier one.
+         auto& entry = table[dstBinding][0];
++        const size_t end = size_t(dstArrayElement) + descInlineUniformBlock->dataSize;
++        if (entry.inlineUniformBlockBuffer.size() < end) entry.inlineUniformBlockBuffer.resize(end);
++        memcpy(entry.inlineUniformBlockBuffer.data() + dstArrayElement, descInlineUniformBlock->pData,
++               descInlineUniformBlock->dataSize);
+         entry.inlineUniformBlock = *descInlineUniformBlock;
+-        entry.inlineUniformBlockBuffer.assign(
+-            static_cast<const uint8_t*>(descInlineUniformBlock->pData),
+-            static_cast<const uint8_t*>(descInlineUniformBlock->pData) +
+-                descInlineUniformBlock->dataSize);
++        entry.inlineUniformBlock.pNext = nullptr;
++        entry.inlineUniformBlock.dataSize = uint32_t(entry.inlineUniformBlockBuffer.size());
+         entry.type = DescriptorWriteType::InlineUniformBlock;
+         entry.descriptorType = descType;
+-        entry.dstArrayElement = dstArrayElement;
++        entry.dstArrayElement = 0;
+     } else if (isDescriptorTypeAccelerationStructure(descType)) {
+         // TODO
+         // Look for pNext inline uniform block or acceleration structure.
+diff --git a/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp b/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp
+index 3e8e716..971aa9b 100644
+--- a/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp
++++ b/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp
+@@ -117,6 +117,14 @@ T* vk_extract_struct(void* start, VkStructureType sType) {
+     return nullptr;
+ }
+ 
++// Caboose (SocketStream.cpp): 1 while the connected executor takes batched descriptor sets with
++// inline uniform blocks (hello 0x80000). Decided by each executor connection, so a process that
++// outlives its executor follows the next one; objects of an earlier executor are lost with it.
++extern "C" int caboose_gfxstream_batched_descriptor_sets;
++static inline bool cabooseBatchedSets() {
++    return __atomic_load_n(&caboose_gfxstream_batched_descriptor_sets, __ATOMIC_ACQUIRE) == 1;
++}
++
+ namespace gfxstream {
+ namespace vk {
+ 
+@@ -901,6 +909,8 @@ static void commitDescriptorSetUpdates(void* context, VkQueue queue,
+     std::vector<uint32_t> pendingAllocations;
+     std::vector<uint32_t> writeStartingIndices;
+     std::vector<VkWriteDescriptorSet> writesForHost;
++    // Caboose: the inline uniform block of each such write, at a stable address until sent.
++    std::deque<VkWriteDescriptorSetInlineUniformBlock> inlineBlocks;
+ 
+     uint32_t poolIndex = 0;
+     uint32_t currentWriteIndex = 0;
+@@ -936,6 +946,8 @@ static void commitDescriptorSetUpdates(void* context, VkQueue queue,
+                 if (write.type == DescriptorWriteType::Empty) continue;
+ 
+                 uint32_t dstArrayElement = 0;
++                uint32_t descriptorCount = 1;
++                const void* pNext = nullptr;
+ 
+                 VkDescriptorImageInfo* imageInfo = nullptr;
+                 VkDescriptorBufferInfo* bufferInfo = nullptr;
+@@ -956,7 +968,20 @@ static void commitDescriptorSetUpdates(void* context, VkQueue queue,
+                         dstArrayElement = j;
+                         bufferView = &write.bufferView;
+                         break;
+-                    case DescriptorWriteType::InlineUniformBlock:
++                    case DescriptorWriteType::InlineUniformBlock: {
++                        // The binding's bytes written so far, from offset 0
++                        // (DescriptorSetVirtualization.cpp keeps them whole).
++                        if (write.inlineUniformBlockBuffer.empty()) continue;
++                        VkWriteDescriptorSetInlineUniformBlock block = {
++                            VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_INLINE_UNIFORM_BLOCK, nullptr,
++                            uint32_t(write.inlineUniformBlockBuffer.size()),
++                            write.inlineUniformBlockBuffer.data()};
++                        inlineBlocks.push_back(block);
++                        pNext = &inlineBlocks.back();
++                        dstArrayElement = 0;
++                        descriptorCount = block.dataSize;
++                        break;
++                    }
+                     case DescriptorWriteType::AccelerationStructure:
+                         // TODO
+                         mesa_loge(
+@@ -970,11 +995,11 @@ static void commitDescriptorSetUpdates(void* context, VkQueue queue,
+                 // TODO: Combine multiple writes into one VkWriteDescriptorSet.
+                 VkWriteDescriptorSet forHost = {
+                     VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+-                    0 /* TODO: inline uniform block */,
++                    pNext,
+                     set,
+                     binding,
+                     dstArrayElement,
+-                    1,
++                    descriptorCount,
+                     write.descriptorType,
+                     imageInfo,
+                     bufferInfo,
+@@ -1310,10 +1335,10 @@ void ResourceTracker::freeDescriptorSetsIfHostAllocated(VkEncoder* enc, VkDevice
+ void ResourceTracker::clearDescriptorPoolAndUnregisterDescriptorSets(void* context, VkDevice device,
+                                                                      VkDescriptorPool pool) {
+     std::vector<VkDescriptorSet> toClear =
+-        clearDescriptorPool(pool, mFeatureInfo.hasVulkanBatchedDescriptorSetUpdate);
++        clearDescriptorPool(pool, cabooseBatchedSets());
+ 
+     for (auto set : toClear) {
+-        if (mFeatureInfo.hasVulkanBatchedDescriptorSetUpdate) {
++        if (cabooseBatchedSets()) {
+             VkDescriptorSetLayout setLayout = as_goldfish_VkDescriptorSet(set)->reified->setLayout;
+             decDescriptorSetLayoutRef(context, device, setLayout, nullptr);
+         }
+@@ -2035,7 +2060,7 @@ void ResourceTracker::setupCaps(uint32_t& noRenderControlEnc) {
+         mFeatureInfo.hasVirtioGpuNext = true;
+         mFeatureInfo.hasVirtioGpuNativeSync = true;
+         mFeatureInfo.hasVulkanBatchedDescriptorSetUpdate =
+-            mCaps.vulkanCapset.vulkanBatchedDescriptorSetUpdate;
++            mCaps.vulkanCapset.vulkanBatchedDescriptorSetUpdate; // unused: cabooseBatchedSets()
+         mFeatureInfo.hasVulkanAsyncQsri = true;
+ 
+         ResourceTracker::streamFeatureBits |= VULKAN_STREAM_FEATURE_NULL_OPTIONAL_STRINGS_BIT;
+@@ -6450,7 +6475,7 @@ VkResult ResourceTracker::on_vkCreateDescriptorPool(void* context, VkResult, VkD
+         });
+     }
+ 
+-    if (mFeatureInfo.hasVulkanBatchedDescriptorSetUpdate) {
++    if (cabooseBatchedSets()) {
+         std::vector<uint64_t> poolIds(pCreateInfo->maxSets);
+ 
+         uint32_t count = pCreateInfo->maxSets;
+@@ -6523,7 +6548,7 @@ VkResult ResourceTracker::on_vkAllocateDescriptorSets(
+     VkEncoder* enc = (VkEncoder*)context;
+     auto ci = pAllocateInfo;
+     auto sets = pDescriptorSets;
+-    if (mFeatureInfo.hasVulkanBatchedDescriptorSetUpdate) {
++    if (cabooseBatchedSets()) {
+         // Using the pool ID's we collected earlier from the host
+         VkResult poolAllocResult = validateAndApplyVirtualDescriptorSetAllocation(ci, sets);
+ 
+@@ -6602,7 +6627,7 @@ VkResult ResourceTracker::on_vkFreeDescriptorSets(void* context, VkResult, VkDev
+ 
+         for (auto set : existingDescriptorSets) {
+             if (removeDescriptorSetFromPool(set,
+-                                            mFeatureInfo.hasVulkanBatchedDescriptorSetUpdate)) {
++                                            cabooseBatchedSets())) {
+                 toActuallyFree.push_back(set);
+             }
+         }
+@@ -6610,7 +6635,7 @@ VkResult ResourceTracker::on_vkFreeDescriptorSets(void* context, VkResult, VkDev
+         if (toActuallyFree.empty()) return VK_SUCCESS;
+     }
+ 
+-    if (mFeatureInfo.hasVulkanBatchedDescriptorSetUpdate) {
++    if (cabooseBatchedSets()) {
+         // In the batched set update case, decrement refcount on the set layout
+         // and only free on host if we satisfied a pending allocation on the
+         // host.
+@@ -6737,7 +6762,7 @@ void ResourceTracker::on_vkUpdateDescriptorSets(void* context, VkDevice device,
+         }
+     }
+ 
+-    if (mFeatureInfo.hasVulkanBatchedDescriptorSetUpdate) {
++    if (cabooseBatchedSets()) {
+         for (uint32_t i = 0; i < descriptorWriteCount; ++i) {
+             VkDescriptorSet set = transformedWrites[i].dstSet;
+             doEmulatedDescriptorWrite(&transformedWrites[i],
+@@ -7821,7 +7846,7 @@ void ResourceTracker::flushStagingStreams(void* context, VkQueue queue, uint32_t
+     if (cabooseSynchronousProfile() && !usingDirectMapping()) {
+         // Command buffers go with their submit; the descriptor sets they bind that were
+         // allocated or written since go just before it, in one commit on the same stream.
+-        if (mFeatureInfo.hasVulkanBatchedDescriptorSetUpdate) {
++        if (cabooseBatchedSets()) {
+             std::vector<VkCommandBuffer> submitted;
+             for (uint32_t i = 0; i < submitCount; ++i)
+                 for (uint32_t j = 0; j < getCommandBufferCount(pSubmits[i]); ++j)
+@@ -8717,7 +8742,7 @@ void ResourceTracker::on_vkUpdateDescriptorSetWithTemplate(
+     struct goldfish_VkDescriptorSet* ds = as_goldfish_VkDescriptorSet(descriptorSet);
+     ReifiedDescriptorSet* reified = ds->reified;
+ 
+-    bool batched = mFeatureInfo.hasVulkanBatchedDescriptorSetUpdate;
++    bool batched = cabooseBatchedSets();
+     // Null resources become the device's stand-ins when the host lacks null descriptors.
+     const caboose::features::NullObjects nulls =
+         cabooseEmulatesNullDescriptor() ? cabooseNullObjects(device) : caboose::features::NullObjects();
+@@ -9517,7 +9542,7 @@ void ResourceTracker::on_vkCmdBindDescriptorSets(void* context, VkCommandBuffer
+                                                  const uint32_t* pDynamicOffsets) {
+     VkEncoder* enc = (VkEncoder*)context;
+ 
+-    if (mFeatureInfo.hasVulkanBatchedDescriptorSetUpdate)
++    if (cabooseBatchedSets())
+         addPendingDescriptorSets(commandBuffer, descriptorSetCount, pDescriptorSets);
+ 
+     enc->vkCmdBindDescriptorSets(commandBuffer, pipelineBindPoint, layout, firstSet,
+-- 
+2.43.0
