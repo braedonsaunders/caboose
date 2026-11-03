@@ -31,6 +31,7 @@ final class PhoneDecider {
     private var loaded: (name: String, container: ModelContainer, state: DecisionState)?
 
     struct Unanswered: Error { let reason: String }
+    private static let away = "the computer went away"
 
     init() {
         installed = (try? FileManager.default.contentsOfDirectory(atPath: Self.root.path))?.filter { Self.recorded($0) != nil }.sorted() ?? []
@@ -49,11 +50,21 @@ final class PhoneDecider {
             defer { self?.syncing = nil }
             guard let self else { return }
             do {
-                let id = Self.requestID()
-                let manifest = try await withCheckedThrowingContinuation { continuation in
-                    self.listing = (id, continuation)
-                    send(AIRelay.listModels(id))
+                // The host joins the computer's relay only after this phone's hello: until then
+                // a manifest request is answered "not reachable", so ask again while connected.
+                var manifest: AIRelay.ComputerModels?
+                for _ in 0 ..< 60 where manifest == nil && !Task.isCancelled {
+                    let id = Self.requestID()
+                    do {
+                        manifest = try await withCheckedThrowingContinuation { continuation in
+                            self.listing = (id, continuation)
+                            send(AIRelay.listModels(id))
+                        }
+                    } catch let unanswered as Unanswered where unanswered.reason != Self.away {
+                        try await Task.sleep(for: .seconds(2))
+                    }
                 }
+                guard let manifest else { return }
                 for model in manifest.models where AIRelay.safeName(model.name) {
                     try await self.install(model, release: manifest.release, send: send)
                 }
@@ -143,9 +154,10 @@ final class PhoneDecider {
 
     /// The socket closed: every read in flight fails, and the next connection resumes the sync.
     func disconnected() {
-        for continuation in reads.values { continuation.resume(throwing: Unanswered(reason: "the computer went away")) }
+        for continuation in reads.values { continuation.resume(throwing: Unanswered(reason: Self.away)) }
         reads = [:]
-        if let continuation = listing?.continuation { listing = nil; continuation.resume(throwing: Unanswered(reason: "the computer went away")) }
+        if let continuation = listing?.continuation { listing = nil; continuation.resume(throwing: Unanswered(reason: Self.away)) }
+        syncing?.cancel()
     }
 
     private func refresh() {
