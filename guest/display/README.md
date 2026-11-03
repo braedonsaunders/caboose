@@ -318,6 +318,7 @@ summary.
 | --- | --- |
 | `XDG_RUNTIME_DIR` | Required. Holds the Wayland socket and the instance's state directory |
 | `CABOOSE_GAME_SOCKET` | The game socket (default `$XDG_RUNTIME_DIR/caboose-game.sock`) |
+| `CABOOSE_GPU_BROKER` | The GPU broker the private GPU supervisor starts (default `/usr/local/libexec/caboose-gpu-broker`; a release check runs its candidate broker this way) |
 | `LIBVA_DRIVERS_PATH` | Where to look for `caboose_drv_video.so` (default `/usr/lib/x86_64-linux-gnu/dri`) |
 | `CABOOSE_DISPLAY_LOG` | A `tracing` filter (`info`, `caboose_display=debug`, …) |
 

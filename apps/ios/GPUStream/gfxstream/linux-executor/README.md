@@ -217,3 +217,27 @@ its page as well. Each phase requires a presented picture that is neither noise 
 Chromium runs as a Wayland client, so its frames reach the compositor as phone-resident
 dma-bufs registered by the driver. `SECONDS_RUNNING` (default 25) is each Chromium's time.
 The release seal runs it, in the computer DXVK's check uses.
+
+## Executor chaos
+
+```sh
+python3 apps/ios/GPUStream/gfxstream/linux-executor/check_chaos.py COMPUTER WORK RELEASE OUT \
+    [--cycles 50] [--seed N] [--steam-home DIR] [--triangle PATH]
+```
+
+Makes a seat of its own in a running computer, like the loss pixels check, running RELEASE's
+own compositor, GPU broker (`CABOOSE_GPU_BROKER`) and guest driver for both architectures (a
+release directory of `guest/release`), with the real executor serving it with `--pictures` and
+`caboose-display-probe --children` as the viewer (it shows child windows, as the phone does).
+Long-lived apps run through every cycle: an animated Chromium page and, with `--steam-home` (a
+home of the check's own with a Steam Flatpak profile, never the computer owner's), Steam's CEF
+client. Each cycle applies one event at a random point: the executor ends and a new one
+connects (an app relaunch); the executor and the viewer end and return (a network drop, a
+lock); the executor stops answering for 2-8 s (a stall); the viewer reconnects; or fresh apps
+start and the executor ends 0-2 s later (during their warm-up, first bind and first present).
+Then the long-lived apps must present real pictures again, and so must a freshly started
+Chromium, glxgears (shown in the compositor's own images) and, with `--triangle` (DXVK's
+d3d11 triangle in that home's Flatpak data), DXVK through Proton, each judged at its own
+window size. The check prints one line per cycle and fails on the first cycle whose apps did
+not all present; `--seed` repeats a run. The release seal runs it with 50 cycles.
+
