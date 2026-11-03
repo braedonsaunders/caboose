@@ -107,7 +107,7 @@ it('routes agent replies, approvals, files and links with the right status codes
   const displayClient = new WebSocket(base.replace('http:', 'ws:') + '/v1/display', 'binary', { headers: { authorization: 'Bearer owner' } })
   const [opened, launched, uploaded, screen] = await Promise.all([
     post('/v1/open', { url: 'https://example.com' }),
-    post('/v1/apps/firefox.desktop/launch', {}),
+    post('/v1/apps/chromium.desktop/launch', {}),
     post('/v1/files', { name: 'open.txt', data: 'aGk=', open: true }),
     fetch(base + '/v1/screen/elements', { headers: { authorization: 'Bearer owner' } }),
     once(displayClient, 'open'),
@@ -133,21 +133,21 @@ it('routes agent replies, approvals, files and links with the right status codes
   // The operator's computer-scoped route reaches the same files relay.
   expect((await fetch(base + `/v1/computers/${STANDALONE_COMPUTER}/fs/content?path=a.txt`, { method: 'PUT', headers: { authorization: 'Bearer owner', 'if-none-match': '*' }, body: 'hi' })).status).toBe(201)
   expect((await post('/v1/fs/open', { path: 'a', app: '../bad.desktop' })).status).toBe(400)
-  expect((await fetch(base + '/v1/apps/firefox.desktop/desktop-shortcut', { method: 'POST' })).status).toBe(401)
-  const shortcut = await post('/v1/apps/firefox.desktop/desktop-shortcut', {})
+  expect((await fetch(base + '/v1/apps/chromium.desktop/desktop-shortcut', { method: 'POST' })).status).toBe(401)
+  const shortcut = await post('/v1/apps/chromium.desktop/desktop-shortcut', {})
   expect(shortcut.status).toBe(201)
-  expect(await shortcut.json()).toEqual({ path: 'Desktop/firefox.desktop' })
+  expect(await shortcut.json()).toEqual({ path: 'Desktop/chromium.desktop' })
   expect((await post('/v1/apps/bad%2Fid.desktop/desktop-shortcut', {})).status).toBe(400)
   // A launch takes no body, or { action } naming one of the entry's desktop actions.
-  expect((await fetch(base + '/v1/apps/firefox.desktop/launch', { method: 'POST', headers: { authorization: 'Bearer owner' } })).status).toBe(200)
-  expect(launch).toHaveBeenLastCalledWith('firefox.desktop', undefined, undefined)
-  expect((await post('/v1/apps/firefox.desktop/launch', { action: 'new-private-window' })).status).toBe(200)
-  expect(launch).toHaveBeenLastCalledWith('firefox.desktop', undefined, 'new-private-window')
+  expect((await fetch(base + '/v1/apps/chromium.desktop/launch', { method: 'POST', headers: { authorization: 'Bearer owner' } })).status).toBe(200)
+  expect(launch).toHaveBeenLastCalledWith('chromium.desktop', undefined, undefined)
+  expect((await post('/v1/apps/chromium.desktop/launch', { action: 'new-private-window' })).status).toBe(200)
+  expect(launch).toHaveBeenLastCalledWith('chromium.desktop', undefined, 'new-private-window')
   launch.mockClear()
-  for (const action of ['new window', '../x', '', 'a'.repeat(65), 7]) expect((await post('/v1/apps/firefox.desktop/launch', { action })).status).toBe(400)
+  for (const action of ['new window', '../x', '', 'a'.repeat(65), 7]) expect((await post('/v1/apps/chromium.desktop/launch', { action })).status).toBe(400)
   expect(launch).not.toHaveBeenCalled()
   launch.mockRejectedValueOnce(new AgentNotFoundError('Application action not found'))
-  const unknown = await post('/v1/apps/firefox.desktop/launch', { action: 'missing' })
+  const unknown = await post('/v1/apps/chromium.desktop/launch', { action: 'missing' })
   expect(unknown.status).toBe(404)
   expect(await unknown.json()).toEqual({ error: 'Application action not found' })
   expect(timing).toHaveBeenLastCalledWith('App launch timing', {

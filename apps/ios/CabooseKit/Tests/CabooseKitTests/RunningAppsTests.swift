@@ -23,20 +23,20 @@ struct RunningAppsTests {
           ]
         },
         {
-          "id": "app-firefox\\x2desr-3.scope", "kind": "app", "desktopId": "firefox-esr.desktop",
-          "name": "Firefox ESR", "origin": "launch", "startedAt": 1793499000000, "windows": [12, 15],
+          "id": "app-libreoffice\\x2dstartcenter-3.scope", "kind": "app", "desktopId": "libreoffice-startcenter.desktop",
+          "name": "LibreOffice", "origin": "launch", "startedAt": 1793499000000, "windows": [12, 15],
           "cpuPercent": 42.25, "memoryBytes": 1288490188,
           "io": { "readBytesPerSecond": 1048576, "writeBytesPerSecond": 0 },
           "gpu": { "streams": 1, "surfaces": 2, "toPhoneBytesPerSecond": 2097152, "fromPhoneBytesPerSecond": 512 },
           "processCount": 9,
           "processes": [
-            { "pid": 900, "ppid": 1, "name": "firefox-esr", "command": "/usr/lib/firefox-esr/firefox-esr",
+            { "pid": 900, "ppid": 1, "name": "oosplash", "command": "/usr/lib/libreoffice/program/oosplash",
               "state": "sleeping", "cpuPercent": 30, "memoryBytes": 600000000, "threads": 77 },
-            { "pid": 901, "ppid": 900, "name": "Web Content", "command": "", "state": "hibernating",
+            { "pid": 901, "ppid": 900, "name": "soffice.bin", "command": "", "state": "hibernating",
               "cpuPercent": 12.25, "memoryBytes": 300000000 },
             { "pid": "not a pid", "name": "broken" }
           ],
-          "cgroup": "/owner.slice/app-firefox\\x2desr-3.scope"
+          "cgroup": "/owner.slice/app-libreoffice\\x2dstartcenter-3.scope"
         },
         {
           "id": "app-steam-1.scope", "kind": "app", "desktopId": "steam.desktop", "name": "Steam",
@@ -70,18 +70,18 @@ struct RunningAppsTests {
         #expect(listing.measured)
         #expect(listing.machine == .init(cpus: 8, memoryBytes: 17179869184))
         // The app without an id is dropped; the others survive it.
-        #expect(listing.apps.map(\.id) == ["session.scope", #"app-firefox\x2desr-3.scope"#, "app-steam-1.scope",
+        #expect(listing.apps.map(\.id) == ["session.scope", #"app-libreoffice\x2dstartcenter-3.scope"#, "app-steam-1.scope",
                                            "app-term-2.scope", "app-future-1.scope"])
-        let firefox = listing.apps[1]
-        #expect(firefox.kind == .app)
-        #expect(firefox.origin == .launch)
-        #expect(firefox.desktopId == "firefox-esr.desktop")
-        #expect(firefox.windows == [12, 15])
-        #expect(firefox.cpuPercent == 42.25)
-        #expect(firefox.memoryBytes == 1288490188)
-        #expect(firefox.io == .init(readBytesPerSecond: 1048576, writeBytesPerSecond: 0))
-        #expect(firefox.gpu == .init(streams: 1, surfaces: 2, toPhoneBytesPerSecond: 2097152, fromPhoneBytesPerSecond: 512))
-        #expect(firefox.processCount == 9)
+        let libreoffice = listing.apps[1]
+        #expect(libreoffice.kind == .app)
+        #expect(libreoffice.origin == .launch)
+        #expect(libreoffice.desktopId == "libreoffice-startcenter.desktop")
+        #expect(libreoffice.windows == [12, 15])
+        #expect(libreoffice.cpuPercent == 42.25)
+        #expect(libreoffice.memoryBytes == 1288490188)
+        #expect(libreoffice.io == .init(readBytesPerSecond: 1048576, writeBytesPerSecond: 0))
+        #expect(libreoffice.gpu == .init(streams: 1, surfaces: 2, toPhoneBytesPerSecond: 2097152, fromPhoneBytesPerSecond: 512))
+        #expect(libreoffice.processCount == 9)
     }
 
     @Test func nullsAreAbsentNotFailures() throws {
@@ -132,8 +132,8 @@ struct RunningAppsTests {
     // MARK: Routes
 
     @Test func idsArePercentEncodedAsOneSegment() {
-        #expect(RunningAppsRoute.path(.quit, id: #"app-firefox\x2desr-3.scope"#)
-                == "/v1/running-apps/app-firefox%5Cx2desr-3.scope/quit")
+        #expect(RunningAppsRoute.path(.quit, id: #"app-libreoffice\x2dstartcenter-3.scope"#)
+                == "/v1/running-apps/app-libreoffice%5Cx2dstartcenter-3.scope/quit")
         #expect(RunningAppsRoute.path(.forceQuit, id: "app-steam_app_570-1.scope")
                 == "/v1/running-apps/app-steam_app_570-1.scope/force-quit")
         #expect(RunningAppsRoute.path(.kill, id: "a/b?c#d%e f") == "/v1/running-apps/a%2Fb%3Fc%23d%25e%20f/kill")
@@ -152,9 +152,9 @@ struct RunningAppsTests {
     @Test func theSessionIsApartAndAppsSort() throws {
         let listing = try Self.decoded()
         #expect(TaskManager.session(in: listing)?.id == "session.scope")
-        #expect(TaskManager.apps(in: listing, sortedBy: .cpu).map(\.name) == ["Firefox ESR", "Steam", "Future", "Terminal"])
-        #expect(TaskManager.apps(in: listing, sortedBy: .memory).map(\.name) == ["Steam", "Firefox ESR", "Terminal", "Future"])
-        #expect(TaskManager.apps(in: listing, sortedBy: .name).map(\.name) == ["Firefox ESR", "Future", "Steam", "Terminal"])
+        #expect(TaskManager.apps(in: listing, sortedBy: .cpu).map(\.name) == ["LibreOffice", "Steam", "Future", "Terminal"])
+        #expect(TaskManager.apps(in: listing, sortedBy: .memory).map(\.name) == ["Steam", "LibreOffice", "Terminal", "Future"])
+        #expect(TaskManager.apps(in: listing, sortedBy: .name).map(\.name) == ["Future", "LibreOffice", "Steam", "Terminal"])
     }
 
     @Test func processesSort() throws {
@@ -219,15 +219,15 @@ struct RunningAppsTests {
     @Test func aDockEntryMatchesByWindowThenDesktopID() throws {
         let apps = try Self.decoded().apps
         // A window it shows decides, whatever its desktop id.
-        #expect(TaskManager.matching(windowIDs: [15], desktopID: "org.mozilla.firefox.desktop", in: apps).map(\.id)
-                == [#"app-firefox\x2desr-3.scope"#])
+        #expect(TaskManager.matching(windowIDs: [15], desktopID: "org.libreoffice.LibreOffice.desktop", in: apps).map(\.id)
+                == [#"app-libreoffice\x2dstartcenter-3.scope"#])
         // Steam closed to its tray has no window: its desktop entry finds it.
         #expect(TaskManager.matching(windowIDs: [], desktopID: "steam.desktop", in: apps).map(\.id) == ["app-steam-1.scope"])
         #expect(TaskManager.matching(windowIDs: [], desktopID: "Steam", in: apps).map(\.id) == ["app-steam-1.scope"])
         // Both, each once, windows first.
-        let second = RunningApp(id: "app-firefox\\x2desr-4.scope", desktopId: "firefox-esr.desktop", name: "Firefox ESR")
-        #expect(TaskManager.matching(windowIDs: [12], desktopID: "firefox-esr.desktop", in: apps + [second]).map(\.id)
-                == [#"app-firefox\x2desr-3.scope"#, #"app-firefox\x2desr-4.scope"#])
+        let second = RunningApp(id: "app-libreoffice\\x2dstartcenter-4.scope", desktopId: "libreoffice-startcenter.desktop", name: "LibreOffice")
+        #expect(TaskManager.matching(windowIDs: [12], desktopID: "libreoffice-startcenter.desktop", in: apps + [second]).map(\.id)
+                == [#"app-libreoffice\x2dstartcenter-3.scope"#, #"app-libreoffice\x2dstartcenter-4.scope"#])
         #expect(TaskManager.matching(windowIDs: [99], desktopID: "gimp.desktop", in: apps).isEmpty)
         #expect(TaskManager.matching(windowIDs: [], desktopID: nil, in: apps).isEmpty)
     }
@@ -247,9 +247,9 @@ struct RunningAppsTests {
         // A windowless app (Steam in its tray) still gets Quit; quitting it asks to force-quit.
         #expect(actions == [.open, .unpin, .quit])
         #expect(actions.map(\.title) == ["Open", "Unpin", "Quit"])
-        let firefox = DockMenu.actions(appName: "Firefox", pinned: false, windows: [.init(id: 12, title: "Home")],
+        let libreoffice = DockMenu.actions(appName: "LibreOffice", pinned: false, windows: [.init(id: 12, title: "Home")],
                                        ending: .init(canQuit: true, canForceQuit: true))
-        #expect(firefox == [.open, .pin, .quit])
+        #expect(libreoffice == [.open, .pin, .quit])
     }
 
     // MARK: Quit, then Force Quit

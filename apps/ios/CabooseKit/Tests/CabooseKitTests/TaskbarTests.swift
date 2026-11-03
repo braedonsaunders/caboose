@@ -107,12 +107,12 @@ struct TaskbarTests {
             ("debian-uxterm.desktop", ["System", "TerminalEmulator"]),
             ("thunar.desktop", ["System", "Core", "GTK", "Utility", "FileManager"]),
             ("xfce4-terminal.desktop", ["GTK", "System", "TerminalEmulator"]),
-            ("firefox-esr.desktop", ["Network", "WebBrowser"]),
+            ("chromium.desktop", ["Network", "WebBrowser"]),
         ]
         // In dock order, the first of each category in the computer's list.
-        #expect(choose(xfce) == ["firefox-esr.desktop", "thunar.desktop", "debian-uxterm.desktop"])
+        #expect(choose(xfce) == ["chromium.desktop", "thunar.desktop", "debian-uxterm.desktop"])
         // The person's pinned and recent apps come first within their category.
-        #expect(choose(xfce, preferred: ["xfce4-terminal.desktop"]) == ["firefox-esr.desktop", "thunar.desktop", "xfce4-terminal.desktop"])
+        #expect(choose(xfce, preferred: ["xfce4-terminal.desktop"]) == ["chromium.desktop", "thunar.desktop", "xfce4-terminal.desktop"])
         #expect(choose(Array(xfce.prefix(2))).isEmpty)
         // An app in two categories takes one place; the next of the other category takes the other.
         let editors: [App] = [("code.desktop", ["Development", "IDE", "TextEditor"]), ("mousepad.desktop", ["Utility", "TextEditor"])]
