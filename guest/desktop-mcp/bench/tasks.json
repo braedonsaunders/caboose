@@ -213,6 +213,84 @@
       "setup": "page $HOME/Documents/form.html 'Shipping' 'Claimed'; start python3 -m http.server 18761 --bind 127.0.0.1 --directory $HOME/Documents; sleep 0.5; start chromium --no-first-run --no-default-browser-check --user-data-dir=$HOME/chromium http://127.0.0.1:18761/form.html",
       "prompt": "In the open Chromium window, fill the form: Recipient \"Iris Moss\", City \"Granite Falls\", tick Gift wrap, then press Ship order.",
       "verify": "window_title 'Claimed - Chromium'"
+    },
+    {
+      "id": "flow-download-extract-edit",
+      "app": "Chromium",
+      "setup": "mkdir -p $HOME/Documents $HOME/Downloads; python3 -c \"import zipfile, os; z = zipfile.ZipFile(os.environ['HOME'] + '/Documents/data.zip', 'w'); z.writestr('notes.txt', 'draft one\\\\n'); z.close()\"; mkdir -p $(dirname $HOME/Documents/download.html); cat > $HOME/Documents/download.html <<'HTML'\n<!doctype html><title>Data</title><h1>Data</h1><p><a href=\"data.zip\" download>Download data</a></p>\nHTML\nstart python3 -m http.server 18761 --bind 127.0.0.1 --directory $HOME/Documents; sleep 0.5; start chromium --no-first-run --no-default-browser-check --user-data-dir=$HOME/chromium http://127.0.0.1:18761/download.html",
+      "prompt": "In the open Chromium window, download data.zip with the Download data link (it lands in /tmp/caboose-bench/home/Downloads). Then extract it with the archive manager (file-roller) into a new folder /tmp/caboose-bench/home/Documents/data, open the extracted notes.txt in Mousepad, add a second line reading reviewed, and save it.",
+      "verify": "grep -qx 'reviewed' $HOME/Documents/data/notes.txt && grep -qx 'draft one' $HOME/Documents/data/notes.txt"
+    },
+    {
+      "id": "flow-text-to-pdf",
+      "app": "Mousepad",
+      "setup": "mkdir -p $HOME/Documents; printf 'Harbor report: all berths full.\\n' > $HOME/Documents/report.txt; start mousepad $HOME/Documents/report.txt",
+      "prompt": "The open Mousepad window shows report.txt. Put its text into a new LibreOffice Writer document (start Writer with soffice --writer) and export that document as a PDF named /tmp/caboose-bench/home/Documents/report.pdf.",
+      "verify": "test \"$(head -c 4 $HOME/Documents/report.pdf)\" = '%PDF'"
+    },
+    {
+      "id": "flow-folder-move-edit",
+      "app": "Thunar",
+      "setup": "mkdir -p $HOME/Documents; printf 'total 30\\n' > $HOME/Documents/bill1.txt; printf 'total 12\\n' > $HOME/Documents/bill2.txt; start thunar $HOME/Documents",
+      "prompt": "In the open file manager, create a folder named Invoices in Documents and move bill1.txt and bill2.txt into it. Then open Invoices/bill2.txt in Mousepad, change its text to total 42 and save it.",
+      "verify": "test -f $HOME/Documents/Invoices/bill1.txt && test ! -e $HOME/Documents/bill2.txt && test \"$(cat $HOME/Documents/Invoices/bill2.txt)\" = 'total 42'"
+    },
+    {
+      "id": "flow-calc-to-web",
+      "app": "libreoffice-calc",
+      "setup": "mkdir -p $HOME/Documents; printf 'item,amount\\nrope,12\\nsail,30\\nanchor,58\\n' > $HOME/Documents/costs.csv; mkdir -p $(dirname $HOME/Documents/claims.html); cat > $HOME/Documents/claims.html <<'HTML'\n<!doctype html><title>Claims</title><h1>Claims</h1><form onsubmit=\"event.preventDefault(); document.title = 'Filed ' + document.getElementById('t').value\"><label for=t>Total</label> <input id=t> <button>File</button></form>\nHTML\nstart python3 -m http.server 18761 --bind 127.0.0.1 --directory $HOME/Documents; sleep 0.5; start soffice --norestore --nologo --calc --infilter=CSV:44,34,76 $HOME/Documents/costs.csv",
+      "prompt": "The open LibreOffice Calc window shows costs.csv. Put a formula in B5 that sums the amounts, save the sheet in ODF format as /tmp/caboose-bench/home/Documents/costs.ods, then open http://127.0.0.1:18761/claims.html in Chromium (chromium http://127.0.0.1:18761/claims.html), enter that sum as the Total and press File.",
+      "verify": "test -f $HOME/Documents/costs.ods && window_title 'Filed 100 - Chromium'"
+    },
+    {
+      "id": "flow-terminal-to-editor",
+      "app": "xfce4-terminal",
+      "setup": "mkdir -p $HOME/Documents; touch $HOME/Documents/alpha.txt $HOME/Documents/beta.txt; start xfce4-terminal --disable-server --working-directory=$HOME/Documents",
+      "prompt": "In the open terminal, write the names of the files in the current directory into a file named list.txt there (one per line). Then open /tmp/caboose-bench/home/Documents/list.txt in Mousepad, add a last line reading done, and save it.",
+      "verify": "grep -qx alpha.txt $HOME/Documents/list.txt && grep -qx beta.txt $HOME/Documents/list.txt && test \"$(tail -n 1 $HOME/Documents/list.txt)\" = done"
+    },
+    {
+      "id": "flow-writer-letter",
+      "app": "libreoffice-writer",
+      "setup": "mkdir -p $HOME/Documents; start soffice --norestore --nologo --writer",
+      "prompt": "In the open LibreOffice Writer window, write a short letter: a first line Harbor notice in bold, then two paragraphs, \"The east dock closes on Monday.\" and \"Moorings move to the west dock.\". Save it in Word format as /tmp/caboose-bench/home/Documents/notice.docx.",
+      "verify": "x=$(unzip -p $HOME/Documents/notice.docx word/document.xml) && echo \"$x\" | grep -q 'Harbor notice' && echo \"$x\" | grep -q 'The east dock closes on Monday.' && echo \"$x\" | grep -q 'Moorings move to the west dock.' && echo \"$x\" | grep -Eq '<w:b( w:val=\"(1|true|on)\")?/>'"
+    },
+    {
+      "id": "flow-web-wizard",
+      "app": "Chromium",
+      "setup": "mkdir -p $(dirname $HOME/Documents/step1.html); cat > $HOME/Documents/step1.html <<'HTML'\n<!doctype html><title>Step 1</title><h1>Choose a plan</h1><form action=\"step2.html\"><label for=p>Plan</label> <select id=p name=plan><option>Basic</option><option>Harbor</option><option>Fleet</option></select> <button>Next</button></form>\nHTML\nmkdir -p $(dirname $HOME/Documents/step2.html); cat > $HOME/Documents/step2.html <<'HTML'\n<!doctype html><title>Step 2</title><h1>Boat size</h1><form action=\"step3.html\"><input type=hidden name=plan id=h><p><label><input type=radio name=size value=small checked> Small</label> <label><input type=radio name=size value=large> Large</label></p><button>Next</button></form><script>document.getElementById(\"h\").value = new URLSearchParams(location.search).get(\"plan\")</script>\nHTML\nmkdir -p $(dirname $HOME/Documents/step3.html); cat > $HOME/Documents/step3.html <<'HTML'\n<!doctype html><title>Step 3</title><h1>Confirm</h1><form id=f><label><input type=checkbox id=t> I accept the harbor rules</label> <button>Enroll</button></form><script>const q = new URLSearchParams(location.search); document.getElementById(\"f\").onsubmit = e => { e.preventDefault(); document.title = document.getElementById(\"t\").checked ? \"Enrolled \" + q.get(\"plan\") + \" \" + q.get(\"size\") : \"Not accepted\" }</script>\nHTML\nstart python3 -m http.server 18761 --bind 127.0.0.1 --directory $HOME/Documents; sleep 0.5; start chromium --no-first-run --no-default-browser-check --user-data-dir=$HOME/chromium http://127.0.0.1:18761/step1.html",
+      "prompt": "In the open Chromium window, go through the enrollment: choose the Harbor plan, then the Large boat size, then accept the harbor rules and enroll.",
+      "verify": "window_title 'Enrolled Harbor large - Chromium'"
+    },
+    {
+      "id": "flow-two-preferences",
+      "app": "Mousepad",
+      "setup": "gsettings reset org.xfce.mousepad.preferences.view show-line-numbers; xfconf-query -c thunar -r -R -p / 2>/dev/null; mkdir -p $HOME/Documents; printf 'hello\\n' > $HOME/Documents/notes.txt; start mousepad $HOME/Documents/notes.txt",
+      "prompt": "Turn on line numbers in the open Mousepad's preferences, then open the file manager preferences (start thunar-settings) and turn on \"Text beside icons\".",
+      "verify": "test \"$(gsettings get org.xfce.mousepad.preferences.view show-line-numbers)\" = true && test \"$(xfconf-query -c thunar -p /misc-text-beside-icons)\" = true",
+      "reset": "gsettings reset org.xfce.mousepad.preferences.view show-line-numbers; xfconf-query -c thunar -r -R -p / 2>/dev/null; true"
+    },
+    {
+      "id": "flow-dialog-to-file",
+      "app": "zenity",
+      "setup": "mkdir -p $HOME/Documents; printf '' > $HOME/Documents/crew.txt; start sh -c 'zenity --forms --title=Crew --text=Crew --add-entry=Name --add-entry=Role > \"$BENCH/zenity.out\"'",
+      "prompt": "In the open Crew dialog, enter the Name \"Iris Moss\" and the Role \"Skipper\" and confirm with OK. Then write the same two values as two lines (Iris Moss, then Skipper) into /tmp/caboose-bench/home/Documents/crew.txt with Mousepad (mousepad /tmp/caboose-bench/home/Documents/crew.txt) and save it.",
+      "verify": "test \"$(cat $BENCH/zenity.out)\" = 'Iris Moss|Skipper' && test \"$(sed -n 1p $HOME/Documents/crew.txt)\" = 'Iris Moss' && test \"$(sed -n 2p $HOME/Documents/crew.txt)\" = Skipper"
+    },
+    {
+      "id": "flow-vscode-project",
+      "app": "com.microsoft.VSCode",
+      "setup": "mkdir -p $HOME/Documents/harbor; start /usr/share/code/code --user-data-dir $HOME/vscode --extensions-dir $HOME/vscode-extensions --disable-workspace-trust --skip-welcome --new-window $HOME/Documents/harbor",
+      "prompt": "In the open Visual Studio Code window with the harbor folder, create two files in that folder: README.md containing the line \"# Harbor\" and berths.txt containing the line \"12 berths\", and save both.",
+      "verify": "grep -qx '# Harbor' $HOME/Documents/harbor/README.md && grep -qx '12 berths' $HOME/Documents/harbor/berths.txt"
+    },
+    {
+      "id": "flow-keepass-to-web",
+      "app": "KeePassXC",
+      "setup": "export XDG_CONFIG_HOME=$HOME/.config; mkdir -p $HOME/Documents; printf 'heron-basalt-42\\nheron-basalt-42\\n' | keepassxc-cli db-create -p $HOME/Documents/vault.kdbx >/dev/null 2>&1; printf 'heron-basalt-42\\n' | keepassxc-cli add -q -u iris-harbor $HOME/Documents/vault.kdbx Mail >/dev/null 2>&1; mkdir -p $(dirname $HOME/Documents/login.html); cat > $HOME/Documents/login.html <<'HTML'\n<!doctype html><title>Login</title><form onsubmit=\"event.preventDefault(); document.title = 'Hello ' + document.getElementById('u').value\"><label for=u>Username</label> <input id=u> <button>Sign in</button></form>\nHTML\nstart python3 -m http.server 18761 --bind 127.0.0.1 --directory $HOME/Documents; sleep 0.5; start keepassxc $HOME/Documents/vault.kdbx",
+      "prompt": "In the open KeePassXC window, unlock the database with the password \"heron-basalt-42\" and find the username of the Mail entry. Then open http://127.0.0.1:18761/login.html in Chromium (chromium http://127.0.0.1:18761/login.html), enter that username and press Sign in.",
+      "verify": "window_title 'Hello iris-harbor - Chromium'"
     }
   ]
 }
