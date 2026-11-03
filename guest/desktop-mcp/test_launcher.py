@@ -43,5 +43,15 @@ class Plan(unittest.TestCase):
         self.assertEqual(launcher.plan('browser --force-renderer-accessibility'), ['browser', '--force-renderer-accessibility'])
 
 
+class Java(unittest.TestCase):
+    def test_the_atk_wrapper_is_named_once_where_installed(self):
+        launcher.ATK_WRAPPER = __file__  # stands in for the installed jar
+        env = launcher.java_accessibility({'JAVA_TOOL_OPTIONS': '-Xmx1g'})
+        self.assertIn('-Xmx1g -Djavax.accessibility.assistive_technologies=org.GNOME.Accessibility.AtkWrapper', env['JAVA_TOOL_OPTIONS'])
+        self.assertEqual(launcher.java_accessibility(env), env)
+        launcher.ATK_WRAPPER = '/nonexistent.jar'
+        self.assertEqual(launcher.java_accessibility({}), {})
+
+
 if __name__ == '__main__':
     unittest.main()
