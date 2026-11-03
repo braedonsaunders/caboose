@@ -100,7 +100,7 @@ drain() { # log
 executor "$phone"
 for phase in disabled cold warm fresh; do
   disabled=0; [ "$phase" != disabled ] || disabled=1
-  app env CABOOSE_CAPABILITY_CACHE_DISABLE="$disabled" timeout 120 /usr/bin/time -f "CABOOSE_CAPABILITY_PROCESS elapsed_s=%e" /shared/sync_check > "$out/$phase.log" 2>&1
+  app env CABOOSE_CAPABILITY_CACHE_DISABLE="$disabled" python3 -c 'import subprocess,time; started=time.monotonic(); result=subprocess.run(["/shared/sync_check"],timeout=120); print("CABOOSE_CAPABILITY_PROCESS elapsed_s=%.6f"%(time.monotonic()-started),flush=True); raise SystemExit(result.returncode)' > "$out/$phase.log" 2>&1
   cat "$out/$phase.log"
 done
 drain "$out/executor.log"
