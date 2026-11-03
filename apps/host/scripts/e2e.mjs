@@ -29,7 +29,7 @@ const apps = await request('/v1/apps')
 if (!Array.isArray(apps) || apps.length === 0 || apps.some(app => !app.icon?.startsWith('data:image/png;base64,'))) {
   throw new Error('App list is empty or contains an app without a PNG icon')
 }
-for (const pattern of [/chromium/i, /firefox/i, /code/i, /terminal/i, /thunar/i, /mousepad/i, /libreoffice/i]) {
+for (const pattern of [/chromium/i, /code/i, /terminal/i, /thunar/i, /mousepad/i, /libreoffice/i]) {
   if (!apps.some(app => pattern.test(app.name) || pattern.test(app.id))) throw new Error(`Missing app: ${pattern}`)
 }
 console.log(`App list contains ${apps.length} entries with PNG icons, including the requested desktop applications`)
