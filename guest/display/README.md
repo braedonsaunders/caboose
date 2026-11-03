@@ -95,7 +95,9 @@ property updates are reconciled on notifications, without a polling timer.
   client that plays Opus is connected (`hello.audio_decoders`), `parec` records the sink and
   each 20 ms of 48 kHz stereo goes out as an `audio` message, timestamped on the pictures'
   clock; silence stops being sent after a second, and nothing records with no listener.
-  `--no-audio` turns it off.
+  A PulseAudio an earlier instance left on the socket is ended at start, a server that
+  exits is started again on the same socket, and a recorder that stops is started again
+  while a client listens. `--no-audio` turns it off.
 - **Sessions.** One client at a time; a new authenticated client replaces the previous
   one. Window ids survive reconnects. A client that sends nothing for `--client-timeout`
   (30 s) is closed.

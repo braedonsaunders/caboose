@@ -447,6 +447,9 @@ impl State {
 
     /// Once a second: frame callbacks for windows nothing paces, and connection upkeep.
     pub fn slow_tick(&mut self) {
+        if let Some(audio) = self.audio.as_mut() {
+            audio.supervise();
+        }
         let stale: Vec<u64> = self
             .windows
             .iter()

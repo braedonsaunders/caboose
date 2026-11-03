@@ -12,6 +12,10 @@
 //! PulseAudio and the recorder die with the compositor (`PR_SET_PDEATHSIG`), and
 //! PulseAudio stays off the session bus: the `org.PulseAudio1` name it would claim there
 //! outlives a compositor that crashed, and a later PulseAudio that cannot claim it exits.
+//! A server some earlier instance left on the socket is ended before this one starts, so
+//! the socket never has two. The compositor watches its server once a second: one that
+//! exits is started again on the same socket, and a recorder that stops (its server gone,
+//! or its stream broken) is started again while a client listens.
 
 use ffmpeg_next as ff;
 use smithay::reexports::calloop::channel::Sender;
@@ -47,8 +51,11 @@ fn monotonic_us() -> u64 {
 /// The compositor's PulseAudio server.
 pub struct Audio {
     pub socket: PathBuf,
+    dir: PathBuf,
     server: Child,
     capture: Option<Capture>,
+    /// Where packets go while a client listens, and at what bitrate.
+    listening: Option<(Sender<Packet>, u32)>,
 }
 
 struct Capture {
@@ -74,53 +81,49 @@ impl Audio {
             return None;
         }
         let socket = dir.join("native");
-        let _ = std::fs::remove_file(&socket);
-        let server = Command::new("pulseaudio")
-            .args(["--daemonize=no", "--exit-idle-time=-1", "--use-pid-file=no", "--system=no", "-n", "--log-target=stderr"])
-            .arg(format!("--load=module-native-protocol-unix socket={} auth-anonymous=1", socket.display()))
-            .arg("--load=module-null-sink sink_name=caboose rate=48000 channels=2 sink_properties=device.description=Caboose")
-            .env("PULSE_RUNTIME_PATH", &dir)
-            .env("PULSE_STATE_PATH", &dir)
-            // A bus address that leads nowhere: PulseAudio then registers no D-Bus names
-            // (it warns and goes on), and applications reach it only by its socket.
-            .env("DBUS_SESSION_BUS_ADDRESS", format!("unix:path={}", dir.join("no-bus").display()))
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .die_with_parent()
-            .spawn();
-        let mut server = match server {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::info!("no audio: cannot start PulseAudio: {e}");
-                return None;
+        let server = spawn_server(&dir, &socket)?;
+        Some(Self { socket, dir, server, capture: None, listening: None })
+    }
+
+    /// Once a second: a server that exited is started again on the same socket, and a
+    /// recorder that stopped is started again while a client listens.
+    pub fn supervise(&mut self) {
+        if let Ok(Some(status)) = self.server.try_wait() {
+            tracing::warn!("audio: PulseAudio exited ({status}); starting it again");
+            self.end_capture();
+            match spawn_server(&self.dir, &self.socket) {
+                Some(server) => self.server = server,
+                // Tried again on the next turn.
+                None => return,
             }
-        };
-        for _ in 0..50 {
-            if socket.exists() {
-                tracing::info!("audio: PulseAudio on {}", socket.display());
-                return Some(Self { socket, server, capture: None });
-            }
-            if let Ok(Some(status)) = server.try_wait() {
-                tracing::warn!("no audio: PulseAudio exited ({status})");
-                return None;
-            }
-            std::thread::sleep(Duration::from_millis(100));
         }
-        tracing::warn!("no audio: PulseAudio did not create {}", socket.display());
-        let _ = server.kill();
-        None
+        let stopped = self.capture.as_mut().is_some_and(|c| !matches!(c.recorder.try_wait(), Ok(None)));
+        if stopped {
+            tracing::warn!("audio: the recorder stopped; recording again");
+            self.end_capture();
+        }
+        if self.capture.is_none() {
+            if let Some((out, bitrate)) = self.listening.clone() {
+                self.record(out, bitrate);
+            }
+        }
     }
 
     pub fn server_address(&self) -> String {
         format!("unix:{}", self.socket.display())
     }
 
-    /// Records the sink and sends encoded packets to `out` until [`Self::stop_capture`].
+    /// Records the sink and sends encoded packets to `out` until [`Self::stop_capture`],
+    /// recording again whenever the recording stops meanwhile ([`Self::supervise`]).
     pub fn start_capture(&mut self, out: Sender<Packet>, bitrate: u32) {
+        self.listening = Some((out.clone(), bitrate));
         if self.capture.is_some() {
             return;
         }
+        self.record(out, bitrate);
+    }
+
+    fn record(&mut self, out: Sender<Packet>, bitrate: u32) {
         let recorder = Command::new("parec")
             .arg(format!("--server={}", self.server_address()))
             .args([
@@ -165,6 +168,11 @@ impl Audio {
     }
 
     pub fn stop_capture(&mut self) {
+        self.listening = None;
+        self.end_capture();
+    }
+
+    fn end_capture(&mut self) {
         if let Some(mut c) = self.capture.take() {
             c.stop.store(true, Ordering::Relaxed);
             let _ = c.recorder.kill();
@@ -172,6 +180,89 @@ impl Audio {
             tracing::info!("audio: capture stopped");
         }
     }
+}
+
+/// Starts PulseAudio on `socket`, first ending any server an earlier instance left there.
+fn spawn_server(dir: &Path, socket: &Path) -> Option<Child> {
+    for pid in servers_on(socket) {
+        tracing::warn!("audio: ending PulseAudio {pid}, left on {}", socket.display());
+        end_process(pid);
+    }
+    let _ = std::fs::remove_file(socket);
+    let server = Command::new("pulseaudio")
+        .args(["--daemonize=no", "--exit-idle-time=-1", "--use-pid-file=no", "--system=no", "-n", "--log-target=stderr"])
+        .arg(format!("--load=module-native-protocol-unix socket={} auth-anonymous=1", socket.display()))
+        .arg("--load=module-null-sink sink_name=caboose rate=48000 channels=2 sink_properties=device.description=Caboose")
+        .env("PULSE_RUNTIME_PATH", dir)
+        .env("PULSE_STATE_PATH", dir)
+        // A bus address that leads nowhere: PulseAudio then registers no D-Bus names
+        // (it warns and goes on), and applications reach it only by its socket.
+        .env("DBUS_SESSION_BUS_ADDRESS", format!("unix:path={}", dir.join("no-bus").display()))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .die_with_parent()
+        .spawn();
+    let mut server = match server {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::info!("no audio: cannot start PulseAudio: {e}");
+            return None;
+        }
+    };
+    for _ in 0..50 {
+        if socket.exists() {
+            tracing::info!("audio: PulseAudio {} on {}", server.id(), socket.display());
+            return Some(server);
+        }
+        if let Ok(Some(status)) = server.try_wait() {
+            tracing::warn!("no audio: PulseAudio exited ({status})");
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    tracing::warn!("no audio: PulseAudio did not create {}", socket.display());
+    let _ = server.kill();
+    let _ = server.wait();
+    None
+}
+
+/// This user's PulseAudio servers whose command line names `socket`: the socket is in the
+/// instance's private directory, so only an earlier instance's server names it.
+fn servers_on(socket: &Path) -> Vec<u32> {
+    let wanted = format!("socket={}", socket.display());
+    // SAFETY: getuid has no arguments or memory-safety preconditions.
+    let uid = unsafe { libc::getuid() };
+    let Ok(entries) = std::fs::read_dir("/proc") else { return Vec::new() };
+    entries.filter_map(|e| e.ok()).filter_map(|e| {
+        let pid: u32 = e.file_name().to_str()?.parse().ok()?;
+        let meta = std::fs::metadata(e.path()).ok()?;
+        if std::os::unix::fs::MetadataExt::uid(&meta) != uid { return None; }
+        let cmdline = std::fs::read(e.path().join("cmdline")).ok()?;
+        names_server(&cmdline, &wanted).then_some(pid)
+    }).collect()
+}
+
+/// Whether a NUL-separated command line is a PulseAudio whose arguments hold `wanted`.
+fn names_server(cmdline: &[u8], wanted: &str) -> bool {
+    let mut args = cmdline.split(|b| *b == 0).filter(|a| !a.is_empty());
+    let Some(program) = args.next() else { return false };
+    let program = String::from_utf8_lossy(program);
+    (program == "pulseaudio" || program.ends_with("/pulseaudio")) &&
+        args.any(|a| String::from_utf8_lossy(a).split(' ').any(|word| word == wanted))
+}
+
+/// TERM, then KILL after a second.
+fn end_process(pid: u32) {
+    let pid = pid as libc::pid_t;
+    // SAFETY: kill has no memory-safety preconditions.
+    unsafe { libc::kill(pid, libc::SIGTERM) };
+    for _ in 0..20 {
+        if !Path::new(&format!("/proc/{pid}")).exists() { return; }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    // SAFETY: as above.
+    unsafe { libc::kill(pid, libc::SIGKILL) };
 }
 
 trait DieWithParent {
@@ -304,6 +395,21 @@ mod tests {
             assert_eq!((toc >> 2) & 1, 1, "stereo");
             assert_eq!(toc & 3, 0, "one frame per packet");
         }
+    }
+
+    #[test]
+    fn a_server_left_on_the_socket_is_recognised_by_its_command_line() {
+        let wanted = "socket=/run/user/1000/caboose-display/wayland-caboose-0/pulse/native";
+        let ours = b"pulseaudio\0--daemonize=no\0--load=module-native-protocol-unix socket=/run/user/1000/caboose-display/wayland-caboose-0/pulse/native auth-anonymous=1\0";
+        assert!(names_server(ours, wanted));
+        let full_path = b"/usr/bin/pulseaudio\0--load=module-native-protocol-unix socket=/run/user/1000/caboose-display/wayland-caboose-0/pulse/native auth-anonymous=1\0";
+        assert!(names_server(full_path, wanted));
+        // Another instance's socket, or a program that only mentions it, is not this server.
+        let agent = b"pulseaudio\0--load=module-native-protocol-unix socket=/run/user/1000/caboose-display/wayland-caboose-agent/pulse/native\0";
+        assert!(!names_server(agent, wanted));
+        let reader = b"parec\0--server=unix:/run/user/1000/caboose-display/wayland-caboose-0/pulse/native\0";
+        assert!(!names_server(reader, wanted));
+        assert!(!names_server(b"", wanted));
     }
 
     #[test]
