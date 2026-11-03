@@ -410,7 +410,8 @@ measurements. Weight training and runtime export are separate operations.
 
 ### Choice backend
 
-`CABOOSE_SPECIALIST_BACKEND=choices` opts the runner's desktop child into the phone's
+A computer whose release carries a decision model (`/opt/caboose/ai/models`), or
+`CABOOSE_SPECIALIST_BACKEND=choices`, gives the runner's desktop child `computer_task` on the phone's
 decision model through Caboose AI at `127.0.0.1:11434/v1/decision`
 ([docs/ai.md § Decisions](../../docs/ai.md#decisions); `CABOOSE_SPECIALIST_ENDPOINT` and
 `CABOOSE_SPECIALIST_DECISION_MODEL` override the address and model). The desktop child

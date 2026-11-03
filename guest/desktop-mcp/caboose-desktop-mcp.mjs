@@ -9,6 +9,7 @@
 import { choiceDecision } from './choices.mjs'
 import { spawn } from 'node:child_process'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -297,8 +298,12 @@ for (const name of mutations) {
   }
 }
 
-// Opt-in: do not advertise an unavailable model as a product capability.
-if (process.env.CABOOSE_SPECIALIST_MODEL || process.env.CABOOSE_SPECIALIST_BACKEND === 'choices') {
+// A computer whose release carries a decision model for the phone (docs/ai.md § Computer
+// models) offers computer_task on the choice backend; CABOOSE_SPECIALIST_BACKEND or
+// CABOOSE_SPECIALIST_MODEL choose explicitly. Without either there is no model to advertise.
+const carriesDecisionModel = (() => { try { return readdirSync(process.env.CABOOSE_AI_MODELS ?? '/opt/caboose/ai/models').length > 0 } catch { return false } })()
+const specialistBackend = process.env.CABOOSE_SPECIALIST_BACKEND ?? (!process.env.CABOOSE_SPECIALIST_MODEL && carriesDecisionModel ? 'choices' : undefined)
+if (process.env.CABOOSE_SPECIALIST_MODEL || specialistBackend === 'choices') {
   tools.push({ name: 'computer_task',
     description: 'Delegate a bounded accessibility task in an agent window and the dialogs and menus it opens. Supply an objective and exact observable goal (controls, or a window title). Returns verified only after observing that goal; otherwise returns a structured failure or screenshot for the caller. At most 20 actions and 60 seconds. Does not run shell commands or choose arbitrary coordinates.',
     inputSchema: { type: 'object', properties: {
@@ -334,7 +339,7 @@ if (process.env.CABOOSE_SPECIALIST_MODEL || process.env.CABOOSE_SPECIALIST_BACKE
           const after = await seat('windows')
           return { ...state, focused: after.focused, windows: after.windows }
         },
-        decide: process.env.CABOOSE_SPECIALIST_BACKEND === 'choices' ? choiceDecision(process.env.CABOOSE_SPECIALIST_ENDPOINT || undefined, process.env.CABOOSE_SPECIALIST_DECISION_MODEL || '') : phoneDecision(process.env.CABOOSE_SPECIALIST_MODEL),
+        decide: specialistBackend === 'choices' ? choiceDecision(process.env.CABOOSE_SPECIALIST_ENDPOINT || undefined, process.env.CABOOSE_SPECIALIST_DECISION_MODEL || '') : phoneDecision(process.env.CABOOSE_SPECIALIST_MODEL),
         act: async step => {
           const reply = JSON.parse((await handlers.batch({ steps: [step], observe: false }))[0].text)
           if (reply.completed !== 1) throw new Error(reply.error ?? 'action outcome unknown')

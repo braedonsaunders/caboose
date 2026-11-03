@@ -2539,9 +2539,10 @@ owner and an agent never type into the same application at once.
 
 ### Desktop tools
 
-The desktop MCP process can opt into `computer_task` with
-`CABOOSE_SPECIALIST_MODEL`, or `CABOOSE_SPECIALIST_BACKEND=choices`, forwarded
-when explicitly set in the agent runner environment. The choice backend sends a bounded
+The desktop MCP process offers `computer_task` when the computer's release carries a
+decision model for the phone (`/opt/caboose/ai/models`), on the choice backend;
+`CABOOSE_SPECIALIST_BACKEND` or `CABOOSE_SPECIALIST_MODEL`, forwarded when explicitly set in
+the agent runner environment, choose explicitly. The choice backend sends a bounded
 set of grounded choices to the phone's decision model ([docs/ai.md § Decisions](ai.md#decisions))
 and only the desktop executor resolves the answer into an action; the generative backend
 uses `CABOOSE_SPECIALIST_MODEL`.
