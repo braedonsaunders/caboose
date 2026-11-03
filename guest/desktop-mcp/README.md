@@ -41,6 +41,11 @@ control by id rather than by guessed coordinates.
 A failure comes back as a tool error with a sentence the model can act on; an id that no
 longer resolves says to list the window again.
 
+The server's `initialize` reply carries `instructions` for the agent: read with `elements`,
+act by id, batch known steps, rely on the changes each action returns, and take a
+screenshot only for what the controls do not tell. `CABOOSE_DESKTOP_TRACE=FILE` appends one
+JSON line per tool call (`tool`, `ms`, reply `chars`, `images`), for measuring.
+
 ### Observations
 
 An observation is compact text (`observation.mjs`). The first one, and every `elements`

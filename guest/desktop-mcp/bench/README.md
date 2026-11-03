@@ -24,7 +24,9 @@ python3 run.py --mode native --model claude-sonnet-5-5 --output native.jsonl \
   --mcp "ssh HOST \"docker exec -i -u caboose CONTAINER bash -c 'set -a; . /run/caboose/agent-display.env; set +a; exec node /opt/caboose/desktop-mcp.mjs'\""
 ```
 
-`--mode pixels` runs the baseline through `pixels-only.py`, which offers only
+`--trace FILE` names the `CABOOSE_DESKTOP_TRACE` file the `--mcp` server writes inside the
+computer; each task's record then has `server` (tool milliseconds, reply characters,
+images, slowest calls). `--mode pixels` runs the baseline through `pixels-only.py`, which offers only
 `screenshot` (without annotation), `list_windows`, `focus`, `click`, `drag`, `type`, `key`
 and `scroll`. `--task ID` (repeatable) runs a subset. Each task writes one JSON line:
 `success`, `toolCalls` (and per tool), `seconds` (the model's whole run), `turns`,

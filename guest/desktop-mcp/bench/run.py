@@ -30,6 +30,7 @@ p.add_argument('--model', required=True)
 p.add_argument('--output', required=True)
 p.add_argument('--task', action='append', default=[])
 p.add_argument('--timeout', type=int, default=900)
+p.add_argument('--trace', help='CABOOSE_DESKTOP_TRACE file of the --mcp server inside the computer, summarised per task')
 a = p.parse_args()
 tasks = [t for t in json.loads((here / 'tasks.json').read_text())['tasks'] if not a.task or t['id'] in a.task]
 prelude = (here / 'prelude.sh').read_text()
@@ -84,6 +85,11 @@ for task in tasks:
             result = {'subtype': 'timeout'}
         seconds = time.monotonic() - started
         code, text = computer(task['verify'])
+        if a.trace:
+            _, lines = computer(f'cat {shlex.quote(a.trace)} 2>/dev/null; rm -f {shlex.quote(a.trace)}')
+            calls_ = [json.loads(l) for l in lines.splitlines() if l.startswith('{')]
+            record['server'] = {'ms': sum(c['ms'] for c in calls_), 'chars': sum(c['chars'] for c in calls_), 'images': sum(c['images'] for c in calls_),
+                                'slowest': sorted(calls_, key=lambda c: -c['ms'])[:3]}
         usage = result.get('usage', {})
         record.update(success=code == 0, said=(result.get('result') or result.get('subtype') or '')[-200:], seconds=round(seconds, 1),
                       toolCalls=calls, tools=names, turns=result.get('num_turns'), costUsd=result.get('total_cost_usd'),

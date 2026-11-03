@@ -8,6 +8,7 @@
 // session/new, and answers the agent's permission requests itself.
 import { spawn } from 'node:child_process'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { appendFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -19,6 +20,8 @@ import { controlAlive, ensureAgentSeat } from './ensure-agent-seat.mjs'
 const DISPLAY = process.env.CABOOSE_AGENT_DISPLAY ?? ':101'
 const env = { ...process.env, DISPLAY }
 const PROTOCOL = '2025-06-18'
+// CABOOSE_DESKTOP_TRACE: a file that gets one line per tool call (tool, milliseconds, reply size).
+const TRACE = process.env.CABOOSE_DESKTOP_TRACE
 // Installed side by side: /opt/caboose/desktop-mcp.mjs, a11y.py and seat.py.
 const A11Y = fileURLToPath(new URL('./a11y.py', import.meta.url))
 const SEAT = fileURLToPath(new URL('./seat.py', import.meta.url))
@@ -319,6 +322,14 @@ for (const name of mutations) {
   }
 }
 
+// How to use the tools, sent once to the agent when it connects.
+const INSTRUCTIONS = 'These tools drive the agent seat, a Linux desktop of its own. Read it with elements: every window, '
+  + 'then each control of the focused window as one line with a short id (e12). Act on controls by id with click_element and '
+  + 'set_text, and put several known steps in one batch. Each action returns only what changed (windows opened, closed or '
+  + 'focused; controls added +, changed ~, removed -), so there is no need to look again after it. Keyboard shortcuts '
+  + '(key) are fine for menus and dialogs. Take a screenshot only for what the controls do not tell: a window with no '
+  + 'accessibility tree, a picture, or a layout question.'
+
 function reply(id, result) { process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id, result }) + '\n') }
 function fail(id, code, message) { process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id, error: { code, message } }) + '\n') }
 
@@ -326,7 +337,7 @@ async function handle(message) {
   const { id, method, params } = message
   if (method === 'initialize') {
     return reply(id, { protocolVersion: params?.protocolVersion ?? PROTOCOL, capabilities: { tools: {} },
-      serverInfo: { name: 'caboose-desktop', version: '1.0.0' } })
+      serverInfo: { name: 'caboose-desktop', version: '1.0.0' }, instructions: INSTRUCTIONS })
   }
   if (method === 'notifications/initialized' || id === undefined) return
   if (method === 'ping') return reply(id, {})
@@ -334,8 +345,12 @@ async function handle(message) {
   if (method === 'tools/call') {
     const handler = handlers[params?.name]
     if (!handler) return fail(id, -32602, `unknown tool ${params?.name}`)
+    const started = performance.now()
     try {
-      reply(id, { content: await handler(params.arguments ?? {}) })
+      const content = await handler(params.arguments ?? {})
+      reply(id, { content })
+      if (TRACE) appendFileSync(TRACE, JSON.stringify({ tool: params.name, ms: Math.round(performance.now() - started),
+        chars: content.reduce((n, part) => n + (part.text?.length ?? 0), 0), images: content.filter(part => part.type === 'image').length }) + '\n')
     } catch (error) {
       reply(id, { content: [{ type: 'text', text: String(error?.stderr || error?.message || error).trim() }], isError: true })
     }
