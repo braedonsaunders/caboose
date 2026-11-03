@@ -52,7 +52,7 @@ cp "$probe" "$shared/sync_check"
 docker run -d --name "$name-computer" --init --network none --cpus "$cpus" --memory 6g --entrypoint "" \
   -v "$repo/guest/gpu:/repo/guest/gpu:ro" -v "$here:/repo/apps/ios/GPUStream/gfxstream/linux-executor:ro" \
   -v "$shared:/shared" "$image" runuser -u caboose -- env HOME=/tmp python3 -u \
-  /repo/apps/ios/GPUStream/gfxstream/linux-executor/broker_host.py --directory /shared/gpu --listen 127.0.0.1:14650 --bind-delay "${BIND_DELAY:-0.4}" \
+  /repo/apps/ios/GPUStream/gfxstream/linux-executor/broker_host.py --directory /shared/gpu --listen 127.0.0.1:14650 --bind-delay "${BIND_DELAY:-0.4}" --refuse-missing-x11 :99 \
   > /dev/null
 wait_log "$name-computer" 'listening on' 30 || fail 'the broker did not start'
 docker exec -d -u caboose "$name-computer" Xvfb :99 -screen 0 1920x1080x24 -nolisten tcp
@@ -88,6 +88,16 @@ else
   status=1; echo "FAIL sync-check: $(grep 'FAIL\|failures=' "$out/sync-check.log" | tr '\n' ' ')"
 fi
 grep 'note=surface_enumeration' "$out/sync-check.log" || true
+if app env CABOOSE_GFXSTREAM_RETIREMENT_DIAGNOSTICS=1 timeout 120 /shared/sync_check --lifetime-child > "$out/allocator-lifetime.log" 2>&1; then
+  retired=$(grep -c 'CABOOSE_GPU_PRESENTATION_RETIRED leases=0 records=0' "$out/allocator-lifetime.log" || true)
+  if [ "$retired" = 32 ]; then
+    echo 'PASS allocator lifetime: 32 cycles, zero guest allocations and remote retirement records'
+  else
+    status=1; echo "FAIL remote retirement accounting: $retired/32 empty ledgers"
+  fi
+else
+  status=1; echo 'FAIL allocator lifetime (allocator-lifetime.log)'
+fi
 drain "$out/executor-sync-check.log"
 # The probe's child windows (a covering and an inset child of one top-level, an inset child
 # of another) each bind a surface of their own and present every frame on the executor.
@@ -99,6 +109,16 @@ if [ -n "$children" ]; then
   done
   if [ "$shown" = 3 ]; then echo "PASS child windows: 3 surfaces presented 30 frames each"
   else status=1; echo "FAIL child windows: $shown of 3 surfaces presented 30 frames ($children)"; fi
+fi
+
+
+one_shot=$(sed -n 's/.*case=one_shot .*window=\([^ ]*\).*/\1/p' "$out/sync-check.log")
+if [ -n "$one_shot" ]; then
+  if grep -q "swapchain retired window=$one_shot swapchain=[0-9]* frames=1 " "$out/executor-sync-check.log"; then
+    echo 'PASS one shot: delayed bind presented its single frame'
+  else
+    status=1; echo 'FAIL one shot: executor did not retire exactly one frame'
+  fi
 fi
 
 executor "$phone"

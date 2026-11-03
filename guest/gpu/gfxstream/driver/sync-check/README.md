@@ -11,7 +11,7 @@ Build it on any x86-64 Linux host with Vulkan headers and the loader:
 ```sh
 cc -std=c11 -O2 -Wall -Wextra -Wno-missing-field-initializers -Werror \
     -I/path/to/vulkan/include guest/gpu/gfxstream/driver/sync-check/sync_check.c \
-    -o sync_check -lvulkan
+    -o sync_check -lvulkan -lxcb
 ```
 
 Run it on the computer as the seat user with the seat's environment, selecting the driver
@@ -42,3 +42,24 @@ when the device cannot be set up. A full run takes about fifteen seconds.
 
 It also prints the mean time of `vkGetImageMemoryRequirements2` for a new image shape,
 which asks the phone once.
+
+`one_shot` submits one cleared frame and makes no Vulkan calls for two seconds. The Linux
+executor check requires exactly one retired frame. `--lifetime-child` repeats instance,
+device, surface and swapchain creation/destruction 32 times with custom allocators. Every
+cycle requires zero outstanding bytes at destruction and no callbacks after allocator
+lifetime ends. With `CABOOSE_GFXSTREAM_RETIREMENT_DIAGNOSTICS=1`, the Linux executor check
+also requires 32 empty native retirement ledgers. Its broker refuses X11 windows that no
+longer exist when the delayed bind is answered.
+
+`wayland_present.c` shares the clear/present sequence and exercises a real xdg toplevel:
+
+```sh
+wayland-scanner client-header /usr/share/wayland-protocols/stable/xdg-shell/xdg-shell.xml xdg-shell-client-protocol.h
+wayland-scanner private-code /usr/share/wayland-protocols/stable/xdg-shell/xdg-shell.xml xdg-shell-protocol.c
+cc -std=c11 -O2 -Wall -Wextra -Wno-missing-field-initializers -Werror \
+  -I. wayland_present.c xdg-shell-protocol.c -o wayland_present -lvulkan -lxcb -lwayland-client
+```
+
+Run `linux-executor/check-wayland.sh IMAGE WORK RELEASE DRIVER WAYLAND_PROBE OUT` to
+exercise the release's packaged session/display/broker and require one and 30 frames
+on the real Linux executor. Both disposable containers are removed on exit.
