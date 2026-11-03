@@ -24,7 +24,6 @@ specific to one app beyond the app's arguments and its input script in
 | --- | --- | --- | --- |
 | `chromium-wikipedia` | Chromium, a long Wikipedia article (a local article with `--offline`) | wheel scrolling down and back | yes |
 | `chromium-youtube` | Chromium, a YouTube watch page (skipped with `--offline`) | none, animated | no |
-| `firefox` | Firefox, the same article | wheel scrolling | yes |
 | `gtk4` | gtk4-widget-factory (GTK 4) | Ctrl+Page Down/Up through its pages | yes |
 | `qt-quick` | qml6 with a 2000-row ListView (Qt 6) | wheel scrolling | yes |
 | `vscode` | Visual Studio Code (Electron) on a 5000-line file | wheel scrolling | yes |
