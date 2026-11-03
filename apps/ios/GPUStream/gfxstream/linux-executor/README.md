@@ -155,7 +155,9 @@ sh apps/ios/GPUStream/gfxstream/linux-executor/check-gl-loss.sh IMAGE WORK DRIVE
 libdl. It renders through Zink into an offscreen colour buffer and flushes every frame; the
 check ends the executor mid-frame and requires the program to tear its context down and
 exit. It prints the frames rendered and the teardown time. `KEEP_EXECUTOR=1` keeps the
-executor, for the same client's teardown with its executor present.
+executor, for the same client's teardown with its executor present. `COMPUTER=NAME` runs it in
+that running computer instead of a disposable one from `IMAGE`: the check's broker is hosted
+there on a port of its own, and the computer's own executor is untouched.
 
 ## Bind the phone fails
 
