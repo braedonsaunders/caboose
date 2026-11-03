@@ -13,13 +13,17 @@ granted. It does not check that the bound process made the window, as the compos
 --bind-delay answers each bind that much later, as a compositor waiting for a window's layer
 does, so the queries an application makes before its window is bound are exercised.
 SIGUSR1 replaces the broker with a new one, as a display restart does: the executor's session
-and every guest stream end, and the executor may connect again.
+and every guest stream end, and the executor may connect again. With --supervised the broker
+runs on its own control socket (DIR/control.sock), as caboose-session supervises it beside the
+display, and SIGUSR1 replaces only this compositor's connection, with a new epoch: the broker,
+the executor's session and the guest streams go on, and only the grants end.
 
 DIR (created mode 0700) receives token, gpu.sock and surface.sock. Applications reach the
 broker with CABOOSE_GFXSTREAM_SOCKET=DIR/gpu.sock and CABOOSE_GFXSTREAM_SURFACE_SOCKET=DIR/surface.sock.
 """
 import argparse
 import array
+import contextlib
 import os
 from pathlib import Path
 import select
@@ -44,6 +48,8 @@ def main():
     parser.add_argument('--listen', default='127.0.0.1:14650', metavar='HOST:PORT')
     parser.add_argument('--broker', type=Path, default=BROKER_DIR / 'caboose-gpu-broker')
     parser.add_argument('--bind-delay', type=float, default=0.0, metavar='SECONDS')
+    parser.add_argument('--supervised', action='store_true',
+                        help='run the broker on its own control socket, outliving this compositor')
     options = parser.parse_args()
     directory = options.directory
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -55,12 +61,31 @@ def main():
     # The broker's modules, as the installed launcher puts them on its path.
     modules = [str(options.broker.resolve().parent), str(BROKER_DIR.parent / 'broker')]
 
+    control_path = directory / 'control.sock'
+
+    def connect_compositor():
+        for _ in range(200):
+            try:
+                connection = socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+                connection.connect(str(control_path))
+                return connection
+            except (FileNotFoundError, ConnectionRefusedError):
+                connection.close()
+                time.sleep(0.05)
+        raise SystemExit('the broker never listened on its control socket')
+
     def start_broker():
+        arguments = [sys.executable, str(options.broker), '--token-file', str(token),
+                     '--socket', str(directory / 'gpu.sock'), '--surface-socket', str(directory / 'surface.sock'),
+                     '--private-indexed']
+        environment = dict(os.environ, PYTHONPATH=os.pathsep.join(modules))
+        if options.supervised:
+            with contextlib.suppress(FileNotFoundError):
+                control_path.unlink()
+            broker = subprocess.Popen(arguments + ['--control-socket', str(control_path)], env=environment)
+            return broker, connect_compositor()
         parent, child = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
-        broker = subprocess.Popen(
-            [sys.executable, str(options.broker), '--control-fd=0', '--token-file', str(token),
-             '--socket', str(directory / 'gpu.sock'), '--surface-socket', str(directory / 'surface.sock'),
-             '--private-indexed'], stdin=child, env=dict(os.environ, PYTHONPATH=os.pathsep.join(modules)))
+        broker = subprocess.Popen(arguments + ['--control-fd=0'], stdin=child, env=environment)
         child.close()
         return broker, parent
 
@@ -92,11 +117,17 @@ def main():
         while not stopping and broker.poll() is None:
             if restarts:
                 restarts.clear()
-                stop_broker(broker)
                 parent.close()
                 delayed.clear()
-                broker, parent = start_broker()
-                log(f'broker restarted pid={broker.pid}')
+                if options.supervised:
+                    # A new compositor: its own epoch, the broker untouched.
+                    epoch = os.urandom(16)
+                    parent = connect_compositor()
+                    log('compositor reconnected')
+                else:
+                    stop_broker(broker)
+                    broker, parent = start_broker()
+                    log(f'broker restarted pid={broker.pid}')
             now = time.monotonic()
             while delayed and delayed[0][0] <= now:
                 _, data, line = delayed.pop(0)

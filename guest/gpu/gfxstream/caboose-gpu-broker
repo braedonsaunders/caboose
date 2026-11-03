@@ -947,7 +947,9 @@ class Session:
             if (surface is None or surface['process'] != frame.process or
                     (not surface.get('forced') and (not surface['retiring'] or surface.get('retire_sent') is False))):
                 raise ValueError('unexpected surface retirement')
-            if self.indexed_enabled and not surface.get('disconnected') and (
+            # A revoked surface (the compositor took the window back, or went) ends what was
+            # pending on it with its retirement; otherwise everything must have completed.
+            if self.indexed_enabled and not surface.get('disconnected') and not surface.get('revoked') and (
                     surface['indexed'].creating or self.unfinished_presents(surface) or
                     any(swap['acquire'] is not None or swap['mapping'] for swap in surface['indexed'].swaps.values())):
                 raise ValueError('surface retired before pending operation completion')
@@ -1149,6 +1151,7 @@ class Session:
         key = (record.epoch, record.grant, record.generation)
         surface = self.surfaces.get(key)
         if surface is None: raise ValueError('unknown surface revoke')
+        surface['revoked'] = True
         if not surface['retiring']:
             surface['retiring'] = True
             if surface.get('owner') is not None:
@@ -1413,14 +1416,29 @@ class Session:
 
 
 class Broker:
-    def __init__(self, control, token_file, socket_path, surface_path=None, indexed=False):
+    """`control` is the compositor's channel inherited from it, its parent, and the broker
+    ends with it. With `listener` instead the broker runs on its own (supervised beside the
+    display): it serves one compositor at a time, connected to the listening socket, and a
+    compositor that goes ends only its own grants, while the executor and the phone stay."""
+    listener = None
+    lifecycle = None
+    stale_epochs = frozenset()
+
+    def __init__(self, control, token_file, socket_path, surface_path=None, indexed=False, listener=None):
         if os.environ.get("CABOOSE_PRIVATE_GPU_DEFLATE") == "1" and not indexed:
             raise ValueError("private GPU DEFLATE requires indexed v4")
         self.control, self.token_file, self.socket_path = control, token_file, socket_path
+        self.listener = listener
         self.surface_path = surface_path
         self.indexed = indexed
-        self.compositor_pid = os.getppid()
-        self.compositor_start = process_start_ticks(Path(f'/proc/{self.compositor_pid}/stat').read_text())
+        self.compositor_pid = self.compositor_start = None
+        if control is not None:
+            self.compositor_pid = os.getppid()
+            self.compositor_start = process_start_ticks(Path(f'/proc/{self.compositor_pid}/stat').read_text())
+        # Epochs of compositors that went: their grants ended with them, and nothing more
+        # about them is sent to the next one.
+        self.stale_epochs = set()
+        self.lifecycle = None  # the last executor lifecycle record, for a compositor that connects later
         self.lease = ExecutorLease()
         self.tasks = set(); self.closing = asyncio.Event()
         self.session = None
@@ -1499,25 +1517,46 @@ class Broker:
 
     async def send_control(self, data, fd=None):
         loop = asyncio.get_running_loop()
+        try: record = control_protocol.decode(data, 0 if fd is None else 1)
+        except control_protocol.ControlError: record = None
+        if getattr(record, 'epoch', None) in self.stale_epochs:
+            return  # a grant of a compositor that went
+        if self.control is None:
+            # No compositor: grants and buffers ended with the last one, a lifecycle record
+            # reaches the next one when it connects, and a bind cannot be asked.
+            if isinstance(record, (control_protocol.RevokeRequest, control_protocol.GrantRetired,
+                                   control_protocol.BufferReleased, control_protocol.ExecutorLifecycle)):
+                return
+            raise ConnectionError('no compositor connected')
         ancillary = [] if fd is None else [(socket.SOL_SOCKET, socket.SCM_RIGHTS, array.array('i', [fd]))]
         async with self.bind_send_lock:
+            control = self.control
+            if control is None: raise ConnectionError('no compositor connected')
             deadline = loop.time() + 5
             while True:
                 try:
-                    n = self.control.sendmsg([data], ancillary)
+                    n = control.sendmsg([data], ancillary)
                     if n != len(data): raise OSError('partial sequenced-packet control record')
                     return
                 except BlockingIOError:
                     ready = loop.create_future()
                     def writable():
                         if not ready.done(): ready.set_result(None)
-                    loop.add_writer(self.control.fileno(), writable)
+                    loop.add_writer(control.fileno(), writable)
                     try: await asyncio.wait_for(ready, max(0, deadline - loop.time()))
-                    finally: loop.remove_writer(self.control.fileno())
+                    finally: loop.remove_writer(control.fileno())
+                except OSError as error:
+                    # On its own the broker outlives a compositor that went while it sent: the
+                    # record goes with that compositor, and a bind is refused.
+                    if self.listener is None: raise
+                    if self.control is control: self.compositor_lost(f'{type(error).__name__}: {error}')
+                    if fd is not None: raise ConnectionError('compositor control closed') from error
+                    return
 
     async def report_lifecycle(self, session, kind):
         if kind == 5 and session.lost_reported: return
         data = control_protocol.encode_lifecycle(control_protocol.ExecutorLifecycle(kind, session.executor, session.generation))
+        self.lifecycle = data
         await self.send_control(data)
         if kind == 4: session.ready_reported = True
         if kind == 5: session.lost_reported = True
@@ -1717,48 +1756,103 @@ class Broker:
         finally:
             session.buffer_registry.drop(connection)
 
+    def control_ready(self):
+        """One record from the compositor: a handoff, a bind answer, a revoke or a buffer."""
+        try:
+            record = receive_record(self.control, os.getuid(), self.compositor_pid, self.compositor_start)
+            if isinstance(record, control_protocol.BindResult):
+                self.bind_answered(record)
+                return
+            if isinstance(record, control_protocol.RevokeGrant):
+                # A revoke can cross the end of its session or surface: nothing is left
+                # to retire, and the broker goes on serving the next executor.
+                if self.session is None or not self.session.has_surface(record):
+                    print('CABOOSE_GPU_BROKER revoke for a surface that is already gone', file=sys.stderr, flush=True)
+                    return
+                self.session.request_surface_retire(record)
+                return
+            if isinstance(record, control_protocol.BufferPresent):
+                if self.session is None or not self.session.session_ready.is_set():
+                    task = asyncio.create_task(self.send_control(control_protocol.encode_buffer_released(
+                        control_protocol.BufferReleased(record.request, errno.ENODEV))))
+                    self.tasks.add(task); task.add_done_callback(self.tasks.discard)
+                else:
+                    self.session.present_buffer(record)
+                return
+            stream = record
+        except BlockingIOError: return
+        except (OSError, ValueError, PermissionError) as error:
+            if self.listener is not None:
+                self.compositor_lost(f'{type(error).__name__}: {error}')
+                return
+            print(f'CABOOSE_GPU_BROKER control channel failed: {type(error).__name__}: {error}', file=sys.stderr, flush=True)
+            self.closing.set(); return
+        if len(self.tasks) >= MAX_QUEUED_MESSAGES:
+            stream.close(); return
+        stream.setblocking(False)
+        task = asyncio.create_task(self.remote(stream))
+        self.tasks.add(task); task.add_done_callback(self.tasks.discard)
+
+    def compositor_connecting(self):
+        """A compositor connected to the listening socket: it replaces any current one."""
+        try:
+            connection, _ = self.listener.accept()
+        except (BlockingIOError, InterruptedError): return
+        except OSError as error:
+            print(f'CABOOSE_GPU_BROKER control socket accept failed: {error}', file=sys.stderr, flush=True)
+            return
+        try:
+            with PeerIdentity.from_socket(connection, os.getuid(), allow_seqpacket=True) as peer:
+                pid, start = peer.pid, peer.start_ticks
+        except (OSError, ValueError, PermissionError) as error:
+            print(f'CABOOSE_GPU_BROKER refused a compositor: {type(error).__name__}: {error}', file=sys.stderr, flush=True)
+            connection.close(); return
+        if self.control is not None:
+            self.compositor_lost('a new compositor connected')
+        connection.setblocking(False)
+        self.control, self.compositor_pid, self.compositor_start = connection, pid, start
+        asyncio.get_running_loop().add_reader(connection.fileno(), self.control_ready)
+        print(f'CABOOSE_GPU_BROKER compositor connected pid={pid}', file=sys.stderr, flush=True)
+        # A compositor that comes while an executor serves learns of it at once.
+        if self.lifecycle is not None and control_protocol.decode(self.lifecycle, 0).kind == 4:
+            task = asyncio.create_task(self.send_control(self.lifecycle))
+            self.tasks.add(task); task.add_done_callback(self.tasks.discard)
+
+    def compositor_lost(self, reason):
+        """The compositor went (a display restart): its windows and grants went with it. Its
+        surfaces retire on the phone as if revoked, and the executor goes on."""
+        print(f'CABOOSE_GPU_BROKER compositor ended: {reason}', file=sys.stderr, flush=True)
+        with contextlib.suppress(OSError, ValueError):
+            asyncio.get_running_loop().remove_reader(self.control.fileno())
+        with contextlib.suppress(OSError): self.control.close()
+        self.control = self.compositor_pid = self.compositor_start = None
+        for future in self.pending_binds.values():
+            if not future.done(): future.set_exception(ConnectionError('compositor control closed'))
+        session = self.session
+        if session is None: return
+        for key in tuple(session.surfaces):
+            self.stale_epochs.add(key[0])
+            with contextlib.suppress(ValueError, OSError, RuntimeError, BufferError):
+                session.request_surface_retire(control_protocol.RevokeGrant(*key))
+        session.surface_epoch = None
+
     async def run(self):
         loop = asyncio.get_running_loop()
-        self.control.setblocking(False)
-        def ready():
-            try:
-                record = receive_record(self.control, os.getuid(), self.compositor_pid, self.compositor_start)
-                if isinstance(record, control_protocol.BindResult):
-                    self.bind_answered(record)
-                    return
-                if isinstance(record, control_protocol.RevokeGrant):
-                    # A revoke can cross the end of its session or surface: nothing is left
-                    # to retire, and the broker goes on serving the next executor.
-                    if self.session is None or not self.session.has_surface(record):
-                        print('CABOOSE_GPU_BROKER revoke for a surface that is already gone', file=sys.stderr, flush=True)
-                        return
-                    self.session.request_surface_retire(record)
-                    return
-                if isinstance(record, control_protocol.BufferPresent):
-                    if self.session is None or not self.session.session_ready.is_set():
-                        task = asyncio.create_task(self.send_control(control_protocol.encode_buffer_released(
-                            control_protocol.BufferReleased(record.request, errno.ENODEV))))
-                        self.tasks.add(task); task.add_done_callback(self.tasks.discard)
-                    else:
-                        self.session.present_buffer(record)
-                    return
-                stream = record
-            except BlockingIOError: return
-            except (OSError, ValueError, PermissionError) as error:
-                print(f'CABOOSE_GPU_BROKER control channel failed: {type(error).__name__}: {error}', file=sys.stderr, flush=True)
-                self.closing.set(); return
-            if len(self.tasks) >= MAX_QUEUED_MESSAGES:
-                stream.close(); return
-            stream.setblocking(False)
-            task = asyncio.create_task(self.remote(stream))
-            self.tasks.add(task); task.add_done_callback(self.tasks.discard)
-        loop.add_reader(self.control.fileno(), ready)
+        if self.control is not None:
+            self.control.setblocking(False)
+            loop.add_reader(self.control.fileno(), self.control_ready)
+        if self.listener is not None:
+            self.listener.setblocking(False)
+            loop.add_reader(self.listener.fileno(), self.compositor_connecting)
         usage = asyncio.create_task(self.publish_usage())
         try: await self.closing.wait()
         finally:
             usage.cancel()
             with contextlib.suppress(OSError): self.usage_path.unlink()
-            loop.remove_reader(self.control.fileno()); self.control.close()
+            if self.listener is not None:
+                loop.remove_reader(self.listener.fileno()); self.listener.close()
+            if self.control is not None:
+                loop.remove_reader(self.control.fileno()); self.control.close()
             for future in self.pending_binds.values():
                 if not future.done(): future.set_exception(ConnectionError('compositor control closed'))
             if self.tasks:
@@ -1951,7 +2045,11 @@ class Broker:
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--control-fd', type=int, required=True)
+    control_source = parser.add_mutually_exclusive_group(required=True)
+    control_source.add_argument('--control-fd', type=int,
+                                help="the compositor's channel, inherited: the broker ends with it")
+    control_source.add_argument('--control-socket', type=Path,
+                                help='listen for the compositor here (mode 0600) and outlive it')
     parser.add_argument('--token-file', type=Path, required=True)
     parser.add_argument('--socket', type=Path, required=True)
     parser.add_argument('--surface-socket', type=Path)
@@ -1959,12 +2057,22 @@ def main():
     args = parser.parse_args()
     if args.private_indexed and args.surface_socket is None:
         parser.error('--private-indexed requires --surface-socket')
-    control = socket.socket(fileno=args.control_fd)
-    if control.family != socket.AF_UNIX or control.getsockopt(socket.SOL_SOCKET, socket.SO_TYPE) != socket.SOCK_SEQPACKET:
-        raise SystemExit('private Unix sequenced-packet control socket required')
+    control = listener = None
+    if args.control_fd is not None:
+        control = socket.socket(fileno=args.control_fd)
+        if control.family != socket.AF_UNIX or control.getsockopt(socket.SOL_SOCKET, socket.SO_TYPE) != socket.SOCK_SEQPACKET:
+            raise SystemExit('private Unix sequenced-packet control socket required')
+    else:
+        with contextlib.suppress(FileNotFoundError): args.control_socket.unlink()
+        listener = socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+        previous = os.umask(0o177)
+        try: listener.bind(str(args.control_socket))
+        finally: os.umask(previous)
+        listener.listen(2)
     # The supervisor restarts the broker; its log says why each one ended.
     try:
-        asyncio.run(Broker(control, args.token_file, args.socket, args.surface_socket, args.private_indexed).run())
+        asyncio.run(Broker(control, args.token_file, args.socket, args.surface_socket, args.private_indexed,
+                           listener=listener).run())
     except BaseException as error:
         print(f'CABOOSE_GPU_BROKER_EXIT error {type(error).__name__}: {error}', file=sys.stderr, flush=True)
         raise

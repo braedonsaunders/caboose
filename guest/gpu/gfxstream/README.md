@@ -64,9 +64,20 @@ payloads.
 
 ## Broker
 
-`caboose-gpu-broker` is the private owner-compositor child. It accepts an
-inherited Unix control socket and a per-wake token-file path, and binds the
-requested local socket only after the executor reports real session readiness.
+`caboose-gpu-broker` is the private owner-compositor service. It takes a per-wake
+token-file path and its compositor channel either inherited (`--control-fd`, as the
+compositor's child, ending with it) or as a socket it listens on (`--control-socket PATH`,
+a Unix sequenced-packet socket of mode 0600, when it is supervised beside the display), and
+binds the requested local socket only after the executor reports real session readiness.
+
+On a control socket the broker outlives its compositor. It serves one at a time, the latest
+to connect, whose process it takes from the connection's credentials; the records and their
+handoffs are those of the inherited channel. When the compositor goes (a display restart),
+its windows and grants go with it: each surface it granted retires on the phone as if
+revoked, ending what was pending on it, nothing more about those grants is sent to the next
+compositor, and binds are refused until one connects. The executor, the phone's session and
+every guest stream go on. A compositor that connects while an executor serves is sent its
+`EXECUTOR_READY` (lifecycle kind 4) at once.
 Its modules use the CGLV codec in `guest/gpu/broker/live_protocol.py`. The
 compositor's routing hook is disabled by default; `/gpu` returns HTTP 503 until
 it is explicitly wired and the private bridge is validated. `../install-live.py`

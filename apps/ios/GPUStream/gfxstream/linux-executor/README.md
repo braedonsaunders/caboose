@@ -80,7 +80,9 @@ socket and a fresh token, hands each TCP connection on `--listen` to the broker 
 display hands it the relayed phone, and answers the broker's compositor records. It grants
 every surface bind to the window it names and every revoke, without the compositor's check
 that the bound process made the window, so it belongs on disposable test computers only.
-SIGUSR1 replaces its broker with a new one, as a display restart does.
+SIGUSR1 replaces its broker with a new one, as a display restart does. With `--supervised` the
+broker listens on its own control socket, as it does supervised beside the display, and SIGUSR1
+reconnects only the compositor, with a new epoch: the executor's session and guest streams go on.
 
 ## Check
 

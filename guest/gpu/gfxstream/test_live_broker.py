@@ -715,6 +715,59 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
             if not task.done(): task.cancel(); await asyncio.gather(task, return_exceptions=True)
             control.close(); peer.close()
 
+    @unittest.skipUnless(sys.platform == 'linux', 'Linux AF_UNIX SOCK_SEQPACKET')
+    async def test_a_listening_broker_outlives_its_compositor(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'control.sock'
+            listener = socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+            listener.bind(str(path)); listener.listen(2)
+            instance = broker.Broker(None, Path(directory) / 'token', Path(directory) / 'gpu.sock', listener=listener)
+            task = asyncio.create_task(instance.run())
+            loop = asyncio.get_running_loop()
+            async def connect():
+                compositor = socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+                compositor.setblocking(False)
+                await loop.sock_connect(compositor, str(path))
+                for _ in range(200):
+                    if instance.control is not None and instance.compositor_pid == os.getpid(): break
+                    await asyncio.sleep(0.005)
+                return compositor
+            try:
+                first = await connect()
+                self.assertEqual(instance.compositor_pid, os.getpid())
+                # Its grants: one surface of a live session.
+                key = (b'e' * 16, b'g' * 16, 7)
+                session = mock.Mock()
+                session.surfaces = {key: {}}
+                session.surface_epoch = b'e' * 16
+                instance.session = session
+                first.close()
+                for _ in range(200):
+                    if instance.control is None: break
+                    await asyncio.sleep(0.005)
+                self.assertIsNone(instance.control)
+                self.assertFalse(instance.closing.is_set())
+                session.request_surface_retire.assert_called_once_with(control_protocol.RevokeGrant(*key))
+                self.assertIsNone(session.surface_epoch)
+                # Without a compositor grants are dropped and a bind cannot be asked.
+                await instance.send_control(control_protocol.encode_grant_retired(control_protocol.GrantRetired(*key)))
+                with self.assertRaises(ConnectionError):
+                    await instance.send_control(b'a bind request')
+                # The next compositor hears of a ready executor, and nothing of the old grants.
+                instance.lifecycle = control_protocol.encode_lifecycle(
+                    control_protocol.ExecutorLifecycle(4, b'x' * 16, 3))
+                second = await connect()
+                record = control_protocol.decode(await asyncio.wait_for(loop.sock_recv(second, 256), 1), 0)
+                self.assertEqual(record, control_protocol.ExecutorLifecycle(4, b'x' * 16, 3))
+                await instance.send_control(control_protocol.encode_grant_retired(control_protocol.GrantRetired(*key)))
+                fresh = control_protocol.GrantRetired(b'n' * 16, b'g' * 16, 8)
+                await instance.send_control(control_protocol.encode_grant_retired(fresh))
+                self.assertEqual(control_protocol.decode(await asyncio.wait_for(loop.sock_recv(second, 256), 1), 0), fresh)
+                second.close()
+            finally:
+                instance.closing.set()
+                await asyncio.wait_for(task, 5)
+
     async def test_a_late_bind_answer_is_logged_and_its_grant_handed_back(self):
         broker_instance = broker.Broker.__new__(broker.Broker)
         broker_instance.pending_binds = {}
