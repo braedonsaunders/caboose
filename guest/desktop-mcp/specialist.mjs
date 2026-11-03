@@ -10,6 +10,10 @@ export function validateTask(task) {
   const goals = task.goal?.all ?? [task.goal]
   if (!Array.isArray(goals) || goals.length < 1 || goals.length > 8) throw new Error('goal all must contain 1–8 conditions')
   for (const goal of goals) {
+    if (goal && goal.title !== undefined) {
+      if (typeof goal.title !== 'string' || !goal.title || goal.title.length > 200 || Object.keys(goal).length !== 1) throw new Error('a title goal is an exact window title alone')
+      continue
+    }
     if (!goal || goal.all !== undefined || typeof goal.name !== 'string' || !goal.name || goal.name.length > 200 ||
         typeof goal.role !== 'string' || !goal.role || goal.role.length > 60) throw new Error('goal requires an exact name and role')
     if (goal.value !== undefined && (typeof goal.value !== 'string' || goal.value.length > 200)) throw new Error('goal value must be at most 200 characters')
@@ -20,8 +24,19 @@ export function validateTask(task) {
     throw new Error('maxActions must be 1–20')
 }
 
-export function goalSatisfied(goal, elements) {
-  if (goal.all) return goal.all.every(part => goalSatisfied(part, elements))
+// The task's windows: its own and every window whose parent chain reaches it (its dialogs and
+// menus), as the compositor lists them. Focus anywhere else is not the task's.
+export function taskWindows(window, windows = []) {
+  const byId = new Map(windows.map(w => [w.id, w]))
+  return windows.filter(w => {
+    for (let at = w, seen = new Set(); at && !seen.has(at.id); seen.add(at.id), at = byId.get(at.parent)) if (at.id === window) return true
+    return false
+  })
+}
+
+export function goalSatisfied(goal, elements, titles = []) {
+  if (goal.all) return goal.all.every(part => goalSatisfied(part, elements, titles))
+  if (goal.title !== undefined) return titles.includes(goal.title)
   const matches = elements.filter(e => e.name === goal.name && e.role === goal.role)
   return matches.length === 1 && (goal.value === undefined || matches[0].value === goal.value) &&
     (goal.state === undefined || matches[0].states?.includes(goal.state))
@@ -38,14 +53,19 @@ export async function runSpecialist(task, { observe, decide, act, trace = () => 
     const before = now(), state = await observe(task.window)
     metrics.observationMs += now() - before; metrics.observations++
     check()
-    if (state.focused !== task.window) throw new Error('focused window changed; no input sent')
+    const family = state.windows ? taskWindows(task.window, state.windows) : [{ id: task.window }]
+    if (!family.some(w => w.id === state.focused)) throw new Error('focused window changed; no input sent')
     if (!Array.isArray(state.elements)) throw new Error('invalid accessibility observation')
+    titles = family.flatMap(w => typeof w.title === 'string' ? [w.title] : [])
+    const focused = state.windows?.find(w => w.id === state.focused)
+    windowLabel = focused && focused.id !== task.window ? `${focused.kind ?? 'window'} ${JSON.stringify(focused.title ?? '')}` : undefined
     return state.elements.slice(0, 200)
   }
+  let titles = [], windowLabel
   try {
     let elements = await read()
     for (let step = 0; ; step++) {
-      if (goalSatisfied(task.goal, elements)) return { ...result('verified'), evidence: (task.goal.all ?? [task.goal]).map(g => elements.find(e => e.name === g.name && e.role === g.role)) }
+      if (goalSatisfied(task.goal, elements, titles)) return { ...result('verified'), evidence: (task.goal.all ?? [task.goal]).map(g => g.title !== undefined ? { title: g.title } : elements.find(e => e.name === g.name && e.role === g.role)) }
       if ((task.goal.all ?? [task.goal]).some(g => elements.filter(e => e.name === g.name && e.role === g.role).length > 1))
         return result('needs_clarification', 'completion control is ambiguous')
       if (!elements.length) return result('needs_visual', 'No accessible controls; delegate screenshot inspection to the caller')
@@ -53,7 +73,7 @@ export async function runSpecialist(task, { observe, decide, act, trace = () => 
       check()
       const before = now()
       let choice
-      try { choice = await decide({ objective: task.objective, goal: task.goal, elements, ...(task.values ? { values: task.values } : {}) }, signal) }
+      try { choice = await decide({ objective: task.objective, goal: task.goal, elements, ...(windowLabel ? { window: windowLabel } : {}), ...(task.values ? { values: task.values } : {}) }, signal) }
       finally { metrics.modelMs += now() - before }
       check()
       if (choice?.action === 'blocked') return result('needs_clarification', choice.reason ?? 'specialist cannot select a grounded action')
@@ -74,7 +94,7 @@ export async function runSpecialist(task, { observe, decide, act, trace = () => 
       const previous = elements.find(e => e.id === choice.id)
       elements = await read()
       const target = elements.find(e => e.id === choice.id)
-      if (goalSatisfied(task.goal, elements)) return { ...result('verified'), evidence: (task.goal.all ?? [task.goal]).map(g => elements.find(e => e.name === g.name && e.role === g.role)) }
+      if (goalSatisfied(task.goal, elements, titles)) return { ...result('verified'), evidence: (task.goal.all ?? [task.goal]).map(g => g.title !== undefined ? { title: g.title } : elements.find(e => e.name === g.name && e.role === g.role)) }
       if (!target || target.name !== previous.name || target.role !== previous.role || target.value !== previous.value ||
           JSON.stringify(target.states) !== JSON.stringify(previous.states) || target.states?.includes('disabled')) {
         metrics.rejectedActions++; return result('rejected', 'target changed before execution')

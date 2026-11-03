@@ -11,13 +11,13 @@ export const LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef'
 // The one decision prompt every runtime and the trainer use. The answer is one token: the
 // letter of a choice. The task line opens every step of a task unchanged, so a runtime can
 // keep its KV cache; observed values are listed whether or not their control offers an action.
-export function decisionPrompt(objective, elements, labels) {
+export function decisionPrompt(objective, elements, labels, window) {
   const values = elements.filter(e => e.value).map(e => `${e.name}=${quote(e.value)}`)
-  return [`Task: ${objective}`, ...(values.length ? [`Values: ${values.join('; ')}`] : []),
+  return [`Task: ${objective}`, ...(window ? [`Window: ${window}`] : []), ...(values.length ? [`Values: ${values.join('; ')}`] : []),
     ...labels.map((label, i) => `${LETTERS[i]} ${label}`), 'Next:'].join('\n')
 }
 
-export function actionChoices({ objective, goal, elements, values = [] }) {
+export function actionChoices({ objective, goal, elements, values = [], window }) {
   const supplied = [...values]
   for (const part of goal.all ?? [goal]) {
     if (part.value !== undefined && !supplied.some(v => v.name === part.name && v.value === part.value))
@@ -34,9 +34,10 @@ export function actionChoices({ objective, goal, elements, values = [] }) {
     controls.push([element.role, element.name, element.value ?? '', element.states ?? []])
     if (element.states?.includes('disabled')) continue
     const actions = element.actions ?? (PRESS_ROLES.has(element.role) ? ['press'] : [])
+    const name = element.name || element.role
     if (actions.includes('press')) {
       const detail = TOGGLE_ROLES.has(element.role) ? `${element.role}, ${element.states?.includes('checked') ? 'checked' : 'not checked'}` : element.role
-      candidates.push({ label: `PRESS ${element.name} (${detail})`, action: { action: 'click_element', id: element.id } })
+      candidates.push({ label: `PRESS ${name} (${detail})`, action: { action: 'click_element', id: element.id } })
     }
     if (editable.includes(element)) {
       const own = supplied.filter(s => s.name === element.name)
@@ -44,14 +45,14 @@ export function actionChoices({ objective, goal, elements, values = [] }) {
         if (element.value === source.value) continue
         const current = element.value ? `${quote(element.value)}` : 'empty'
         const origin = source.name === element.name ? '' : ` (source ${source.name})`
-        candidates.push({ label: `SET ${element.name} from ${current} to ${quote(source.value)}${origin}`, action: { action: 'set_text', id: element.id, text: source.value } })
+        candidates.push({ label: `SET ${name} from ${current} to ${quote(source.value)}${origin}`, action: { action: 'set_text', id: element.id, text: source.value } })
       }
     }
   }
   if (candidates.length > LETTERS.length) throw new Error('more than 32 choices; delegate a smaller task')
   const state = JSON.stringify({ objective, goal, controls })
   const revision = createHash('sha256').update(JSON.stringify({ state, candidates })).digest('hex').slice(0, 24)
-  return { state, revision, candidates, prompt: decisionPrompt(objective, elements, candidates.map(c => c.label)) }
+  return { state, revision, candidates, prompt: decisionPrompt(objective, elements, candidates.map(c => c.label), window) }
 }
 
 // The phone's decision model through Caboose AI (docs/ai.md § Decisions); the development MLX

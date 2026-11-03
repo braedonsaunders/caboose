@@ -14,7 +14,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createInterface } from 'node:readline'
 import { Worker } from './worker.mjs'
-import { runSpecialist, phoneDecision, validateTask } from './specialist.mjs'
+import { runSpecialist, phoneDecision, validateTask, taskWindows } from './specialist.mjs'
 import { controlAlive, ensureAgentSeat } from './ensure-agent-seat.mjs'
 
 const DISPLAY = process.env.CABOOSE_AGENT_DISPLAY ?? ':101'
@@ -300,13 +300,17 @@ for (const name of mutations) {
 // Opt-in: do not advertise an unavailable model as a product capability.
 if (process.env.CABOOSE_SPECIALIST_MODEL || process.env.CABOOSE_SPECIALIST_BACKEND === 'choices') {
   tools.push({ name: 'computer_task',
-    description: 'Delegate a bounded accessibility task in the currently focused agent window. Supply an objective and exact observable goal. Returns verified only after observing that goal; otherwise returns a structured failure or screenshot for the caller. At most 20 actions and 60 seconds. Does not run shell commands or choose arbitrary coordinates.',
+    description: 'Delegate a bounded accessibility task in an agent window and the dialogs and menus it opens. Supply an objective and exact observable goal (controls, or a window title). Returns verified only after observing that goal; otherwise returns a structured failure or screenshot for the caller. At most 20 actions and 60 seconds. Does not run shell commands or choose arbitrary coordinates.',
     inputSchema: { type: 'object', properties: {
       values: { type: 'array', maxItems: 12, items: { type: 'object', properties: { name: { type: 'string', maxLength: 80 }, value: { type: 'string', maxLength: 200 } }, required: ['name', 'value'] } },
       objective: { type: 'string', maxLength: 2000 }, window: { type: 'integer', minimum: 1 },
       goal: { anyOf: [
         { type: 'object', properties: { name: { type: 'string' }, role: { type: 'string' }, value: { type: 'string' }, state: { type: 'string' } }, required: ['name', 'role'] },
-        { type: 'object', properties: { all: { type: 'array', minItems: 1, maxItems: 8, items: { type: 'object', properties: { name: { type: 'string' }, role: { type: 'string' }, value: { type: 'string' }, state: { type: 'string' } }, required: ['name', 'role'] } } }, required: ['all'] },
+        { type: 'object', properties: { title: { type: 'string', description: 'Exact title of the task window or one of its dialogs' } }, required: ['title'] },
+        { type: 'object', properties: { all: { type: 'array', minItems: 1, maxItems: 8, items: { anyOf: [
+          { type: 'object', properties: { name: { type: 'string' }, role: { type: 'string' }, value: { type: 'string' }, state: { type: 'string' } }, required: ['name', 'role'] },
+          { type: 'object', properties: { title: { type: 'string' } }, required: ['title'] },
+        ] } } }, required: ['all'] },
       ] },
       maxActions: { type: 'integer', minimum: 1, maximum: 20, default: 8 },
     }, required: ['objective', 'window', 'goal'] },
@@ -322,10 +326,13 @@ if (process.env.CABOOSE_SPECIALIST_MODEL || process.env.CABOOSE_SPECIALIST_BACKE
       const outcome = await runSpecialist(task, {
         signal: controller.signal,
         observe: async () => {
+          // The compositor's window records decide which windows are the task's (its own, and
+          // dialogs and menus whose parent chain reaches it); AT-SPI reads only the focused one.
           const listing = await seat('windows')
-          if (listing.focused !== task.window) return { focused: listing.focused, elements: [] }
+          if (!taskWindows(task.window, listing.windows).some(w => w.id === listing.focused)) return { focused: listing.focused, windows: listing.windows, elements: [] }
           const state = await observe()
-          return { ...state, focused: (await seat('windows')).focused }
+          const after = await seat('windows')
+          return { ...state, focused: after.focused, windows: after.windows }
         },
         decide: process.env.CABOOSE_SPECIALIST_BACKEND === 'choices' ? choiceDecision(process.env.CABOOSE_SPECIALIST_ENDPOINT || undefined, process.env.CABOOSE_SPECIALIST_DECISION_MODEL || '') : phoneDecision(process.env.CABOOSE_SPECIALIST_MODEL),
         act: async step => {

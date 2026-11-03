@@ -74,3 +74,9 @@ test('exactly decidable observations return without invoking the model', async t
   assert.equal((await decide({ ...input, elements: input.elements.map(e => ({ ...e, states: ['disabled'] })) })).action, 'blocked')
   assert.equal(fetch.mock.callCount(), 0)
 })
+test('the prompt names the window a choice acts in, and unnamed controls go by their role', () => {
+  const { prompt, candidates } = actionChoices({ objective: 'Name it', goal: { title: 'x' }, window: 'dialog "Create New Folder"',
+    values: [{ name: 'Folder name', value: 'Reports' }], elements: [{ id: 'n', name: '', role: 'text', value: 'New Folder', states: ['editable'] }, { id: 'c', name: 'Create', role: 'button', states: [] }] })
+  assert.equal(prompt.split('\n')[1], 'Window: dialog "Create New Folder"')
+  assert.ok(candidates.some(c => c.label === 'SET text from "New Folder" to "Reports" (source Folder name)'))
+})

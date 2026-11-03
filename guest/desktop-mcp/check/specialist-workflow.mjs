@@ -17,7 +17,7 @@ const observe = async () => {
   const state = await call(a11y, { op: 'elements' })
   const listing = await call(seat, { args: ['windows'] })
   latestElements = state.elements ?? []
-  return { ...state, focused: listing.focused }
+  return { ...state, focused: listing.focused, windows: listing.windows }
 }
 try {
   for (const [index, spec] of cases.entries()) {

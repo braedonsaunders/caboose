@@ -2541,16 +2541,36 @@ owner and an agent never type into the same application at once.
 
 The desktop MCP process can opt into `computer_task` with
 `CABOOSE_SPECIALIST_MODEL`, or `CABOOSE_SPECIALIST_BACKEND=choices`, forwarded
-when explicitly set in the agent runner environment. The choice backend selects
-from a bounded set of observed actions and caller-provided literal value sources
-through a local decision service; only the desktop executor resolves those choices. A bounded model loop acts only on freshly observed
-accessibility IDs in one focused agent window and verifies the caller’s explicit
-control postcondition (or conjunction of up to eight conditions). Ambiguous
-completion controls return `needs_clarification`. Missing model service, changed focus, deadlines and
-unsupported visual tasks return control to the parent agent. The ordinary desktop
-tools remain available without phone inference; this does not change seat
-ownership, task takeover, or unattended computer lifetime. See the
-[desktop specialist contract](../guest/desktop-mcp/README.md#bounded-computer-specialist).
+when explicitly set in the agent runner environment. The choice backend sends a bounded
+set of grounded choices to the phone's decision model ([docs/ai.md § Decisions](ai.md#decisions))
+and only the desktop executor resolves the answer into an action; the generative backend
+uses `CABOOSE_SPECIALIST_MODEL`.
+
+The observation and action contract of a task:
+
+- **Windows come from the compositor.** The task names a window id from the seat's window
+  list. Its windows are that one and every window whose `parent` chain reaches it: the
+  dialogs and popup menus it opens are their own records with `kind` and `parent`. When
+  focus is on one of them the task observes and acts there; focus on any other window stops
+  input (`interrupted`). Each step names the window it acts in when that is not the task's
+  own.
+- **Controls come from AT-SPI.** An observation is the focused window's accessibility
+  subtree, joined to its window record by process and geometry, after the seat settles;
+  each element id names its window. Busy, empty, ambiguous and completed observations are
+  decided in code, never by a model.
+- **Actions are semantic.** A choice presses a control through its own accessibility
+  action or replaces an editable text's contents. A control is re-observed after the
+  decision and must be unchanged before input goes in.
+- **Success is observed.** The caller's postcondition is up to eight conditions on
+  controls (name, role, value, state) or on window titles of the task's windows; it is
+  checked before every decision and after every action.
+
+Ambiguous completion controls return `needs_clarification`. A missing model service, a
+focus change, a deadline, or an observation with no accessible controls return control to
+the parent agent (`needs_visual` attaches a picture of the task window from the seat's
+control socket). The ordinary desktop tools remain available without phone inference;
+this does not change seat ownership, task takeover, or unattended computer lifetime. See
+the [desktop specialist contract](../guest/desktop-mcp/README.md#bounded-computer-specialist).
 
 `caboose-desktop-mcp` is a stdio MCP server. The runner passes it to every agent as
 `caboose-desktop` in ACP `session/new`, with the seat's launch environment:
