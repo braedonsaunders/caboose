@@ -8,8 +8,9 @@ pipes, lists or redirections) runs directly; anything else runs under /bin/sh un
 Chromium and Electron build their whole accessibility tree only when started with
 --force-renderer-accessibility, so a program on that runtime gets the switch: recognised by
 the runtime's own files beside its executable (resources.pak, v8_context_snapshot.bin),
-following wrapper scripts (the programs and directories they name), or for `flatpak run` by an Electron base application. Every other
-program starts as asked."""
+following wrapper scripts (the programs and directories they name), or for `flatpak run` by
+an Electron base application. Java programs get the ATK wrapper, where it is installed. Every
+other program starts as asked."""
 import os
 import re
 import shlex
@@ -78,9 +79,25 @@ def plan(command):
     return argv
 
 
+ATK_WRAPPER = '/usr/share/java/java-atk-wrapper.jar'
+
+
+def java_accessibility(environ):
+    """Java Swing and AWT reach AT-SPI through the ATK wrapper, which a JRE loads only when told
+    to and finds only on its boot class path: added for every program started, where installed."""
+    if not os.path.exists(ATK_WRAPPER):
+        return environ
+    options = environ.get('JAVA_TOOL_OPTIONS', '')
+    if 'AtkWrapper' in options:
+        return environ
+    return {**environ, 'JAVA_TOOL_OPTIONS': f'{options} -Djavax.accessibility.assistive_technologies=org.GNOME.Accessibility.AtkWrapper '
+            f'-Xbootclasspath/a:{ATK_WRAPPER}'.strip()}
+
+
 if __name__ == '__main__':
     if len(sys.argv) != 2:
         sys.exit(__doc__)
+    os.environ.update(java_accessibility(dict(os.environ)))
     argv = plan(sys.argv[1])
     if argv is None:
         os.execv('/bin/sh', ['/bin/sh', '-c', sys.argv[1]])

@@ -951,7 +951,7 @@ class Tree:
             "BLOCK_QUOTE", "ARTICLE", "FOOTER", "HEADER", "LANDMARK", "PANEL", "SEPARATOR", "DOCUMENT_WEB",
             "DOCUMENT_FRAME", "DOCUMENT_TEXT", "FILLER", "TOOL_BAR", "MENU_BAR", "PAGE_TAB_LIST", "GROUPING",
             "DESCRIPTION_LIST", "DESCRIPTION_TERM", "DESCRIPTION_VALUE", "CAPTION", "COMMENT", "FOOTNOTE")
-        self.press_actions = ("click", "press", "activate", "jump", "toggle", "open", "check", "uncheck")
+        self.press_actions = ("click", "press", "activate", "jump", "toggle", "open", "check", "uncheck", "showmenu")
         # Selectable items a toolkit gives no action (GTK 3 notebook tabs): on screen, a press is
         # the seat's pointer at their coordinates.
         self.pointer_roles = _roles(Atspi, "PAGE_TAB", "LIST_ITEM", "TREE_ITEM")
@@ -1628,6 +1628,18 @@ def act(display_name, element, action, text):
                 return
         except Exception:
             pass
+        # Toolkits without GrabFocus (GTK 4): an editable field on screen takes focus from the
+        # seat's pointer, which only places the caret; anything else is not clicked.
+        bounds = tree.bounds(node, origin)
+        if tree.has(states, "EDITABLE") and bounds is not None and tree.has(states, "SHOWING"):
+            screen.activate(xid)
+            screen.click(xid, bounds["x"] + bounds["width"] // 2, bounds["y"] + bounds["height"] // 2)
+            deadline = time.monotonic() + 0.4
+            while time.monotonic() < deadline:
+                if tree.has(tree.fresh_states(node), "FOCUSED"):
+                    return
+                screen.let_draw()
+                time.sleep(0.01)
         raise Failure("element cannot take focus")
     if action == "set-text":
         if text is None:

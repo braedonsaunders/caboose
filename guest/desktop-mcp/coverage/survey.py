@@ -7,8 +7,8 @@ usage: survey.py --output RESULTS.jsonl [--only ID ...] [--skip ID ...] [--wait 
 Run inside the computer as the agent user with the agent seat's environment and its agent
 profile (`python3 /opt/caboose/agent-profile.py exec ...`), from desktop-mcp's directory. The
 seat must be empty: each application is started alone, as desktop MCP's launch starts it,
-and ended afterwards. It lists every desktop entry that opens a window (the image's, and the
-system and user Flatpak exports), starts it, waits for its window and scores it:
+and ended afterwards. It lists every desktop entry that opens a window (the image's, the system
+and user Flatpak exports, and the user's own, Wine's included), starts it, waits for its window and scores it:
 
   tree     the focused window's accessibility tree is found
   controls how many controls a read lists
@@ -69,9 +69,10 @@ def toolkit(pid):
 
 def entries(only, skip):
     homes = [os.environ.get('XDG_DATA_HOME', os.path.expanduser('~/.local/share'))]
-    dirs = ['/usr/share/applications', '/var/lib/flatpak/exports/share/applications'] + [f'{h}/flatpak/exports/share/applications' for h in homes]
+    dirs = ['/usr/share/applications', '/var/lib/flatpak/exports/share/applications'] + [f'{h}/flatpak/exports/share/applications' for h in homes] \
+        + [f'{h}/applications' for h in homes]  # the user's own entries, Wine's among them
     found = {}
-    for path in sorted(p for d in dirs for p in glob.glob(f'{d}/*.desktop')):
+    for path in sorted(p for d in dirs for p in glob.glob(f'{d}/**/*.desktop', recursive=True)):
         ident = pathlib.Path(path).stem
         if ident in found or (only and ident not in only) or ident in skip:
             continue
