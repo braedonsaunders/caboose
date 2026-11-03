@@ -18,4 +18,10 @@ if [ "${mode#*container}" != "$mode" ]; then
     dpkg-divert --local --rename --divert /usr/bin/bwrap.distrib --add /usr/bin/bwrap
   fi
   install -m 0755 "$here/caboose-bwrap" /usr/bin/bwrap
+  # The document portal mounts a FUSE file system, which a container without CAP_SYS_ADMIN
+  # cannot: it is not D-Bus activatable there, so nothing starts it to fail (README.md).
+  documents=/usr/share/dbus-1/services/org.freedesktop.portal.Documents.service
+  if [ "$(dpkg-divert --truename "$documents")" = "$documents" ]; then
+    dpkg-divert --local --rename --divert "$documents.caboose-off" --add "$documents"
+  fi
 fi
