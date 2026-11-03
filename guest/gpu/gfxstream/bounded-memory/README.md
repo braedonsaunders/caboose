@@ -188,3 +188,8 @@ held destroys across queues, devices and executors, and event status replies. Th
 the headers, not the generated encoder or a device. `test_requirements_cache.cpp` needs
 Vulkan's headers on the include path (`test.sh` uses Mesa's, or
 `CABOOSE_VULKAN_INCLUDE`).
+
+`CABOOSE_CAPABILITY_CACHE_DISABLE=1` bypasses lookups and stores for a baseline run.
+`CABOOSE_CAPABILITY_CACHE_DIAGNOSTICS=1` reports hits, misses, writes, bytes written and
+time spent attempting writes. Cache snapshots use atomic replacement without forcing
+disk persistence; damaged snapshots after a crash are discarded.

@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <chrono>
 #include <fcntl.h>
 #include <mutex>
 #include <string>
@@ -23,8 +24,9 @@ class StaticQueryCache {
 public:
     ~StaticQueryCache() {
         if (std::getenv("CABOOSE_CAPABILITY_CACHE_DIAGNOSTICS"))
-            std::fprintf(stderr,"CABOOSE_CAPABILITY_CACHE hits=%llu misses=%llu scopes=%zu\n",
-                         (unsigned long long)hits_,(unsigned long long)misses_,identities_.size());
+            std::fprintf(stderr,"CABOOSE_CAPABILITY_CACHE hits=%llu misses=%llu scopes=%zu writes=%llu write_bytes=%llu write_us=%llu\n",
+                         (unsigned long long)hits_,(unsigned long long)misses_,identities_.size(),(unsigned long long)writes_,
+                         (unsigned long long)writeBytes_,(unsigned long long)writeMicros_);
     }
     static constexpr size_t kMaxEntries=8192, kMaxKeyBytes=4096, kMaxValueBytes=4096;
     static constexpr size_t kMaxScopes=64, kMaxFileBytes=8u<<20;
@@ -64,12 +66,14 @@ public:
     }
     template<class T> bool lookup(const std::string& input,T* out) {
         std::lock_guard<std::mutex> lock(mutex_);
+        if (disabled()) { ++misses_; return false; }
         auto it=entries_.find(normalize(input).second);
         if (it==entries_.end() || it->second.size()!=sizeof(T)) { ++misses_; return false; }
         ++hits_;
         std::memcpy(out,it->second.data(),sizeof(T)); return true;
     }
     template<class T> void store(const std::string& input,const T& value) {
+        if (disabled()) return;
         if (input.size()>kMaxKeyBytes || sizeof(T)>kMaxValueBytes) return;
         std::lock_guard<std::mutex> lock(mutex_);
         auto scoped=normalize(input);
@@ -82,6 +86,7 @@ public:
     uint64_t epoch() { std::lock_guard<std::mutex> lock(mutex_); return epoch_; }
     size_t size() { std::lock_guard<std::mutex> lock(mutex_); return entries_.size(); }
 private:
+    static bool disabled() { const char* value=std::getenv("CABOOSE_CAPABILITY_CACHE_DISABLE"); return value && !std::strcmp(value,"1"); }
     template<class T> static void append(std::string* out,const T& value) {
         out->append(reinterpret_cast<const char*>(&value),sizeof(T));
     }
@@ -172,6 +177,10 @@ private:
         }
     }
     void appendLocked(const std::string& identity,const std::string& key,const std::string& value) {
+        const auto started=std::chrono::steady_clock::now();
+        struct Timing { uint64_t& micros; std::chrono::steady_clock::time_point start;
+            ~Timing() { micros+=std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-start).count(); }
+        } timing{writeMicros_,started};
         auto path=files_.find(identity); if (path==files_.end()) return;
         std::string name; int dir=directory(path->second,&name); if (dir<0) return;
         int lock=openat(dir,(name+".lock").c_str(),O_RDWR|O_CREAT|O_CLOEXEC|O_NOFOLLOW|O_NONBLOCK,0600);
@@ -200,13 +209,15 @@ private:
         if (fd>=0) {
             // Cache durability is optional; fsync per query would stall cold discovery.
             // Atomic rename publishes a complete snapshot; crash damage is a miss.
-            if (write(fd,bytes.data(),bytes.size())==ssize_t(bytes.size()))
+            if (write(fd,bytes.data(),bytes.size())==ssize_t(bytes.size())) {
+                ++writes_; writeBytes_+=bytes.size();
                 (void)renameat(dir,temp.c_str(),dir,name.c_str());
+            }
             close(fd); (void)unlinkat(dir,temp.c_str(),0);
         }
         close(lock); close(dir);
     }
-    uint64_t epoch_=1,hits_=0,misses_=0;
+    uint64_t epoch_=1,hits_=0,misses_=0,writes_=0,writeBytes_=0,writeMicros_=0;
     std::string connection_;
     std::mutex mutex_;
     std::unordered_map<uint64_t,std::string> identities_;

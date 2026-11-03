@@ -98,8 +98,9 @@ drain() { # log
 }
 
 executor "$phone"
-for phase in cold warm fresh; do
-  app /shared/sync_check > "$out/$phase.log" 2>&1
+for phase in disabled cold warm fresh; do
+  disabled=0; [ "$phase" != disabled ] || disabled=1
+  app env CABOOSE_CAPABILITY_CACHE_DISABLE="$disabled" timeout 120 /usr/bin/time -f "CABOOSE_CAPABILITY_PROCESS elapsed_s=%e" /shared/sync_check > "$out/$phase.log" 2>&1
   cat "$out/$phase.log"
 done
 drain "$out/executor.log"
@@ -107,7 +108,7 @@ python3 - "$out" <<'PYCHECK'
 import pathlib,re,sys
 root=pathlib.Path(sys.argv[1])
 rows=[]
-for name in ('cold','warm','fresh'):
+for name in ('disabled','cold','warm','fresh'):
     text=(root/(name+'.log')).read_text()
     found=re.search(r'CABOOSE_CAPABILITY_QUERIES .*hash=([0-9a-f]+)',text)
     if not found: raise SystemExit('FAIL missing capability report: '+name)
@@ -115,7 +116,7 @@ for name in ('cold','warm','fresh'):
     counters=re.search(r'CABOOSE_CAPABILITY_CACHE hits=(\d+) misses=(\d+) scopes=(\d+)',text)
     if not counters: raise SystemExit('FAIL missing cache diagnostics: '+name)
     hits,misses,scopes=map(int,counters.groups())
-    if not scopes or (name=='cold' and (hits or misses<368)) or (name!='cold' and hits<368):
+    if not scopes or (name in ('disabled','cold') and (hits or misses<368)) or (name in ('warm','fresh') and hits<368):
         raise SystemExit('FAIL incorrect cold/warm cache use: '+name+' '+counters.group(0))
 if len(set(rows))!=1: raise SystemExit('FAIL cold/warm capabilities differ')
 print('PASS identical cold/warm/fresh process capability answers')
