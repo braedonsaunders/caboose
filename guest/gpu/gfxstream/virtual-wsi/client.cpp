@@ -311,6 +311,26 @@ void Client::waitPresentationRoom(size_t frames, Deadline deadline) {
     // After a revocation no further retirements are owed: the caller sees revoked().
     while (unretired()>=frames && awaitLive(36,0,deadline)) {}
 }
+bool Client::waitPresentationIdleFor(Deadline until) {
+    require(bound_);
+    auto unretired=[this] {
+        return std::any_of(sources_.begin(),sources_.end(),[](const auto& entry) {
+            return entry.second.swapchain!=0 && !entry.second.failed;
+        });
+    };
+    while (!revoked_ && unretired()) {
+        auto left=std::chrono::duration_cast<std::chrono::milliseconds>(until-std::chrono::steady_clock::now()).count();
+        pollfd p{fd_,POLLIN,0};
+        int result=poll(&p,1,int(std::max<int64_t>(0,std::min<int64_t>(left,INT_MAX))));
+        if (result<0 && errno==EINTR) continue;
+        if (result<0) fail(errno);
+        if (!result) return false;
+        if (!(p.revents & POLLIN)) fail(ECONNRESET);
+        Record r;
+        if (receiveReady(&r)) absorb(r,0,0);
+    }
+    return true;
+}
 Record Client::retire(Deadline deadline) {
     if (retired_) return retirement_;
     require(bound_ && !retiring_);

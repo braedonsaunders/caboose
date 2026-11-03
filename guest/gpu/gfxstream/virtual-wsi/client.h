@@ -44,6 +44,8 @@ public:
     void waitPresentationIdle(Deadline deadline);
     // Waits until fewer than `frames` presented frames are still unretired.
     void waitPresentationRoom(size_t frames, Deadline deadline);
+    // Waits until no presented frame is unretired, or `until`: false then, the connection intact.
+    bool waitPresentationIdleFor(Deadline until);
     Record retire(Deadline deadline);
     bool retired() const { return retired_; }
     // Called when the peer closes the connection (the executor left), before the failure.

@@ -104,7 +104,7 @@ this. With `caboose-computer:flathub-79f46a1` and the driver of
 `guest/gpu/gfxstream/driver/build.sh`:
 
 ```
-PASS sync-check: 16 cases
+PASS sync-check: 17 cases
 PASS child windows: 3 surfaces presented 30 frames each
 PASS vkcube: window=0x200000 swapchain=1 frames=300 captured=300 distinct=50 chain=e51ca5e4
 ```

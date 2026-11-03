@@ -77,8 +77,12 @@ the connection of a bind it refused; that close is not executor loss (only a bou
 connection's end is reported to `peerGone`). The surface binds lazily: a query tries
 again at most every 100 ms on a new connection (`Client::reset`), and a present always
 tries. The bind is sent at once and its reply is collected by a later call when it has
-not arrived (a query waits up to 250 ms for it, a present not at all), so neither blocks
-on the phone's own wait for the window's layer. Without guest-owned images a query has no
+not arrived. With guest-owned images a query never waits for it and only a swapchain's
+first present does, up to 2 s, so an application that draws once is shown; otherwise a query
+waits up to 250 ms. A surface destroyed with its bind in flight does not wait for the
+answer: its connection closes, the broker hands a later grant back, and the instance is kept
+until the process ends, so an application that makes a window and ends at once is never held
+by the phone's own wait for the window's layer. Without guest-owned images a query has no
 local answer and waits up to 5 s for a bind in flight, as long as the broker waits for the
 compositor. A bind the phone answered with a failure (it could not take the window's layer)
 is retried after 100 ms, doubling up to 4 s, by queries and presents alike. The first
@@ -124,8 +128,8 @@ order, a submission that waits for them and signals the presented image's own bi
 semaphore, which is all the phone waits for. The application may signal its semaphores
 again once vkQueuePresentKHR returns, before the phone runs that present; the image's
 semaphore is signaled again only when the image is presented again, after the phone has
-released it. Swapchain retirement waits until the surface's ordered presents have
-retired, since retirement rejects presents still waiting for their order mark.
+released it. Swapchain retirement waits up to 1 s for the surface's ordered presents to retire, since
+retirement rejects presents still waiting for their order mark.
 
 With ordered presents and the completion feed, the next image is acquired right after
 each present, on the phone, against one of three private semaphores. The application's

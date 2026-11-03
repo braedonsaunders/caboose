@@ -9,6 +9,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <poll.h>
+#include <sys/wait.h>
+#include <unistd.h>
 #include <xcb/xcb.h>
 #include <vulkan/vulkan.h>
 #include <vulkan/vulkan_xcb.h>
@@ -838,7 +841,131 @@ static void pipelineCacheCase(const VkPhysicalDeviceProperties* props) {
            (unsigned long long)readMax);
 }
 
+// The exit_latency child: what a launcher's splash does (Steam's update window): an instance,
+// a device, an X11 window with a surface whose capabilities it asks (which starts the bind)
+// and a swapchain; then it says so on `fd` and ends, in `mode` 0 without destroying
+// anything, in mode 1 after destroying everything.
+static int exitChild(int mode, int fd) {
+    const char* extensions[] = {VK_KHR_SURFACE_EXTENSION_NAME, VK_KHR_XCB_SURFACE_EXTENSION_NAME};
+    VkApplicationInfo app = {VK_STRUCTURE_TYPE_APPLICATION_INFO};
+    app.pApplicationName = "caboose-sync-check-exit";
+    app.apiVersion = VK_API_VERSION_1_3;
+    VkInstanceCreateInfo instanceInfo = {VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
+    instanceInfo.pApplicationInfo = &app;
+    instanceInfo.enabledExtensionCount = 2;
+    instanceInfo.ppEnabledExtensionNames = extensions;
+    VkInstance childInstance;
+    if (vkCreateInstance(&instanceInfo, NULL, &childInstance) != VK_SUCCESS) return 3;
+    uint32_t count = 1;
+    VkPhysicalDevice childPhysical;
+    VkResult enumerated = vkEnumeratePhysicalDevices(childInstance, &count, &childPhysical);
+    if ((enumerated != VK_SUCCESS && enumerated != VK_INCOMPLETE) || !count) return 3;
+    const float priority = 1.0f;
+    VkDeviceQueueCreateInfo queueInfo = {VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};
+    queueInfo.queueFamilyIndex = 0;
+    queueInfo.queueCount = 1;
+    queueInfo.pQueuePriorities = &priority;
+    const char* swapchainExtension = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
+    VkDeviceCreateInfo deviceInfo = {VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
+    deviceInfo.queueCreateInfoCount = 1;
+    deviceInfo.pQueueCreateInfos = &queueInfo;
+    deviceInfo.enabledExtensionCount = 1;
+    deviceInfo.ppEnabledExtensionNames = &swapchainExtension;
+    VkDevice childDevice;
+    if (vkCreateDevice(childPhysical, &deviceInfo, NULL, &childDevice) != VK_SUCCESS) return 3;
+    xcb_connection_t* connection = xcb_connect(NULL, NULL);
+    if (xcb_connection_has_error(connection)) return 3;
+    xcb_screen_t* screen = xcb_setup_roots_iterator(xcb_get_setup(connection)).data;
+    xcb_window_t window = xcb_generate_id(connection);
+    xcb_create_window(connection, XCB_COPY_FROM_PARENT, window, screen->root, 0, 0, 320, 240, 0,
+                      XCB_WINDOW_CLASS_INPUT_OUTPUT, screen->root_visual, 0, NULL);
+    xcb_map_window(connection, window);
+    xcb_flush(connection);
+    VkXcbSurfaceCreateInfoKHR surfaceInfo = {VK_STRUCTURE_TYPE_XCB_SURFACE_CREATE_INFO_KHR};
+    surfaceInfo.connection = connection;
+    surfaceInfo.window = window;
+    VkSurfaceKHR surface;
+    if (vkCreateXcbSurfaceKHR(childInstance, &surfaceInfo, NULL, &surface) != VK_SUCCESS) return 3;
+    VkSurfaceCapabilitiesKHR caps;
+    if (vkGetPhysicalDeviceSurfaceCapabilitiesKHR(childPhysical, surface, &caps) != VK_SUCCESS) return 3;
+    VkSurfaceFormatKHR format;
+    count = 1;
+    VkResult listed = vkGetPhysicalDeviceSurfaceFormatsKHR(childPhysical, surface, &count, &format);
+    if ((listed != VK_SUCCESS && listed != VK_INCOMPLETE) || !count) return 3;
+    VkSwapchainCreateInfoKHR swapInfo = {VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR};
+    swapInfo.surface = surface;
+    swapInfo.minImageCount = caps.minImageCount;
+    swapInfo.imageFormat = format.format;
+    swapInfo.imageColorSpace = format.colorSpace;
+    swapInfo.imageExtent = caps.currentExtent.width != UINT32_MAX ? caps.currentExtent : (VkExtent2D){320, 240};
+    swapInfo.imageArrayLayers = 1;
+    swapInfo.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    swapInfo.preTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
+    swapInfo.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
+    swapInfo.presentMode = VK_PRESENT_MODE_FIFO_KHR;
+    swapInfo.clipped = VK_TRUE;
+    VkSwapchainKHR swapchain;
+    if (vkCreateSwapchainKHR(childDevice, &swapInfo, NULL, &swapchain) != VK_SUCCESS) return 3;
+    // Shutdown: the window goes first, as a toolkit's does.
+    xcb_destroy_window(connection, window);
+    xcb_flush(connection);
+    const char done = 1;
+    if (write(fd, &done, 1) != 1) return 3;
+    if (mode == 1) {
+        vkDestroySwapchainKHR(childDevice, swapchain, NULL);
+        vkDestroySurfaceKHR(childInstance, surface, NULL);
+        vkDestroyDevice(childDevice, NULL);
+        vkDestroyInstance(childInstance, NULL);
+        xcb_disconnect(connection);
+    }
+    return 0;
+}
+
+// Exit latency: from a child's shutdown (exitChild above) to its end. A process's end never
+// waits for the phone, so a launcher that starts again at once never finds it still running.
+static void exitLatencyCase(void) {
+    if (!surfaces) {
+        printf("CABOOSE_SYNC_CHECK note=exit_latency skipped (no X11 display)\n");
+        return;
+    }
+    char details[256] = "";
+    int ok = 1;
+    for (int mode = 0; mode < 2; ++mode) {
+        int pipefd[2];
+        if (pipe(pipefd) != 0) fail("pipe", VK_ERROR_INITIALIZATION_FAILED);
+        fflush(stdout);
+        const uint64_t started = nowUs();
+        const pid_t child = fork();
+        if (child < 0) fail("fork", VK_ERROR_INITIALIZATION_FAILED);
+        if (child == 0) {
+            close(pipefd[0]);
+            char modeArg[8], fdArg[16];
+            snprintf(modeArg, sizeof(modeArg), "%d", mode);
+            snprintf(fdArg, sizeof(fdArg), "%d", pipefd[1]);
+            execl("/proc/self/exe", "sync_check", "--exit-child", modeArg, fdArg, (char*)NULL);
+            _exit(4);
+        }
+        close(pipefd[1]);
+        struct pollfd ready = {pipefd[0], POLLIN, 0};
+        char byte = 0;
+        const int signalled = poll(&ready, 1, 30000) == 1 && read(pipefd[0], &byte, 1) == 1;
+        const uint64_t shutdown = nowUs();
+        const double setupMs = (double)(shutdown - started) / 1000.0;
+        int status = 0;
+        waitpid(child, &status, 0);
+        const double ms = (double)(nowUs() - shutdown) / 1000.0;
+        close(pipefd[0]);
+        const int clean = signalled && WIFEXITED(status) && WEXITSTATUS(status) == 0;
+        if (!clean || ms >= 50.0) ok = 0;
+        snprintf(details + strlen(details), sizeof(details) - strlen(details), "%s%s_ms=%.1f setup_ms=%.0f%s",
+                 mode ? " " : "", mode ? "destroyed" : "abandoned", ms, setupMs,
+                 clean ? "" : " (child failed)");
+    }
+    report("exit_latency", ok, "%s", details);
+}
+
 int main(int argc, char** argv) {
+    if (argc > 3 && !strcmp(argv[1], "--exit-child")) return exitChild(atoi(argv[2]), atoi(argv[3]));
     const char* only = argc > 1 ? argv[1] : NULL;
     VkApplicationInfo app = {VK_STRUCTURE_TYPE_APPLICATION_INFO};
     app.pApplicationName = "caboose-sync-check";
@@ -935,6 +1062,7 @@ int main(int argc, char** argv) {
     RUN("pipeline_cache", pipelineCacheCase(&props));
     RUN("child_windows", childWindowsCase());
     RUN("coherent_rewrite", coherentRewriteCase());
+    RUN("exit_latency", exitLatencyCase());
 
     CHECK(vkDeviceWaitIdle(device));
     vkDestroySemaphore(device, timeline, NULL);

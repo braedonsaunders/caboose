@@ -39,6 +39,7 @@ struct DeviceSwapchain {
     // Guest-owned images (hello feature 0x800): acquisition is local, and the phone takes
     // a native image inside each present, dropping the frame when none is free in mailbox.
     bool guestImages=false;
+    bool firstPresentWaited=false; // guest-owned: the first present waited for the surface's bind
     bool mailbox=false;
     size_t nextImage=0;
     // Guest-owned swapchains are created on the guest first; the phone's swapchain is
@@ -246,6 +247,7 @@ static void cancelPreAcquire(DeviceSwapchain& swap) {
     client.finishAcquire(swap.native,swap.preRequest,deadline());
     swap.preRequest=0;
 }
+constexpr auto kRetirePresentWait=std::chrono::seconds(1);
 static bool retireSwapchain(DeviceSwapchain& swap) {
     if (swap.retired) return true;
     try {
@@ -256,8 +258,10 @@ static bool retireSwapchain(DeviceSwapchain& swap) {
             if (!swap.native) return false;
             cancelPreAcquire(swap);
             // Retirement rejects presents still waiting for their ORDER mark: the frames the
-            // application presented before destroying its swapchain run first.
-            if (swap.guestImages || caboose_gfxstream_ordered_present==1) client.waitPresentationIdle(deadline());
+            // application presented before destroying its swapchain run first, for at most
+            // kRetirePresentWait, so destroying a swapchain never waits long on the phone.
+            if (swap.guestImages || caboose_gfxstream_ordered_present==1)
+                client.waitPresentationIdleFor(std::chrono::steady_clock::now()+kRetirePresentWait);
             auto result=client.retireSwapchain(swap.native,deadline());
             if (apiStatus(status(result.body,48))!=VK_SUCCESS) return false;
         }
@@ -701,7 +705,12 @@ static VkResult VKAPI_CALL present(VkQueue handle, const VkPresentInfoKHR* info)
         const bool resized=swap->guestImages && windowResized(*swap);
         if (resized || (swap->guestImages && !swap->native)) {
             VkResult made=resized ? VK_ERROR_OUT_OF_DATE_KHR : VK_NOT_READY;
-            if (!resized && !swap->nativeAttempted && tryBind(surface,true)) made=createNative(*swap);
+            // The first frame waits for a bind in flight (the phone waits for the window's
+            // layer), so an application that draws once is shown; later ones never wait.
+            const auto bindWait=swap->firstPresentWaited ? std::chrono::steady_clock::duration::zero()
+                                                        : std::chrono::steady_clock::duration(kFirstPresentBindWait);
+            swap->firstPresentWaited=true;
+            if (!resized && !swap->nativeAttempted && tryBind(surface,true,bindWait)) made=createNative(*swap);
             if (made!=VK_SUCCESS) {
                 // No window to show it in yet: the frame is dropped once its waits are
                 // consumed on the queue, and its image is free again at once.

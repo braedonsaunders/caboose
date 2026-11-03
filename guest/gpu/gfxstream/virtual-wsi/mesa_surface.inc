@@ -123,20 +123,24 @@ static void logBind(const Surface& surface, const char* outcome, int error, int 
     std::fprintf(stderr,"CABOOSE_GPU_SURFACE_BIND object=0x%x space=%u attempt=%u %s errno=%d vk=%d\n",
         surface.object,unsigned(surface.space),surface.bindAttempts,outcome,error,vk);
 }
-// Binds the surface if its window exists. The bind goes out at once; a query waits up to
-// kQueryBindWait for its reply and a present not at all, and a reply that has not arrived
-// is collected by a later call, so nothing blocks on the phone's own wait for the
-// window's layer. A transport error before the reply leaves nothing bound: the broker
+// Binds the surface if its window exists. The bind goes out at once; with guest-owned
+// images a query never waits for its reply (it is answered locally) and only a swapchain's
+// first present does, up to kFirstPresentBindWait; otherwise a query waits up to
+// kQueryBindWait. A reply that has not arrived is collected by a later call, and a surface
+// destroyed with its bind in flight does not wait for it, so an application that makes a
+// window and ends at once (a launcher's splash) is never held by the phone. A transport error before the reply leaves nothing bound: the broker
 // closed the connection, which it does for a refused bind. Queries (`present` false) retry a refused bind at most every kBindRetry; a present
 // always does, since on Wayland nothing else maps the window (no buffer is ever attached
 // to the wl_surface), so a dropped first frame would leave the application waiting for a
 // frame callback.
 constexpr auto kQueryBindWait=std::chrono::milliseconds(250);
+// With guest-owned images a swapchain's first present waits this long for a bind in flight.
+constexpr auto kFirstPresentBindWait=std::chrono::seconds(2);
 // Without guest-owned images a query has no local answer, so it waits for a bind in flight as
 // long as the broker does for the compositor's answer: a slow bind is not a lost surface.
 constexpr auto kQueryBindPatience=std::chrono::seconds(5);
 static bool tryBind(Surface& surface, bool present=false,
-                    std::chrono::steady_clock::duration wait=kQueryBindWait) {
+                    std::chrono::steady_clock::duration wait=std::chrono::steady_clock::duration::zero()) {
     if (surface.bound) return true;
     const auto now=std::chrono::steady_clock::now();
     try {
@@ -147,7 +151,7 @@ static bool tryBind(Surface& surface, bool present=false,
             surface.client.beginBind(surface.boxedInstance,surface.object,0,0,deadline(),surface.space);
         }
         Record reply;
-        if (!surface.client.awaitBind(present ? now : now+wait,&reply)) return false;
+        if (!surface.client.awaitBind(now+wait,&reply)) return false;
         const auto answer=status(reply.body,48);
         if (apiStatus(answer)==VK_SUCCESS) {
             surface.bound=true;
@@ -196,7 +200,7 @@ static VkResult query(VkPhysicalDevice physical, VkSurfaceKHR handle, Bytes& cap
     if (surface.instance!=gfxstream_vk_instance_to_handle(device->instance) || surface.poisoned)
         return VK_ERROR_SURFACE_LOST_KHR;
     try {
-        if (!tryBind(surface,false,lazyBind() ? std::chrono::steady_clock::duration(kQueryBindWait)
+        if (!tryBind(surface,false,lazyBind() ? std::chrono::steady_clock::duration::zero()
                                               : std::chrono::steady_clock::duration(kQueryBindPatience))) {
             if (!lazyBind()) return VK_ERROR_SURFACE_LOST_KHR;
             caps=localCaps();
@@ -331,13 +335,21 @@ static VkResult VKAPI_CALL createXlib(VkInstance instance, const XlibSurfaceCrea
     });
 }
 static bool retire(Surface& surface) {
-    // An outstanding bind is answered first: a granted one is retired like any other.
+    // An outstanding bind already answered is retired like any other bind. One still in
+    // flight is not waited for: closing its connection hands a later grant back (the broker
+    // revokes it), and the bind stays uncertain, so its instance is kept until the process ends.
     if (surface.client.bindPending()) {
         try {
             Record reply;
-            if (surface.client.awaitBind(deadline(),&reply) && surface.client.bound()) surface.bound=true;
+            if (surface.client.awaitBind(std::chrono::steady_clock::now(),&reply) && surface.client.bound())
+                surface.bound=true;
         } catch (const std::system_error&) {}
-        if (!surface.bound) { surface.client.reset(); surface.attempted=false; }
+        if (!surface.bound) {
+            const bool inFlight=surface.client.bindPending();
+            surface.client.reset();
+            surface.attempted=inFlight;
+            if (inFlight) return false;
+        }
     }
     if (!surface.attempted) return true;
     if (!surface.bound) return false; // uncertain bind still retains the instance
