@@ -31,6 +31,10 @@ transfer and reply handling, so it can be tested without Mesa.
 Socket-mode host-visible memory is a guest shadow. A flush validates every range, then
 splits it into atom-aligned fragments that end at the current mapping for `WHOLE_SIZE`,
 keeps only the blocks the host does not already hold, and packs them into flush packets.
+What the host holds is known per 256-byte block (`flush_shadow.h`): from a copy of the bytes
+it was sent for an allocation up to 32 MiB (48 MiB of copies in all), and otherwise from an
+XXH64 hash of each whole block (16 MiB of hashes, for 512 MiB of mappings), so memory an
+application rewrites with the bytes it already held is not sent again.
 The first failed packet's result is returned and no later packet is sent; a partial send
 or a failed reply read invalidates the stream. An invalidate retains every chunk until
 all ranges succeed, then publishes them in their original order, overlaps included;

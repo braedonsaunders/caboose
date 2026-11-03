@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 #include "flush_shadow.h"
 #include <cassert>
+#include <string>
 #include <utility>
 #include <vector>
 using namespace caboose::memory;
@@ -141,5 +142,56 @@ int main() {
 
     shadow.forget(1); shadow.forget(2);
     assert(budget.used() == 0);
+
+    // An allocation no copy fits is known by block hashes: unchanged whole blocks are not
+    // sent again, a changed one is, and a partly sent block is sent until it is sent whole.
+    Budget small{8 * 1024};
+    FlushShadow hashed{small};
+    std::vector<uint8_t> big(size);
+    for (size_t i = 0; i < size; ++i) big[i] = uint8_t(i * 7 + 3);
+    Remote far{size};
+    traffic::counters().take(0);  // opens the counters' window
+    assert(hashed.emitChanged(4, big.data(), size, 0, size, far.sender(big)) == success);
+    assert(far.sends.size() == 1 && far.sends[0].second == size && far.bytes == big);
+    assert(small.used() > 0 && small.used() < size);
+    far.sends.clear();
+    assert(hashed.emitChanged(4, big.data(), size, 0, size, far.sender(big)) == success);
+    assert(far.sends.empty());
+    big[5000] ^= 1;
+    big[size - 1] ^= 1;
+    assert(hashed.emitChanged(4, big.data(), size, 0, size, far.sender(big)) == success);
+    assert(far.sends.size() == 2);
+    assert(far.sends[0] == std::make_pair(uint64_t(4864), uint64_t(256)));
+    assert(far.sends[1] == std::make_pair(uint64_t(64 * 1024), uint64_t(100)));
+    assert(far.bytes == big);
+    far.sends.clear();
+    big[300] ^= 1;
+    assert(hashed.emitChanged(4, big.data(), size, 260, 100, far.sender(big)) == success);
+    assert(far.sends.size() == 1 && far.sends[0] == std::make_pair(uint64_t(260), uint64_t(100)));
+    far.sends.clear();
+    assert(hashed.emitChanged(4, big.data(), size, 0, 1024, far.sender(big)) == success);
+    assert(far.sends.size() == 1 && far.sends[0] == std::make_pair(uint64_t(256), uint64_t(256)));
+    far.sends.clear();
+    assert(hashed.emitChanged(4, big.data(), size, 0, 1024, far.sender(big)) == success);
+    assert(far.sends.empty() && far.bytes == big);
+    // unchanged() holds for whole known blocks whose hash matches, and not for part of one.
+    assert(hashed.unchanged(4, big.data(), size, 0, 4096));
+    assert(!hashed.unchanged(4, big.data(), size, 64, 4096));
+    big[1000] ^= 1;
+    assert(!hashed.unchanged(4, big.data(), size, 0, 4096));
+    big[1000] ^= 1;
+    // A device write forgets its blocks; an invalidate's whole blocks are known again.
+    hashed.forgetRange(4, 512, 513);
+    assert(!hashed.unchanged(4, big.data(), size, 0, 4096));
+    hashed.noteRefreshed(4, big.data(), size, 512, 256);
+    assert(hashed.unchanged(4, big.data(), size, 0, 4096));
+    const std::string line = traffic::counters().take(5000);
+    assert(line.find(" hashed_considered_bytes=") != std::string::npos);
+    assert(line.find(" hashed_considered_bytes=0 ") == std::string::npos);
+    hashed.forget(4);
+    assert(small.used() == 0);
+    // XXH64 of the empty input and of "abc", as published.
+    assert(blockHash(nullptr, 0) == 0xEF46DB3751D8E999ull);
+    assert(blockHash(reinterpret_cast<const uint8_t*>("abc"), 3) == 0x44BC2CF5AD770999ull);
     return 0;
 }

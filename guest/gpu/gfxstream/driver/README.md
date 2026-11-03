@@ -131,6 +131,7 @@ Each patch is one feature. Several change Mesa's generated encoder
 | 0059 render-node-drm-properties | The device offers `VK_EXT_physical_device_drm` with vgem's nodes, so Mesa's OpenGL picks the phone's GPU behind the render node (`../dmabuf/dmabuf.h`) |
 | 0060 memory-traffic | Every five seconds in which anything moved, `CABOOSE_GPU_MEMORY_TRAFFIC` reports what the process sent and received, the mapped memory it flushed and read back, by the application or the driver's coherent upkeep, and the readbacks copies marked (`../bounded-memory/memory_traffic.h`) |
 | 0061 empty-application-pipeline-caches | An application's pipeline cache is empty in the guest: created without its saved data, and `vkGetPipelineCacheData` answers the device's header without a round trip, since the phone's own cache, which it seeds into every application cache, holds the pipelines |
+| 0062 traffic-detail | The traffic report also splits the coherent upkeep (written blocks or whole mappings), staging uploads, upload-cache pieces and what each kind of shadow considered and sent |
 
 The patch messages describe each change. To change the driver, prepare a tree, commit
 the prepared state, edit, and regenerate the affected patch with `git format-patch`

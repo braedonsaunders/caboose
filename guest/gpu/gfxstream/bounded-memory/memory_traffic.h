@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
 // What a process moves through its device streams, always counted: mapped memory flushed to
-// the phone and read back from it, by who asked, the readbacks commands marked, and every
-// byte the process's sockets sent and received. Every five seconds in which anything moved,
+// the phone and read back from it, by who asked, the readbacks commands marked, every byte
+// the process's sockets sent and received, what the coherent upkeep considered sending, and
+// what the upload cache's pieces went as. Every five seconds in which anything moved,
 // the first call after the window ends writes one CABOOSE_GPU_MEMORY_TRAFFIC line.
 #pragma once
 #include <atomic>
@@ -18,6 +19,12 @@ namespace caboose::memory::traffic {
 enum Origin : int { application, coherent, kOrigins };
 // The commands whose destination buffer the driver reads back after the GPU wrote it.
 enum Mark : int { copyImageToBuffer, copyBuffer, copyQueryResults, kMarks };
+// What a 4096-byte piece of an upload-cache range went as (upload_cache.h): nothing, since the
+// phone holds it unchanged; a key the phone holds; its bytes for the phone to store.
+enum Piece : int { unchangedPiece, namedPiece, storedPiece, kPieces };
+// How a flush knew what the host holds (flush_shadow.h): a copy of its bytes, a hash of
+// each block, or not at all.
+enum Shadow : int { copied, hashed, unshadowed, kShadows };
 
 class Counters {
 public:
@@ -34,6 +41,19 @@ public:
         while (bytes > largest &&
                !largestInvalidate_.compare_exchange_weak(largest, bytes, std::memory_order_relaxed)) {}
     }
+    // A range the coherent upkeep flushes: the blocks written since the last flush (`watched`,
+    // write_watch.h), or the whole mapping where writes are not recorded.
+    void considered(bool watched, uint64_t bytes) {
+        (watched ? watchedBytes_ : wholeBytes_).fetch_add(bytes, std::memory_order_relaxed);
+    }
+    // Bytes a flush sent into memory whose buffers only transfer from it (image uploads).
+    void staged(uint64_t bytes) { stagedBytes_.fetch_add(bytes, std::memory_order_relaxed); }
+    // A flushed range of `considered` bytes of which `sent` differed from the host's copy.
+    void shadowed(Shadow kind, uint64_t considered, uint64_t sent) {
+        shadowConsidered_[kind].fetch_add(considered, std::memory_order_relaxed);
+        shadowSent_[kind].fetch_add(sent, std::memory_order_relaxed);
+    }
+    void piece(Piece kind) { pieces_[kind].fetch_add(1, std::memory_order_relaxed); }
     void marked(Mark mark, uint64_t bytes) { markedBytes_[mark].fetch_add(bytes, std::memory_order_relaxed); }
     void sent(uint64_t bytes) { sentBytes_.fetch_add(bytes, std::memory_order_relaxed); }
     void received(uint64_t bytes) { receivedBytes_.fetch_add(bytes, std::memory_order_relaxed); }
@@ -62,8 +82,20 @@ public:
         const uint64_t largest = largestInvalidate_.exchange(0, std::memory_order_relaxed);
         const uint64_t sent = sentBytes_.exchange(0, std::memory_order_relaxed);
         const uint64_t received = receivedBytes_.exchange(0, std::memory_order_relaxed);
+        const uint64_t watched = watchedBytes_.exchange(0, std::memory_order_relaxed);
+        const uint64_t whole = wholeBytes_.exchange(0, std::memory_order_relaxed);
+        const uint64_t staged = stagedBytes_.exchange(0, std::memory_order_relaxed);
+        uint64_t pieces[kPieces];
+        for (int i = 0; i < kPieces; ++i) pieces[i] = pieces_[i].exchange(0, std::memory_order_relaxed);
+        uint64_t considered[kShadows], shadowSent[kShadows];
+        for (int i = 0; i < kShadows; ++i) {
+            considered[i] = shadowConsidered_[i].exchange(0, std::memory_order_relaxed);
+            shadowSent[i] = shadowSent_[i].exchange(0, std::memory_order_relaxed);
+        }
+        for (int i = 0; i < kShadows; ++i) moved += considered[i];
+        moved += watched + whole + staged;
         if (!moved && !sent && !received) return {};
-        char line[768];
+        char line[2048];
         std::snprintf(line, sizeof line,
             "CABOOSE_GPU_MEMORY_TRAFFIC elapsed_ms=%" PRId64 " sent_bytes=%" PRIu64 " received_bytes=%" PRIu64
             " app_flushed_bytes=%" PRIu64 " app_flushes=%" PRIu64
@@ -71,12 +103,18 @@ public:
             " app_invalidated_bytes=%" PRIu64 " app_invalidates=%" PRIu64
             " coherent_invalidated_bytes=%" PRIu64 " coherent_invalidates=%" PRIu64
             " largest_invalidate_bytes=%" PRIu64
-            " marked_copy_image_bytes=%" PRIu64 " marked_copy_buffer_bytes=%" PRIu64 " marked_query_bytes=%" PRIu64,
+            " marked_copy_image_bytes=%" PRIu64 " marked_copy_buffer_bytes=%" PRIu64 " marked_query_bytes=%" PRIu64
+            " coherent_watched_bytes=%" PRIu64 " coherent_whole_bytes=%" PRIu64 " staging_flushed_bytes=%" PRIu64
+            " pieces_unchanged=%" PRIu64 " pieces_named=%" PRIu64 " pieces_stored=%" PRIu64
+            " copied_considered_bytes=%" PRIu64 " copied_sent_bytes=%" PRIu64
+            " hashed_considered_bytes=%" PRIu64 " hashed_sent_bytes=%" PRIu64 " unshadowed_bytes=%" PRIu64,
             nowMs - start, sent, received,
             flushedBytes[application], flushes[application], flushedBytes[coherent], flushes[coherent],
             invalidatedBytes[application], invalidates[application],
             invalidatedBytes[coherent], invalidates[coherent], largest,
-            marked[copyImageToBuffer], marked[copyBuffer], marked[copyQueryResults]);
+            marked[copyImageToBuffer], marked[copyBuffer], marked[copyQueryResults],
+            watched, whole, staged, pieces[unchangedPiece], pieces[namedPiece], pieces[storedPiece],
+            considered[copied], shadowSent[copied], considered[hashed], shadowSent[hashed], considered[unshadowed]);
         return line;
     }
 
@@ -95,6 +133,9 @@ private:
     std::atomic<uint64_t> largestInvalidate_{0};
     std::atomic<uint64_t> markedBytes_[kMarks]{};
     std::atomic<uint64_t> sentBytes_{0}, receivedBytes_{0};
+    std::atomic<uint64_t> watchedBytes_{0}, wholeBytes_{0}, stagedBytes_{0};
+    std::atomic<uint64_t> pieces_[kPieces]{};
+    std::atomic<uint64_t> shadowConsidered_[kShadows]{}, shadowSent_[kShadows]{};
     std::atomic<int64_t> windowStart_{-1};
 };
 

@@ -547,6 +547,56 @@ static void callsCase(void) {
     }
 }
 
+// Host-coherent memory rewritten with what it already holds, as an application refilling its
+// upload or constant buffers each frame does: a 64 MiB buffer filled once, then 30 times
+// written whole with the same bytes but one changed KiB, each followed by a submit (which
+// flushes coherent memory) and its wait. Only the changed bytes should travel, so an
+// iteration takes well under the time 64 MiB takes to send.
+static void coherentRewriteCase(void) {
+    const VkDeviceSize size = 64u << 20;
+    VkBufferCreateInfo bufferInfo = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    bufferInfo.size = size;
+    bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+    VkBuffer buffer;
+    CHECK(vkCreateBuffer(device, &bufferInfo, NULL, &buffer));
+    VkMemoryRequirements req;
+    vkGetBufferMemoryRequirements(device, buffer, &req);
+    VkMemoryAllocateInfo alloc = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    alloc.allocationSize = req.size;
+    alloc.memoryTypeIndex = memoryType(req.memoryTypeBits,
+                                       VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    VkDeviceMemory memory;
+    CHECK(vkAllocateMemory(device, &alloc, NULL, &memory));
+    CHECK(vkBindBufferMemory(device, buffer, memory, 0));
+    uint8_t* mapped;
+    CHECK(vkMapMemory(device, memory, 0, VK_WHOLE_SIZE, 0, (void**)&mapped));
+    uint8_t* source = malloc(size);
+    if (!source) fail("malloc", VK_ERROR_OUT_OF_HOST_MEMORY);
+    for (VkDeviceSize i = 0; i < size; ++i) source[i] = (uint8_t)(i * 13 + (i >> 12));
+    memcpy(mapped, source, size);
+    begin();
+    waitTimeline(submit2(1));
+    const int iterations = 30;
+    uint64_t totalUs = 0, worstUs = 0;
+    for (int i = 0; i < iterations; ++i) {
+        const uint64_t t0 = nowUs();
+        source[(size_t)i * 1024 * 1024 + 7] ^= 0x5A;
+        memcpy(mapped, source, size);
+        begin();
+        waitTimeline(submit2(1));
+        const uint64_t d = nowUs() - t0;
+        totalUs += d;
+        if (d > worstUs) worstUs = d;
+    }
+    free(source);
+    vkUnmapMemory(device, memory);
+    vkDestroyBuffer(device, buffer, NULL);
+    vkFreeMemory(device, memory, NULL);
+    const double meanMs = (double)totalUs / iterations / 1000.0;
+    report("coherent_rewrite", meanMs < 20.0, "mib=64 iterations=%d mean_ms=%.1f max_ms=%.1f", iterations, meanMs,
+           (double)worstUs / 1000.0);
+}
+
 // A swapchain on one X11 window, presenting frames cleared to a color.
 struct Presenter {
     VkSurfaceKHR surface;
@@ -884,6 +934,7 @@ int main(int argc, char** argv) {
     RUN("calls", callsCase());
     RUN("pipeline_cache", pipelineCacheCase(&props));
     RUN("child_windows", childWindowsCase());
+    RUN("coherent_rewrite", coherentRewriteCase());
 
     CHECK(vkDeviceWaitIdle(device));
     vkDestroySemaphore(device, timeline, NULL);
