@@ -1,0 +1,57 @@
+From: Caboose <caboose@local>
+Subject: [PATCH 68/68] Ask the connected executor for its extensions after the executor changed
+
+The tracker kept the host's instance and device extension lists from the first time a
+process asked, for its whole life. A long-running process that outlives its executor (the
+compositor, when the phone reconnects, another phone or the Linux executor serves) then
+offered the old device's extensions, and vkCreateDevice on the new one failed with
+VK_ERROR_EXTENSION_NOT_PRESENT. Each list now records the executor generation it was asked
+under and is asked again once the generation changed.
+---
+diff --git a/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp b/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp
+index e60fbb7..de64eac 100644
+--- a/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp
++++ b/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp
+@@ -2289,6 +2289,12 @@ VkResult ResourceTracker::on_vkEnumerateInstanceExtensionProperties(
+     VkEncoder* enc = (VkEncoder*)context;
+ 
+     // Only advertise a select set of extensions.
++    // The host's list is the connected executor's: asked again after it changed.
++    const uint64_t cabooseGeneration = caboose::completion::executorGeneration.load(std::memory_order_acquire);
++    if (mHostInstanceExtensionsGeneration != cabooseGeneration) {
++        mHostInstanceExtensions.clear();
++        mHostInstanceExtensionsGeneration = cabooseGeneration;
++    }
+     if (mHostInstanceExtensions.empty()) {
+         uint32_t hostPropCount = 0;
+         enc->vkEnumerateInstanceExtensionProperties(nullptr, &hostPropCount, nullptr,
+@@ -2490,6 +2496,12 @@ VkResult ResourceTracker::on_vkEnumerateDeviceExtensionProperties(
+ 
+     VkEncoder* enc = (VkEncoder*)context;
+ 
++    // The host's list is the connected executor's: asked again after it changed.
++    const uint64_t cabooseGeneration = caboose::completion::executorGeneration.load(std::memory_order_acquire);
++    if (mHostDeviceExtensionsGeneration != cabooseGeneration) {
++        mHostDeviceExtensions.clear();
++        mHostDeviceExtensionsGeneration = cabooseGeneration;
++    }
+     if (mHostDeviceExtensions.empty()) {
+         uint32_t hostPropCount = 0;
+         enc->vkEnumerateDeviceExtensionProperties(physdev, nullptr, &hostPropCount, nullptr,
+diff --git a/src/gfxstream/guest/vulkan_enc/ResourceTracker.h b/src/gfxstream/guest/vulkan_enc/ResourceTracker.h
+index dfd1def..29ffca9 100644
+--- a/src/gfxstream/guest/vulkan_enc/ResourceTracker.h
++++ b/src/gfxstream/guest/vulkan_enc/ResourceTracker.h
+@@ -1087,6 +1087,10 @@ class ResourceTracker {
+     struct VirtGpuCaps mCaps = {};
+     std::vector<VkExtensionProperties> mHostInstanceExtensions;
+     std::vector<VkExtensionProperties> mHostDeviceExtensions;
++    // The executor generation each list was asked under: a later executor (another phone,
++    // or one the process reconnected to) has its own extensions.
++    uint64_t mHostInstanceExtensionsGeneration = 0;
++    uint64_t mHostDeviceExtensionsGeneration = 0;
+ 
+     // 32 bits only for now, upper bits may be used later.
+     std::atomic<uint32_t> mAtomicId = 0;
+-- 
+2.43.0
