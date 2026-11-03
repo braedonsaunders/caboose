@@ -7,7 +7,7 @@ On a display smaller than 1280x720 on either side (a phone in portrait), each pr
 a Wine virtual desktop, landscape and at least 1920x1080, which Wine reports as the screen.
 
 The prefixes are ~/.wine, winetricks' (~/.local/share/wineprefixes/*) and every prefix a
-running Wine process names in WINEPREFIX, remembered once seen.
+running Wine process on this display names in WINEPREFIX, remembered once seen.
 
 usage: caboose-wine-dpi    the service (runs as the owner)"""
 import os
@@ -86,8 +86,10 @@ def with_settings(text, desktop):
     return with_value(text, DESKTOPS, "Default", f'"{desktop[0]}x{desktop[1]}"')
 
 
-def running_prefixes(proc="/proc"):
-    """The prefixes running Wine processes of this user name in WINEPREFIX."""
+def running_prefixes(proc="/proc", display=None):
+    """The prefixes running Wine processes of this user name in WINEPREFIX. With `display`,
+    only those of processes on that X display: a prefix running on another seat (a check's
+    own, the agent's) follows that seat's display, not this one's."""
     found = set()
     for entry in Path(proc).iterdir():
         if not entry.name.isdigit():
@@ -97,6 +99,8 @@ def running_prefixes(proc="/proc"):
                 continue
             environ = (entry / "environ").read_bytes().split(b"\0")
         except OSError:
+            continue
+        if display is not None and f"DISPLAY={display}".encode() not in environ:
             continue
         for item in environ:
             if item.startswith(b"WINEPREFIX="):
@@ -201,7 +205,7 @@ def serve(home):
         return (max((r.x + r.width for r in rects), default=0), max((r.y + r.height for r in rects), default=0))
 
     def update(*_):
-        seen = remembered(home) | running_prefixes()
+        seen = remembered(home) | running_prefixes(display=os.environ.get("DISPLAY"))
         remember(home, seen)
         apply_all(home, screen_size(), seen)
         return True

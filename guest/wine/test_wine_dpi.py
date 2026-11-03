@@ -114,6 +114,15 @@ class Prefixes(unittest.TestCase):
                 Path(proc, pid, "environ").write_bytes(environ)
             self.assertEqual(wine_dpi.running_prefixes(proc), {Path("/games/x/pfx")})
 
+    def test_only_prefixes_running_on_this_display_are_this_displays(self):
+        with tempfile.TemporaryDirectory() as proc:
+            for pid, environ in (("10", b"DISPLAY=:110\0WINEPREFIX=/games/x/pfx\0"),
+                                 ("11", b"DISPLAY=:181\0WINEPREFIX=/check/pfx\0"),
+                                 ("12", b"WINEPREFIX=/nodisplay/pfx\0")):
+                Path(proc, pid).mkdir()
+                Path(proc, pid, "environ").write_bytes(environ)
+            self.assertEqual(wine_dpi.running_prefixes(proc, ":110"), {Path("/games/x/pfx")})
+
     def test_keeps_the_file_mode(self):
         with tempfile.TemporaryDirectory() as home:
             prefix = self.make_prefix(Path(home) / ".wine")
