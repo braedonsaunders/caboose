@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// Runs the probes named by `--probes a,b,c` (all of them without it; `none` for none), then
-/// the MLX models named by `--mlx a,b`, when launched.
+/// the MLX models named by `--mlx a,b`, then the decision replay for `--decide a,b`, when launched.
 @main
 struct ProbeApp: App {
     @State private var lines: [String] = []
@@ -22,9 +22,12 @@ struct ProbeApp: App {
                 let mlx = arguments.firstIndex(of: "--mlx").flatMap { index in
                     arguments.indices.contains(index + 1) ? arguments[index + 1].split(separator: ",").map(String.init) : nil
                 } ?? []
+                let decide = arguments.firstIndex(of: "--decide").flatMap { index in
+                    arguments.indices.contains(index + 1) ? arguments[index + 1].split(separator: ",").map(String.init) : nil
+                } ?? []
                 UIApplication.shared.isIdleTimerDisabled = true
                 let probe = Probe { lines.append($0) }
-                await probe.run(only: only, mlx: mlx)
+                await probe.run(only: only, mlx: mlx, decide: decide)
             }
         }
     }

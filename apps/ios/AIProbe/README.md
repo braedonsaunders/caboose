@@ -22,3 +22,12 @@ just inside and outside the window), `session` (one session until its transcript
 `guided` (a run-time schema), `tools` (a run-time tool schema, a tool answering after 3 s,
 required tool calls), `vision`, `reasoning`, `concurrency` (two sessions at once, and a second
 request to a busy session) and `pcc` (Private Cloud Compute).
+
+`scripts/check-on-device-ai.sh <device id> none '' qwen3-0.6b` (fourth argument, `--decide`)
+replays `Sources/decisions.json` through each named MLX model the way the desktop
+specialist's choice backend asks: one token over the offered choice letters, once
+prefilling every step from empty and twice keeping the KV cache across a task's steps. It
+reports the median, p95 and mean milliseconds per decision with prompt and cached token
+counts. The prompts are rendered by `guest/desktop-mcp/choices.mjs` from generated fixture
+validation trajectories; the latency depends only on the model's architecture and
+quantization, so the registry's base weights measure a fine-tuned model of the same shape.
