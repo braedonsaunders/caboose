@@ -199,17 +199,15 @@ mcp() {  # one tool call per server process, so calls run strictly in order
 on agent python3 /src/check/fixture.py --title 'Seat window' --log "$logs/seat.log" --dialog >/dev/null 2>&1 &
 wait_for "$logs/seat.log" ready; sleep 1
 check 'high-APM persistent MCP contract' on agent timeout 60 node /src/check/high-apm.mjs
-check 'mcp list_windows shows the dialog' yes "$(mcp list_windows '{}' | py "any(w['title'] == 'Save changes?' for w in json.loads(d['result']['content'][0]['text']))")"
+check 'mcp look with windows shows the dialog' yes "$(mcp look '{"windows":true}' | py "'\"Save changes?\"' in d['result']['content'][0]['text']")"
 centre() {
   seat find --display :101 --query "$1" ${2:+--role "$2"} |
     python3 -c "import json, sys; b = json.load(sys.stdin)['elements'][0]['bounds']; print(b['x'] + b['width'] // 2, b['y'] + b['height'] // 2)"
 }
 read -r ex ey <<< "$(centre 'File name')"; read -r sx sy <<< "$(centre Save button)"
-mcp click "{\"x\":$ex,\"y\":$ey}" >/dev/null
-mcp key '{"combo":"ctrl+a"}' >/dev/null
-mcp type '{"text":"typed-by-agent.txt"}' >/dev/null
+mcp act "{\"steps\":[{\"click\":[$ex,$ey]},{\"key\":\"ctrl+a\"},{\"type\":\"typed-by-agent.txt\"}]}" >/dev/null
 check 'mcp click and type reach the field' wait_for "$logs/seat.log" 'text typed-by-agent.txt'
-mcp click "{\"x\":$sx,\"y\":$sy}" >/dev/null
+mcp act "{\"steps\":[{\"click\":[$sx,$sy]}]}" >/dev/null
 check 'mcp click presses Save' wait_for "$logs/seat.log" 'clicked Save'
 on agent python3 /src/check/fixture.py --title 'Seat window' --log "$logs/seat2.log" --dialog >/dev/null 2>&1 &
 wait_for "$logs/seat2.log" ready; sleep 1
@@ -234,21 +232,21 @@ seat act --display :101 --element "$(echo "$page" | id_of Subscribe button)" --a
 sleep 1
 check 'chromium: set-text and press ran the page' yes "$(seat elements --display :101 | py "d['window']['title'].startswith('Subscribed me@example.com')")"
 read -r lx ly <<< "$(centre 'Read the docs' link)"
-mcp click "{\"x\":$lx,\"y\":$ly}" >/dev/null
+mcp act "{\"steps\":[{\"click\":[$lx,$ly]}]}" >/dev/null
 sleep 1
 check 'chromium: a click at the link'"'"'s bounds follows it' yes "$(seat text --display :101 | py "'PAGE-BODY-TEXT with Read the docs inside a sentence.' in d['text'] and 'page.html#docs' in d['text']")"
 
 echo '== caboose-desktop-mcp over stdio, driving the page'
 printf '%s\n' \
   '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"check","version":"0"}}}' \
-  '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"find","arguments":{"query":"read the docs","role":"link"}}}' \
-  '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"read_text","arguments":{}}}' |
+  '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"look","arguments":{"find":"read the docs"}}}' \
+  '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"look","arguments":{"text":true}}}' |
   on agent env CABOOSE_AGENT_DISPLAY=:101 timeout 60 node /opt/caboose/desktop-mcp.mjs > "$logs/mcp.out"
 # Preserve helper errors/stacks before JSON assertions consume the response text.
 cat "$logs/mcp.out"
 answer() { python3 -c "import json, sys; [print(m['result']['content'][0]['text']) for m in map(json.loads, open('$logs/mcp.out')) if m.get('id') == $1]"; }
-check 'mcp find' yes "$(answer 2 | py "[(e['role'], e['name']) for e in d['elements']] == [('link', 'Read the docs')]")"
-check 'mcp read_text' yes "$(answer 3 | py "'PAGE-BODY-TEXT' in d['text']")"
+check 'mcp look find' yes "$(answer 2 | python3 -c "import sys; lines = sys.stdin.read().split(chr(10)); print('yes' if [l.split(' ', 1)[1] for l in lines if l] == ['link \"Read the docs\"'] else lines)")"
+check 'mcp look text' yes "$(answer 3 | python3 -c "import sys; print('yes' if 'PAGE-BODY-TEXT' in sys.stdin.read() else 'no')")"
 pkill -u caboose -f chromium; pkill -u caboose -f fixture.py
 pkill -u caboose caboose-display
 
