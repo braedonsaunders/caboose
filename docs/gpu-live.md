@@ -495,7 +495,10 @@ When the phone loses its socket (an error, an abnormal close, or no pong and no 
 3 s), it reconnects at once and then every 250 ms for 30 s, each attempt with the same
 request plus `X-Caboose-GPU-Resume` and a 3 s upgrade deadline. The host splices a valid
 credential onto the executor it holds, ending the old phone socket if it still has one, and
-answers an unknown or expired credential with `410 Gone`, which ends the executor at once.
+answers an unknown or expired credential with `410 Gone`, which ends the executor at once. When
+the broker's side ends without its retirement exchange (the broker ended, as at a display
+restart), the host closes the phone's socket with code 4410 ("executor ended") and keeps no
+credential for it: the phone ends the executor at once, as after a 410, without reconnecting.
 The phone's first message on the new socket is RESUME alone, with the last sequence it
 received and a fresh nonce; it sends nothing else until the broker's answer. The broker
 answers with RESUME, alone in its message, carrying the last sequence it received and the

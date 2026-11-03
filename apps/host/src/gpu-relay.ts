@@ -18,6 +18,10 @@ export const GPU_HEARTBEAT_TIMEOUT_MS = 3000
 export const GPU_RESUME_HOLD_MS = 30_000
 export const GPU_SUSPEND_HOLD_MS = 30 * 60_000
 export const GPU_SUSPENDED_CLOSE = 4001
+/** The close code that tells the phone its executor ended with the guest side (a broker that
+ * ended without its retirement exchange, as at a display restart): there is nothing to resume,
+ * so it frees the executor at once (docs/gpu-live.md, "Resuming an executor"). */
+export const GPU_EXECUTOR_ENDED_CLOSE = 4410
 /** GPU capabilities a phone may declare; the host forwards only these, never other text. */
 export const GPU_FEATURES = ['guest-handles', 'guest-handle-arrays', 'completion-feed', 'ordered-present', 'guest-images', 'guest-query-pools', 'shader-cache', 'executor-resume', 'zstd-stream', 'upload-cache', 'guest-buffer-views'] as const
 
@@ -155,7 +159,8 @@ export function startGPURelay(first: WebSocket, options: {
     function lose(reason: string, hold = suspended ? GPU_SUSPEND_HOLD_MS : GPU_RESUME_HOLD_MS): void {
       // After a stop, the phone side's own close is the last thing the relay waits for.
       if (stopped) { settle(); return }
-      if (!options.resumable) { stop(reason); return }
+      // A relay already closing has nothing to hold the guest side for.
+      if (!options.resumable || closeTimer) { stop(reason); return }
       const lost = phone
       phone = undefined
       generation++
@@ -190,6 +195,15 @@ export function startGPURelay(first: WebSocket, options: {
         closeTimer ??= setTimeout(() => stop('phone did not acknowledge close'), GPU_CLOSE_TIMEOUT_MS)
         destination.resume() // a paused peer must be able to acknowledge Close
         destination.close(1000)
+        settle()
+      } else if (phone?.readyState === WebSocket.OPEN && !stopped) {
+        // No receipt to forward, but the phone learns its executor ended now, rather than
+        // from a refused resume after it reconnects.
+        console.warn(`gpu relay ${options.executor}: guest closed (code ${code ?? 'none'}); ending the phone's executor`)
+        const destination = phone
+        closeTimer ??= setTimeout(() => stop('phone did not acknowledge close'), GPU_CLOSE_TIMEOUT_MS)
+        destination.resume()
+        destination.close(GPU_EXECUTOR_ENDED_CLOSE, 'executor ended')
         settle()
       } else stop(`guest closed (code ${code ?? 'none'})`)
     })

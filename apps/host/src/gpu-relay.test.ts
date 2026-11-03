@@ -11,7 +11,7 @@ vi.mock('ws', async () => {
     pending: Array<(error?: Error) => void> = []
     paused = false
     closeCodes: number[] = []
-    close(code: number) { this.closeCodes.push(code); this.readyState = 2 }
+    close(code: number, _reason?: string) { this.closeCodes.push(code); this.readyState = 2 }
     peerClose(code: number) { this.readyState = 3; this.emit('close', code) }
     args: unknown[]
     constructor(...args: unknown[]) { super(); this.args = args; state.created.push(this) }
@@ -26,7 +26,7 @@ vi.mock('ws', async () => {
 })
 
 import { WebSocket } from 'ws'
-import { GPU_CLOSE_TIMEOUT_MS, GPU_HEARTBEAT_MS, GPU_HEARTBEAT_TIMEOUT_MS, GPU_MAX_MESSAGE, GPU_MAX_PENDING, GPU_MAX_PENDING_MESSAGES, GPU_RESUME_HOLD_MS, GPU_SUSPEND_HOLD_MS, GPU_SUSPENDED_CLOSE, gpuFeatures, gpuUpstreamURL, relayGPU, startGPURelay, suspension } from './gpu-relay.js'
+import { GPU_CLOSE_TIMEOUT_MS, GPU_EXECUTOR_ENDED_CLOSE, GPU_HEARTBEAT_MS, GPU_HEARTBEAT_TIMEOUT_MS, GPU_MAX_MESSAGE, GPU_MAX_PENDING, GPU_MAX_PENDING_MESSAGES, GPU_RESUME_HOLD_MS, GPU_SUSPEND_HOLD_MS, GPU_SUSPENDED_CLOSE, gpuFeatures, gpuUpstreamURL, relayGPU, startGPURelay, suspension } from './gpu-relay.js'
 
 type ControlledSocket = WebSocket & { pending: Array<(error?: Error) => void>; paused: boolean; closeCodes: number[]; pings: number; peerClose(code: number): void }
 function pair() {
@@ -115,12 +115,29 @@ it('bounds a peer that never acknowledges normal close', async () => {
   } finally { vi.useRealTimers() }
 })
 
-it('does not turn abnormal upstream closure into a normal receipt', async () => {
+it('does not turn abnormal upstream closure into a normal receipt, and tells the phone its executor ended', async () => {
   const { client, upstream, done } = pair()
   upstream.peerClose(1006)
+  expect(client.closeCodes).toEqual([GPU_EXECUTOR_ENDED_CLOSE])
+  client.peerClose(GPU_EXECUTOR_ENDED_CLOSE)
   await done
-  expect(client.closeCodes).toEqual([])
   expect(client.readyState).toBe(WebSocket.CLOSED)
+})
+
+it('never holds a resumable relay whose guest side ended', async () => {
+  vi.useFakeTimers()
+  try {
+    const client = new WebSocket('ws://test') as ControlledSocket
+    const relay = startGPURelay(client, { displayURL: 'ws://guest:14600', displayToken: 'test', computer: 'owner', executor: 'test', resumable: true })
+    const upstream = state.created.at(-1) as ControlledSocket
+    upstream.emit('open')
+    upstream.peerClose(1006)
+    expect(client.closeCodes).toEqual([GPU_EXECUTOR_ENDED_CLOSE])
+    expect(relay.ended).toBe(true)
+    client.peerClose(GPU_EXECUTOR_ENDED_CLOSE)
+    await relay.done
+    expect(relay.attach(new WebSocket('ws://test') as ControlledSocket)).toBe(false)
+  } finally { vi.useRealTimers() }
 })
 
 it('forwards only known phone GPU features, normalized', () => {
@@ -216,6 +233,8 @@ it('parks a resumable relay when its phone is lost, without telling the guest, a
     expect(upstream.readyState).toBe(WebSocket.OPEN)
     next.pending.shift()!(); upstream.pending.shift()!()
     upstream.peerClose(1006)
+    expect(next.closeCodes).toEqual([GPU_EXECUTOR_ENDED_CLOSE])
+    next.peerClose(GPU_EXECUTOR_ENDED_CLOSE)
     await relay.done
   } finally { vi.useRealTimers() }
 })
