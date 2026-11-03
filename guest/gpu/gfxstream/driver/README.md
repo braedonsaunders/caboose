@@ -143,6 +143,8 @@ Each patch is one feature. Several change Mesa's generated encoder
 | 0070 instance-version-once | `vkEnumerateInstanceVersion` is asked once per executor connection and answered from the capability cache's process-local answers after that |
 | 0071 deferred-pool-ids | With batched descriptor sets and one encoder, a descriptor pool asks for its set ids without waiting; the reply is read with the other deferred replies or at the pool's first allocation |
 | 0072 batched-inline-uniform-blocks | A batched commit carries inline uniform block writes (the binding's bytes kept whole in the guest), and batching follows the connected executor's grant (hello `0x80000`) at every use, so a process that outlives its executor follows the next |
+| 0073 command-profile | `CABOOSE_COMMAND_PROFILE=1` reports device-stream bytes per command every 2 s and at exit |
+| 0074 commit-without-drain | The batched descriptor set commit goes out without waiting for earlier replies, and pools of up to 4096 sets ask for their ids without waiting |
 
 The patch messages describe each change. To change the driver, prepare a tree, commit
 the prepared state, edit, and regenerate the affected patch with `git format-patch`
@@ -190,6 +192,7 @@ hello for the completion feed. The rest of the series requires the `0x70` contra
 | `CABOOSE_GFXSTREAM_SURFACE_SOCKET` | Socket path of the broker's surface service |
 | `CABOOSE_GFXSTREAM_GUEST_HANDLES=0` | Do not offer guest-assigned handles |
 | `CABOOSE_READ_PROFILE=1` | Every two seconds and at exit, the eight opcodes with the most blocking read time (`opN` waiting for its own reply, `drainN` for earlier deferred replies, `waitN` for local waits), on stderr; calls above opcode 21009 are named (`wait_WaitSemaphores`) |
+| `CABOOSE_COMMAND_PROFILE=1` | Every two seconds and at exit, the twelve commands that took the most device-stream bytes (`opN=KiB/count/mean bytes`), and the total bytes and commands, on stderr |
 | `CABOOSE_PRIVATE_GPU_COHERENT_LOG=1` | The first coherent-memory flushes and invalidates, per allocation, on stderr |
 | `CABOOSE_PRIVATE_GPU_FLUSH_TIMING=1` | Bounded flush timing records on stderr |
 | `CABOOSE_PRIVATE_GPU_RPC_TIMING=1` | Bounded timing of ten synchronous calls on stderr |
