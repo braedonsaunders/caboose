@@ -1004,15 +1004,20 @@ class Tree:
             return []
         indices = range(count)
         if count > self.LARGE:
-            chosen = set(range(self.SAMPLE))
+            chosen, active = set(), None
             try:
                 if node.get_selection_iface() is not None:
                     for k in range(min(self.Atspi.Selection.get_n_selected_children(node), self.SAMPLE)):
                         child = self.Atspi.Selection.get_selected_child(node, k)
                         if child is not None:
                             chosen.add(child.get_index_in_parent())
+                            active = active or child
             except Exception:
                 pass
+            # A table (a spreadsheet) is read around its selected cell: the rows and columns a
+            # person sees next to it, so values entered nearby show.
+            region = self.table_region(node, active)
+            chosen |= region if region else set(range(self.SAMPLE))
             indices = sorted(i for i in chosen if 0 <= i < count)
             self.partial.append(count)
         result = []
@@ -1022,6 +1027,31 @@ class Tree:
             except Exception:
                 continue
         return result
+
+    def table_region(self, table, active, rows=12, cols=6):
+        """Child indices of the cells around `active` (or the top left) of a table."""
+        try:
+            if table.get_table_iface() is None:
+                return set()
+            Table = self.Atspi.Table
+            row = col = 0
+            if active is not None:
+                index = active.get_index_in_parent()
+                row, col = Table.get_row_at_index(table, index), Table.get_column_at_index(table, index)
+            cells, filled = {}, set()
+            for r in range(max(0, row - 2), row + rows):
+                for c in range(max(0, col - 1), col + cols):
+                    cell = Table.get_accessible_at(table, r, c)
+                    if cell is not None:
+                        cells[(r, c)] = cell.get_index_in_parent()
+                        if self.text(cell, 1):
+                            filled.add((r, c))
+            # The cells holding something, the selected one, and the empty ones next to them
+            # (where the next value goes); not every blank cell of the region.
+            keep = filled | {(row, col)} | {(r + dr, c + dc) for r, c in filled for dr, dc in ((1, 0), (0, 1), (-1, 0), (0, -1))}
+            return {index for at, index in cells.items() if at in keep}
+        except Exception:
+            return set()
 
     def text(self, node, limit=None):
         try:
@@ -1619,7 +1649,9 @@ def act(display_name, element, action, text):
         pid = screen.pid(xid)
         try:
             if pid not in INERT_EDITABLE and node.get_editable_text_iface() is not None and tree.Atspi.EditableText.set_text_contents(node, text):
-                # A password field reads back masked: the same length in bullets is the new text.
+                # A password field reads back masked (bullets of the same length) or not at all.
+                if node.get_role() in _roles(tree.Atspi, "PASSWORD_TEXT"):
+                    return
                 masked = lambda value: value is not None and len(value) == len(text) and text and set(value) <= set("•●*·")
                 shown = wait_text(screen, tree, node, lambda value: value == text or masked(value), 0.3)
                 if shown in (text, None) or masked(shown):

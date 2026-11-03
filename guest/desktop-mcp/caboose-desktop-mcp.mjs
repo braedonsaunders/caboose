@@ -52,8 +52,9 @@ const tools = [
     description: 'Run steps in order, stopping at the first failure; then reply with what changed (+ added, ~ changed, - removed '
       + 'controls; windows opened or closed). Put every step you already know in one call. A step is one of: {"press":id} '
       + '{"set":id,"text":t} replaces a field\'s text, {"key":"ctrl+s"}, {"type":t}, {"click":[x,y],"button":1-3,"count":1-3}, '
-      + '{"scroll":[x,y],"dy":n}, {"drag":[x1,y1,x2,y2]}, {"focus":window}, {"wait":ms}, {"launch":"command"}, '
-      + '{"tool":name,"args":{...}} calls a page tool.',
+      + '{"scroll":[x,y],"dy":n}, {"drag":[x1,y1,x2,y2]}, {"focus":window}, {"launch":"command"}, '
+      + '{"tool":name,"args":{...}} calls a page tool. Every step waits for the application to react, so wait steps '
+      + '({"wait":ms}) are rarely needed.',
     inputSchema: { type: 'object', properties: { steps: { type: 'array', items: { type: 'object' } } }, required: ['steps'] },
   },
   {
@@ -230,6 +231,7 @@ function windowLines(windows) {
 // When the last action went in, on the compositor's clock (CLOCK_MONOTONIC): the next
 // settled observation waits for the seat to react to it.
 let actedAt, typed = false
+let lastTiming = []
 async function changes() {
   // A text edit is processed asynchronously (completion, validation): wait for the window to
   // go quiet. After a press, the first reaction is enough for an accessibility read.
@@ -312,7 +314,13 @@ async function step(s) {
     await seat('focus', String(s.focus))
   } else if ('wait' in s) {
     if (!Number.isInteger(s.wait) || s.wait < 10 || s.wait > 5000) throw new Error('wait must be 10–5000 ms')
-    await new Promise(resolve => setTimeout(resolve, s.wait))
+    // At most that long, and no longer than the windows take to stop drawing: every step
+    // already waits for the application's reaction, so a wait mostly lets a slow one finish.
+    const until = performance.now() + s.wait
+    let settled = true
+    try { await seat('settle', 'quiet', ...(actedAt === undefined ? [] : [String(actedAt)])) } catch { settled = false }
+    const left = settled ? Math.min(until - performance.now(), 200) : until - performance.now()
+    if (left > 0) await new Promise(resolve => setTimeout(resolve, left))
   } else if ('tool' in s) {
     const name = text(s.tool, 'tool', 200)
     if (!PAGE_TOOLS) throw new Error('page tools are off (CABOOSE_DESKTOP_PAGE_TOOLS=0)')
@@ -359,6 +367,7 @@ const handlers = {
     let done = 0, error
     const notes = []
     let after
+    const timing = []
     for (const s of steps) {
       try {
         // Typed text reaches an application as an input method's commit, keys as key events,
@@ -367,15 +376,20 @@ const handlers = {
         if (after === 'type' && s && typeof s === 'object' && !('wait' in s)) {
           await seat('settle', 'quiet', ...(actedAt === undefined ? [] : [String(actedAt)]))
         }
+        const began = performance.now()
         const note = await step(s); if (note) notes.push(note); done++
+        timing.push(`${Object.keys(s ?? {})[0]}:${Math.round(performance.now() - began)}`)
         after = s && typeof s === 'object' && 'type' in s ? 'type' : undefined
       } catch (e) { error = e.message; break }
     }
     const head = done === steps.length ? (steps.length > 1 ? `Done ${done} steps.` : 'Done.') : `Did ${done} of ${steps.length}; stopped: ${error}`
     const content = [head + (notes.length ? ` (${notes.join('; ')})` : '')]
     if (observe) {
+      const began = performance.now()
       try { content.push(await changes()) } catch (e) { content.push(`Could not read the window: ${e.message}`) }
+      timing.push(`observe:${Math.round(performance.now() - began)}`)
     }
+    lastTiming = timing
     return [{ type: 'text', text: content.join('\n') }]
   },
   async screenshot({ window, marks = false }) {
@@ -421,7 +435,7 @@ async function handle(message) {
     try {
       const content = await handler(params.arguments ?? {})
       reply(id, { content })
-      if (TRACE) appendFileSync(TRACE, JSON.stringify({ tool: params.name, ms: Math.round(performance.now() - started),
+      if (TRACE) appendFileSync(TRACE, JSON.stringify({ tool: params.name, ms: Math.round(performance.now() - started), ...(params.name === 'act' ? { steps: lastTiming } : {}),
         chars: content.reduce((n, part) => n + (part.text?.length ?? 0), 0), images: content.filter(part => part.type === 'image').length }) + '\n')
     } catch (error) {
       reply(id, { content: [{ type: 'text', text: String(error?.stderr || error?.message || error).trim() }], isError: true })
