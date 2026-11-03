@@ -138,6 +138,21 @@ def check_wayland_terminal():
     return with_server(["weston-terminal", f"--shell={HERE}/read-line.sh"], run)
 
 
+def check_physical_key():
+    typed = os.path.join(tempfile.mkdtemp(), "typed")
+    os.environ["CABOOSE_TYPED"] = typed
+    def run(proc, token):
+        # The A position (HID 4) wins over a mismatched q keysym; an unknown
+        # usage falls back to q. Return finishes the terminal read.
+        probe(["--token-file", token, "--duration", "4", "--windows", "1", "--actions",
+               "key:71@4;key:71@65535;key:ff0d"])
+        got = wait_for_file(typed)
+        if got != "aq":
+            raise Failed(f"expected physical A then fallback q, got {got!r}")
+        return "physical key position and keysym fallback reach the terminal"
+    return with_server(["weston-terminal", f"--shell={HERE}/read-line.sh"], run)
+
+
 def check_x11_terminal():
     typed = os.path.join(tempfile.mkdtemp(), "typed")
     text = "X11 says $HOME ~!@#%^&*()_+{}|:<>? ok"
@@ -733,6 +748,7 @@ def check_idle():
 CHECKS = [
     ("auth", check_auth),
     ("wayland-terminal", check_wayland_terminal),
+    ("physical-key", check_physical_key),
     ("x11-terminal", check_x11_terminal),
     ("taskbar", check_taskbar),
     ("two-windows", check_two_windows),

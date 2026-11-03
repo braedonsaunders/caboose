@@ -474,7 +474,9 @@ impl State {
             self.trace_release("key");
             0
         };
-        let Some(pos) = self.input.keysyms.lookup(m.keysym) else {
+        let physical = m.code.and_then(keymap::physical_keycode);
+        let Some(pos) = physical.map(|keycode| keymap::KeyPosition { keycode, shift: false })
+            .or_else(|| self.input.keysyms.lookup(m.keysym)) else {
             // Not on the layout: text-input-v3 can still take it as text.
             if m.pressed {
                 if let Some(c) = char::from_u32(smithay::input::keyboard::xkb::keysym_to_utf32(m.keysym.into()))
@@ -494,7 +496,7 @@ impl State {
             // Other keys keep the client's Shift (Shift+Tab, Shift+arrows).
             let printable = smithay::input::keyboard::xkb::keysym_to_utf32(m.keysym.into()) >= 0x20;
             let mut mods: Vec<&str> =
-                m.mods.iter().map(String::as_str).filter(|n| !(printable && *n == "shift")).collect();
+                m.mods.iter().map(String::as_str).filter(|n| !(physical.is_none() && printable && *n == "shift")).collect();
             if pos.shift && !mods.contains(&"shift") {
                 mods.push("shift");
             }

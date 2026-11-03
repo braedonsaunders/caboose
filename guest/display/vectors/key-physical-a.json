@@ -1,0 +1,8 @@
+{
+  "name": "key-physical-a",
+  "description": "Physical A position with a layout-dependent keysym.",
+  "messages": [
+    {"direction": "client", "type": "key", "type_id": 147, "fields": {"code": 4, "mods": [], "keysym": 113, "pressed": true}}
+  ],
+  "hex": "931f000000a464636f646504646d6f647380666b657973796d18716770726573736564f5"
+}

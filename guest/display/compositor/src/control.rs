@@ -341,8 +341,8 @@ impl State {
                 }
                 let combos = args.iter().map(|c| parse_combo(c)).collect::<Result<Vec<_>, _>>()?;
                 for (mods, keysym) in combos {
-                    self.key(&proto::Key { keysym, pressed: true, mods: mods.clone() });
-                    self.key(&proto::Key { keysym, pressed: false, mods });
+                    self.key(&proto::Key { keysym, code: None, pressed: true, mods: mods.clone() });
+                    self.key(&proto::Key { keysym, code: None, pressed: false, mods });
                 }
                 Ok(b"{\"ok\":true}\n".to_vec())
             })(),

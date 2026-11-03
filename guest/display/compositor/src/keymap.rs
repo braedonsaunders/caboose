@@ -73,6 +73,30 @@ impl Keysyms {
     }
 }
 
+/// USB HID keyboard-page usage to xkb keycode (Linux evdev code plus 8).
+/// Unsupported usages fall back to the keysym. Zero entries are reserved.
+pub fn physical_keycode(usage: u32) -> Option<u32> {
+    // USB HID usage table, keyboard page; values are Linux input-event codes.
+    const KEYS: [u16; 164] = [
+        0,0,0,0,30,48,46,32,18,33,34,35,23,36,37,38,
+        50,49,24,25,16,19,31,20,22,47,17,45,21,44,2,3,
+        4,5,6,7,8,9,10,11,28,1,14,15,57,12,13,26,
+        27,43,43,39,40,41,51,52,53,58,59,60,61,62,63,64,
+        65,66,67,68,87,88,99,70,119,110,102,104,111,107,109,106,
+        105,108,103,69,98,55,74,78,96,79,80,81,75,76,77,71,
+        72,73,82,83,86,127,116,117,183,184,185,186,187,188,189,190,
+        191,192,193,194,134,138,130,132,128,129,131,137,133,135,136,113,
+        115,114,0,0,0,121,0,89,93,124,92,94,95,0,0,0,
+        122,123,90,91,85,0,0,0,0,0,0,0,0,0,0,0,
+        0,0,0,0,
+    ];
+    let evdev = match usage {
+        0xe0..=0xe7 => [29,42,56,125,97,54,100,126][(usage - 0xe0) as usize],
+        _ => *KEYS.get(usage as usize)? as u32,
+    };
+    (evdev != 0).then_some(evdev + 8)
+}
+
 /// The keysym for a character, for typing text into clients without text-input-v3.
 pub fn char_to_keysym(c: char) -> u32 {
     match c {
@@ -144,5 +168,18 @@ mod tests {
         assert_eq!(char_to_keysym('\n'), sym::RETURN);
         assert_eq!(char_to_keysym('é'), 0x00e9);
         assert_eq!(modifier_keysym("mod4"), Some(sym::SUPER_L));
+    }
+}
+
+#[cfg(test)]
+mod physical_tests {
+    use super::physical_keycode;
+    #[test]
+    fn maps_hid_positions_and_rejects_reserved() {
+        assert_eq!(physical_keycode(4), Some(38)); // A position
+        assert_eq!(physical_keycode(26), Some(25)); // W position
+        assert_eq!(physical_keycode(0xe4), Some(105)); // right control
+        assert_eq!(physical_keycode(0), None);
+        assert_eq!(physical_keycode(u32::MAX), None);
     }
 }

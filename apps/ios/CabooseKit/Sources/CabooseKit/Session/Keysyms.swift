@@ -7,12 +7,14 @@ public struct KeyStroke: Equatable, Sendable {
     public var keyval: Int
     public var string: String
     public var modifiers: [String]
+    public var physicalCode: Int?
 
-    public init(name: String, keyval: Int, string: String = "", modifiers: [String] = []) {
+    public init(name: String, keyval: Int, string: String = "", modifiers: [String] = [], physicalCode: Int? = nil) {
         self.name = name
         self.keyval = keyval
         self.string = string
         self.modifiers = modifiers
+        self.physicalCode = physicalCode
     }
 }
 

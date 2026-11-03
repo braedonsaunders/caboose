@@ -393,6 +393,17 @@ final class MockStream: ByteStream, @unchecked Sendable {
         #expect(sent.last?.body["keysym"]?.int == 0x41 && sent.last?.body["mods"]?.array == ["shift"])
     }
 
+    @Test func physicalKeysCarryTheirPosition() async throws {
+        let session = try await ready()
+        defer { session.disconnect() }
+        let stroke = KeyStroke(name: "q", keyval: 0x71, physicalCode: 4)
+        session.key(stroke, pressed: true, in: nil)
+        session.key(stroke, pressed: false, in: nil)
+        let keys = stream.take().filter { $0.type == DisplayProtocol.ClientType.key.rawValue }
+        #expect(keys.count == 2)
+        #expect(keys.allSatisfy { $0.body["code"]?.int == 4 && $0.body["keysym"]?.int == 0x71 })
+    }
+
     @Test func fullscreenExitSendsEscapeAndRestoresGeometryWithoutMetadata() async throws {
         let session = try await ready()
         defer { session.disconnect() }

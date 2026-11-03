@@ -2110,7 +2110,9 @@ Caboose Display (`guest/display`, Rust and Smithay) is a headless Wayland compos
 Xwayland. It composites nothing across windows: each toplevel and popup is rendered on
 the phone's GPU as its own native surface. It paces frames on the client's vsync,
 carries the clipboard (text, images and files), named cursors, touch, text-input-v3
-and the keyboard, and sends sound as Opus. Application video decoded through the
+and the keyboard, and sends sound as Opus. Hardware key messages carry USB HID positions
+as well as keysyms; the guest uses positions where recognized and otherwise resolves the
+keysym. Application video decoded through the
 VA-API driver is decoded on the phone into the window's GPU images
 ([gpu-media.md](gpu-media.md)).
 

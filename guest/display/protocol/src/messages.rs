@@ -501,6 +501,8 @@ pub struct Hold {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Key {
     pub keysym: u32,
+    /// USB HID keyboard page usage, when the source is a physical key.
+    pub code: Option<u32>,
     pub pressed: bool,
     /// Any of "shift", "control", "mod1", "mod4".
     pub mods: Vec<String>,
@@ -1098,7 +1100,7 @@ impl Message {
                 .opt("relative", m.relative.map(|[dx, dy]| Value::Array(vec![dx.into(), dy.into()])))
                 .build(),
             Message::Key(m) => {
-                MapBuilder::new().put("keysym", m.keysym).put("pressed", m.pressed).put("mods", m.mods.clone()).build()
+                MapBuilder::new().put("keysym", m.keysym).opt("code", m.code).put("pressed", m.pressed).put("mods", m.mods.clone()).build()
             }
             Message::Text(m) => MapBuilder::new()
                 .opt("commit", m.commit.clone())
@@ -1356,7 +1358,7 @@ impl Message {
                 relative: f.opt("relative", fields::as_f64_pair)?,
             }),
             KEY => {
-                Message::Key(Key { keysym: f.u32("keysym")?, pressed: f.bool("pressed")?, mods: f.strings("mods")? })
+                Message::Key(Key { keysym: f.u32("keysym")?, code: f.opt_u32("code")?, pressed: f.bool("pressed")?, mods: f.strings("mods")? })
             }
             TEXT => Message::Text(Text {
                 commit: f.opt_string("commit")?,

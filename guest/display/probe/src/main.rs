@@ -42,7 +42,7 @@ OPTIONS:
     --touch X,Y            once a window shows, tap there with one finger
     --window ID            the window --actions are for [default: the first that shows]
     --actions LIST         once a window shows, run `;`-separated actions 300 ms apart:
-                           key:KEYSYM[+mod...] (press and release; mods shift, control,
+                           key:KEYSYM[@HID_USAGE][+mod...] (press and release; mods shift, control,
                            mod1, mod4), text:STRING, edit:N:STRING (delete N before,
                            then commit), copy:STRING (the phone's clipboard),
                            copy-file:MIME:PATH (the file's bytes as MIME on the
@@ -293,11 +293,15 @@ fn action_messages(id: u64, action: &str) -> Result<Vec<Message>, String> {
     Ok(match verb {
         "key" => {
             let mut parts = arg.split('+');
-            let sym = parts.next().unwrap_or_default();
+            let key = parts.next().unwrap_or_default();
+            let (sym, code) = match key.split_once('@') {
+                Some((sym, code)) => (sym, Some(code.parse::<u32>().map_err(|_| format!("bad HID usage {code}"))?)),
+                None => (key, None),
+            };
             let keysym =
                 u32::from_str_radix(sym.trim_start_matches("0x"), 16).map_err(|_| format!("bad keysym {sym}"))?;
             let mods: Vec<String> = parts.map(str::to_owned).collect();
-            [true, false].map(|pressed| Message::Key(proto::Key { keysym, pressed, mods: mods.clone() })).to_vec()
+            [true, false].map(|pressed| Message::Key(proto::Key { keysym, code, pressed, mods: mods.clone() })).to_vec()
         }
         "text" => vec![Message::Text(proto::Text { commit: Some(arg.to_owned()), ..Default::default() })],
         // copy:STRING puts STRING on the computer's clipboard, as copying on the phone does.
@@ -898,6 +902,8 @@ mod tests {
 
     #[test]
     fn actions_become_messages() {
+        let physical = action_messages(3, "key:71@4").unwrap();
+        assert!(matches!(&physical[0], Message::Key(k) if k.code == Some(4) && k.keysym == 0x71));
         let key = action_messages(3, "key:ff0d+control").unwrap();
         assert_eq!(key.len(), 2);
         assert!(matches!(&key[0], Message::Key(k) if k.keysym == 0xff0d && k.pressed && k.mods == ["control"]));

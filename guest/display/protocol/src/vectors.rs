@@ -948,7 +948,12 @@ pub fn all(media: &Media) -> Vec<Vector> {
         one(
             "key-shift-a",
             "Keysym 0x41 (A) pressed with shift held.",
-            Message::Key(Key { keysym: 0x41, pressed: true, mods: vec!["shift".into()] }),
+            Message::Key(Key { keysym: 0x41, code: None, pressed: true, mods: vec!["shift".into()] }),
+        ),
+        one(
+            "key-physical-a",
+            "Physical A position with a layout-dependent keysym.",
+            Message::Key(Key { keysym: 0x71, code: Some(4), pressed: true, mods: vec![] }),
         ),
         one("text-commit", "", Message::Text(Text { commit: Some("naïve café 👍".into()), ..Default::default() })),
         one(

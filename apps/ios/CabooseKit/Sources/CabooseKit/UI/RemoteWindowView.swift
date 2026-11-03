@@ -1192,10 +1192,15 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         if key.modifierFlags.contains(.shift) { modifiers.append("shift") }
         if key.modifierFlags.contains(.control) || key.modifierFlags.contains(.command) { modifiers.append("control") }
         if key.modifierFlags.contains(.alternate) { modifiers.append("mod1") }
-        if let name = specialKeys[key.keyCode], let stroke = Keysyms.special[name] { return (stroke, modifiers) }
+        if let name = specialKeys[key.keyCode], var stroke = Keysyms.special[name] {
+            stroke.physicalCode = Int(key.keyCode.rawValue)
+            return (stroke, modifiers)
+        }
         guard let character = key.charactersIgnoringModifiers.first,
-              let stroke = Keysyms.stroke(for: modifiers.contains("shift") ? Character(String(character).uppercased()) : character)
+              var stroke = Keysyms.stroke(for: modifiers.contains("shift") ? Character(String(character).uppercased()) : character)
         else { return nil }
+        stroke.physicalCode = Int(key.keyCode.rawValue)
+        stroke.modifiers = []
         return (stroke, modifiers)
     }
 }

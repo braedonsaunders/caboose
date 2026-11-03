@@ -15,6 +15,12 @@ an application's own response to input.
 | `guest/display/compositor/src/pencil.rs` | Apple Pencil as the seat's tablet pen |
 | `guest/xwayland/touchpad-scroll.patch` | Xwayland's touchpad device for finger scrolling ([guest/xwayland](../guest/xwayland/README.md)) |
 
+## Keyboard
+
+Hardware keys carry their USB HID keyboard-page usage as well as a keysym. The compositor
+maps recognized usages to evdev positions and uses the keysym when no position is supplied
+or recognized. Synthetic keys use the keysym and the seat keymap.
+
 ## Gestures
 
 A `pinch`, `swipe` or `hold` from the phone is delivered through

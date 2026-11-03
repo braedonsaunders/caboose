@@ -965,7 +965,7 @@ public final class CabooseDisplaySession: DisplaySession {
             if focusedWindow != window.id { focus(window) }
         }
         let modifiers = Array(Set(stroke.modifiers + extraModifiers)).sorted()
-        send(.key(keysym: stroke.keyval, pressed: pressed, modifiers: modifiers))
+        send(.key(keysym: stroke.keyval, pressed: pressed, modifiers: modifiers, code: stroke.physicalCode))
     }
 
     /// Text goes as a text-input-v3 commit; the server types it as keys into apps without one.

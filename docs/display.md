@@ -193,7 +193,7 @@ Client → server (`0x81`–`0xFF`):
 | `0x90` | `touch` | `id`, `points: [{ slot, phase, x, y, force?, radius? }]`; one message is one `wl_touch.frame` |
 | `0x91` | `pencil` | `id`, `phase`, `x`, `y`, `pressure` (0…1), `tilt: [x_deg, y_deg]`, `azimuth_deg` |
 | `0x92` | `pointer` | `id`, `x`, `y`, `buttons: uint` (1 left, 2 middle, 4 right, 8 back, 16 forward), `scroll?: { dx, dy, precise, seq?, lift?: [vx, vy], hold? }`, `relative?: [dx, dy]` |
-| `0x93` | `key` | `keysym: uint`, `pressed: bool`, `mods: ["shift"\|"control"\|"mod1"\|"mod4"]` |
+| `0x93` | `key` | `keysym: uint`, `code?: uint`, `pressed: bool`, `mods: ["shift"\|"control"\|"mod1"\|"mod4"]` |
 | `0x94` | `text` | `commit?`, `preedit?`, `cursor?: [begin, end]`, `delete_before?`, `delete_after?` |
 | `0x95` | `pinch` | `id`, `phase: "begin"\|"update"\|"end"\|"cancel"`, `x`, `y`, `scale`, `rotation`, `fingers: uint` |
 | `0x96` | `swipe` | `id`, `phase`, `x`, `y`, `dx`, `dy`, `fingers: uint` |
@@ -260,6 +260,10 @@ launches and taskbar entries to windows by `desktop_id` first, then by class
 `pid` is the process that owns a toplevel: the Wayland client's, or for an X11 window
 the X server's record of the client that created it, with `_NET_WM_PID` only when the
 server has none.
+
+A hardware `key` may include `code`, its USB HID keyboard-page usage. The server maps
+recognized usages to physical evdev positions and otherwise resolves `keysym` as before.
+Synthetic keys omit `code`. The modifier list applies to the physical position.
 
 ### Gestures
 

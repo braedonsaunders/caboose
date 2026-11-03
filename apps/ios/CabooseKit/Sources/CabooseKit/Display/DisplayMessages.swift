@@ -521,7 +521,7 @@ public enum ClientMessage: Sendable {
     /// kinetic scrolling (docs/input.md, "Kinetic scrolling").
     case pointer(window: Int, x: Double, y: Double, buttons: Int, scroll: (dx: Double, dy: Double, precise: Bool)?,
                  scrollSeq: UInt64? = nil, relative: CGPoint? = nil, scrollLift: CGPoint? = nil, scrollHold: Bool = false)
-    case key(keysym: Int, pressed: Bool, modifiers: [String])
+    case key(keysym: Int, pressed: Bool, modifiers: [String], code: Int? = nil)
     case text(commit: String?, preedit: String? = nil, cursor: (Int, Int)? = nil, deleteBefore: Int? = nil, deleteAfter: Int? = nil)
     case clipboard(ClipboardContent)
     /// The phone drags something over a window, offering these clipboard types.
@@ -633,9 +633,10 @@ public enum ClientMessage: Sendable {
                 }),
                 ("relative", relative.map { [CBOR(Double($0.x)), CBOR(Double($0.y))] }),
             ]))
-        case .key(let keysym, let pressed, let modifiers):
+        case .key(let keysym, let pressed, let modifiers, let code):
             return DisplayFrame(type: T.key.rawValue, body: map([
                 ("keysym", CBOR(keysym)), ("pressed", CBOR(pressed)), ("mods", .array(modifiers.map { CBOR($0) })),
+                ("code", code.map { CBOR($0) }),
             ]))
         case .text(let commit, let preedit, let cursor, let deleteBefore, let deleteAfter):
             return DisplayFrame(type: T.text.rawValue, body: map([

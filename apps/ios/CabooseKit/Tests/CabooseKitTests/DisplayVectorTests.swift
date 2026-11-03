@@ -361,6 +361,7 @@ import Testing
         "configure": .configure(window: 7, geometry: CGRect(x: 0, y: 0, width: 2556, height: 1179), display: 1,
                                 maximized: true, activated: true),
         "displays": .displays([DisplayInfo(id: 1, width: 2556, height: 1179, scale: 3, refreshHz: 120, hdr: true)]),
+        "key-physical-a": .key(keysym: 0x71, pressed: true, modifiers: [], code: 4),
         "key-shift-a": .key(keysym: 65, pressed: true, modifiers: ["shift"]),
         "liberal-vsync-wide-int": .vsync(display: 1, micros: 1000),
         "pencil-hover": .pencil(window: 7, PencilSample(phase: .hover, x: 300.5, y: 410, pressure: 0, tilt: (12.5, -30), azimuth: 271.25)),

@@ -55,7 +55,7 @@ This directory is a Cargo workspace:
   window's image pool has room, so applications draw at the rate the screen can show. A
   window whose display sends no vsync gets frame callbacks once a second.
 - **Input.** Pointer (buttons as a pressed set, precise and wheel scrolling), multitouch
-  (`wl_touch`, one frame per message), keys by keysym (mapped to the keymap, with the
+  (`wl_touch`, one frame per message), physical keys by USB HID position and synthetic keys by keysym (mapped to the keymap, with the
   modifiers a level needs), and text: commits and pre-edit text go to the focused surface
   through text-input-v3, whose enable/disable is reported with `text_input` (also to a
   client that connects after a field was focused); deletions are BackSpace/Delete
@@ -163,6 +163,7 @@ probe. Every check asserts on what arrived, not on a picture:
 | Check | What it proves |
 | --- | --- |
 | `auth` | a wrong token gets `bye(auth)`; the right one gets windows |
+| `physical-key` | a physical HID position and an unknown-position keysym fallback reach weston-terminal |
 | `wayland-terminal` | text typed from the client reaches weston-terminal exactly (key fallback) |
 | `x11-terminal` | the same through Xwayland into xterm |
 | `taskbar` | an X11 window a shell started, with a class no desktop entry has and a `_NET_WM_PID` from another namespace, reports the X server's PID for its process and its `_NET_WM_ICON`, and its icon change follows as an update (`scripts/x11-icon-window.py`) |
