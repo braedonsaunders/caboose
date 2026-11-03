@@ -254,7 +254,7 @@
       "app": "libreoffice-writer",
       "setup": "mkdir -p $HOME/Documents; start soffice --norestore --nologo --writer",
       "prompt": "In the open LibreOffice Writer window, write a short letter: a first line Harbor notice in bold, then two paragraphs, \"The east dock closes on Monday.\" and \"Moorings move to the west dock.\". Save it in Word format as /tmp/caboose-bench/home/Documents/notice.docx.",
-      "verify": "x=$(unzip -p $HOME/Documents/notice.docx word/document.xml) && echo \"$x\" | grep -q 'Harbor notice' && echo \"$x\" | grep -q 'The east dock closes on Monday.' && echo \"$x\" | grep -q 'Moorings move to the west dock.' && echo \"$x\" | grep -q '<w:b/>'"
+      "verify": "x=$(unzip -p $HOME/Documents/notice.docx word/document.xml) && echo \"$x\" | grep -q 'Harbor notice' && echo \"$x\" | grep -q 'The east dock closes on Monday.' && echo \"$x\" | grep -q 'Moorings move to the west dock.' && echo \"$x\" | grep -Eq '<w:b( w:val=\"(1|true|on)\")?/>'"
     },
     {
       "id": "flow-web-wizard",

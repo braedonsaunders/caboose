@@ -63,7 +63,7 @@ code, text = computer('windows')
 if json.loads(text)['windows']:
     sys.exit('the agent seat has windows open; run on an empty seat')
 for task in tasks:
-    computer(f'end_apps; rm -rf "$BENCH"; mkdir -p "$BENCH"')
+    computer(f'end_apps; fresh_office; rm -rf "$BENCH"; mkdir -p "$BENCH"')
     code, text = computer(f"{task['setup']}\nwait_window {shlex.quote(task['app'])}", timeout=180)
     record = {'task': task['id'], 'mode': a.label or a.mode, 'model': a.model}
     if code != 0:

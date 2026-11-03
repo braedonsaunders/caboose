@@ -37,6 +37,9 @@ wait_window() {
   done
   windows; return 1
 }
+# The agent profile's LibreOffice profile, emptied between tasks: its document recovery would
+# carry one task's unsaved documents into the next.
+fresh_office() { rm -rf "${XDG_CONFIG_HOME:-$HOME/.config}/libreoffice"; }
 # End every process on the agent seat's windows, and anything still running from this run.
 end_apps() {
   for pid in $(windows | python3 -c 'import json, sys; print(" ".join({str(w["pid"]) for w in json.load(sys.stdin)["windows"] if w.get("pid")}))'); do kill "$pid" 2>/dev/null; done
