@@ -2,6 +2,7 @@ name: Check display and guest contracts
 
 on:
   pull_request:
+    types: [ready_for_review]
     paths:
       - '.github/workflows/check-display.yml'
       - 'guest/display/**'

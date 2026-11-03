@@ -62,7 +62,7 @@ struct HomeTodayTests {
         #expect(HomeToday.find("calc", in: candidates, limit: 5).map(\.key) == ["7", "libreoffice-calc"])
         // Words may come from the subtitle; all of them must match.
         #expect(HomeToday.find("web chr", in: candidates, limit: 5).map(\.key) == ["chromium"])
-        #expect(HomeToday.find("web firefox", in: candidates, limit: 5).isEmpty)
+        #expect(HomeToday.find("web calc", in: candidates, limit: 5).isEmpty)
         // Within a word is not a match; accents fold.
         #expect(HomeToday.find("udget", in: candidates, limit: 5).isEmpty)
         #expect(HomeToday.find("CAFE", in: candidates, limit: 5).map(\.key) == ["Café.txt"])

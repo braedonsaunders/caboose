@@ -21,7 +21,7 @@ points per window pixel, and is scored for the bare finger, the nearest control 
 spreads, `TouchAim`, `TouchAim` with a magnified second look at ambiguous taps, and
 `TouchAim` over the shapes `PictureTargets` finds in the window's picture around the touch,
 for windows without an accessibility tree. `bench-guest.py --survey` reads the image's own
-applications (a terminal, an editor, a file manager, Firefox, Chromium, LibreOffice) and
+applications (a terminal, an editor, a file manager, VS Code, Chromium, LibreOffice) and
 reports how many targets each yields and how long reading took.
 
 ```sh

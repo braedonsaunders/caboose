@@ -60,49 +60,6 @@
       "needs_network": true
     },
     {
-      "id": "firefox",
-      "name": "Firefox, long article",
-      "command": [
-        "firefox",
-        "--no-remote",
-        "--profile",
-        "{tmp}/profile",
-        "--width",
-        "1200",
-        "--height",
-        "900"
-      ],
-      "url": "https://en.wikipedia.org/wiki/History_of_the_United_States",
-      "offline_url": "file://{page}",
-      "files": {
-        "profile/user.js": "user_pref(\"browser.aboutwelcome.enabled\", false);\nuser_pref(\"browser.startup.homepage_override.mstone\", \"ignore\");\nuser_pref(\"datareporting.policy.dataSubmissionPolicyBypassNotification\", true);\nuser_pref(\"browser.shell.checkDefaultBrowser\", false);\nuser_pref(\"trailhead.firstrun.didSeeAboutWelcome\", true);\n"
-      },
-      "window": "firefox",
-      "ready_s": 40,
-      "warmup_s": 6,
-      "measure_s": 20,
-      "input": [
-        {
-          "scroll": [
-            0,
-            3
-          ],
-          "every_ms": 80,
-          "count": 120
-        },
-        {
-          "scroll": [
-            0,
-            -3
-          ],
-          "every_ms": 80,
-          "count": 60
-        }
-      ],
-      "correctness": true,
-      "ready_title": "History of the United States|Frame lab article"
-    },
-    {
       "id": "gtk4",
       "name": "GTK 4, gtk4-widget-factory",
       "command": [
