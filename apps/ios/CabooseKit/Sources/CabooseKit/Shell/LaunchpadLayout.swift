@@ -2,7 +2,8 @@ import CoreGraphics
 
 /// The Launchpad grid for a desktop of a given size: columns of at most 150 points (scaled by
 /// the desktop's size factor `ui`), as many as the width holds up to seven and at least two,
-/// and as many rows as fit above the dock. It always fits inside the desktop, so a phone's
+/// and as many rows as fit above the dock (`dockHeight`: all the dock takes of the bottom,
+/// `reservedBottom`). It always fits inside the desktop, so a phone's
 /// narrow screen beside its bars gets fewer, narrower columns rather than an overflow.
 public struct LaunchpadLayout: Equatable, Sendable {
     public var columns: Int
@@ -33,6 +34,20 @@ public struct LaunchpadLayout: Equatable, Sendable {
 
     /// The grid's width, spacing included.
     public var width: CGFloat { CGFloat(columns) * column + CGFloat(columns - 1) * spacing }
+
+    /// How many pages `count` apps take: one at least.
+    public func pageCount(_ count: Int) -> Int {
+        max(1, (max(0, count) + max(1, columns * rows) - 1) / max(1, columns * rows))
+    }
+
+    /// How much of the desktop's bottom a dock that stays over Launchpad takes: from the top of
+    /// its measured frame (`dock`, in the desktop's space) to the bottom of a desktop `height`
+    /// high, or `fallback` before it has been measured. Launchpad keeps its grid and page dots
+    /// above it.
+    public static func reservedBottom(dock: CGRect, height: CGFloat, fallback: CGFloat) -> CGFloat {
+        guard !dock.isNull, !dock.isEmpty, dock.minY.isFinite, height.isFinite else { return max(0, fallback) }
+        return min(max(0, height), max(0, height - dock.minY))
+    }
 
     public func clampedPage(_ page: Int, count: Int) -> Int {
         let capacity = max(1, columns * rows)

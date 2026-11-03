@@ -132,6 +132,28 @@ final class LaunchpadLayoutTests: XCTestCase {
         let rowHeight = layout.icon + 8 + 20 + layout.spacing
         XCTAssertLessThanOrEqual(layout.top + CGFloat(layout.rows) * rowHeight, 600 - 76 - 44)
     }
+    func testPageCountCoversEveryApp() {
+        let layout = LaunchpadLayout(size: CGSize(width: 800, height: 600), ui: 1, dockHeight: 76)
+        let capacity = layout.columns * layout.rows
+        XCTAssertEqual(layout.pageCount(0), 1)
+        XCTAssertEqual(layout.pageCount(capacity), 1)
+        XCTAssertEqual(layout.pageCount(capacity + 1), 2)
+        XCTAssertEqual(layout.pageCount(capacity * 3), 3)
+    }
+
+    func testTheGridAndPageDotsStayAboveADockOverLaunchpad() {
+        // Laptop's upper screen: the dock floats 8 points above its bottom, over Launchpad.
+        let dock = CGRect(x: 120, y: 330 - 8 - 62, width: 700, height: 62)
+        let reserved = LaunchpadLayout.reservedBottom(dock: dock, height: 330, fallback: 0)
+        XCTAssertEqual(reserved, 70)
+        let layout = LaunchpadLayout(size: CGSize(width: 951, height: 330), ui: 0.86, dockHeight: reserved)
+        let rowHeight = layout.icon + 8 * 0.86 + 20 * 0.86 + layout.spacing
+        XCTAssertLessThanOrEqual(layout.top + CGFloat(layout.rows) * rowHeight, dock.minY)
+        // Before the dock is measured, and for a dock off the desktop, what the desktop reserves.
+        XCTAssertEqual(LaunchpadLayout.reservedBottom(dock: .null, height: 330, fallback: 86), 86)
+        XCTAssertEqual(LaunchpadLayout.reservedBottom(dock: CGRect(x: 0, y: 400, width: 10, height: 10), height: 330, fallback: 86), 0)
+    }
+
     func testABigScreenGetsSevenFullColumns() {
         let layout = LaunchpadLayout(size: CGSize(width: 1920, height: 1080), ui: 1.2, dockHeight: 76 * 1.2)
         XCTAssertEqual(layout.columns, 7)

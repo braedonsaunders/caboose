@@ -47,9 +47,11 @@ struct DesktopView: View {
                         .allowsHitTesting(false)
                         .transition(.opacity)
                 }
+                // Launchpad fades and settles in from a little larger, and back out, as on a Mac;
+                // with Reduce Motion it only fades.
                 if desktop.launchpadOpen {
                     Launchpad(desktop: desktop)
-                        .transition(.opacity.combined(with: .scale(scale: 1.04)))
+                        .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 1.06)))
                 }
                 if showsDock, !desktop.detachedChrome, let session = model.session, desktop.fullscreenWindow(in: session.windows) == nil {
                     Dock(desktop: desktop)
@@ -70,6 +72,7 @@ struct DesktopView: View {
                 }
             }
             .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: desktop.snapPalette != nil)
+            .animation(.smooth(duration: 0.25), value: desktop.launchpadOpen)
             .coordinateSpace(name: "desktop")
             .task(id: ObjectIdentifier(desktop)) {
                 desktop.quickSwitch = model.quickSwitch
@@ -392,6 +395,9 @@ struct Dock: View {
         .background {
             Color.clear.glassEffect(.regular, in: .surface(cornerRadius: 22 * ui))
         }
+        // Launchpad keeps its grid and page dots above it.
+        .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(coordinateSpace)) } action: { desktop.dockBarFrame = $0 }
+        .onDisappear { desktop.dockBarFrame = .null }
     }
 
     /// A continuous, thin strip below the hinge, never a floating capsule over content.
@@ -472,7 +478,9 @@ struct Launchpad: View {
     var body: some View {
         let ui = desktop.ui
         let apps = model.partitionedApps.main
-        let layout = LaunchpadLayout(size: desktop.size, ui: ui, dockHeight: desktop.dockHeight)
+        let reserved = LaunchpadLayout.reservedBottom(dock: desktop.dockBarFrame, height: desktop.size.height,
+                                                      fallback: desktop.dockHeight + desktop.dockBottomInset)
+        let layout = LaunchpadLayout(size: desktop.size, ui: ui, dockHeight: reserved)
         let range = layout.pageRange(desktop.launcherPage, count: apps.count)
         let columns = Array(repeating: GridItem(.fixed(layout.column), spacing: layout.spacing), count: layout.columns)
         ZStack(alignment: .top) {
@@ -508,16 +516,26 @@ struct Launchpad: View {
             .offset(x: reduceMotion ? 0 : pageDrag)
             .transition(reduceMotion ? .opacity : .asymmetric(insertion: .move(edge: movingForward ? .trailing : .leading), removal: .move(edge: movingForward ? .leading : .trailing)))
             .id("\(desktop.launcherPage)-\(apps.map(\.id).joined(separator: ","))-\(desktop.size.width)-\(desktop.size.height)")
-            if apps.count > layout.columns * layout.rows {
-                HStack(spacing: 24 * ui) {
-                    if range.lowerBound > 0 { pageArrow(-1, symbol: "chevron.left", ui: ui) }
-                    Text("\(range.lowerBound / (layout.columns * layout.rows) + 1) / \((apps.count + layout.columns * layout.rows - 1) / (layout.columns * layout.rows))")
-                        .foregroundStyle(.white).font(.system(size: 14 * ui, weight: .semibold))
-                    if range.upperBound < apps.count { pageArrow(1, symbol: "chevron.right", ui: ui) }
+            if layout.pageCount(apps.count) > 1 {
+                let pages = layout.pageCount(apps.count)
+                let current = layout.clampedPage(desktop.launcherPage, count: apps.count)
+                HStack(spacing: 16 * ui) {
+                    if current > 0 { pageArrow(-1, symbol: "chevron.left", ui: ui) } else { Color.clear.frame(width: 44 * ui, height: 44 * ui) }
+                    HStack(spacing: 9 * ui) {
+                        ForEach(0..<pages, id: \.self) { page in
+                            Circle()
+                                .fill(.white.opacity(page == current ? 0.95 : 0.4))
+                                .frame(width: 7 * ui, height: 7 * ui)
+                        }
+                    }
+                    .accessibilityElement()
+                    .accessibilityLabel("Page \(current + 1) of \(pages)")
+                    if current < pages - 1 { pageArrow(1, symbol: "chevron.right", ui: ui) } else { Color.clear.frame(width: 44 * ui, height: 44 * ui) }
                 }
-                .id("\(desktop.launcherPage)-\(apps.count)-\(desktop.size.width)-\(desktop.size.height)")
+                .animation(.smooth(duration: 0.2), value: current)
                 .frame(maxHeight: .infinity, alignment: .bottom)
-                .padding(.bottom, desktop.dockHeight + 12 * ui)
+                // Above a dock that stays over Launchpad (Laptop's), never behind it.
+                .padding(.bottom, reserved + 10 * ui)
             }
         }
         .frame(width: desktop.size.width, height: desktop.size.height)
@@ -563,6 +581,7 @@ struct Launchpad: View {
                 desktop.launcherPage += direction
             }
             .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("desktop")) } action: { desktop.launcherPageFrames[direction] = $0 }
+            .onDisappear { desktop.launcherPageFrames[direction] = nil }
     }
 }
 
@@ -587,7 +606,7 @@ struct DesktopKeyCommands: View {
             key("Zoom", "f") { front { desktop.toggleZoom($0.id, $1) } }
             key("Minimize", "m") { front { window, _ in desktop.minimize(window.id) } }
             key("Close Window", "w") { front { $1.closeDiagnosed($0) } }
-            key("Launchpad", "a") { withAnimation(.smooth(duration: 0.3)) { desktop.launchpadOpen.toggle() } }
+            key("Launchpad", "a") { desktop.launchpadOpen.toggle() }
             key("New Terminal", .return) { model.openTerminalApp() }
             QuickSwitchKeys(recent: { model.recentWindowIDs }) { desktop.switchTarget(session: model.session) }
         }
