@@ -249,9 +249,11 @@ declare `batched-descriptor-sets` leaves the process on per-call `vkAllocateDesc
 and `vkUpdateDescriptorSet*`. The process's first connection decides: a later executor that
 does not take batched sets cannot serve a process that uses them (its connection fails
 with `CABOOSE_GPU_CONNECT_FAILED`), while one that does serves a process that does not.
-The executor makes every pool's set ids when the pool is created, for every process, and
-deletes the handles of sets allocated per call when they are freed or their pool is reset.
-Its devices do not offer inline uniform blocks, which a batched commit cannot carry.
+The phone app and the Linux executor do not declare `batched-descriptor-sets` and run with
+gfxstream's batched descriptor-set feature off: with it on, gfxstream hides inline uniform
+blocks from every guest of the executor, which DXVK requires, and the guest's batched commit
+cannot carry inline uniform block writes. Their devices offer inline uniform blocks, and
+every process allocates and writes sets per call.
 
 ### Guest-assigned handles
 
