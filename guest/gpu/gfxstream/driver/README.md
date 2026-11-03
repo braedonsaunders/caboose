@@ -130,6 +130,7 @@ Each patch is one feature. Several change Mesa's generated encoder
 | 0058 requirements-across-processes | Memory requirements are kept by device identity in `$XDG_CACHE_HOME/caboose-gpu` (or `~/.cache`), so a later process made the same way asks the phone only for shapes no earlier one made (`../bounded-memory/requirements_cache.h`) |
 | 0059 render-node-drm-properties | The device offers `VK_EXT_physical_device_drm` with vgem's nodes, so Mesa's OpenGL picks the phone's GPU behind the render node (`../dmabuf/dmabuf.h`) |
 | 0060 memory-traffic | Every five seconds in which anything moved, `CABOOSE_GPU_MEMORY_TRAFFIC` reports what the process sent and received, the mapped memory it flushed and read back, by the application or the driver's coherent upkeep, and the readbacks copies marked (`../bounded-memory/memory_traffic.h`) |
+| 0061 empty-application-pipeline-caches | An application's pipeline cache is empty in the guest: created without its saved data, and `vkGetPipelineCacheData` answers the device's header without a round trip, since the phone's own cache, which it seeds into every application cache, holds the pipelines |
 
 The patch messages describe each change. To change the driver, prepare a tree, commit
 the prepared state, edit, and regenerate the affected patch with `git format-patch`

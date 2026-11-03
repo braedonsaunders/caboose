@@ -346,6 +346,9 @@ it. A token the decoder cannot resolve (a damaged file) fails that module's crea
 guest-assigned handles that is device loss for the process. A new executor connection
 discards what the process knew, and it asks again.
 
+The decoder seeds that cache into every `VkPipelineCache` an application creates, so the
+guest driver keeps an application's own cache empty: it never sends the cache's saved data,
+and `vkGetPipelineCacheData` returns the device's empty cache without asking the phone.
 Pipelines built from these modules come from the per-computer `VkPipelineCache`, and the
 Metal pipeline states MoltenVK makes from them from a Metal binary archive in `pipeline/`
 (`provider-patches/moltenvk-pipeline-binary-archive.patch`): each pipeline is looked up in

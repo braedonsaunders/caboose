@@ -547,6 +547,247 @@ static void callsCase(void) {
     }
 }
 
+// A swapchain on one X11 window, presenting frames cleared to a color.
+struct Presenter {
+    VkSurfaceKHR surface;
+    VkSwapchainKHR swapchain;
+    VkImage images[16];
+    uint32_t imageCount;
+    VkSemaphore acquired, rendered;
+    VkFence done;
+    int presented;
+};
+
+static void presenterCreate(struct Presenter* p, xcb_connection_t* connection, xcb_window_t window,
+                            uint32_t width, uint32_t height) {
+    memset(p, 0, sizeof(*p));
+    VkXcbSurfaceCreateInfoKHR surfaceInfo = {VK_STRUCTURE_TYPE_XCB_SURFACE_CREATE_INFO_KHR};
+    surfaceInfo.connection = connection;
+    surfaceInfo.window = window;
+    CHECK(vkCreateXcbSurfaceKHR(instance, &surfaceInfo, NULL, &p->surface));
+    VkBool32 supported = VK_FALSE;
+    CHECK(vkGetPhysicalDeviceSurfaceSupportKHR(physical, family, p->surface, &supported));
+    if (!supported) fail("vkGetPhysicalDeviceSurfaceSupportKHR", VK_ERROR_FEATURE_NOT_PRESENT);
+    VkSurfaceCapabilitiesKHR caps;
+    CHECK(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physical, p->surface, &caps));
+    uint32_t count = 16;
+    VkSurfaceFormatKHR formats[16];
+    VkResult listed = vkGetPhysicalDeviceSurfaceFormatsKHR(physical, p->surface, &count, formats);
+    if ((listed != VK_SUCCESS && listed != VK_INCOMPLETE) || !count) fail("vkGetPhysicalDeviceSurfaceFormatsKHR", listed);
+    VkSwapchainCreateInfoKHR info = {VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR};
+    info.surface = p->surface;
+    info.minImageCount = caps.minImageCount;
+    info.imageFormat = formats[0].format;
+    info.imageColorSpace = formats[0].colorSpace;
+    info.imageExtent = caps.currentExtent.width != UINT32_MAX ? caps.currentExtent : (VkExtent2D){width, height};
+    info.imageArrayLayers = 1;
+    info.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    info.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    info.preTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
+    info.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
+    info.presentMode = VK_PRESENT_MODE_FIFO_KHR;
+    info.clipped = VK_TRUE;
+    CHECK(vkCreateSwapchainKHR(device, &info, NULL, &p->swapchain));
+    p->imageCount = 16;
+    CHECK(vkGetSwapchainImagesKHR(device, p->swapchain, &p->imageCount, p->images));
+    VkSemaphoreCreateInfo semaphoreInfo = {VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+    CHECK(vkCreateSemaphore(device, &semaphoreInfo, NULL, &p->acquired));
+    CHECK(vkCreateSemaphore(device, &semaphoreInfo, NULL, &p->rendered));
+    VkFenceCreateInfo fenceInfo = {VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+    CHECK(vkCreateFence(device, &fenceInfo, NULL, &p->done));
+}
+
+// One frame: acquire, clear to `shade`, present. Counts presents the driver accepted.
+static void presenterFrame(struct Presenter* p, float shade) {
+    uint32_t index;
+    VkResult acquired = vkAcquireNextImageKHR(device, p->swapchain, 5000000000ull, p->acquired, VK_NULL_HANDLE, &index);
+    if (acquired != VK_SUCCESS && acquired != VK_SUBOPTIMAL_KHR) return;
+    begin();
+    VkImageSubresourceRange range = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    VkImageMemoryBarrier toClear = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+    toClear.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    toClear.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    toClear.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    toClear.srcQueueFamilyIndex = toClear.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    toClear.image = p->images[index];
+    toClear.subresourceRange = range;
+    vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &toClear);
+    VkClearColorValue color = {{shade, 0.5f, 1.0f - shade, 1.0f}};
+    vkCmdClearColorImage(cb, p->images[index], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &color, 1, &range);
+    VkImageMemoryBarrier toPresent = toClear;
+    toPresent.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    toPresent.dstAccessMask = 0;
+    toPresent.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    toPresent.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+    vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, NULL, 0, NULL, 1, &toPresent);
+    CHECK(vkEndCommandBuffer(cb));
+    const VkPipelineStageFlags stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+    VkSubmitInfo submit = {VK_STRUCTURE_TYPE_SUBMIT_INFO};
+    submit.waitSemaphoreCount = 1;
+    submit.pWaitSemaphores = &p->acquired;
+    submit.pWaitDstStageMask = &stage;
+    submit.commandBufferCount = 1;
+    submit.pCommandBuffers = &cb;
+    submit.signalSemaphoreCount = 1;
+    submit.pSignalSemaphores = &p->rendered;
+    CHECK(vkResetFences(device, 1, &p->done));
+    CHECK(vkQueueSubmit(queue, 1, &submit, p->done));
+    VkPresentInfoKHR present = {VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
+    present.waitSemaphoreCount = 1;
+    present.pWaitSemaphores = &p->rendered;
+    present.swapchainCount = 1;
+    present.pSwapchains = &p->swapchain;
+    present.pImageIndices = &index;
+    const VkResult presented = vkQueuePresentKHR(queue, &present);
+    if (presented == VK_SUCCESS || presented == VK_SUBOPTIMAL_KHR) ++p->presented;
+    // The command buffer is reused by the next frame.
+    CHECK(vkWaitForFences(device, 1, &p->done, VK_TRUE, 5000000000ull));
+}
+
+static void presenterDestroy(struct Presenter* p) {
+    CHECK(vkDeviceWaitIdle(device));
+    vkDestroyFence(device, p->done, NULL);
+    vkDestroySemaphore(device, p->acquired, NULL);
+    vkDestroySemaphore(device, p->rendered, NULL);
+    vkDestroySwapchainKHR(device, p->swapchain, NULL);
+    vkDestroySurfaceKHR(instance, p->surface, NULL);
+}
+
+static xcb_window_t createWindow(xcb_connection_t* connection, xcb_window_t parent, xcb_visualid_t visual,
+                                 int16_t x, int16_t y, uint16_t width, uint16_t height) {
+    xcb_window_t window = xcb_generate_id(connection);
+    xcb_create_window(connection, XCB_COPY_FROM_PARENT, window, parent, x, y, width, height, 0,
+                      XCB_WINDOW_CLASS_INPUT_OUTPUT, visual, 0, NULL);
+    xcb_map_window(connection, window);
+    return window;
+}
+
+// Child windows with their own swapchains, as a browser's GPU process draws its views: a
+// top-level with a child that covers it and an inset child beside it, and a second top-level
+// with only an inset child. Every swapchain must present every frame; the executor's log
+// shows each window's frames (linux-executor/check.sh).
+static void childWindowsCase(void) {
+    if (!surfaces) {
+        printf("CABOOSE_SYNC_CHECK note=child_windows skipped (no X11 display)\n");
+        return;
+    }
+    xcb_connection_t* connection = xcb_connect(NULL, NULL);
+    if (xcb_connection_has_error(connection)) {
+        printf("CABOOSE_SYNC_CHECK note=child_windows skipped (no X11 connection)\n");
+        return;
+    }
+    xcb_screen_t* screen = xcb_setup_roots_iterator(xcb_get_setup(connection)).data;
+    const xcb_visualid_t visual = screen->root_visual;
+    const xcb_window_t first = createWindow(connection, screen->root, visual, 0, 0, 640, 480);
+    const xcb_window_t covering = createWindow(connection, first, visual, 0, 0, 640, 480);
+    const xcb_window_t inset = createWindow(connection, first, visual, 40, 120, 400, 240);
+    const xcb_window_t second = createWindow(connection, screen->root, visual, 700, 0, 320, 240);
+    const xcb_window_t lone = createWindow(connection, second, visual, 16, 32, 200, 150);
+    xcb_flush(connection);
+    struct Presenter presenters[3];
+    presenterCreate(&presenters[0], connection, covering, 640, 480);
+    presenterCreate(&presenters[1], connection, inset, 400, 240);
+    presenterCreate(&presenters[2], connection, lone, 200, 150);
+    const int frames = 30;
+    for (int i = 0; i < frames; ++i)
+        for (int k = 0; k < 3; ++k) presenterFrame(&presenters[k], (float)i / frames);
+    for (int k = 0; k < 3; ++k) presenterDestroy(&presenters[k]);
+    xcb_destroy_window(connection, first);
+    xcb_destroy_window(connection, second);
+    xcb_flush(connection);
+    xcb_disconnect(connection);
+    const int all = presenters[0].presented == frames && presenters[1].presented == frames &&
+                    presenters[2].presented == frames;
+    report("child_windows", all, "frames=%d covering=%d inset=%d lone_inset=%d windows=%#x,%#x,%#x", frames,
+           presenters[0].presented, presenters[1].presented, presenters[2].presented, covering, inset, lone);
+}
+
+// Application pipeline caches: created with 4 MiB of saved data (another device's, so any
+// driver ignores it), a compute pipeline built into one, its data read back 200 times. The
+// data is the empty cache of this device, 32 bytes of VkPipelineCacheHeaderVersionOne with
+// its properties, and no read waits for the phone: the phone's own cache, which it seeds into
+// every application cache, holds the pipelines.
+static void pipelineCacheCase(const VkPhysicalDeviceProperties* props) {
+    // void main() {} with local size 1x1x1.
+    static const uint32_t spirv[] = {
+        0x07230203, 0x00010000, 0, 5, 0,
+        0x00020011, 1,                                  // OpCapability Shader
+        0x0003000E, 0, 1,                               // OpMemoryModel Logical GLSL450
+        0x0005000F, 5, 1, 0x6E69616D, 0,                // OpEntryPoint GLCompute %1 "main"
+        0x00060010, 1, 17, 1, 1, 1,                     // OpExecutionMode %1 LocalSize 1 1 1
+        0x00020013, 2,                                  // %2 = OpTypeVoid
+        0x00030021, 3, 2,                               // %3 = OpTypeFunction %2
+        0x00050036, 2, 1, 0, 3,                         // %1 = OpFunction %2 None %3
+        0x000200F8, 4,                                  // %4 = OpLabel
+        0x000100FD,                                     // OpReturn
+        0x00010038,                                     // OpFunctionEnd
+    };
+    const size_t savedSize = 4u << 20;
+    uint8_t* saved = calloc(1, savedSize);
+    if (!saved) fail("calloc", VK_ERROR_OUT_OF_HOST_MEMORY);
+    const uint32_t savedHeader[4] = {32, VK_PIPELINE_CACHE_HEADER_VERSION_ONE, props->vendorID ^ 0xFFFFu, props->deviceID};
+    memcpy(saved, savedHeader, sizeof(savedHeader));
+    VkPipelineCacheCreateInfo cacheInfo = {VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO};
+    cacheInfo.initialDataSize = savedSize;
+    cacheInfo.pInitialData = saved;
+    VkPipelineCache cache;
+    const uint64_t createStart = nowUs();
+    CHECK(vkCreatePipelineCache(device, &cacheInfo, NULL, &cache));
+    const uint64_t createUs = nowUs() - createStart;
+    free(saved);
+
+    VkShaderModuleCreateInfo moduleInfo = {VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+    moduleInfo.codeSize = sizeof(spirv);
+    moduleInfo.pCode = spirv;
+    VkShaderModule module;
+    CHECK(vkCreateShaderModule(device, &moduleInfo, NULL, &module));
+    VkPipelineLayoutCreateInfo layoutInfo = {VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+    VkPipelineLayout layout;
+    CHECK(vkCreatePipelineLayout(device, &layoutInfo, NULL, &layout));
+    VkComputePipelineCreateInfo pipelineInfo = {VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+    pipelineInfo.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    pipelineInfo.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+    pipelineInfo.stage.module = module;
+    pipelineInfo.stage.pName = "main";
+    pipelineInfo.layout = layout;
+    VkPipeline pipeline;
+    CHECK(vkCreateComputePipelines(device, cache, 1, &pipelineInfo, NULL, &pipeline));
+
+    const int reads = 200;
+    uint64_t readUs = 0, readMax = 0;
+    size_t size = 0;
+    uint8_t data[64];
+    int headerOk = 1;
+    for (int i = 0; i < reads; ++i) {
+        const uint64_t t0 = nowUs();
+        size = 0;
+        CHECK(vkGetPipelineCacheData(device, cache, &size, NULL));
+        size_t filled = sizeof(data);
+        const VkResult got = vkGetPipelineCacheData(device, cache, &filled, data);
+        const uint64_t d = nowUs() - t0;
+        readUs += d;
+        if (d > readMax) readMax = d;
+        if (size != 32 || got != VK_SUCCESS || filled != 32) { headerOk = 0; continue; }
+        uint32_t fields[4];
+        memcpy(fields, data, sizeof(fields));
+        if (fields[0] != 32 || fields[1] != VK_PIPELINE_CACHE_HEADER_VERSION_ONE || fields[2] != props->vendorID ||
+            fields[3] != props->deviceID || memcmp(data + 16, props->pipelineCacheUUID, VK_UUID_SIZE))
+            headerOk = 0;
+    }
+    // A buffer smaller than the header gets nothing.
+    size_t small = 16;
+    const VkResult incomplete = vkGetPipelineCacheData(device, cache, &small, data);
+    vkDestroyPipeline(device, pipeline, NULL);
+    vkDestroyPipelineLayout(device, layout, NULL);
+    vkDestroyShaderModule(device, module, NULL);
+    vkDestroyPipelineCache(device, cache, NULL);
+    const double mean = (double)readUs / reads;
+    report("pipeline_cache", headerOk && incomplete == VK_INCOMPLETE && small == 0 && mean < 1000.0,
+           "size=%zu header=%s small=%d/%zu create_with_4mib_us=%llu reads=%d mean_us=%.1f max_us=%llu", size,
+           headerOk ? "device" : "other", incomplete, small, (unsigned long long)createUs, reads, mean,
+           (unsigned long long)readMax);
+}
+
 int main(int argc, char** argv) {
     const char* only = argc > 1 ? argv[1] : NULL;
     VkApplicationInfo app = {VK_STRUCTURE_TYPE_APPLICATION_INFO};
@@ -606,6 +847,12 @@ int main(int argc, char** argv) {
     deviceInfo.pNext = &features12;
     deviceInfo.queueCreateInfoCount = 1;
     deviceInfo.pQueueCreateInfos = &queueInfo;
+    // Swapchains for the child window case, on a device whose instance has surfaces.
+    const char* swapchainExtension = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
+    if (surfaces) {
+        deviceInfo.enabledExtensionCount = 1;
+        deviceInfo.ppEnabledExtensionNames = &swapchainExtension;
+    }
     CHECK(vkCreateDevice(physical, &deviceInfo, NULL, &device));
     vkGetDeviceQueue(device, family, 0, &queue);
     printf("CABOOSE_SYNC_CHECK device=\"%s\" api=%u.%u\n", props.deviceName, VK_API_VERSION_MAJOR(props.apiVersion),
@@ -635,6 +882,8 @@ int main(int argc, char** argv) {
     RUN("free_after_wait", freeCase());
     RUN("completion_after_gpu", completionCase());
     RUN("calls", callsCase());
+    RUN("pipeline_cache", pipelineCacheCase(&props));
+    RUN("child_windows", childWindowsCase());
 
     CHECK(vkDeviceWaitIdle(device));
     vkDestroySemaphore(device, timeline, NULL);
