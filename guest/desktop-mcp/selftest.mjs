@@ -57,7 +57,7 @@ for (const [steps, pattern] of [
   [[{ wait: 10 }, { wait: 0 }], /Did 1 of 2; stopped: wait must be 10–5000 ms/],
   [[{ press: 'x'.repeat(501) }], /at most 500/],
   [[{ fly: 1 }], /unknown step/],
-  [[{ set: 'e1' }], /element not found|set needs text|seat|display/],
+  [[{ set: 'e1' }], /stale id|set needs text|seat|display/],
 ]) {
   const result = await call('act', { steps, observe: false })
   assert.match(result.content[0].text, pattern)
