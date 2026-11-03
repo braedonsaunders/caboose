@@ -93,8 +93,10 @@ static void pumpRemoteSurface(Surface& surface) {
         if (surface.destroyed && !client.bindPending()) return;
         if (!tryBind(surface)) {
             // A refused bind is terminal for the accepted swapchain work, rather than
-            // filling its image ring while an infinite acquire waits for a retry.
-            if (!client.bindPending() && !surface.attempted && surface.bindAttempts) {
+            // filling its image ring while an infinite acquire waits for a retry. A bind
+            // the phone failed (its layer was not ready) is retried with backoff, and the
+            // work waits for it, up to kPhoneBindFailuresMax failures.
+            if (!client.bindPending() && !surface.attempted && surface.bindAttempts && !surface.phoneRetrying) {
                 for (auto& swap:surface.remoteSwaps) { swap->poisoned=true; swap->cancelled=true; }
             }
             return;

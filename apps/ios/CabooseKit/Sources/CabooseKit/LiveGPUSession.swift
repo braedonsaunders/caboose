@@ -36,6 +36,12 @@ protocol LiveGPURetirementReporting: AnyObject {
     var retirementReceiptSent: Bool { get }
 }
 
+/// Prints where a cleanup that has not returned stands (docs/gpu-live.md, "Teardown
+/// report"): each process's teardown step and what the native teardown is doing. Any thread.
+protocol LiveGPUTeardownReporting: AnyObject {
+    func reportTeardown()
+}
+
 public enum LiveGPUSessionEvent: Sendable {
     /// WebSocket accepted. Does not imply native runtime, negotiation or presentation readiness.
     case transportOpened
@@ -61,6 +67,8 @@ public final class LiveGPUSession: @unchecked Sendable {
     /// The transport's receiving is held back while the decoder catches up (under `lock`).
     private var receivePaused = false
     private var confirmedRetirement = false
+    /// Set when cleanup returned (under `lock`): the teardown report stops.
+    private var cleanupReturned = false
     public var remoteRetirementCompleted: Bool { lock.withLock { confirmedRetirement } }
     private var drainDeadline: DispatchWorkItem?
     private let drainTimeout: TimeInterval
@@ -231,6 +239,7 @@ public final class LiveGPUSession: @unchecked Sendable {
         #endif
         transport.close()
         DispatchQueue.global().asyncAfter(deadline: .now() + cleanupTimeout) { [self] in
+            reportTeardownWhilePending()
             report(cause: cause, cleanupError: LiveGPUError.cleanupTimedOut)
         }
         // A blocked socketpair writer cannot prevent revocation from interrupting it.
@@ -242,10 +251,20 @@ public final class LiveGPUSession: @unchecked Sendable {
                 var cleanupError = priorError
                 do { try consumer.finish() } catch { if cleanupError == nil { cleanupError = error } }
                 let receipt = (consumer as? any LiveGPURetirementReporting)?.retirementReceiptSent == true
+                lock.withLock { cleanupReturned = true }
                 report(cause: cause, cleanupError: cleanupError,
                        confirmed: normalPeerClose && cause == nil && cleanupError == nil && receipt)
             }
         }
+    }
+
+    /// At the cleanup deadline and every 10 s after it while cleanup has not returned, prints
+    /// where each process's teardown stands.
+    private func reportTeardownWhilePending() {
+        guard !lock.withLock({ cleanupReturned }) else { return }
+        print("CABOOSE_GPU_TEARDOWN_REPORT generation=\(generation.uuidString)")
+        (consumer as? any LiveGPUTeardownReporting)?.reportTeardown()
+        DispatchQueue.global().asyncAfter(deadline: .now() + 10) { [self] in reportTeardownWhilePending() }
     }
 
     /// The single end event: from returned cleanup or from the cleanup deadline, whichever is first.

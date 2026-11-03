@@ -33,11 +33,15 @@ int caboose_gpu_runtime_wait_order(uint64_t token, uint64_t serial);
 int caboose_gpu_runtime_suspend(uint32_t timeout_ms);
 int caboose_gpu_runtime_resume(void);
 int caboose_gpu_runtime_stop(uint64_t token);
-// Call off UI/network threads after all run calls return. Waits for upstream
-// process cleanup. First retire all GPU surface work on a worker and detach
-// each surface on main, releasing its decoder-instance lease; otherwise cleanup
-// waits for that lease and cannot finish.
+// Call off UI/network threads after all run calls return. Waits up to 4 s for upstream
+// process cleanup, which then goes on by itself. First retire all GPU surface work on a
+// worker and detach each surface on main, releasing its decoder-instance lease; a lease
+// still held defers the instance's teardown until it is released.
 int caboose_gpu_runtime_finish(uint64_t token);
+// Prints the teardown report to standard error (docs/gpu-live.md, "Teardown report"): every
+// process's state, what the decoder's teardown is doing and has deferred, and every queue's
+// pending waits.
+void caboose_gpu_runtime_report_teardown(void);
 
 #ifdef __cplusplus
 }

@@ -249,9 +249,11 @@ declare `batched-descriptor-sets` leaves the process on per-call `vkAllocateDesc
 and `vkUpdateDescriptorSet*`. The process's first connection decides: a later executor that
 does not take batched sets cannot serve a process that uses them (its connection fails
 with `CABOOSE_GPU_CONNECT_FAILED`), while one that does serves a process that does not.
-The executor makes every pool's set ids when the pool is created, for every process, and
-deletes the handles of sets allocated per call when they are freed or their pool is reset.
-Its devices do not offer inline uniform blocks, which a batched commit cannot carry.
+The phone app and the Linux executor do not declare `batched-descriptor-sets` and run with
+gfxstream's batched descriptor-set feature off: with it on, gfxstream hides inline uniform
+blocks from every guest of the executor, which DXVK requires, and the guest's batched commit
+cannot carry inline uniform block writes. Their devices offer inline uniform blocks, and
+every process allocates and writes sets per call.
 
 ### Guest-assigned handles
 
@@ -507,7 +509,36 @@ which ends every surface grant the generation held, and then releases the lease.
 reconnect (which may wait up to 5 s for that) is admitted as a new generation and served
 by the same broker. Reconnect never replays stale
 handles or command history. A refused or abnormally ended executor session is logged
-as `CABOOSE_GPU_BROKER executor session ended: <reason>`.
+as `CABOOSE_GPU_BROKER executor session ended: <reason>`. A TCP executor connection whose
+peer vanished without closing it counts as an abrupt loss within about 30 s: the broker
+sets keepalive probes (after 10 s idle, every 5 s, 3 of them) and ends a connection whose
+data stays unacknowledged for 30 s, so neither the lease nor clients waiting for replies
+are held for the kernel's retransmission timeout.
+
+## Memory budget
+
+Before every guest `vkAllocateMemory` the decoder asks the phone's budget, which refuses the
+allocation with `VK_ERROR_OUT_OF_DEVICE_MEMORY` when it would take the GPU device past three
+quarters of Metal's recommended working set, leave the app less than 384 MiB before the
+system ends it (`os_proc_available_memory`), or take what guests hold past an explicit limit
+(the Linux executor's `--gpu-memory-limit BYTES`; the phone sets none). For a process with
+guest-assigned handles a refused allocation is the loss of its device. Each refusal (the
+first 64, then every 64th) is logged as `CABOOSE_GPU_MEMORY_REFUSED` with the request, what
+guests hold, the device's figures and the reason (`limit`, `device`, `headroom`). While memory
+is short (past 85% of a limit, or under twice the 384 MiB reserve left) presented-picture
+capture rings are given up.
+
+## Teardown report
+
+A finished process's teardown never waits without bound. Its streams' decoders get 5 s to
+return; one that has not keeps its stream, and the others retire. The decoder gives a
+device's queues 1 s to go idle, then releases the semaphores and events nothing of the
+process will signal and gives them 2 s more, and gives presentation leases 2 s; whatever is
+still in use then (a device, an instance, a completion marker) is handed to a deferred list
+whose worker frees it once the GPU is done (`CABOOSE_GPU_TEARDOWN_DEFERRED`, `_FREED`,
+`_PENDING` every 30 s), and the teardown goes on. When cleanup has not returned by its
+deadline, and every 10 s after, the phone prints where each process stands
+(`CABOOSE_GPU_TEARDOWN_STEP`, `CABOOSE_GPU_TEARDOWN_PROCESS`).
 
 ## Resuming an executor
 

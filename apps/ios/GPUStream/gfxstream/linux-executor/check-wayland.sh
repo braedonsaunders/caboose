@@ -17,7 +17,7 @@ cleanup() {
 trap cleanup EXIT INT TERM
 cp "$driver" "$shared/libvulkan_gfxstream.so"; cp "$probe" "$shared/wayland_present"
 printf 'wayland-check-token' > "$shared/token"
-features=guest-handles,guest-handle-arrays,completion-feed,ordered-present,guest-images,guest-query-pools,shader-cache,executor-resume,zstd-stream,upload-cache,guest-buffer-views,batched-descriptor-sets
+features=guest-handles,guest-handle-arrays,completion-feed,ordered-present,guest-images,guest-query-pools,shader-cache,executor-resume,zstd-stream,upload-cache,guest-buffer-views
 docker run -d --name "$name-computer" --init --network none --cpus 4 --memory 6g --shm-size 256m \
  -v "$release:/release:ro" -v "$shared:/shared" -v "$repo/guest/gpu:/repo/guest/gpu:ro" \
  --entrypoint /bin/sh "$image" -c 'exec sleep infinity' >/dev/null

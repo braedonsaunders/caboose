@@ -138,6 +138,10 @@ Each patch is one feature. Several change Mesa's generated encoder
 | 0065 external-semaphore-capabilities | A device's external-semaphore answers (empty chain, or exactly a semaphore type) join the same per-session capability cache; the tracker's adjustment applies to cached and asked answers alike |
 | 0066 device-constant-capabilities | Physical-device properties (with chains of known, pointer-free structures), queue families and the device's extension list join the per-session capability cache (`../bounded-memory/capability_chains.h`); the first properties query in a process is still asked. Features and memory properties are not shared: the encoder adjusts them per process |
 | 0067 batched-descriptor-sets | With hello `0x40000`, descriptor sets are allocated and written in the guest (a pool asks for its set ids once) and the sets a submit binds go just before it in one `vkQueueCommitDescriptorSetUpdatesGOOGLE` |
+| 0068 extensions-per-executor | The host's instance and device extension lists are asked again after the executor changed (its generation), so a process that outlives its executor offers the new device's extensions |
+| 0069 read-profile-at-exit | `CABOOSE_READ_PROFILE` also reports the totals not yet reported when the process exits (`at_exit`), so a process shorter than its 2 s period reports |
+| 0070 instance-version-once | `vkEnumerateInstanceVersion` is asked once per executor connection and answered from the capability cache's process-local answers after that |
+| 0071 deferred-pool-ids | With batched descriptor sets and one encoder, a descriptor pool asks for its set ids without waiting; the reply is read with the other deferred replies or at the pool's first allocation |
 
 The patch messages describe each change. To change the driver, prepare a tree, commit
 the prepared state, edit, and regenerate the affected patch with `git format-patch`
@@ -183,7 +187,7 @@ hello for the completion feed. The rest of the series requires the `0x70` contra
 | `CABOOSE_GFXSTREAM_SOCKET` | Socket path of the broker; selects the Caboose transport |
 | `CABOOSE_GFXSTREAM_SURFACE_SOCKET` | Socket path of the broker's surface service |
 | `CABOOSE_GFXSTREAM_GUEST_HANDLES=0` | Do not offer guest-assigned handles |
-| `CABOOSE_READ_PROFILE=1` | Every two seconds, the eight opcodes with the most blocking read time (`opN` waiting for its own reply, `drainN` for earlier deferred replies, `waitN` for local waits), on stderr; calls above opcode 21009 are named (`wait_WaitSemaphores`) |
+| `CABOOSE_READ_PROFILE=1` | Every two seconds and at exit, the eight opcodes with the most blocking read time (`opN` waiting for its own reply, `drainN` for earlier deferred replies, `waitN` for local waits), on stderr; calls above opcode 21009 are named (`wait_WaitSemaphores`) |
 | `CABOOSE_PRIVATE_GPU_COHERENT_LOG=1` | The first coherent-memory flushes and invalidates, per allocation, on stderr |
 | `CABOOSE_PRIVATE_GPU_FLUSH_TIMING=1` | Bounded flush timing records on stderr |
 | `CABOOSE_PRIVATE_GPU_RPC_TIMING=1` | Bounded timing of ten synchronous calls on stderr |

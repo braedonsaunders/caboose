@@ -118,6 +118,7 @@ import CabooseGPULive
         _ = caboose_gpu_runtime_set_cache_root("/")
         _ = caboose_gpu_runtime_suspend(0)
         _ = caboose_gpu_runtime_resume()
+        caboose_gpu_runtime_report_teardown()
         var surface: OpaquePointer?
         var bind = caboose_gpu_surface_bind_info()
         _ = caboose_gpu_surface_prepare(&bind, &surface)

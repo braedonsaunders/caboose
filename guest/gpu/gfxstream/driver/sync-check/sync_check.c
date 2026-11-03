@@ -1073,6 +1073,56 @@ static void exitLatencyCase(void) {
            worst[0],worst[1],worstSetup[0],worstSetup[1],failedChildren);
 }
 
+// The process the abandoned_work case starts: a batch that waits for a timeline value
+// nothing will signal, and the process gone at once, so that only the executor's
+// teardown can let that work finish.
+static void abandonWork(void) {
+    begin();
+    CHECK(vkEndCommandBuffer(cb));
+    VkSemaphoreSubmitInfo waitInfo = {VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
+    waitInfo.semaphore = timeline;
+    waitInfo.value = 1;
+    waitInfo.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+    VkCommandBufferSubmitInfo cbInfo = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO};
+    cbInfo.commandBuffer = cb;
+    VkSubmitInfo2 submit = {VK_STRUCTURE_TYPE_SUBMIT_INFO_2};
+    submit.waitSemaphoreInfoCount = 1;
+    submit.pWaitSemaphoreInfos = &waitInfo;
+    submit.commandBufferInfoCount = 1;
+    submit.pCommandBufferInfos = &cbInfo;
+    VkFenceCreateInfo fenceInfo = {VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+    VkFence fence;
+    CHECK(vkCreateFence(device, &fenceInfo, NULL, &fence));
+    CHECK(vkQueueSubmit2(queue, 1, &submit, fence));
+    // Time for the batch to reach the executor before the process goes.
+    struct timespec pause = {0, 500000000};
+    nanosleep(&pause, NULL);
+    printf("CABOOSE_SYNC_CHECK abandoned pid=%ld\n", (long)getpid());
+    fflush(stdout);
+    _exit(0);
+}
+
+// Starts this program again to abandon a waiting batch (abandonWork), and waits for it.
+static void abandonedWorkCase(void) {
+    const uint64_t start = nowUs();
+    const pid_t child = fork();
+    if (child == 0) {
+        execl("/proc/self/exe", "sync_check", "--abandon", (char*)NULL);
+        _exit(127);
+    }
+    int status = 0;
+    int exited = 0;
+    while (child > 0 && nowUs() - start < 20000000u) {
+        const pid_t done = waitpid(child, &status, WNOHANG);
+        if (done == child) { exited = 1; break; }
+        struct timespec pause = {0, 20000000};
+        nanosleep(&pause, NULL);
+    }
+    report("abandoned_work", exited && WIFEXITED(status) && WEXITSTATUS(status) == 0,
+           "exited=%d status=%d ms=%.1f (linux-executor/check.sh also requires its retirement)", exited,
+           exited ? WEXITSTATUS(status) : -1, (nowUs() - start) / 1000.0);
+}
+
 int main(int argc, char** argv) {
     if (argc>1 && !strcmp(argv[1],"--lifetime-child")) {
         for (int i=0;i<32;++i) {
@@ -1087,7 +1137,8 @@ int main(int argc, char** argv) {
         return 0;
     }
     if (argc > 3 && !strcmp(argv[1], "--exit-child")) return exitChild(atoi(argv[2]), atoi(argv[3]));
-    const char* only = argc > 1 ? argv[1] : NULL;
+    const int abandon = argc > 1 && !strcmp(argv[1], "--abandon");
+    const char* only = argc > 1 && !abandon ? argv[1] : NULL;
     VkApplicationInfo app = {VK_STRUCTURE_TYPE_APPLICATION_INFO};
     app.pApplicationName = "caboose-sync-check";
     app.apiVersion = VK_API_VERSION_1_3;
@@ -1170,6 +1221,7 @@ int main(int argc, char** argv) {
     semaphoreInfo.pNext = &typeInfo;
     CHECK(vkCreateSemaphore(device, &semaphoreInfo, NULL, &timeline));
 
+    if (abandon) abandonWork();
 #define RUN(name, call) if (!only || strstr(name, only)) call
     RUN("event_set2_timeline", eventCase(0));
     RUN("event_set2_unsignalled", eventCase(1));
@@ -1185,6 +1237,7 @@ int main(int argc, char** argv) {
     RUN("one_shot", oneShotCase());
     RUN("coherent_rewrite", coherentRewriteCase());
     RUN("exit_latency", exitLatencyCase());
+    RUN("abandoned_work", abandonedWorkCase());
 
     CHECK(vkDeviceWaitIdle(device));
     vkDestroySemaphore(device, timeline, NULL);

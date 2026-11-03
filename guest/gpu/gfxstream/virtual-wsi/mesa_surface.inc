@@ -78,6 +78,9 @@ struct Surface {
     // a bind the phone answered with a failure, not before `nextPhoneBind`.
     std::chrono::steady_clock::time_point nextBind{}, nextPhoneBind{};
     uint32_t bindAttempts=0, phoneFailures=0;
+    // The last bind was answered by the phone with a failure and is retried: pending
+    // swapchain work waits for it instead of ending (kPhoneBindFailuresMax).
+    bool phoneRetrying=false;
     // The provider's last capability reply, for the physical device it answered.
     Bytes caps;
     uint64_t capsPhysical=0;
@@ -135,6 +138,9 @@ static bool lazyBind() { return caboose_gfxstream_guest_images==1; }
 // retried after a delay that doubles up to this, even by presents: each costs the phone's
 // own wait for the layer.
 constexpr auto kPhoneBindRetryMax=std::chrono::seconds(4);
+// Phone failures in a row a pending swapchain waits through (about 14 s with the backoff
+// above) before its work ends as for a refused bind.
+constexpr uint32_t kPhoneBindFailuresMax=8;
 static void logBind(const Surface& surface, const char* outcome, int error, int vk) {
     // The first attempts, then every 32nd: enough to see why a window never binds.
     if (surface.bindAttempts>4 && surface.bindAttempts%32) return;
@@ -179,16 +185,18 @@ static bool tryBind(Surface& surface, bool present=false,
         if (!surface.client.awaitBind(now+wait,&reply)) return false;
         const auto answer=status(reply.body,48);
         if (apiStatus(answer)==VK_SUCCESS) {
-            surface.bound=true;
+            surface.bound=true; surface.phoneRetrying=false;
             if (surface.bindAttempts>1 || surface.phoneFailures) logBind(surface,"bound",0,0);
             return true;
         }
         const auto delay=std::min<std::chrono::steady_clock::duration>(kPhoneBindRetryMax,
             kBindRetry*(1u<<std::min(surface.phoneFailures,6u)));
         ++surface.phoneFailures;
+        surface.phoneRetrying=surface.phoneFailures<kPhoneBindFailuresMax;
         surface.nextPhoneBind=std::chrono::steady_clock::now()+delay;
         logBind(surface,"failed",answer.nativeError,answer.hasVk ? answer.vk : 0);
     } catch (const std::system_error& error) {
+        surface.phoneRetrying=false;
         logBind(surface,"refused",error.code().value(),0);
     }
     surface.client.reset();

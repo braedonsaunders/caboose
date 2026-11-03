@@ -40,7 +40,7 @@ from surfaces import FrameLog, NativeError, ProtocolViolation, SerialQueue, Surf
 PROTOCOL = 'caboose.gpu.live.v1'
 # The phone's capabilities (LiveGPUConnection.features).
 FEATURES = ('guest-handles,guest-handle-arrays,completion-feed,ordered-present,guest-images,guest-query-pools,'
-            'shader-cache,executor-resume,zstd-stream,upload-cache,guest-buffer-views,batched-descriptor-sets')
+            'shader-cache,executor-resume,zstd-stream,upload-cache,guest-buffer-views')
 HELLO = (b'CBGLREF1' + struct.pack('<II', 4, 0x70) +
          bytes.fromhex('20d3bb2e30337cabf0febb006ed102ab25ccf6d9ddbfaf624c7e68f9040969c0'))
 MAX_MESSAGE = 256 * 1024
@@ -217,7 +217,8 @@ class Executor:
     def __init__(self, runtime, socket_, options):
         self.rt, self.ws, self.options = runtime, socket_, options
         self.surfaces = SurfaceController(runtime, self._surface_send, self.fail, options.display,
-                                          FrameLog(options.log_every), checksums=not options.no_checksums)
+                                          FrameLog(options.log_every), checksums=not options.no_checksums,
+                                          fail_binds=options.fail_binds)
         self.decoder = None
         self.identity = None
         self.negotiated = False
@@ -395,6 +396,8 @@ class Executor:
                 raise NativeError('start', code)
             if self.options.cache_root:
                 self.rt.runtime_set_cache_root(str(Path(self.options.cache_root).resolve()).encode())
+            if self.options.gpu_memory_limit:
+                self.rt.runtime_set_memory_limit(self.options.gpu_memory_limit)
             self.identity = (frame.executor, frame.generation)
             self.negotiated = True
             self.send(Kind.SESSION_READY, payload=HELLO)
@@ -589,7 +592,9 @@ class Executor:
         with process.lock:
             process.streams.clear()
         self.surfaces.retire_process(ident)
+        started = time.monotonic()
         code = self.rt.runtime_finish(process.token)
+        log(f'process finished id={ident} token={process.token} seconds={time.monotonic() - started:.2f}')
         with self.lock:
             self.processes.pop(ident, None)
             self.retiring.discard(ident)
@@ -642,12 +647,16 @@ def main():
     parser.add_argument('--features', default=FEATURES, help="capability names (default: the phone's)")
     parser.add_argument('--computer', default='linux-executor', help='the X-Caboose-GPU-Computer identity')
     parser.add_argument('--cache-root', help='directory for the shader and upload caches')
+    parser.add_argument('--gpu-memory-limit', type=int, default=0, metavar='BYTES',
+                        help='limit on the device memory guests hold (docs/gpu-live.md, "Memory budget")')
     parser.add_argument('--display', default='1920x1080', help='extent of a window bound without one')
     parser.add_argument('--zstd-window-log', type=int, default=27)
     parser.add_argument('--log-every', type=int, default=60, help='log every Nth presented frame of a swapchain')
     parser.add_argument('--extra-formats', default='', metavar='FORMAT:SPACE,...',
                         help='surface formats to report beyond the implementation\'s (VkFormat:VkColorSpaceKHR numbers)')
     parser.add_argument('--no-checksums', action='store_true', help='do not capture presented pictures')
+    parser.add_argument('--fail-binds', type=int, default=0, metavar='N',
+                        help="answer each session's first N surface binds with EAGAIN, as a phone whose layer is not ready does")
     parser.add_argument('--sessions', type=int, default=1, metavar='N',
                         help='connect again after a session ends, as the phone does, for N sessions in all')
     options = parser.parse_args()

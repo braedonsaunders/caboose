@@ -49,11 +49,19 @@ int caboose_gpu_runtime_suspend(uint32_t timeout_ms);
 int caboose_gpu_runtime_resume(void);
 // Stop revokes admission, signals upstream cleanup and shuts down its streams.
 int caboose_gpu_runtime_stop(uint64_t token);
-// Finish only after every run has returned. Blocks for upstream queued process
-// cleanup and must run off UI/network threads; it does not finalize the backend.
-// Callers must serialize finish for a token and admit a replacement only after
-// this call succeeds. Presentation resources need their own retirement proof.
+// Finish only after every run has returned. Waits up to 4 s for the process's queued
+// cleanup (then prints CABOOSE_GPU_CLEANUP_CONTINUES and the teardown report, and the cleanup
+// goes on by itself; what it cannot free yet is deferred, never holding other processes) and
+// must run off UI/network threads; it does not finalize the backend. Callers must serialize
+// finish for a token and admit a replacement only after this call succeeds. Presentation
+// resources need their own retirement proof.
 int caboose_gpu_runtime_finish(uint64_t token);
+// Limits the device memory guests hold to `bytes` (0: no explicit limit); allocations past it
+// fail (docs/gpu-live.md, "Memory budget"). The limits derived from the device always apply.
+int caboose_gpu_runtime_set_memory_limit(uint64_t bytes);
+// Prints, to standard error, every process's state and what the decoder's teardown is doing
+// and has deferred, with every queue's pending waits (docs/gpu-live.md, "Teardown report").
+void caboose_gpu_runtime_report_teardown(void);
 #ifdef __cplusplus
 }
 #endif

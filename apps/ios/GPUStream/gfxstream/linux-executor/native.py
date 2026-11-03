@@ -94,6 +94,8 @@ _SIGNATURES = {
     'caboose_gpu_runtime_wait_order': (c_int, [c_uint64, c_uint64]),
     'caboose_gpu_runtime_stop': (c_int, [c_uint64]),
     'caboose_gpu_runtime_finish': (c_int, [c_uint64]),
+    'caboose_gpu_runtime_set_memory_limit': (c_int, [c_uint64]),
+    'caboose_gpu_runtime_report_teardown': (None, []),
     'caboose_gpu_surface_prepare': (c_int, [POINTER(BindInfo), POINTER(c_void_p)]),
     'caboose_gpu_surface_attach_headless': (c_int, [c_void_p]),
     'caboose_gpu_surface_detach_headless': (c_int, [POINTER(c_void_p)]),

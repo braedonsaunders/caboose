@@ -46,6 +46,15 @@ public:
         std::unique_lock<std::mutex> lock(mutex_);
         drained_.wait(lock, [this] { return active_ == 0; });
     }
+    // True once nothing holds the gate; false when `timeout` passed first.
+    template <class Duration> bool waitFor(Duration timeout) {
+        std::unique_lock<std::mutex> lock(mutex_);
+        return drained_.wait_for(lock, timeout, [this] { return active_ == 0; });
+    }
+    bool drained() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return active_ == 0;
+    }
 private:
     std::mutex mutex_;
     std::condition_variable drained_;

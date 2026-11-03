@@ -1,0 +1,152 @@
+From: Caboose <caboose@local>
+Subject: [PATCH 71/71] Ask for a descriptor pool's set ids without waiting
+
+With batched descriptor sets every vkCreateDescriptorPool waited for
+vkCollectDescriptorPoolIdsGOOGLE's reply: eight round trips in one Zink GL
+initialization, about 250 ms of it at 15 ms. With one encoder in the process the request
+is now sent deferred: its reply (count, pointer check, ids) is queued as data with the
+stream's other deferred replies (caboose-bounded-memory/deferred_replies.h
+deferredPoolIds) and read into the pool's free ids at its first allocation, which waits
+only if it has not arrived; the request itself reads only replies already arrived. An answer of another count than asked is reported
+(CABOOSE_GPU_POOL_IDS_FAILED) and the allocation reports device loss.
+---
+diff --git a/src/gfxstream/guest/vulkan_enc/DescriptorSetVirtualization.cpp b/src/gfxstream/guest/vulkan_enc/DescriptorSetVirtualization.cpp
+index 0d2efa3..8491196 100644
+--- a/src/gfxstream/guest/vulkan_enc/DescriptorSetVirtualization.cpp
++++ b/src/gfxstream/guest/vulkan_enc/DescriptorSetVirtualization.cpp
+@@ -477,6 +477,16 @@ VkResult validateAndApplyVirtualDescriptorSetAllocation(
+ 
+     if (validateRes != VK_SUCCESS) return validateRes;
+ 
++    // Caboose: set ids the pool asked for without waiting are read before its first sets.
++    {
++        DescriptorPoolAllocationInfo* pending = as_goldfish_VkDescriptorPool(pAllocateInfo->descriptorPool)->allocInfo;
++        if (pending->resolvePoolIds) {
++            auto resolve = std::move(pending->resolvePoolIds);
++            pending->resolvePoolIds = nullptr;
++            if (!resolve(&pending->freePoolIds)) return VK_ERROR_DEVICE_LOST;
++        }
++    }
++
+     for (uint32_t i = 0; i < pAllocateInfo->descriptorSetCount; ++i) {
+         applyDescriptorSetAllocation(pAllocateInfo->descriptorPool, pAllocateInfo->pSetLayouts[i]);
+     }
+diff --git a/src/gfxstream/guest/vulkan_enc/DescriptorSetVirtualization.h b/src/gfxstream/guest/vulkan_enc/DescriptorSetVirtualization.h
+index 9fa5404..88a7e8e 100644
+--- a/src/gfxstream/guest/vulkan_enc/DescriptorSetVirtualization.h
++++ b/src/gfxstream/guest/vulkan_enc/DescriptorSetVirtualization.h
+@@ -6,6 +6,7 @@
+ 
+ #include <vulkan/vulkan.h>
+ 
++#include <functional>
+ #include <unordered_set>
+ #include <vector>
+ 
+@@ -72,6 +73,9 @@ struct DescriptorPoolAllocationInfo {
+ 
+     // TODO: This should be in a single fancy data structure of some kind.
+     std::vector<uint64_t> freePoolIds;
++    // Caboose: the pool asked for its set ids without waiting; this reads them into
++    // freePoolIds at the first allocation, and is false if they cannot be had.
++    std::function<bool(std::vector<uint64_t>*)> resolvePoolIds;
+     std::unordered_set<uint32_t> allocedPoolIds;
+     std::unordered_set<VkDescriptorSet> allocedSets;
+     uint32_t maxSets;
+diff --git a/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp b/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp
+index de64eac..3e8e716 100644
+--- a/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp
++++ b/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp
+@@ -6454,10 +6454,37 @@ VkResult ResourceTracker::on_vkCreateDescriptorPool(void* context, VkResult, VkD
+         std::vector<uint64_t> poolIds(pCreateInfo->maxSets);
+ 
+         uint32_t count = pCreateInfo->maxSets;
++        // Caboose: with one encoder in the process, the ids are asked for without waiting
++        // and read when the pool first allocates (most pools a GL context makes at its
++        // start allocate later, or never), so making a pool costs no round trip.
++        std::shared_ptr<caboose::memory::QueryReply> deferred;
++        if (count && caboose::memory::deferredReplies.singleEncoder(enc)) caboose::memory::deferredPoolIds = &deferred;
+         enc->vkCollectDescriptorPoolIdsGOOGLE(device, pool, &count, poolIds.data(),
+                                               true /* do lock */);
+-
+-        dp->allocInfo->freePoolIds = poolIds;
++        caboose::memory::deferredPoolIds = nullptr;
++
++        if (deferred) {
++            const uint32_t asked = count;
++            dp->allocInfo->resolvePoolIds = [deferred, enc, asked](std::vector<uint64_t>* ids) {
++                if (!deferred->done.load(std::memory_order_acquire) && !enc->cabooseDrainDeferredReplies(true))
++                    return false;
++                if (!deferred->done.load(std::memory_order_acquire)) return false;
++                const auto& data = deferred->data;
++                uint32_t answered = 0;
++                uint64_t pointer = 0;
++                std::memcpy(&answered, data.data(), sizeof(answered));
++                std::memcpy(&pointer, data.data() + sizeof(answered), sizeof(pointer));
++                if (answered != asked || !pointer) {
++                    std::fprintf(stderr, "CABOOSE_GPU_POOL_IDS_FAILED asked=%u answered=%u\n", asked, answered);
++                    return false;
++                }
++                ids->resize(asked);
++                std::memcpy(ids->data(), data.data() + sizeof(answered) + sizeof(pointer), size_t(asked) * sizeof(uint64_t));
++                return true;
++            };
++        } else {
++            dp->allocInfo->freePoolIds = poolIds;
++        }
+     }
+ 
+     return res;
+diff --git a/src/gfxstream/guest/vulkan_enc/autogenerated/VkEncoder.cpp b/src/gfxstream/guest/vulkan_enc/autogenerated/VkEncoder.cpp
+index bed7df5..6da7db1 100644
+--- a/src/gfxstream/guest/vulkan_enc/autogenerated/VkEncoder.cpp
++++ b/src/gfxstream/guest/vulkan_enc/autogenerated/VkEncoder.cpp
+@@ -31737,7 +31737,20 @@ void VkEncoder::vkCollectDescriptorPoolIdsGOOGLE(VkDevice device, VkDescriptorPo
+     if (!queueSubmitWithCommandsEnabled && doLock) this->lock();
+     auto stream = mImpl->stream();
+     caboose_read_profile::currentOpcode = OP_vkCollectDescriptorPoolIdsGOOGLE;
+-    caboose::memory::deferredReplies.drain(this, stream);
++    if (caboose::memory::deferredPoolIds && pPoolIds) {
++        // Sent without waiting: only replies that already arrived are read first.
++        const int fd = caboose_gfxstream_device_fd;
++        if (fd >= 0 && !caboose::memory::deferredReplies.drainAvailable(this, stream, [fd] {
++                int bytes = 0;
++                return ioctl(fd, FIONREAD, &bytes) == 0 && bytes > 0 ? size_t(bytes) : size_t(0);
++            })) {
++            if (!queueSubmitWithCommandsEnabled && doLock) this->unlock();
++            if (pPoolIdCount) *pPoolIdCount = 0;
++            return;
++        }
++    } else {
++        caboose::memory::deferredReplies.drain(this, stream);
++    }
+     auto pool = mImpl->pool();
+     VkDevice local_device;
+     VkDescriptorPool local_descriptorPool;
+@@ -31797,6 +31810,16 @@ void VkEncoder::vkCollectDescriptorPoolIdsGOOGLE(VkDevice device, VkDescriptorPo
+             *streamPtrPtr += (*pPoolIdCount) * sizeof(uint64_t);
+         }
+     }
++    if (caboose::memory::deferredPoolIds && pPoolIds) {
++        // The reply (the count, the array's pointer check and the ids) is read with the
++        // stream's other deferred replies, or when the pool first allocates.
++        auto reply = std::make_shared<caboose::memory::QueryReply>();
++        reply->data.resize(sizeof(uint32_t) + sizeof(uint64_t) + size_t(*pPoolIdCount) * sizeof(uint64_t));
++        stream->flush();
++        caboose::memory::deferredReplies.reserve(this, stream, packetSize_vkCollectDescriptorPoolIdsGOOGLE);
++        caboose::memory::deferredReplies.addDataReply(this, reply, packetSize_vkCollectDescriptorPoolIdsGOOGLE, false);
++        *caboose::memory::deferredPoolIds = std::move(reply);
++    } else {
+     caboose_read_profile::read(stream, (uint32_t*)pPoolIdCount, sizeof(uint32_t));
+     // WARNING PTR CHECK
+     uint64_t* check_pPoolIds;
+@@ -31808,6 +31831,7 @@ void VkEncoder::vkCollectDescriptorPoolIdsGOOGLE(VkDevice device, VkDescriptorPo
+         }
+         caboose_read_profile::read(stream, (uint64_t*)pPoolIds, (*pPoolIdCount) * sizeof(uint64_t));
+     }
++    }
+     ++encodeCount;
+     if (0 == encodeCount % POOL_CLEAR_INTERVAL) {
+         pool->freeAll();
+-- 
+2.43.0
