@@ -4,8 +4,11 @@
 // the compositor can show one a window commits: CGLS kind 40 names the image holding a
 // buffer's pixels and carries the dma-buf itself; kind 41 forgets it. One connection per
 // process to the private surface socket, opened on first use; closing it forgets all of
-// the process's buffers. Without the socket nothing is registered and buffers still work
-// within the process.
+// the process's buffers. The broker closes it when the process's executor is lost, and the
+// next registration opens a new one: a process that recovers from the loss registers the
+// buffers it makes on the new executor. Without the socket nothing is registered (a failed
+// connection is tried again at most once a second) and buffers still work within the
+// process.
 #pragma once
 
 #if defined(__linux__)
@@ -13,6 +16,7 @@
 #include <cerrno>
 #include <cstdint>
 #include <cstdlib>
+#include <chrono>
 #include <cstring>
 #include <mutex>
 #include <sys/socket.h>
@@ -51,11 +55,24 @@ private:
 
     bool send(uint16_t kind, const std::vector<uint8_t>& body, int fd) {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (!connectLocked()) return false;
         std::vector<uint8_t> packet = {'C', 'G', 'L', 'S', 1, 0, uint8_t(kind), uint8_t(kind >> 8)};
         put32(packet, uint32_t(16 + body.size()));
         put32(packet, 0);
         packet.insert(packet.end(), body.begin(), body.end());
+        // A connection the broker closed fails the first send; a registration is then sent
+        // again on a new connection. A forget is not: the closed connection forgot it.
+        for (int attempt = 0; attempt < (kind == 40 ? 2 : 1); ++attempt) {
+            const bool fresh = socket_ < 0;
+            if (!connectLocked()) return false;
+            if (sendLocked(packet, fd)) return true;
+            close(socket_);
+            socket_ = -1;
+            if (fresh) break;  // A new connection that fails at once is not retried now.
+        }
+        return false;
+    }
+
+    bool sendLocked(std::vector<uint8_t>& packet, int fd) {
         iovec io{packet.data(), packet.size()};
         msghdr message{};
         message.msg_iov = &io;
@@ -73,18 +90,14 @@ private:
         ssize_t sent;
         do sent = sendmsg(socket_, &message, MSG_NOSIGNAL);
         while (sent < 0 && errno == EINTR);
-        if (sent == ssize_t(packet.size())) return true;
-        // The broker refused a record or went away: stop registering for this process.
-        close(socket_);
-        socket_ = -1;
-        failed_ = true;
-        return false;
+        return sent == ssize_t(packet.size());
     }
 
     bool connectLocked() {
         if (socket_ >= 0) return true;
-        if (failed_) return false;
-        failed_ = true;  // One attempt per process.
+        const auto now = std::chrono::steady_clock::now();
+        if (now < nextConnect_) return false;
+        nextConnect_ = now + kConnectRetry;
         const char* path = std::getenv("CABOOSE_GFXSTREAM_SURFACE_SOCKET");
         sockaddr_un address{};
         address.sun_family = AF_UNIX;
@@ -97,13 +110,14 @@ private:
             return false;
         }
         socket_ = fd;
-        failed_ = false;
+        nextConnect_ = {};
         return true;
     }
 
+    static constexpr std::chrono::seconds kConnectRetry{1};
     std::mutex mutex_;
     int socket_ = -1;
-    bool failed_ = false;
+    std::chrono::steady_clock::time_point nextConnect_{};
 };
 
 inline Registrations& registrations() {

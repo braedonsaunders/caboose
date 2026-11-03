@@ -71,7 +71,10 @@ kind 40, 48 bytes, carries the host instance, device, queue and image handles, t
 image's format and extent, and the queue family, with the dma-buf itself in
 `SCM_RIGHTS`; kind 41, 16 bytes, forgets a buffer by device and inode when its last
 memory object is freed. One connection per process carries these records; closing it
-forgets all of the process's buffers. A buffer is registered once, for its first image.
+forgets all of the process's buffers. The broker closes it when the process's executor is
+lost, and the process's next registration opens a new connection, so a process that
+recovers from the loss registers the buffers it makes on the new executor; a socket that
+cannot be reached is tried again at most once a second. A buffer is registered once, for its first image.
 
 caboose-display names the render node as the main device of its linux-dmabuf global's
 feedback, and with the phone GPU configured also advertises the remote modifier for every
