@@ -171,3 +171,16 @@ Runs against a running computer container: the executor joins its network namesp
 (`guest/gpu/gfxstream/driver/sync-check/wayland_present.c`) presents 30 frames through
 `DRIVER`, loaded for that process only. The check requires the client to see the failed bind,
 bind on a later attempt and have all 30 frames presented.
+
+## DXVK under each negotiation
+
+```sh
+sh apps/ios/GPUStream/gfxstream/linux-executor/check-dxvk.sh COMPUTER WORK BENCH_DIR OUT
+```
+
+Runs DXVK's d3d11 triangle (`BENCH_DIR/triangle.exe`, in the Steam Flatpak's data) through the
+running computer's Steam Linux Runtime 4 and Proton, on the real Linux executor serving that
+computer under the phone's feature list and an older phone's, with `caboose-display-probe` as a
+phone-shaped viewer. Each case requires DXVK to report the device without skipping it and to make
+its D3D11 device and swapchain; `REQUIRE_FRAMES=1` also requires presented frames, which reach
+the compositor only through a viewer it binds the window for (a phone). The release seal runs it.

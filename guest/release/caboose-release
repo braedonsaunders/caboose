@@ -42,7 +42,7 @@ CHECK_CONF = Path(os.environ.get("CABOOSE_RELEASE_CHECK", "/root/.config/caboose
 # The release's 64-bit guest driver, which the check runs.
 DRIVER = "usr/local/lib/caboose-gpu-live/libvulkan_gfxstream.so"
 CHECK_SCRIPT = "apps/ios/GPUStream/gfxstream/linux-executor/check.sh"
-CHECK_KEYS = ("repo", "image", "work", "sync_check", "capability_probe")
+CHECK_KEYS = ("repo", "image", "work", "sync_check", "capability_probe", "dxvk_computer", "dxvk_bench")
 
 
 class Failure(Exception):
@@ -170,7 +170,16 @@ def run_check(directory, settings):
         "sh", str(Path(settings["repo"]) / "apps/ios/GPUStream/gfxstream/linux-executor/check-capabilities.sh"),
         settings["image"], settings["work"], str(driver), settings["capability_probe"],
         str(out / "capabilities"), str(directory)], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-    return capabilities.returncode, summary + capabilities.stdout.decode(errors="replace")
+    summary += capabilities.stdout.decode(errors="replace")
+    if capabilities.returncode:
+        return capabilities.returncode, summary
+    # DXVK must find an adapter and make its device and swapchain on the executor under each
+    # negotiation a phone makes: a device that lacks a feature DXVK requires fails here.
+    dxvk = subprocess.run([
+        "sh", str(Path(settings["repo"]) / "apps/ios/GPUStream/gfxstream/linux-executor/check-dxvk.sh"),
+        settings["dxvk_computer"], settings["work"], settings["dxvk_bench"], str(out / "dxvk")],
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    return dxvk.returncode, summary + dxvk.stdout.decode(errors="replace")
 
 
 def check(directory, run=None):

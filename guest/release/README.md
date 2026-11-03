@@ -37,6 +37,9 @@ frames, in disposable containers. The check then installs the release payload in
 `caboose-session`, display and packaged broker launcher, requiring an authenticated `/gpu`
 WebSocket upgrade. The check also runs cold and fresh-process warmed capability queries
 through the packaged broker, requiring identical answers and verified cache-hit counts.
+Last, DXVK's d3d11 triangle runs on the executor in a running computer under the phone's and
+an older phone's feature negotiation ([`check-dxvk.sh`](../../apps/ios/GPUStream/gfxstream/linux-executor/check-dxvk.sh)):
+DXVK must find the device without skipping it and make its D3D11 device and swapchain.
 A release whose check fails is not sealed and stays open.
 The check's logs and `check/result` (`PASS` or `FAIL`, then the check's summary lines) stay
 in the release, and the manifest covers them. The settings are `key=value` lines in
@@ -49,6 +52,8 @@ in the release, and the manifest covers them. The settings are `key=value` lines
 | `work` | The directory the Linux executor's `build.sh` built in |
 | `capability_probe` | The built `capability_queries.c` probe; packaged broker/cache handshake validation |
 | `sync_check` | The synchronization probe ([sync-check](../gpu/gfxstream/driver/sync-check/README.md)), built |
+| `dxvk_computer` | The running computer DXVK's check runs in (its Steam Flatpak, Steam Linux Runtime 4 and Proton); its executor is replaced while the check runs |
+| `dxvk_bench` | The directory in that computer's Steam Flatpak data holding DXVK's `triangle.exe` |
 
 ## Signatures and the SBOM
 
