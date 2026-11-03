@@ -1044,10 +1044,9 @@ final class DesktopModel {
                                                    maximum: limits.maximum, isAuxiliary: window.isAuxiliary,
                                                    isFullscreen: window.isFullscreen)
         }
-        let filling = layout.windowsToFill(candidates, in: workArea, titleBar: titleBarHeight, filled: laptopFilled)
+        let filling = layout.windowsToFill(candidates, in: workArea, titleBar: titleBarHeight, filled: &laptopFilled)
         for id in filling {
             guard let window = session.windows[id] else { continue }
-            laptopFilled.insert(id)
             layout.setSnap(id, .maximized, current: chromeRect(window), in: workArea, app: app(window))
             applyPlace(window, session, always: true)
         }

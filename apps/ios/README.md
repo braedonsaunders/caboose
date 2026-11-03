@@ -1159,8 +1159,12 @@ desktop focuses it in that workspace, and every app window, Wayland or X11, fill
 screen once (one whose minimum size is larger is laid out at the screen's shape grown to that
 minimum and shown scaled to fit; a fixed-size or capped one such as a starter window sits in its
 middle at its own size). The green button zooms a window out to its own frame and back, and a
-window zoomed out stays so; there is no separate Full Screen route or Exit App Full
-Screen action. Keyboard fills the lower panel with Laptop's own keyboard under the shared
+window zoomed out, dragged out by its title bar or snapped elsewhere stays so: each window is
+filled once, by whichever route first lays it out. A window in app full screen shows its title
+bar while the pointer rests at the top edge, as on a Mac, and its green button leaves full
+screen to the window's place; there is no separate Full Screen route or Exit App Full Screen
+action. Dragging a title bar offers the snap layouts that fit the upper screen as Laptop shows
+them (`TilePolicy.fittedScale`, under [Snapping](#snapping)). Keyboard fills the lower panel with Laptop's own keyboard under the shared
 shortcut header; Keyboard & Trackpad puts a full-width trackpad across the upper third and
 the same keyboard and header in the lower two-thirds. Neither opens the system keyboard: on
 the Trackpad page, any text field on the computer taking focus (its input method turning on,

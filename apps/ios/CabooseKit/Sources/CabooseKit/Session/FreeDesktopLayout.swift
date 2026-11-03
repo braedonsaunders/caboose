@@ -126,18 +126,33 @@ public struct FreeDesktopLayout: Codable, Equatable, Sendable {
     }
 
     /// The windows to maximize so each fills `area` (Laptop's upper screen), by id: app
-    /// windows with a known class that are not maximized in their own place already, have not
-    /// been filled before (`filled`: one the owner restored stays restored), and take the
-    /// area as Laptop shows it (`accepts`, scaled). Dialogs, full-screen windows and windows
-    /// whose class has not arrived are left alone; the last are filled once it does.
+    /// windows with a known class that have not been laid out on it before (`filled`), and
+    /// take the area as Laptop shows it (`accepts`, scaled). A window counts as laid out once
+    /// it has been filled here, or snapped by any route (the first fit, the green button, a
+    /// drag or a menu), so one the owner then restores, drags out or snaps elsewhere stays
+    /// where they put it. Both join `filled`. Dialogs, full-screen windows and windows whose
+    /// class has not arrived are left alone; the last are filled once it does.
     public func windowsToFill(_ windows: [FillCandidate], in area: CGRect, titleBar: CGFloat = 0,
-                              filled: Set<Int> = []) -> [Int] {
-        windows.filter { window in
-            !window.isAuxiliary && !window.isFullscreen && window.app != nil && !filled.contains(window.id)
-                && place(for: window.id, app: window.app)?.snap != .maximized
-                && Self.accepts(.maximized, in: area, titleBar: titleBar, minimum: window.minimum,
-                                maximum: window.maximum, scaled: true)
-        }.map(\.id).sorted()
+                              filled: inout Set<Int>) -> [Int] {
+        var filling: [Int] = []
+        for window in windows.sorted(by: { $0.id < $1.id }) {
+            guard !window.isAuxiliary, !window.isFullscreen, window.app != nil, !filled.contains(window.id) else { continue }
+            if place(for: window.id, app: window.app)?.snap != nil {
+                filled.insert(window.id)
+                continue
+            }
+            guard Self.accepts(.maximized, in: area, titleBar: titleBar, minimum: window.minimum,
+                               maximum: window.maximum, scaled: true) else { continue }
+            filled.insert(window.id)
+            filling.append(window.id)
+        }
+        return filling
+    }
+
+    /// `windowsToFill` for a screen nothing has been laid out on yet.
+    public func windowsToFill(_ windows: [FillCandidate], in area: CGRect, titleBar: CGFloat = 0) -> [Int] {
+        var filled: Set<Int> = []
+        return windowsToFill(windows, in: area, titleBar: titleBar, filled: &filled)
     }
     public func isMinimized(_ id: Int, app: String?) -> Bool { place(for: id, app: app)?.minimized == true }
 
