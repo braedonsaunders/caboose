@@ -5,6 +5,13 @@
 #include <vulkan/vk_layer.h>
 #include <vulkan/vulkan.h>
 
+#include <drm/drm.h>
+#include <drm/drm_mode.h>
+#include <fcntl.h>
+#include <sys/ioctl.h>
+#include <unistd.h>
+
+#include <cerrno>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -38,6 +45,13 @@ struct InstanceData {
 struct DeviceData {
     PFN_vkGetDeviceProcAddr next = nullptr;
     PFN_vkDestroyDevice destroy = nullptr;
+    // A device on a CPU implementation presented as a GPU: its dma-buf memory is vgem's.
+    bool cpu = false;
+    PFN_vkAllocateMemory allocate = nullptr;
+    PFN_vkFreeMemory free = nullptr;
+    PFN_vkGetMemoryFdKHR memoryFd = nullptr;
+    std::mutex lock;
+    std::unordered_map<VkDeviceMemory, int> dmabufs;  // memory made from a vgem dma-buf: its descriptor
 };
 
 std::mutex mutex;
@@ -268,6 +282,120 @@ VKAPI_ATTR VkResult VKAPI_CALL EnumeratePhysicalDeviceGroupsKHR(VkInstance insta
     return data ? enumerateGroups(data->groupsKHR, *data, instance, count, out) : VK_ERROR_INITIALIZATION_FAILED;
 }
 
+// Dma-bufs for a CPU implementation. Lavapipe exports memory as a dma-buf through
+// /dev/udmabuf, which a computer's kernel may lack (WSL2's has no CONFIG_UDMABUF), and then
+// fails every export; it imports a dma-buf by mapping it. Memory allocated for export as a
+// dma-buf is therefore a vgem buffer (the render node's own device, docs/gpu-buffers.md)
+// imported instead: ordinary shared memory in LINEAR layout, as a LINEAR GBM buffer is.
+
+// The vgem device's primary node (vgem makes buffers only there), opened once.
+int vgemCard() {
+    static const int card = [] {
+        for (int minor = 0; minor < 64; ++minor) {
+            char path[32];
+            std::snprintf(path, sizeof(path), "/dev/dri/card%d", minor);
+            const int fd = ::open(path, O_RDWR | O_CLOEXEC);
+            if (fd < 0) continue;
+            char name[16] = {};
+            drm_version version{};
+            version.name = name;
+            version.name_len = sizeof(name) - 1;
+            if (::ioctl(fd, DRM_IOCTL_VERSION, &version) == 0 && !std::strcmp(name, "vgem")) return fd;
+            ::close(fd);
+        }
+        return -1;
+    }();
+    return card;
+}
+
+// A new vgem buffer of at least `size` bytes as a dma-buf descriptor, or -1.
+int vgemDmabuf(VkDeviceSize size) {
+    const int card = vgemCard();
+    const uint64_t rows = (size + 4095) / 4096;
+    if (card < 0 || !size || rows > UINT32_MAX) return -1;
+    drm_mode_create_dumb create{};
+    create.width = 4096;
+    create.height = static_cast<uint32_t>(rows);
+    create.bpp = 8;
+    if (::ioctl(card, DRM_IOCTL_MODE_CREATE_DUMB, &create)) return -1;
+    drm_prime_handle prime{};
+    prime.handle = create.handle;
+    prime.flags = DRM_CLOEXEC | DRM_RDWR;
+    const int exported = ::ioctl(card, DRM_IOCTL_PRIME_HANDLE_TO_FD, &prime);
+    drm_gem_close close{};
+    close.handle = create.handle;
+    ::ioctl(card, DRM_IOCTL_GEM_CLOSE, &close);  // the dma-buf keeps the buffer
+    return exported ? -1 : prime.fd;
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL AllocateMemory(VkDevice device, const VkMemoryAllocateInfo* info,
+                                              const VkAllocationCallbacks* allocator, VkDeviceMemory* memory) {
+    DeviceData* data = deviceData(device);
+    if (!data || !data->allocate) return VK_ERROR_INITIALIZATION_FAILED;
+    const VkExportMemoryAllocateInfo* exported = nullptr;
+    for (auto* item = static_cast<const VkBaseInStructure*>(info->pNext); item; item = item->pNext)
+        if (item->sType == VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO)
+            exported = reinterpret_cast<const VkExportMemoryAllocateInfo*>(item);
+    if (!data->cpu || !exported || !(exported->handleTypes & VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT))
+        return data->allocate(device, info, allocator, memory);
+    const int dmabuf = vgemDmabuf(info->allocationSize);
+    if (dmabuf < 0) return VK_ERROR_OUT_OF_DEVICE_MEMORY;
+    const int imported = ::fcntl(dmabuf, F_DUPFD_CLOEXEC, 0);
+    if (imported < 0) { ::close(dmabuf); return VK_ERROR_OUT_OF_HOST_MEMORY; }
+    // The import replaces the export request: the application's chain is passed on with its
+    // export structure unlinked for the call, behind the import, and restored after it.
+    VkBaseOutStructure* before = nullptr;
+    for (auto* item = reinterpret_cast<VkBaseOutStructure*>(const_cast<void*>(info->pNext)); item; item = item->pNext) {
+        if (item->pNext == reinterpret_cast<const VkBaseOutStructure*>(exported)) { before = item; break; }
+    }
+    VkImportMemoryFdInfoKHR import{};
+    import.sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR;
+    import.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
+    import.fd = imported;
+    import.pNext = info->pNext == exported ? exported->pNext : info->pNext;
+    if (before) before->pNext = static_cast<VkBaseOutStructure*>(const_cast<void*>(exported->pNext));
+    VkMemoryAllocateInfo changed = *info;
+    changed.pNext = &import;
+    const VkResult result = data->allocate(device, &changed, allocator, memory);
+    if (before) before->pNext = reinterpret_cast<VkBaseOutStructure*>(const_cast<VkExportMemoryAllocateInfo*>(exported));
+    if (result != VK_SUCCESS) {
+        ::close(imported);
+        ::close(dmabuf);
+        return result;
+    }
+    std::lock_guard<std::mutex> lock(data->lock);
+    data->dmabufs[*memory] = dmabuf;
+    return VK_SUCCESS;
+}
+
+VKAPI_ATTR void VKAPI_CALL FreeMemory(VkDevice device, VkDeviceMemory memory, const VkAllocationCallbacks* allocator) {
+    DeviceData* data = deviceData(device);
+    if (!data || !data->free) return;
+    if (data->cpu && memory != VK_NULL_HANDLE) {
+        std::lock_guard<std::mutex> lock(data->lock);
+        auto found = data->dmabufs.find(memory);
+        if (found != data->dmabufs.end()) {
+            ::close(found->second);
+            data->dmabufs.erase(found);
+        }
+    }
+    data->free(device, memory, allocator);
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL GetMemoryFdKHR(VkDevice device, const VkMemoryGetFdInfoKHR* info, int* fd) {
+    DeviceData* data = deviceData(device);
+    if (!data || !data->memoryFd) return VK_ERROR_INITIALIZATION_FAILED;
+    if (data->cpu && info && info->handleType == VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT) {
+        std::lock_guard<std::mutex> lock(data->lock);
+        auto found = data->dmabufs.find(info->memory);
+        if (found != data->dmabufs.end()) {
+            *fd = ::fcntl(found->second, F_DUPFD_CLOEXEC, 0);
+            return *fd < 0 ? VK_ERROR_TOO_MANY_OBJECTS : VK_SUCCESS;
+        }
+    }
+    return data->memoryFd(device, info, fd);
+}
+
 VKAPI_ATTR VkResult VKAPI_CALL CreateDevice(VkPhysicalDevice physical, const VkDeviceCreateInfo* info,
                                             const VkAllocationCallbacks* allocator, VkDevice* device) {
     InstanceData* instance = instanceData(physical);
@@ -280,6 +408,10 @@ VKAPI_ATTR VkResult VKAPI_CALL CreateDevice(VkPhysicalDevice physical, const VkD
     auto data = std::make_unique<DeviceData>();
     data->next = next;
     data->destroy = reinterpret_cast<PFN_vkDestroyDevice>(next(*device, "vkDestroyDevice"));
+    data->allocate = reinterpret_cast<PFN_vkAllocateMemory>(next(*device, "vkAllocateMemory"));
+    data->free = reinterpret_cast<PFN_vkFreeMemory>(next(*device, "vkFreeMemory"));
+    data->memoryFd = reinterpret_cast<PFN_vkGetMemoryFdKHR>(next(*device, "vkGetMemoryFdKHR"));
+    data->cpu = isPresented(physical);
     std::lock_guard<std::mutex> lock(mutex);
     devices[key(*device)] = std::move(data);
     return VK_SUCCESS;
@@ -328,7 +460,15 @@ VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL GetDeviceProcAddr(VkDevice device, cons
     if (!std::strcmp(name, "vkGetDeviceProcAddr")) return reinterpret_cast<PFN_vkVoidFunction>(GetDeviceProcAddr);
     if (!std::strcmp(name, "vkDestroyDevice")) return reinterpret_cast<PFN_vkVoidFunction>(DestroyDevice);
     DeviceData* data = deviceData(device);
-    return data ? data->next(device, name) : nullptr;
+    if (!data) return nullptr;
+    PFN_vkVoidFunction found = data->next(device, name);
+    // Memory is intercepted only on CPU devices, and only where the driver has the function.
+    if (data->cpu && found) {
+        if (!std::strcmp(name, "vkAllocateMemory")) return reinterpret_cast<PFN_vkVoidFunction>(AllocateMemory);
+        if (!std::strcmp(name, "vkFreeMemory")) return reinterpret_cast<PFN_vkVoidFunction>(FreeMemory);
+        if (!std::strcmp(name, "vkGetMemoryFdKHR")) return reinterpret_cast<PFN_vkVoidFunction>(GetMemoryFdKHR);
+    }
+    return found;
 }
 
 }  // namespace

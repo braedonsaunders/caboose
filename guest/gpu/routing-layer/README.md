@@ -24,6 +24,18 @@ turns it off.
   Without it they are listed again, last; devices made on them before the phone attached are
   moved by the executor switch.
 
+## Dma-bufs without the phone
+
+Lavapipe exports memory as a dma-buf through `/dev/udmabuf`, which a computer's kernel may
+lack (WSL2's is built without `CONFIG_UDMABUF`); every export then fails, and with it every
+GBM buffer that OpenGL on Vulkan (Zink, through Mesa's GBM backend) makes for a GPU process
+such as Chromium's. On a device made on a CPU implementation presented as the GPU, memory
+allocated for dma-buf export is therefore a buffer of the computer's vgem device, imported
+in place of the export request, and `vkGetMemoryFdKHR` returns that buffer's dma-buf:
+ordinary shared memory in linear layout, as a LINEAR GBM buffer is
+([docs/gpu-buffers.md](../../../docs/gpu-buffers.md)). Memory whose export asked for other
+handle types as well exports only as a dma-buf.
+
 ## Build and test
 
 ```sh
@@ -31,7 +43,10 @@ make            # libVkLayer_caboose_gpu_routing.so and test_routing
 ./test_routing
 ```
 
-Both need a C++17 compiler and the Vulkan headers. `make CXX=i686-linux-gnu-g++` builds
+Both need a C++17 compiler and the Vulkan headers. `make check_cpu_dmabuf` builds the device
+check: with lavapipe as the only driver, a vgem node (`modprobe vgem`) and this layer
+enabled, it exports a dma-buf from the CPU device and requires bytes written through the
+dma-buf to read back through `vkMapMemory`, printing `PASS` or `FAIL`. `make CXX=i686-linux-gnu-g++` builds
 both for i386, for 32-bit applications (Debian's `g++-i686-linux-gnu`). `guest/gpu/install-live.py
 --routing-layer libVkLayer_caboose_gpu_routing.so` installs the layer with its implicit
 manifest, also into the Flatpak `host` GL extension; given the i386 build as well, it
