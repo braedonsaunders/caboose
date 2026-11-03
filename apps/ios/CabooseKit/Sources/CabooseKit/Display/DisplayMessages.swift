@@ -12,6 +12,7 @@ public enum DisplayProtocol {
         case windowCreate = 0x02
         case windowUpdate = 0x03
         case windowDestroy = 0x04
+        case windowActivate = 0x05
         // Game handoff (docs/game-handoff.md).
         case gameCreate = 0x17
         case gameDestroy = 0x18
@@ -102,6 +103,11 @@ public struct DisplayInfo: Equatable, Sendable {
 
 // MARK: Server → client
 
+/// What a window's application says it shows (`wp_content_type_v1`).
+public enum WindowContentType: String, Sendable {
+    case none, photo, video, game
+}
+
 public enum WindowKind: String, Sendable {
     /// `child`: a region of its parent where one of the parent application's own GPU
     /// surfaces presents (docs/display.md, "Child windows").
@@ -131,6 +137,12 @@ public struct WindowFields: Equatable, Sendable {
     public var clip: CGRect?
     /// A child's place among its parent's children, lowest first.
     public var stack: Int?
+    /// The application holds an idle inhibitor on the window.
+    public var idleInhibit: Bool?
+    /// What the application says the window shows; `.none` when it says nothing.
+    public var contentType: WindowContentType?
+    /// The application holds the keyboard (keyboard-shortcuts-inhibit, xwayland-keyboard-grab).
+    public var keysGrabbed: Bool?
 
     public init(id: Int) { self.id = id }
 
@@ -153,6 +165,9 @@ public struct WindowFields: Equatable, Sendable {
         pid = body["pid"]?.int
         clip = body["clip"].flatMap(Self.rect)
         stack = body["stack"]?.int
+        idleInhibit = body["idle_inhibit"]?.bool
+        contentType = body["content_type"]?.string.flatMap(WindowContentType.init(rawValue:))
+        keysGrabbed = body["keys_grabbed"]?.bool
     }
 
     static func rect(_ value: CBOR) -> CGRect? {
@@ -276,6 +291,9 @@ public enum ServerMessage: Sendable {
     case windowCreate(WindowFields)
     case windowUpdate(WindowFields)
     case windowDestroy(id: Int)
+    /// An application asked for this window to come forward (xdg-activation, from the application
+    /// holding the keyboard).
+    case windowActivate(id: Int)
     case cursorImage(window: Int?, image: Data, hotspot: CGPoint)
     case cursorNamed(String)
     case textInput(window: Int, enabled: Bool, purpose: String?, surrounding: SurroundingText?)
@@ -329,6 +347,7 @@ public enum ServerMessage: Sendable {
         case .windowCreate: parsed = WindowFields(body).map(ServerMessage.windowCreate)
         case .windowUpdate: parsed = WindowFields(body).map(ServerMessage.windowUpdate)
         case .windowDestroy: parsed = body["id"]?.int.map { .windowDestroy(id: $0) }
+        case .windowActivate: parsed = body["id"]?.int.map { .windowActivate(id: $0) }
         case .cursor:
             let hotspot = body["hotspot"]?.ints.flatMap { $0.count == 2 ? CGPoint(x: $0[0], y: $0[1]) : nil } ?? .zero
             parsed = body["image"]?.data.map { .cursorImage(window: body["id"]?.int, image: $0, hotspot: hotspot) }

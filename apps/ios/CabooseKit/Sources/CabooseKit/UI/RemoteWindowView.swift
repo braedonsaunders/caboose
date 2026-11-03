@@ -57,6 +57,8 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     private weak var liveGPUOwners: LiveGPUPresentationOwners?
     /// The window is a game: its input goes to the game, not to the computer.
     private var holdsGameInput = false
+    /// The content type the display link's frame rate range was set for.
+    private var followedContent: WindowContentType = .none
 
     private var metalLayer: CAMetalLayer { layer as! CAMetalLayer }
     private var displayLink: CADisplayLink?
@@ -105,6 +107,18 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
 
     /// Matches the layer and background to the window's alpha, which `window.update` can change,
     /// or to a translucent live GPU layer presenting here.
+    /// The refresh range the window's content type asks for, and the idle inhibitor its
+    /// application holds, while this view shows the window.
+    private func followHints() {
+        let shown = window != nil && !isHidden && alpha > 0.01
+        IdleInhibition.shared.set(self, inhibiting: shown && (remoteWindow?.inhibitsIdle ?? false))
+        let content = remoteWindow?.contentType ?? .none
+        guard content != followedContent, let link = displayLink else { return }
+        followedContent = content
+        let range = FrameRatePolicy.range(for: content)
+        link.preferredFrameRateRange = CAFrameRateRange(minimum: range.minimum, maximum: range.maximum, preferred: range.preferred)
+    }
+
     private func followAlpha() {
         let alpha = (remoteWindow?.hasAlpha ?? false) || (liveGPUOwners?.presentsTranslucent(in: self) ?? false)
         guard alpha != showsThrough || metalLayer.isOpaque == alpha else { return }
@@ -139,6 +153,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         if self.window == nil {
             cancelTouches()
             focusCheck = nil
+            IdleInhibition.shared.set(self, inhibiting: false)
         }
         displayLink?.invalidate()
         displayLink = nil
@@ -147,7 +162,9 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
         let target = DisplayLinkTarget(self), tick = #selector(DisplayLinkTarget.tick(_:))
         let link = self.window?.windowScene?.screen.displayLink(withTarget: target, selector: tick)
             ?? CADisplayLink(target: target, selector: tick)
-        link.preferredFrameRateRange = CAFrameRateRange(minimum: 30, maximum: 120, preferred: 120)
+        let range = FrameRatePolicy.range(for: remoteWindow?.contentType ?? .none)
+        link.preferredFrameRateRange = CAFrameRateRange(minimum: range.minimum, maximum: range.maximum, preferred: range.preferred)
+        followedContent = remoteWindow?.contentType ?? .none
         link.add(to: .main, forMode: .common)
         displayLink = link
     }
@@ -244,6 +261,7 @@ public final class RemoteWindowView: RemoteTextInputView, UIGestureRecognizerDel
     /// snapshot when it changed, and asks for fresh ones while it shows them.
     fileprivate func present() {
         followAlpha()
+        followHints()
         layoutDrawnControls()
         guard let window = remoteWindow else { return }
         // Covers read their colour, and aiming its shapes, from the snapshot.

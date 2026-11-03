@@ -113,6 +113,10 @@ impl KeyboardTarget<State> for KeyboardFocus {
 pub struct ClientState {
     pub compositor: CompositorClientState,
     pub gpu_peer: Option<crate::gpu_peer::GpuPeer>,
+    /// Which connection to the Wayland socket this was, counting from 1 (0 for Xwayland's own):
+    /// the control socket's `windows` names it, so a tool that opened the connections can
+    /// tell whose window is whose.
+    pub ordinal: u64,
 }
 
 impl ClientData for ClientState {
@@ -179,6 +183,11 @@ pub struct State {
     pub pointer_gestures: smithay::wayland::pointer_gestures::PointerGesturesState,
     pub primary_selection: PrimarySelectionState,
     pub xwayland_shell: XWaylandShellState,
+    /// The hint protocols' globals (hints.rs) and the xdg-activation tokens.
+    pub hint_protocols: crate::hints::Protocols,
+    pub activation: smithay::wayland::xdg_activation::XdgActivationState,
+    /// What clients hold through them.
+    pub hints: crate::hints::Hints,
     pub seat: Seat<State>,
     pub xwm: Option<X11Wm>,
     /// Xwayland's own client, whose scale is the primary display's (x11_scale.rs).
@@ -960,6 +969,7 @@ impl State {
     }
 
     pub fn sync_windows(&mut self) {
+        self.hints.prune();
         let Some(conn) = self.session.as_ref().filter(|s| s.ready).map(|s| s.conn) else { return };
         for id in self.windows.parent_first() {
             self.identify_x11(id);
@@ -980,6 +990,7 @@ impl State {
                 continue;
             }
             let Some(mut now) = self.windows.describe(id, &self.displays) else { continue };
+            (now.idle_inhibit, now.content_type, now.keys_grabbed) = self.window_hints(id);
             if virtual_window && w.surface.wl_surface().is_some_and(|s| !Self::is_mapped(&s)) {
                 let Surface::Toplevel(toplevel) = &w.surface else { continue };
                 let Some(size) = toplevel.with_pending_state(|state| state.size) else { continue };

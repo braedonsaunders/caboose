@@ -1,0 +1,8 @@
+{
+  "name": "window-activate",
+  "description": "An application asked for window 9 to be brought forward.",
+  "messages": [
+    {"direction": "server", "type": "window.activate", "type_id": 5, "fields": {"id": 9}}
+  ],
+  "hex": "0505000000a162696409"
+}

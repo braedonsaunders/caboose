@@ -1,0 +1,8 @@
+{
+  "name": "window-create-hints",
+  "description": "A video player: it holds an idle inhibitor, says its content is video, and holds the keyboard.",
+  "messages": [
+    {"direction": "server", "type": "window.create", "type_id": 2, "fields": {"id": 17, "kind": "toplevel", "alpha": false, "title": "Movie", "app_id": "org.example.Player", "display": 2, "geometry": [0, 0, 1920, 1080], "xwayland": false, "fullscreen": true, "content_type": "video", "idle_inhibit": true, "keys_grabbed": true}}
+  ],
+  "hex": "02a0000000ac62696411646b696e6468746f706c6576656c65616c706861f4657469746c65654d6f766965666170705f6964726f72672e6578616d706c652e506c6179657267646973706c6179026867656f6d6574727984000019078019043868787761796c616e64f46a66756c6c73637265656ef56c636f6e74656e745f7479706565766964656f6c69646c655f696e6869626974f56c6b6579735f67726162626564f5"
+}

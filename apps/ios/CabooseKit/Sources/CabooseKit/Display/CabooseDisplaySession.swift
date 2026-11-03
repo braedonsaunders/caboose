@@ -338,6 +338,7 @@ public final class CabooseDisplaySession: DisplaySession {
             case .windowCreate(let fields): createWindow(fields)
             case .windowUpdate(let fields): updateWindow(fields)
             case .windowDestroy(let id): destroyWindow(id)
+            case .windowActivate(let id): activateWindow(id)
             case .cursorImage:
                 cursorName = nil
                 cursorSerial &+= 1
@@ -719,6 +720,9 @@ public final class CabooseDisplaySession: DisplaySession {
         }
         if let fullscreen = fields.fullscreen { window.isFullscreen = fullscreen }
         if let alpha = fields.alpha { window.hasAlpha = alpha }
+        if let inhibit = fields.idleInhibit { window.inhibitsIdle = inhibit }
+        if let content = fields.contentType { window.contentType = content }
+        if let grabbed = fields.keysGrabbed { window.grabsKeys = grabbed }
         if let size = fields.minimumSize { window.minimumSize = size }
         if let size = fields.maximumSize { window.maximumSize = size }
         if let icon = fields.icon, let source = CGImageSourceCreateWithData(icon as CFData, nil),
@@ -809,6 +813,19 @@ public final class CabooseDisplaySession: DisplaySession {
         send(.configure(window: window.id, geometry: geometry, fullscreen: state["fullscreen"], maximized: state["maximized"]))
         if let fullscreen = state["fullscreen"] { window.isFullscreen = fullscreen }
         place(window)
+    }
+
+    /// An application asked for `id` to come forward: it takes the keyboard and the screen follows,
+    /// as if the user had chosen it.
+    func activateWindow(_ id: Int) {
+        guard let window = windows[id], !window.isAuxiliary else { return }
+        focus(window)
+        onRaise?(id)
+    }
+
+    /// The focused window holds the keyboard, so Caboose's own shortcuts do not take its keys.
+    public var focusedWindowGrabsKeys: Bool {
+        focusedWindow.flatMap { windows[$0] }?.grabsKeys ?? false
     }
 
     public func focus(_ window: RemoteWindow?) {

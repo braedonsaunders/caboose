@@ -96,6 +96,9 @@ pub fn describe(id: u64, child: &Child, place: Place, parent: &proto::WindowCrea
         pid: None,
         clip: Some(place.clip),
         stack: Some(place.stack),
+        idle_inhibit: false,
+        content_type: proto::ContentType::None,
+        keys_grabbed: false,
     }
 }
 
@@ -311,6 +314,9 @@ mod tests {
             pid: Some(42),
             clip: None,
             stack: None,
+            idle_inhibit: false,
+            content_type: proto::ContentType::None,
+            keys_grabbed: false,
         }
     }
 

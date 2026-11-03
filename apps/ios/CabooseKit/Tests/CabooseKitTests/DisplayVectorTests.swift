@@ -221,6 +221,12 @@ import Testing
         guard case .windowUpdate(let childMoved) = try server("window-update-child").first else { Issue.record("child update"); return }
         #expect(childMoved.id == 16 && childMoved.kind == nil && childMoved.stack == nil)
         #expect(childMoved.geometry == CGRect(x: 2, y: 200, width: 1916, height: 880) && childMoved.clip == childMoved.geometry)
+        guard case .windowCreate(let hints) = try server("window-create-hints").first else { Issue.record("hints"); return }
+        #expect(hints.idleInhibit == true && hints.contentType == .video && hints.keysGrabbed == true)
+        #expect(toplevel.idleInhibit == nil && toplevel.contentType == nil && toplevel.keysGrabbed == nil)
+        guard case .windowUpdate(let released) = try server("window-update-hints").first else { Issue.record("released"); return }
+        #expect(released.idleInhibit == false && released.contentType == WindowContentType.none && released.keysGrabbed == false)
+        guard case .windowActivate(9) = try server("window-activate").first else { Issue.record("activate"); return }
 
         guard case .windowUpdate(let liberal) = try server("liberal-window-update").first else { Issue.record("liberal"); return }
         #expect(liberal.id == 7 && liberal.title == "x")

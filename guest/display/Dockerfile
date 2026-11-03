@@ -27,3 +27,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends xclip wl-clipbo
 # PulseAudio for the compositor's audio and its check.
 RUN apt-get update && apt-get install -y --no-install-recommends pulseaudio pulseaudio-utils && \
     rm -rf /var/lib/apt/lists/*
+# The compositor's renderer needs a Vulkan device (lavapipe, on the CPU), and WLCS, Mir's
+# Wayland conformance suite, is what scripts/check-wlcs.py drives with its adapter
+# (wlcs/README.md).
+RUN apt-get update && apt-get install -y --no-install-recommends mesa-vulkan-drivers wlcs && \
+    rm -rf /var/lib/apt/lists/*

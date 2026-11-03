@@ -582,6 +582,7 @@ struct DesktopKeyCommands: View {
             key("New Terminal", .return) { model.openTerminalApp() }
             QuickSwitchKeys(recent: { model.recentWindowIDs }) { desktop.switchTarget(session: model.session) }
         }
+        .disabled(model.focusedWindowGrabsKeys)
         .frame(width: 0, height: 0)
         .opacity(0)
         .accessibilityHidden(true)

@@ -48,6 +48,7 @@ pub fn features(xwayland: bool, audio: bool, wasm: bool) -> Vec<String> {
         "drop",
         "drag",
         "gestures",
+        "window-hints",
     ];
     if xwayland {
         f.push("xwayland");

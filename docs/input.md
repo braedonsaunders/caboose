@@ -21,6 +21,12 @@ Hardware keys carry their USB HID keyboard-page usage as well as a keysym. The c
 maps recognized usages to evdev positions and uses the keysym when no position is supplied
 or recognized. Synthetic keys use the keysym and the seat keymap.
 
+An application that holds the keyboard (`zwp_keyboard_shortcuts_inhibit_manager_v1`, or an
+X11 client's keyboard grab through `zwp_xwayland_keyboard_grab_v1`) is reported to the phone as
+`keys_grabbed` ([display.md](display.md#window-hints)). The phone then sends the keys it would
+keep for its own shortcuts to the application while the window is focused. Keys always reach the
+focused window; the grab changes what the phone does, not what the compositor delivers.
+
 ## Gestures
 
 A `pinch`, `swipe` or `hold` from the phone is delivered through

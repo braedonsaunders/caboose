@@ -20,6 +20,12 @@ public final class RemoteWindow: Identifiable {
     /// The app asked to cover the whole screen (a video player, a game, a slideshow).
     public internal(set) var isFullscreen = false
     public internal(set) var hasAlpha = false
+    /// The app holds an idle inhibitor on the window: the screen stays awake while it is shown.
+    public internal(set) var inhibitsIdle = false
+    /// What the app says the window shows; sets how fast it is refreshed (`FrameRatePolicy`).
+    public internal(set) var contentType: WindowContentType = .none
+    /// The app holds the keyboard: Caboose's own shortcuts step aside while it is focused.
+    public internal(set) var grabsKeys = false
     /// Position and size in the server's pixel space. Position may follow an in-flight
     /// placement request; size remains the size reported by the server. The window's GPU
     /// layer is fitted to it.

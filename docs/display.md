@@ -133,7 +133,7 @@ rejecting the ordinary display.
 
 `features` names only what the server implements. caboose-display lists `vsync`,
 `touch`, `pencil`, `text-input-v3`, `cursor-named`, `clipboard`, `clipboard-types`,
-`drop`, `drag` and `gestures`; `xwayland` when Xwayland runs; `audio` when it plays sound;
+`drop`, `drag`, `gestures` and `window-hints`; `xwayland` when Xwayland runs; `audio` when it plays sound;
 `wasm` when it hands games off and the client's hello says `wasm: true`; `webview`
 on the owner display when the client supports agent-app handoff; `devices` when the
 owner's display accepts the phone's hardware and the client's hello says
@@ -245,6 +245,28 @@ nothing in a child's region of the parent's picture beyond what the application 
 A child takes no input: the client hit-tests through it and sends events with the
 parent's id. `window.update` carries a child's changed geometry, clip and stacking;
 `window.destroy` ends it, as does its parent's.
+
+### Window hints
+
+Applications can tell the compositor things about a window that only the client can act on.
+caboose-display passes each one on as a window field (absent from `window.create` when it is
+false or `none`, sent in `window.update` whenever it changes, including back) or a message,
+and lists `window-hints` in its features. The client acts on them as the table says and never
+sends anything back. No application is treated specially: the fields follow the protocols.
+
+| Application protocol | Sent to the client | The client |
+| --- | --- | --- |
+| `zwp_idle_inhibit_manager_v1` | `idle_inhibit: true` while the application holds an inhibitor on any surface of the window | Keeps the screen awake while a window with it is shown, and stops when none is |
+| `wp_content_type_v1` | `content_type`: the most demanding of the window's surfaces (`game`, then `video`, then `photo`), `none` when none says | Asks the display for a refresh range suited to it: `none` 30 to 120 Hz, `game` 60 to 120, `video` 24 to 60, `photo` 10 to 30 |
+| `xdg_activation_v1` | `window.activate` for the window the application asked to bring forward | Focuses the window and shows it, as if the user had chosen it |
+| `zwp_keyboard_shortcuts_inhibit_manager_v1`, `zwp_xwayland_keyboard_grab_v1` | `keys_grabbed: true` while the application holds either on the window | Passes the keys the client would keep for itself (its own shortcuts) to the application while the window is focused |
+
+An inhibitor and a grab are granted at once; the client is the only user and decides what
+holding them means. They end when the application releases them or goes away. Xwayland turns
+an X11 client's `XGrabKeyboard` into the grab where the root window's
+`_XWAYLAND_MAY_GRAB_KEYBOARD` is 1, which caboose-display sets. An activation token is good
+for 10 seconds, once, and only when the application that made it held the keyboard; a request
+with any other token is ignored, so a background application cannot take the screen.
 
 ### Windows and launches
 

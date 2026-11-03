@@ -63,6 +63,11 @@ string_enum!(
     /// A window's role. Popups and dialogs have a parent.
     WindowKind { Toplevel => "toplevel", Popup => "popup", Dialog => "dialog", Child => "child" }
 );
+string_enum!(
+    /// What a window's application says it shows (`wp_content_type_v1`), which tells the
+    /// client how fast to refresh it.
+    ContentType { None => "none", Photo => "photo", Video => "video", Game => "game" }
+);
 string_enum!(TouchPhase { Down => "down", Motion => "motion", Up => "up", Cancel => "cancel" });
 string_enum!(PencilPhase {
     Down => "down", Motion => "motion", Up => "up", Cancel => "cancel", Hover => "hover", Leave => "leave"
@@ -182,6 +187,14 @@ pub struct WindowCreate {
     pub clip: Option<Rect>,
     /// A child's order among its parent's children, lowest first.
     pub stack: Option<u32>,
+    /// The application holds an idle inhibitor on the window: the screen stays awake while
+    /// the window is shown.
+    pub idle_inhibit: bool,
+    /// What the application says the window shows.
+    pub content_type: ContentType,
+    /// The application holds the keyboard (keyboard-shortcuts-inhibit, xwayland-keyboard-grab):
+    /// the client sends it the keys it would keep for itself.
+    pub keys_grabbed: bool,
 }
 
 /// `window.update` (0x03): the id plus whichever fields changed.
@@ -204,6 +217,9 @@ pub struct WindowUpdate {
     pub pid: Option<u32>,
     pub clip: Option<Rect>,
     pub stack: Option<u32>,
+    pub idle_inhibit: Option<bool>,
+    pub content_type: Option<ContentType>,
+    pub keys_grabbed: Option<bool>,
 }
 
 impl WindowUpdate {
@@ -530,6 +546,11 @@ pub enum Message {
     WindowDestroy {
         id: u64,
     },
+    /// An application asked for the window to be brought forward and focused
+    /// (xdg-activation, with a valid token).
+    WindowActivate {
+        id: u64,
+    },
     Cursor(Cursor),
     CursorNamed {
         name: String,
@@ -672,6 +693,7 @@ pub mod type_id {
     pub const WINDOW_CREATE: u8 = 0x02;
     pub const WINDOW_UPDATE: u8 = 0x03;
     pub const WINDOW_DESTROY: u8 = 0x04;
+    pub const WINDOW_ACTIVATE: u8 = 0x05;
     pub const GAME_CREATE: u8 = 0x17;
     pub const GAME_DESTROY: u8 = 0x18;
     pub const WEBVIEW_CREATE: u8 = 0x1C;
@@ -785,6 +807,7 @@ impl Message {
             Message::WindowCreate(_) => WINDOW_CREATE,
             Message::WindowUpdate(_) => WINDOW_UPDATE,
             Message::WindowDestroy { .. } => WINDOW_DESTROY,
+            Message::WindowActivate { .. } => WINDOW_ACTIVATE,
             Message::Cursor(_) => CURSOR,
             Message::CursorNamed { .. } => CURSOR_NAMED,
             Message::TextInput(_) => TEXT_INPUT,
@@ -875,6 +898,9 @@ impl Message {
                 .opt("pid", m.pid)
                 .opt("clip", m.clip)
                 .opt("stack", m.stack)
+                .opt("idle_inhibit", m.idle_inhibit.then_some(true))
+                .opt("content_type", (m.content_type != ContentType::None).then_some(m.content_type))
+                .opt("keys_grabbed", m.keys_grabbed.then_some(true))
                 .build(),
             Message::WindowUpdate(m) => MapBuilder::new()
                 .put("id", m.id)
@@ -894,8 +920,12 @@ impl Message {
                 .opt("pid", m.pid)
                 .opt("clip", m.clip)
                 .opt("stack", m.stack)
+                .opt("idle_inhibit", m.idle_inhibit)
+                .opt("content_type", m.content_type)
+                .opt("keys_grabbed", m.keys_grabbed)
                 .build(),
             Message::WindowDestroy { id }
+            | Message::WindowActivate { id }
             | Message::Close { id }
             | Message::GameDestroy { id }
             | Message::WebviewDestroy { id } => MapBuilder::new().put("id", *id).build(),
@@ -1149,6 +1179,13 @@ impl Message {
                 pid: f.opt_u32("pid")?,
                 clip: f.opt_rect("clip")?,
                 stack: f.opt_u32("stack")?,
+                idle_inhibit: f.opt_bool("idle_inhibit")?.unwrap_or(false),
+                content_type: f.opt("content_type", |v| match v {
+                    Value::Text(s) => ContentType::parse(s),
+                    _ => None,
+                })?
+                .unwrap_or(ContentType::None),
+                keys_grabbed: f.opt_bool("keys_grabbed")?.unwrap_or(false),
             }),
             WINDOW_UPDATE => Message::WindowUpdate(WindowUpdate {
                 id: f.u64("id")?,
@@ -1171,8 +1208,15 @@ impl Message {
                 pid: f.opt_u32("pid")?,
                 clip: f.opt_rect("clip")?,
                 stack: f.opt_u32("stack")?,
+                idle_inhibit: f.opt_bool("idle_inhibit")?,
+                content_type: f.opt("content_type", |v| match v {
+                    Value::Text(s) => ContentType::parse(s),
+                    _ => None,
+                })?,
+                keys_grabbed: f.opt_bool("keys_grabbed")?,
             }),
             WINDOW_DESTROY => Message::WindowDestroy { id: f.u64("id")? },
+            WINDOW_ACTIVATE => Message::WindowActivate { id: f.u64("id")? },
             TARGETS => Message::Targets(Targets {
                 id: f.u64("id")?,
                 serial: f.u64("serial")?,
@@ -1410,6 +1454,7 @@ pub fn type_name(type_id: u8) -> Option<&'static str> {
         WINDOW_CREATE => "window.create",
         WINDOW_UPDATE => "window.update",
         WINDOW_DESTROY => "window.destroy",
+        WINDOW_ACTIVATE => "window.activate",
         WEBVIEW_CREATE => "webview.create",
         WEBVIEW_DESTROY => "webview.destroy",
         WEBVIEW_DECLINE => "webview.decline",

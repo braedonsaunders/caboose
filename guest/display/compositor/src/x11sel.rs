@@ -40,6 +40,25 @@ pub fn intern(conn: &RustConnection, name: &str) -> Result<Atom, Box<dyn std::er
     Ok(conn.intern_atom(false, name.as_bytes())?.reply()?.atom)
 }
 
+/// Lets Xwayland turn an X11 client's keyboard grab into a `zwp_xwayland_keyboard_grab_v1`
+/// (hints.rs): Xwayland does so only where the root window says clients may
+/// (`_XWAYLAND_MAY_GRAB_KEYBOARD`). On a thread, like every other connection here.
+pub fn allow_keyboard_grabs(access: Access) {
+    std::thread::spawn(move || {
+        let result = (|| -> Result<(), Box<dyn std::error::Error>> {
+            let conn = connect(&access)?;
+            let property = intern(&conn, "_XWAYLAND_MAY_GRAB_KEYBOARD")?;
+            let root = conn.setup().roots[0].root;
+            x11rb::wrapper::ConnectionExt::change_property32(&conn, x11rb::protocol::xproto::PropMode::REPLACE, root, property, AtomEnum::CARDINAL, &[1])?
+                .check()?;
+            Ok(())
+        })();
+        if let Err(error) = result {
+            tracing::warn!("X11 keyboard grabs stay off: {error}");
+        }
+    });
+}
+
 /// Whether Smithay's window manager can transfer `mime` itself: the two text types it
 /// maps to atoms without looking at `TARGETS`.
 pub fn smithay_transfers(mime: &str) -> bool {

@@ -346,6 +346,38 @@ final class MockStream: ByteStream, @unchecked Sendable {
         try await until("opaque") { popup.hasAlpha == false }
     }
 
+    @Test func hintsFromTheApplicationFollowItsWindowAndActivationFocusesIt() async throws {
+        let session = try await ready()
+        var raised: [Int] = []
+        session.onRaise = { raised.append($0) }
+        var first = window(7, geometry: [0, 0, 100, 100]), second = window(8, geometry: [0, 0, 100, 100])
+        first = .map(first.pairs! + [("idle_inhibit", true), ("content_type", "video"), ("keys_grabbed", true)])
+        second = .map(second.pairs!)
+        stream.server([(.windowCreate, first), (.windowCreate, second)])
+        try await until("windows") { session.windows.count == 2 }
+        let video = try #require(session.windows[7]), plain = try #require(session.windows[8])
+        #expect(video.inhibitsIdle && video.contentType == .video && video.grabsKeys)
+        #expect(!plain.inhibitsIdle && plain.contentType == WindowContentType.none && !plain.grabsKeys)
+        // Only the focused window's grab matters to the phone's own shortcuts.
+        #expect(!session.focusedWindowGrabsKeys)
+        session.focus(video)
+        #expect(session.focusedWindowGrabsKeys)
+        session.focus(plain)
+        #expect(!session.focusedWindowGrabsKeys)
+        stream.server([(.windowUpdate, ["id": 7, "idle_inhibit": false, "content_type": "none", "keys_grabbed": false])])
+        try await until("released") { !video.inhibitsIdle }
+        #expect(video.contentType == WindowContentType.none && !video.grabsKeys)
+        // An application's request brings its window forward and focuses it.
+        _ = stream.take()
+        stream.server([(.windowActivate, ["id": 7])])
+        try await until("raised") { raised == [7] }
+        #expect(stream.take().last.map { $0.body["id"]?.int == 7 && $0.body["activated"]?.bool == true } == true)
+        // A window the phone does not know is ignored.
+        stream.server([(.windowActivate, ["id": 99])])
+        try await Task.sleep(nanoseconds: 100_000_000)
+        #expect(raised == [7])
+    }
+
     @Test func nativeWaylandWindowsTakeTouchAndXwaylandOnesDoNot() async throws {
         let session = try await ready()
         stream.server([(.windowCreate, window(7, geometry: [0, 0, 100, 100])),

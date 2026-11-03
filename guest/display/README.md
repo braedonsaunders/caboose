@@ -63,6 +63,9 @@ This directory is a Cargo workspace:
   terminals) get the commit as key presses. The virtual pointer publishes paired absolute
   and relative motion in one frame, retaining one Xwayland source device for XI2 scrolling.
   Relative deltas use logical coordinates and receive no additional acceleration.
+- **Window hints** (`src/hints.rs`). idle-inhibit, content-type, xdg-activation,
+  keyboard-shortcuts-inhibit and xwayland-keyboard-grab become window fields and
+  `window.activate` for the phone to act on ([docs/display.md](../../docs/display.md#window-hints)).
 - **Reconnecting.** Every hello carries the process's random `epoch` (16 hex characters,
   from `/dev/urandom` at start), so a client can tell that window ids still name the same
   windows. A hello's `window.create` messages are all written before the next client
@@ -149,6 +152,13 @@ host's render nodes through, and `CABOOSE_DISPLAY_DOCKER_ARGS` adds `docker run`
 arguments. Dev builds are optimised (`opt-level = 2`) because the checks measure frame
 rates. The workspace targets `x86-64-v2` so the pixel conversion vectorises. Release
 builds (`cargo build --release`) are what the guest images carry.
+
+`cargo test -p caboose-display --test advertisement` starts the compositor and fails when
+anything it advertises does not work: every Wayland global must have a check that binds it at
+its advertised version and uses it (a global without a check fails), every hello feature must be
+documented and backed by what it names, and the hint protocols are followed to the window
+messages the phone acts on. It needs the runtime image (the `Dockerfile` here: libEGL, a Vulkan
+device, Xwayland) and reports what it skipped where that is missing.
 
 Unit tests cover the protocol (canonical encoding, the stream decoder on split and
 malformed input, and the committed vectors against the encoder), the pixel conversion

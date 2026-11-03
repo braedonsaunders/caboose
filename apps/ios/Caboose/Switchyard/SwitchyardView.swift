@@ -349,6 +349,7 @@ private struct YardKeyCommands: View {
             key("New Terminal", .return) { model.openTerminalApp() }
             QuickSwitchKeys(recent: { model.recentWindowIDs.filter { yard.layout.contains($0) } }) { yard.switchTarget() }
         }
+        .disabled(model.focusedWindowGrabsKeys)
         .frame(width: 0, height: 0)
         .opacity(0)
         .accessibilityHidden(true)

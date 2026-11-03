@@ -43,7 +43,7 @@ pub struct InputState {
     pub keysyms: Keysyms,
     pub(crate) pointer_buttons: u32,
     /// Touch slots that are down, with the window they started on.
-    touches: HashMap<u32, u64>,
+    pub(crate) touches: HashMap<u32, u64>,
     /// Keycodes the client holds down.
     held: HashSet<u32>,
     /// Modifiers pressed on the client's behalf for one key, released with it.
@@ -193,6 +193,15 @@ impl State {
             let at = self.now_us();
             self.latency.delivered(id, at);
         }
+    }
+
+    /// The pointer moved to `at`, where no window is: it leaves the surface it was over.
+    pub fn pointer_leaves(&mut self, at: Point<f64, Logical>) {
+        let Some(pointer) = self.seat.get_pointer() else { return };
+        let time = self.now_ms();
+        let serial = self.next_serial();
+        pointer.motion(self, None, &MotionEvent { location: at, serial, time });
+        pointer.frame(self);
     }
 
     pub fn pointer(&mut self, m: &proto::Pointer) {

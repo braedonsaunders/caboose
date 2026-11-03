@@ -793,6 +793,12 @@ final class AppModel {
         observeSession()
     }
 
+    /// The focused window holds the keyboard (keyboard-shortcuts-inhibit): Caboose's own
+    /// keyboard shortcuts step aside so its keys reach the application.
+    var focusedWindowGrabsKeys: Bool {
+        (session as? CabooseDisplaySession)?.focusedWindowGrabsKeys ?? false
+    }
+
     /// "Typing 85 ms · Ping 4 ms": how responsive the computer is right now, or what the
     /// connection is doing instead.
     var connectionSummary: String {

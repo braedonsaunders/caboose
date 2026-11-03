@@ -19,6 +19,7 @@ mod gpu_grant;
 mod gpu_control;
 mod gpu_peer;
 mod gpu_x11;
+mod hints;
 mod icons;
 mod ibus;
 mod ibus_portal;
@@ -451,6 +452,7 @@ fn run(config: Config) -> Result<(), String> {
     let pointer_gestures = smithay::wayland::pointer_gestures::PointerGesturesState::new::<State>(&dh);
     let primary_selection = PrimarySelectionState::new::<State>(&dh);
     let xwayland_shell = XWaylandShellState::new::<State>(&dh);
+    let (hint_protocols, activation) = hints::Protocols::new(&dh);
     let text_inputs = text_input::TextInputs::new(&dh);
 
     // The same keymap the seat compiled from the default names.
@@ -517,7 +519,9 @@ fn run(config: Config) -> Result<(), String> {
     handle
         .insert_source(socket, |stream, _, state: &mut State| {
             let gpu_peer = if state.net.gpu_enabled() { gpu_peer::GpuPeer::capture(&stream).ok() } else { None };
-            let client = ClientState { gpu_peer, ..ClientState::default() };
+            static CONNECTIONS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let ordinal = CONNECTIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+            let client = ClientState { gpu_peer, ordinal, ..ClientState::default() };
             if let Err(e) = state.dh.insert_client(stream, Arc::new(client)) {
                 tracing::warn!("cannot add a Wayland client: {e}");
             }
@@ -610,6 +614,9 @@ fn run(config: Config) -> Result<(), String> {
         input_trace: Default::default(),
         latency: Default::default(),
         presentation,
+        hint_protocols,
+        activation,
+        hints: Default::default(),
         present_seq: 0,
         next_input_id: 0,
         cursor: None,
@@ -751,6 +758,7 @@ fn run(config: Config) -> Result<(), String> {
                                     tracing::error!("X11 window icons and processes unavailable: {error}");
                                 }
                                 state.x11 = Some(x11sel::Access { display: display_number, cookie });
+                                x11sel::allow_keyboard_grabs(x11sel::Access { display: display_number, cookie });
                                 input::xwayland::set_pixel_distance(
                                     x11sel::Access { display: display_number, cookie },
                                     state.x11_scale,

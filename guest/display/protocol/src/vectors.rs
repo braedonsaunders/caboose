@@ -180,6 +180,9 @@ pub fn all(media: &Media) -> Vec<Vector> {
         pid: None,
         clip: None,
         stack: None,
+        idle_inhibit: false,
+        content_type: ContentType::None,
+        keys_grabbed: false,
     };
     let menu = WindowCreate {
         id: 9,
@@ -199,6 +202,9 @@ pub fn all(media: &Media) -> Vec<Vector> {
         pid: None,
         clip: None,
         stack: None,
+        idle_inhibit: false,
+        content_type: ContentType::None,
+        keys_grabbed: false,
     };
     let xterm = WindowCreate {
         id: 12,
@@ -218,6 +224,9 @@ pub fn all(media: &Media) -> Vec<Vector> {
         pid: None,
         clip: None,
         stack: None,
+        idle_inhibit: false,
+        content_type: ContentType::None,
+        keys_grabbed: false,
     };
 
     vec![
@@ -313,6 +322,35 @@ pub fn all(media: &Media) -> Vec<Vector> {
                 ..Default::default()
             }),
         ),
+        one(
+            "window-create-hints",
+            "A video player: it holds an idle inhibitor, says its content is video, and holds the keyboard.",
+            Message::WindowCreate(WindowCreate {
+                id: 17,
+                title: "Movie".into(),
+                app_id: "org.example.Player".into(),
+                min: None,
+                max: None,
+                fullscreen: true,
+                xwayland: false,
+                idle_inhibit: true,
+                content_type: ContentType::Video,
+                keys_grabbed: true,
+                ..xterm.clone()
+            }),
+        ),
+        one(
+            "window-update-hints",
+            "The player paused: no inhibitor, no content type (sent as none), the keyboard released.",
+            Message::WindowUpdate(WindowUpdate {
+                id: 17,
+                idle_inhibit: Some(false),
+                content_type: Some(ContentType::None),
+                keys_grabbed: Some(false),
+                ..Default::default()
+            }),
+        ),
+        one("window-activate", "An application asked for window 9 to be brought forward.", Message::WindowActivate { id: 9 }),
         one(
             "window-update-title",
             "Only the changed fields are present.",

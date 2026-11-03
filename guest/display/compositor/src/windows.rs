@@ -300,6 +300,9 @@ impl Windows {
             pid: if w.parent.is_none() { w.lineage.as_ref().and_then(|l| l.first().copied()) } else { None },
             clip: None,
             stack: None,
+            idle_inhibit: false,
+            content_type: proto::ContentType::None,
+            keys_grabbed: false,
         })
     }
 }
@@ -327,6 +330,9 @@ pub fn diff(before: &proto::WindowCreate, now: &proto::WindowCreate) -> proto::W
         pid: if before.pid != now.pid { now.pid } else { None },
         clip: if before.clip != now.clip { now.clip } else { None },
         stack: if before.stack != now.stack { now.stack } else { None },
+        idle_inhibit: changed(&before.idle_inhibit, &now.idle_inhibit),
+        content_type: changed(&before.content_type, &now.content_type),
+        keys_grabbed: changed(&before.keys_grabbed, &now.keys_grabbed),
     }
 }
 
@@ -371,6 +377,9 @@ mod tests {
             pid: None,
             clip: None,
             stack: None,
+            idle_inhibit: false,
+            content_type: proto::ContentType::None,
+            keys_grabbed: false,
         }
     }
 

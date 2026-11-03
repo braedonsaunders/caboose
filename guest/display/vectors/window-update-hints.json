@@ -1,0 +1,8 @@
+{
+  "name": "window-update-hints",
+  "description": "The player paused: no inhibitor, no content type (sent as none), the keyboard released.",
+  "messages": [
+    {"direction": "server", "type": "window.update", "type_id": 3, "fields": {"id": 17, "content_type": "none", "idle_inhibit": false, "keys_grabbed": false}}
+  ],
+  "hex": "0333000000a4626964116c636f6e74656e745f74797065646e6f6e656c69646c655f696e6869626974f46c6b6579735f67726162626564f4"
+}
