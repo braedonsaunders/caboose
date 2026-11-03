@@ -12,6 +12,14 @@ const traces = (await readFile(resultsPath + '.traces.jsonl', 'utf8')).trim().sp
 const good = new Set(results.filter(r => r.model === 'oracle' && r.completed).map(r => r.case))
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b)
 const rows = []
+// The control names an objective names: observed names it contains, less any that is only part
+// of a longer one it also contains ("Save" inside "Save As..." names the menu item, not the button).
+const label = name => name.replace(/[.…:]+$/, '').trim()
+const named = t => {
+  const inObjective = [...new Set(t.before.map(e => e.name).filter(n => n && label(n).length > 1 && t.objective.includes(label(n))))]
+  const names = new Set([...traces.filter(o => o.case === t.case).flatMap(o => o.before.map(e => e.name))].filter(n => n && t.objective.includes(label(n))))
+  return inObjective.filter(n => ![...names].some(m => m !== n && label(m).includes(label(n)) && label(m).length > label(n).length))
+}
 // The values each case has shown so far, as the controller's `entered` (steps are in order).
 const seen = new Map()
 for (const t of traces) {
@@ -37,7 +45,7 @@ for (const t of traces) {
   if (t.action.action === 'set_text') {
     const source = spec.values.find(v => v.value === t.action.text)
     if (source) blocked('synthetic-missing-value', t.before, spec.values.filter(v => v !== source))
-  } else if (target?.name && t.objective.includes(target.name)) {
+  } else if (target?.name && named(t).includes(target.name)) {
     blocked('synthetic-missing-control', t.before.filter(e => e.id !== target.id), spec.values)
   }
 }

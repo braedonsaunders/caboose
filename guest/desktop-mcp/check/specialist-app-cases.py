@@ -26,7 +26,8 @@ OPTIONS = {'train': [('View', 'Show line numbers'), ('View', 'Display whitespace
            'validation': [('View', 'Highlight current line')],
            'holdout': [('View', 'Display line endings'), ('View', 'Highlight matching brackets'), ('View', 'Wrap long lines')]}.get(
                a.split, [('View', 'Display line endings'), ('View', 'Highlight matching brackets'), ('View', 'Wrap long lines')])
-SAVE_PHRASES = {'train': ['Write "{text}" into the document and save it as {name}.', 'Replace the text with "{text}", then save the file as {name}.'],
+SAVE_PHRASES = {'train': ['Write "{text}" into the document and save it as {name}.', 'Replace the text with "{text}", then save the file as {name}.',
+                          'Write "{text}" and choose Save As to store it as {name}.'],
                 'validation': ['Put "{text}" in the document and use Save As to call it {name}.'],
                 'holdout': ['Make the document say "{text}" and store it under the name {name}.'],
                 'holdout2': ['Type "{text}" as the whole document, then save a copy named {name}.']}[a.split]
