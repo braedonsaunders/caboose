@@ -140,7 +140,7 @@ verifies the same profile markers and synthetic canonical GNOME item. Both seats
 the same synthetic credential, and exactly one GNOME keyring writer must exist. The driver
 removes each container and checks its absence on success, failure or timeout, then removes
 the synthetic volume. This is a scripted acceptance check, not an executed-result claim;
-Firefox/Code-specific GUI checks and real account sign-in are outside this script.
+VS Code-specific GUI checks and real account sign-in are outside this script.
 
 The driver also accepts `--overlay-source PATH` with a read-only source export and newly
 compiled binaries under `out/`. In that mode `install-acceptance-overlay.sh` installs only
