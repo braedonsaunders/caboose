@@ -81,7 +81,9 @@ seat's pointer and keyboard.
 
 A window with no accessibility tree (SDL, games, custom-drawn toolkits) is still described:
 `look` returns its picture and, with Tesseract installed, the lines of text OCR finds in it
-with their centres in seat coordinates, both marked as read from pixels. An X11 window that
+with their centres in seat coordinates, both marked as read from pixels. `look` with `ocr`
+adds those lines for any window, for areas its controls leave out (icon views, canvases). The
+picture is enlarged and greyed first (ImageMagick) and read as sparse text. An X11 window that
 does not report its process is matched to the one application with a window of its title.
 
 These tools are the seat's assistive technology, and say so: before the first read and

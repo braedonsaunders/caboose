@@ -19,6 +19,7 @@ import shlex
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 
 here = pathlib.Path(__file__).resolve().parent
@@ -82,10 +83,25 @@ for task in tasks:
                        '-c', f'mcp_servers.desktop.command={json.dumps(server[0])}', '-c', f'mcp_servers.desktop.args={json.dumps(server[1:])}',
                        '-c', 'mcp_servers.desktop.tool_timeout_sec=180', '-c', 'mcp_servers.desktop.startup_timeout_sec=60', '-c', 'mcp_servers.desktop.default_tools_approval_mode="approve"', '-c', 'approval_policy="never"', prompt]
         started = time.monotonic()
-        calls, names, result = 0, {}, {}
+        calls, names, result, model_turns = 0, {}, {}, []
         try:
-            run = subprocess.run(command, capture_output=True, text=True, timeout=a.timeout, cwd=tempfile.gettempdir())
-            for line in run.stdout.splitlines():
+            # Read as it streams, so each turn's model time (from the last tool result to the next
+            # tool call) is measured apart from the tools' own time.
+            child = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, cwd=tempfile.gettempdir())
+            timer = threading.Timer(a.timeout, child.kill); timer.start()
+            lines, since = [], started
+            for line in child.stdout:
+                lines.append(line)
+                now = time.monotonic()
+                try: event = json.loads(line)
+                except ValueError: continue
+                if event.get('type') == 'assistant' and any(p.get('type') == 'tool_use' for p in event['message'].get('content', [])):
+                    model_turns.append(round(now - since, 2))
+                if event.get('type') == 'user':
+                    since = now
+            child.wait(); timer.cancel()
+            if child.returncode == -9: raise subprocess.TimeoutExpired(command, a.timeout)
+            for line in lines:
                 try: event = json.loads(line)
                 except ValueError: continue
                 if event.get('type') == 'assistant':
@@ -115,7 +131,7 @@ for task in tasks:
                                 'slowest': sorted(calls_, key=lambda c: -c['ms'])[:6]}
         usage = result.get('usage', {})
         record.update(success=code == 0, said=(result.get('result') or result.get('subtype') or '')[-200:], seconds=round(seconds, 1),
-                      toolCalls=calls, tools=names, turns=result.get('num_turns'), costUsd=result.get('total_cost_usd'),
+                      toolCalls=calls, tools=names, modelTurns=model_turns, turns=result.get('num_turns'), costUsd=result.get('total_cost_usd'),
                       inputTokens=usage.get('input_tokens', 0) + usage.get('cache_creation_input_tokens', 0) + usage.get('cache_read_input_tokens', 0),
                       outputTokens=usage.get('output_tokens', 0))
     if task.get('reset'): computer(task['reset'])
