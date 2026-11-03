@@ -145,6 +145,7 @@ Each patch is one feature. Several change Mesa's generated encoder
 | 0072 batched-inline-uniform-blocks | A batched commit carries inline uniform block writes (the binding's bytes kept whole in the guest), and batching follows the connected executor's grant (hello `0x80000`) at every use, so a process that outlives its executor follows the next |
 | 0073 command-profile | `CABOOSE_COMMAND_PROFILE=1` reports device-stream bytes per command every 2 s and at exit |
 | 0074 commit-without-drain | The batched descriptor set commit goes out without waiting for earlier replies, and pools of up to 4096 sets ask for their ids without waiting |
+| 0075 recycled-descriptor-sets | A batched pool keeps the sets a reset clears and makes them again in place at their ids' next allocation; an inline uniform block binding takes one write-table entry |
 
 The patch messages describe each change. To change the driver, prepare a tree, commit
 the prepared state, edit, and regenerate the affected patch with `git format-patch`
