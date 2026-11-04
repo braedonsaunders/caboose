@@ -150,7 +150,7 @@ public:
     // An encoder was made on `stream`, or is gone.
     void encoderMade(const void* encoder, const void* stream) {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (deviceStreams_.count(stream)) eligible_.insert(encoder);
+        if (deviceStreams_.count(stream)) eligible_[encoder] = stream;
         else eligible_.erase(encoder);
         states_.erase(encoder);
     }
@@ -188,13 +188,19 @@ public:
         auto found = states_.find(encoder);
         return found != states_.end() && found->second.generation == generation;
     }
-    // True when some stream of this process is silent under the current generation.
+    // True when some stream of this process is silent under the current generation and still
+    // open. A stream the process has closed itself (its device or instance destroyed, its
+    // connections torn down at exit) has nothing left for a FAULT to report, so the feed ending
+    // after it is the process's own teardown, not a lost device.
     bool anySilent() const {
         if (!active_.load(std::memory_order_acquire)) return false;
         const uint64_t generation = completion::connectionGeneration.load(std::memory_order_acquire);
         std::lock_guard<std::mutex> lock(mutex_);
-        for (const auto& entry : states_)
-            if (entry.second.generation == generation) return true;
+        for (const auto& entry : states_) {
+            if (entry.second.generation != generation) continue;
+            auto stream = eligible_.find(entry.first);
+            if (stream != eligible_.end() && deviceStreams_.count(stream->second)) return true;
+        }
         return false;
     }
 
@@ -221,7 +227,8 @@ private:
     std::atomic<bool> active_{false};
     mutable std::mutex mutex_;
     std::unordered_map<const void*, State> states_;
-    std::unordered_set<const void*> deviceStreams_, eligible_;
+    std::unordered_set<const void*> deviceStreams_;
+    std::unordered_map<const void*, const void*> eligible_;  // encoder -> its device stream
 };
 
 // Never destroyed, like the tracker: the feed reader may run during static destruction.

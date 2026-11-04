@@ -834,8 +834,10 @@ A FAULT made before the feed stream attaches is kept for it, as watches are.
 A FAULT is the loss of the process's device, as an [invalid command](#invalid-commands) is: the
 process prints `CABOOSE_GPU_SILENT_FAULT opcode=… result=…` and `CABOOSE_GPU_EXECUTOR_LOST`, its
 calls return `VK_ERROR_DEVICE_LOST`, and an application that recovers creates a new instance.
-A feed that ends while a stream is switched is the same loss (`CABOOSE_GPU_SILENT_FEED_ENDED`):
-the failures of its commands could no longer arrive.
+A feed that ends while a switched stream is still open is the same loss
+(`CABOOSE_GPU_SILENT_FEED_ENDED`): the failures of its commands could no longer arrive. A feed
+that ends after the process closed its switched streams itself (its device or instance
+destroyed, its connections torn down at exit) is its own teardown and loses nothing.
 
 The guest's list is `guest/gpu/gfxstream/bounded-memory/silent_success.h`;
 `test_silent_success_list.py` fails when it differs from the decoder's, and every driver build

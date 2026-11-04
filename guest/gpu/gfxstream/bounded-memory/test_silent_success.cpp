@@ -183,6 +183,14 @@ int main() {
     }
     assert(mode.due(&a, true) && mode.silent(&a));
 
+    // The feed ending after the process closed its own device stream (vkDestroyDevice, exit) is
+    // teardown, not a loss: no stream it could fault is open. While the stream is open it is.
+    assert(mode.anySilent());
+    mode.deviceStream(&device, false);
+    assert(mode.silent(&a) && !mode.anySilent());
+    mode.deviceStream(&device, true);
+    assert(mode.anySilent());
+
     // A gone encoder forgets its switch; its address made again on a device stream starts over.
     mode.encoderGone(&a);
     assert(!mode.silent(&a));
