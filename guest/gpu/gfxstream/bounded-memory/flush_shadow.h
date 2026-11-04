@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 #pragma once
+#include "lock_order.h"
 #include "memory_traffic.h"
 #include "ranges.h"
 #include <cstdint>
@@ -64,7 +65,7 @@ inline uint64_t blockHash(const uint8_t* p, size_t size) {
 class FlushShadow {
 public:
     explicit FlushShadow(Budget& budget = processBudget) : budget_(budget) {}
-    ~FlushShadow() { std::lock_guard<std::mutex> lock(mutex_); clearLocked(); }
+    ~FlushShadow() { std::lock_guard<decltype(mutex_)> lock(mutex_); clearLocked(); }
 
     // Calls emit(offset, size) for each maximal run of changed blocks inside
     // [offset, offset + size) of the mapping `base`, and records those bytes as
@@ -72,7 +73,7 @@ public:
     template<class Emit>
     int emitChanged(uint64_t key, const uint8_t* base, uint64_t allocation,
                     uint64_t offset, uint64_t size, Emit emit) {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<decltype(mutex_)> lock(mutex_);
         Entry* entry = entryLocked(key, allocation);
         auto& traffic = traffic::counters();
         if (!entry) {
@@ -135,7 +136,7 @@ public:
                        uint64_t offset, uint64_t size) {
         if (!base || !size || offset >= allocation) return;
         const uint64_t end = size > allocation - offset ? allocation : offset + size;
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<decltype(mutex_)> lock(mutex_);
         Entry* entry = entryLocked(key, allocation);
         if (!entry) return;
         if (entry->bytes) std::memcpy(entry->bytes.get() + offset, base + offset, size_t(end - offset));
@@ -160,7 +161,7 @@ public:
     // still has the bytes it was sent: a flush of the range would send nothing.
     bool unchanged(uint64_t key, const uint8_t* base, uint64_t allocation, uint64_t offset,
                    uint64_t size) {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<decltype(mutex_)> lock(mutex_);
         auto found = entries_.find(key);
         if (found == entries_.end() || found->second.allocation < allocation || !size ||
             offset > allocation || size > allocation - offset) return false;
@@ -180,14 +181,14 @@ public:
     }
 
     void forget(uint64_t key) {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<decltype(mutex_)> lock(mutex_);
         forgetLocked(key);
     }
 
     // The device wrote [begin, end) behind the guest's back: every block it touches
     // is sent again until a flush or an invalidate makes it known once more.
     void forgetRange(uint64_t key, uint64_t begin, uint64_t end) {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<decltype(mutex_)> lock(mutex_);
         auto found = entries_.find(key);
         if (found == entries_.end()) return;
         std::vector<bool>& valid = found->second.valid;
@@ -272,7 +273,7 @@ private:
     Budget& budget_;
     size_t used_ = 0;
     size_t hashUsed_ = 0;
-    std::mutex mutex_;
+    caboose::lock_order::Mutex<std::mutex, caboose::lock_order::kFlushShadow> mutex_;
     std::unordered_map<uint64_t, Entry> entries_;
 };
 

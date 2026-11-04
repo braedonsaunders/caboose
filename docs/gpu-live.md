@@ -583,6 +583,17 @@ Chromium, GL and DXVK applications, through random executor kills, network drops
 viewer reconnects and losses during application startup, with every application required to
 present real pictures (not noise, not blank) after each. The release seal runs it.
 
+## Lock order
+
+The guest driver's locks form one hierarchy; a thread holding a lock takes only locks below it:
+the encoder's stream lock, then the flush shadow, the tracker (`ResourceTracker::mLock`), the
+deferred replies and the completion tracker. Taking the same lock again (the tracker's is
+recursive) or another encoder's is allowed. `bounded-memory/lock_order.h` holds the hierarchy and
+a checker: with `CABOOSE_LOCK_ORDER=1` every acquisition of those locks is checked and a lock
+taken above one already held is reported once with its calling frames
+(`CABOOSE_LOCK_ORDER took=… holding=…`); `CABOOSE_LOCK_ORDER=abort` also aborts there. Unset, an
+acquisition costs one load.
+
 ## Resuming an executor
 
 A phone that declares `executor-resume` keeps its executor across a lost socket. The host

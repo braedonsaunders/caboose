@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 #pragma once
+#include "lock_order.h"
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -91,7 +92,7 @@ public:
         };
         bool reapAvailable = false;
         {
-            std::lock_guard<std::mutex> lock(mutex_);
+            std::lock_guard<decltype(mutex_)> lock(mutex_);
             auto found = pending_.find(encoder);
             if (found == pending_.end()) return true;
             if (fits(found->second)) {
@@ -104,7 +105,7 @@ public:
         if (reapAvailable) return true;
         std::vector<Reply> replies;
         {
-            std::lock_guard<std::mutex> lock(mutex_);
+            std::lock_guard<decltype(mutex_)> lock(mutex_);
             auto found = pending_.find(encoder);
             if (found == pending_.end() || fits(found->second)) return true;
             auto& queued = found->second.replies;
@@ -155,7 +156,7 @@ public:
 
     void add(const void* encoder, uint32_t replies, uint64_t bytes) {
         if (!replies) return;
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<decltype(mutex_)> lock(mutex_);
         auto& entry = pending_[encoder];
         entry.replies.insert(entry.replies.end(), replies, Reply{});
         entry.replies.back().bytes = bytes;
@@ -171,7 +172,7 @@ public:
     // A create of `count` objects whose consecutive handles start at `first`: its reply
     // is those handles, then one result.
     void addHandleCreates(const void* encoder, uint64_t first, uint32_t count, uint64_t bytes) {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<decltype(mutex_)> lock(mutex_);
         auto& entry = pending_[encoder];
         entry.replies.push_back({0, 0, first, false, count, bytes, nullptr, lastOpcode});
         entry.bytes += bytes;
@@ -181,7 +182,7 @@ public:
     // A command whose reply is data and then a result (or only data, `withResult` false),
     // kept in `reply` when it is read (query_results.h).
     void addDataReply(const void* encoder, std::shared_ptr<QueryReply> reply, uint64_t bytes, bool withResult = true) {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<decltype(mutex_)> lock(mutex_);
         auto& entry = pending_[encoder];
         Reply value; value.data = std::move(reply); value.bytes = bytes; value.dataResult = withResult;
         entry.replies.push_back(std::move(value));
@@ -195,7 +196,7 @@ public:
     }
     void addCheckedResults(const void* encoder, uint32_t results, uint64_t bytes) {
         if (!results) return;
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<decltype(mutex_)> lock(mutex_);
         auto& entry = pending_[encoder];
         entry.replies.insert(entry.replies.end(), results, Reply{0, 0, 0, true, 1, 0, nullptr});
         entry.replies.back().bytes = bytes;
@@ -204,7 +205,7 @@ public:
         total_.fetch_add(results, std::memory_order_relaxed);
     }
     void addFenceWait(const void* encoder, uint64_t fence, uint64_t bytes) {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<decltype(mutex_)> lock(mutex_);
         auto& entry = pending_[encoder];
         entry.replies.push_back({fence, generations_[fence], 0, false, 1, bytes, nullptr});
         entry.bytes += bytes;
@@ -226,7 +227,7 @@ public:
         if (!total_.load(std::memory_order_relaxed)) return true;
         std::vector<Reply> replies;
         {
-            std::lock_guard<std::mutex> lock(mutex_);
+            std::lock_guard<decltype(mutex_)> lock(mutex_);
             auto found = pending_.find(encoder);
             if (found == pending_.end()) return true;
             auto& queued = found->second.replies;
@@ -273,7 +274,7 @@ public:
         for (;;) {
             Reply reply;
             {
-                std::lock_guard<std::mutex> lock(mutex_);
+                std::lock_guard<decltype(mutex_)> lock(mutex_);
                 auto found = pending_.find(encoder);
                 if (found == pending_.end()) return true;
                 auto& queued = found->second.replies;
@@ -294,7 +295,7 @@ public:
     // True when a prefetched wait for the fence's current generation is still in flight.
     bool prefetchPending(const void* encoder, uint64_t fence) {
         if (!fence || !total_.load(std::memory_order_relaxed)) return false;
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<decltype(mutex_)> lock(mutex_);
         auto found = pending_.find(encoder);
         if (found == pending_.end()) return false;
         auto generation = generations_.find(fence);
@@ -308,7 +309,7 @@ public:
     template<class Handle>
     bool signaled(const Handle* fences, uint32_t count, bool waitAll) {
         if (!count || !signaledCount_.load(std::memory_order_relaxed)) return false;
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<decltype(mutex_)> lock(mutex_);
         uint32_t known = 0;
         for (uint32_t i = 0; i < count; ++i)
             known += signaled_.count(caboose::handle_key(fences[i])) ? 1 : 0;
@@ -317,7 +318,7 @@ public:
 
     void markSignaled(uint64_t fence) {
         if (!fence) return;
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<decltype(mutex_)> lock(mutex_);
         signaled_.insert(fence);
         signaledCount_.store(signaled_.size(), std::memory_order_relaxed);
     }
@@ -326,7 +327,7 @@ public:
     // prefetch in flight. Generations are kept so a reused handle cannot match.
     void forgetFence(uint64_t fence) {
         if (!fence) return;
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<decltype(mutex_)> lock(mutex_);
         signaled_.erase(fence);
         signaledCount_.store(signaled_.size(), std::memory_order_relaxed);
         ++generations_[fence];
@@ -350,7 +351,7 @@ public:
     // The connection these replies were owed on ended: none of them will ever arrive, and
     // a new connection must not wait for them.
     void forgetAll() {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<decltype(mutex_)> lock(mutex_);
         pending_.clear();
         total_.store(0, std::memory_order_relaxed);
     }
@@ -418,7 +419,7 @@ private:
             return true;
         }
         if (result != 0) return true;
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<decltype(mutex_)> lock(mutex_);
         auto generation = generations_.find(reply.fence);
         if (generation != generations_.end() && generation->second == reply.generation) {
             signaled_.insert(reply.fence);
@@ -434,7 +435,7 @@ private:
         bool dataResult = true;  // a data reply's data is followed by a result
     };
     struct Entry { std::vector<Reply> replies; uint64_t bytes = 0, replyBytes = 0; };
-    std::mutex mutex_;
+    caboose::lock_order::Mutex<std::mutex, caboose::lock_order::kDeferredReplies> mutex_;
     std::unordered_map<const void*, Entry> pending_;
     std::unordered_map<uint64_t, uint64_t> generations_;
     std::unordered_set<uint64_t> signaled_;

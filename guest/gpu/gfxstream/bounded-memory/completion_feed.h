@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 #pragma once
+#include "lock_order.h"
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -77,17 +78,17 @@ public:
 
     // --- Fences -----------------------------------------------------------------------
     void fenceCreated(uint64_t fence, bool signaled) {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<decltype(mutex_)> lock(mutex_);
         auto& state = fences_[fence];
         state = FenceState{};
         state.state = signaled ? Fence::Signaled : Fence::Unsignaled;
     }
     void fenceDestroyed(uint64_t fence) {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<decltype(mutex_)> lock(mutex_);
         fences_.erase(fence);
     }
     void fenceReset(uint64_t fence) {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<decltype(mutex_)> lock(mutex_);
         auto& state = fences_[fence];
         state.state = Fence::Unsignaled;
         state.serial = 0;
@@ -95,14 +96,14 @@ public:
     // A signal operation the guest cannot follow.
     void fenceUntracked(uint64_t fence) {
         if (!fence) return;
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<decltype(mutex_)> lock(mutex_);
         auto& state = fences_[fence];
         state.state = Fence::Untracked;
         state.serial = 0;
         changed_.notify_all();  // a waiter now asks the device
     }
     Fence fence(uint64_t fence) {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<decltype(mutex_)> lock(mutex_);
         auto it = fences_.find(fence);
         return it == fences_.end() ? Fence::Untracked : it->second.state;
     }
@@ -110,7 +111,7 @@ public:
     // to watch.
     uint64_t submitted(uint64_t fence, const std::vector<std::pair<uint64_t, uint64_t>>& timelineSignals,
                        uint64_t queue = 0, uint64_t device = 0, const std::vector<uint64_t>& commandBuffers = {}) {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<decltype(mutex_)> lock(mutex_);
         const uint64_t serial = ++lastSerial_;
         Watch watch;
         watch.queue = queue;
@@ -167,27 +168,27 @@ public:
     void unwatched(uint64_t serial) { complete(serial, kUnwatched); }
     // The latest serial handed out; an idle wait sent after it covers it.
     uint64_t lastSerial() {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<decltype(mutex_)> lock(mutex_);
         return lastSerial_;
     }
     // True once the watched submission `serial` has completed (or the feed ended).
     bool serialCompleted(uint64_t serial) {
         if (!serial) return true;
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<decltype(mutex_)> lock(mutex_);
         return closed_ || (serial <= lastSerial_ && !watches_.count(serial));
     }
     // The oldest serial whose watch is outstanding, on any queue: every watch below it has
     // completed. One past the last serial when none is outstanding, and UINT64_MAX once the
     // feed has ended (nothing outstanding will be reported).
     uint64_t outstandingFrom() {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<decltype(mutex_)> lock(mutex_);
         return outstandingFromLocked();
     }
     // True once every watch up to and including `serial`, on every queue, has completed.
     bool completedThrough(uint64_t serial) { return serial < outstandingFrom(); }
     // Waits until completedThrough(serial) or `deadline`; whether it holds.
     bool waitCompletedThrough(uint64_t serial, Clock::time_point deadline) {
-        std::unique_lock<std::mutex> lock(mutex_);
+        std::unique_lock<decltype(mutex_)> lock(mutex_);
         return changed_.wait_until(lock, deadline, [&] { return serial < outstandingFromLocked(); });
     }
     // The device reported `queue` idle (vkQueueWaitIdle), or every queue of `device`
@@ -196,7 +197,7 @@ public:
     void idle(uint64_t queue, uint64_t device, uint64_t through) {
         std::vector<uint64_t> serials;
         {
-            std::lock_guard<std::mutex> lock(mutex_);
+            std::lock_guard<decltype(mutex_)> lock(mutex_);
             for (const auto& [serial, watch] : watches_)
                 if (serial <= through && (queue ? watch.queue == queue : watch.device == device))
                     serials.push_back(serial);
@@ -206,22 +207,22 @@ public:
 
     // --- Timeline semaphores ------------------------------------------------------------
     void timelineCreated(uint64_t semaphore, uint64_t initialValue, uint64_t device = 0) {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<decltype(mutex_)> lock(mutex_);
         semaphores_[semaphore] = SemaphoreState{true, initialValue, initialValue, device};
     }
     void semaphoreDestroyed(uint64_t semaphore) {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<decltype(mutex_)> lock(mutex_);
         semaphores_.erase(semaphore);
     }
     void semaphoreUntracked(uint64_t semaphore) {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<decltype(mutex_)> lock(mutex_);
         auto it = semaphores_.find(semaphore);
         if (it != semaphores_.end()) it->second.tracked = false;
         changed_.notify_all();  // a waiter now asks the device
     }
     // vkSignalSemaphore: the host sets the value directly.
     void timelineSignaledByHost(uint64_t semaphore, uint64_t value) {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<decltype(mutex_)> lock(mutex_);
         auto it = semaphores_.find(semaphore);
         if (it == semaphores_.end() || !it->second.tracked) return;
         it->second.value = std::max(it->second.value, value);
@@ -233,15 +234,15 @@ public:
     // on the host, or set or reset by a submitted command buffer once its batch completes, so
     // its state is known without asking the device.
     void eventCreated(uint64_t event) {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<decltype(mutex_)> lock(mutex_);
         events_[event] = EventInfo{};
     }
     void eventDestroyed(uint64_t event) {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<decltype(mutex_)> lock(mutex_);
         events_.erase(event);
     }
     void eventHost(uint64_t event, bool set) {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<decltype(mutex_)> lock(mutex_);
         auto it = events_.find(event);
         if (it != events_.end() && it->second.state != EventState::Untracked)
             it->second.state = set ? EventState::Set : EventState::Reset;
@@ -249,18 +250,18 @@ public:
     }
     // Recording: a command buffer begun anew, an event set or reset in it, secondaries run in it.
     void commandBufferBegun(uint64_t commandBuffer) {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<decltype(mutex_)> lock(mutex_);
         commandEvents_.erase(commandBuffer);
         commandQueries_.erase(commandBuffer);
     }
     void commandBufferEvent(uint64_t commandBuffer, uint64_t event, bool set) {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<decltype(mutex_)> lock(mutex_);
         auto& ops = commandEvents_[commandBuffer];
         if (ops.size() < kMaxCommandEvents) ops.push_back({event, set});
         else untrackLocked(event);  // too many to follow: asked on the device
     }
     void commandBufferExecutes(uint64_t primary, const uint64_t* secondaries, uint32_t count) {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<decltype(mutex_)> lock(mutex_);
         for (uint32_t i = 0; i < count; ++i) {
             auto found = commandEvents_.find(secondaries[i]);
             if (found == commandEvents_.end()) continue;
@@ -279,20 +280,20 @@ public:
         }
     }
     void commandBufferFreed(uint64_t commandBuffer) {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<decltype(mutex_)> lock(mutex_);
         commandEvents_.erase(commandBuffer);
         commandQueries_.erase(commandBuffer);
     }
     // Whether any of these command buffers sets or resets an event: its batch needs a watch.
     bool setsEvents(const std::vector<uint64_t>& commandBuffers) {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<decltype(mutex_)> lock(mutex_);
         for (uint64_t cb : commandBuffers)
             if (commandEvents_.count(cb)) return true;
         return false;
     }
     // The events these command buffers set or reset.
     std::vector<uint64_t> eventsOf(const std::vector<uint64_t>& commandBuffers) {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<decltype(mutex_)> lock(mutex_);
         std::vector<uint64_t> out;
         for (uint64_t cb : commandBuffers) {
             auto found = commandEvents_.find(cb);
@@ -304,7 +305,7 @@ public:
     }
     // A batch whose completion nobody will report: the events it touches are asked on the device.
     void eventsUntracked(const std::vector<uint64_t>& commandBuffers) {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<decltype(mutex_)> lock(mutex_);
         for (uint64_t cb : commandBuffers) {
             auto found = commandEvents_.find(cb);
             if (found == commandEvents_.end()) continue;
@@ -313,7 +314,7 @@ public:
     }
     // The event's state, or false when the device must be asked.
     bool eventSet(uint64_t event, bool* set) {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<decltype(mutex_)> lock(mutex_);
         if (lost_) return false;
         auto it = events_.find(event);
         if (it == events_.end() || it->second.state == EventState::Untracked) return false;
@@ -327,30 +328,30 @@ public:
     // in a submitted batch) until then, so a poll without WAIT needs no request while the
     // result cannot be there yet.
     void commandBufferQueries(uint64_t commandBuffer, uint64_t pool, uint32_t first, uint32_t count, bool end) {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<decltype(mutex_)> lock(mutex_);
         addQueryOpLocked(commandBuffer, QueryOp{pool, first, count, end ? QueryOp::End : QueryOp::Reset});
     }
     // Whether these command buffers end or reset queries: their batch needs a watch.
     bool touchesQueries(const std::vector<uint64_t>& commandBuffers) {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<decltype(mutex_)> lock(mutex_);
         for (uint64_t cb : commandBuffers)
             if (commandQueries_.count(cb)) return true;
         return false;
     }
     void queriesReset(uint64_t pool, uint32_t first, uint32_t count) {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<decltype(mutex_)> lock(mutex_);
         auto& queries = queryPools_[pool];
         const uint32_t n = std::min(count, kMaxQueryRange);
         for (uint32_t i = 0; i < n; ++i) queries[first + i] = QueryState{};
     }
     void queryPoolDestroyed(uint64_t pool) {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<decltype(mutex_)> lock(mutex_);
         queryPools_.erase(pool);
     }
     enum class Queries { Available, NotReady, AskDevice };
     // Whether every query of the range is available; AskDevice when any is not followed.
     Queries queries(uint64_t pool, uint32_t first, uint32_t count) {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<decltype(mutex_)> lock(mutex_);
         if (lost_ || !count || count > kMaxQueryRange) return Queries::AskDevice;
         auto found = queryPools_.find(pool);
         if (found == queryPools_.end()) return Queries::AskDevice;
@@ -363,7 +364,7 @@ public:
         return ready ? Queries::Available : Queries::NotReady;
     }
     std::string describeQuery(uint64_t pool, uint32_t index) {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<decltype(mutex_)> lock(mutex_);
         static const char* const names[] = {"reset", "pending", "available", "untracked"};
         std::string out = "query=";
         const QueryState* query = nullptr;
@@ -385,7 +386,7 @@ public:
 
     // What the tracker knows of a fence or timeline, for a stalled poll's log line.
     std::string describeFence(uint64_t fence) {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<decltype(mutex_)> lock(mutex_);
         static const char* const names[] = {"unsignaled", "signaled", "pending", "untracked"};
         auto it = fences_.find(fence);
         std::string out = "fence=";
@@ -396,7 +397,7 @@ public:
         return out + describeLocked();
     }
     std::string describeEvent(uint64_t event) {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<decltype(mutex_)> lock(mutex_);
         static const char* const names[] = {"reset", "set", "untracked"};
         auto it = events_.find(event);
         std::string out = "event=";
@@ -405,7 +406,7 @@ public:
         return out + describeLocked();
     }
     std::string describeSemaphore(uint64_t semaphore) {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<decltype(mutex_)> lock(mutex_);
         auto it = semaphores_.find(semaphore);
         std::string out = "timeline=";
         if (it == semaphores_.end()) out += "unknown";
@@ -416,7 +417,7 @@ public:
 
     // The completed value of a tracked timeline; false when untracked.
     bool timelineValue(uint64_t semaphore, uint64_t* value) {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<decltype(mutex_)> lock(mutex_);
         auto it = semaphores_.find(semaphore);
         if (it == semaphores_.end() || !it->second.tracked) return false;
         *value = it->second.value;
@@ -426,7 +427,7 @@ public:
     // --- Feed ---------------------------------------------------------------------------
     // A record from the feed stream. Unknown serials (already superseded) are ignored.
     void complete(uint64_t serial, int32_t status) {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<decltype(mutex_)> lock(mutex_);
         auto it = watches_.find(serial);
         if (it == watches_.end()) return;
         Watch watch = std::move(it->second);
@@ -469,7 +470,7 @@ public:
     }
     // The executor is gone: every device of this process is lost.
     void loseAll() {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<decltype(mutex_)> lock(mutex_);
         lost_ = true;
         closed_ = true;
         changed_.notify_all();
@@ -477,7 +478,7 @@ public:
     // A new executor connection after a loss: objects of the lost devices are asked about
     // on their own (ended) streams, which report device loss; new objects are tracked.
     void revive() {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<decltype(mutex_)> lock(mutex_);
         for (auto& [handle, state] : fences_)
             if (state.state == Fence::Pending) { state.state = Fence::Untracked; state.serial = 0; }
         for (auto& [handle, state] : semaphores_) state.tracked = false;
@@ -492,12 +493,12 @@ public:
     }
     // The feed ended: nothing pending will be reported any more.
     void feedClosed() {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<decltype(mutex_)> lock(mutex_);
         closed_ = true;
         changed_.notify_all();
     }
     bool deviceLost(uint64_t device = 0) {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<decltype(mutex_)> lock(mutex_);
         return lost_ || (device && lostDevices_.count(device));
     }
 
@@ -505,12 +506,12 @@ public:
     enum class Answer { Satisfied, NotYet, DeviceLost, AskDevice };
     // Fence status without waiting.
     Answer fencesSignaled(const uint64_t* fences, uint32_t count, bool all) {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<decltype(mutex_)> lock(mutex_);
         return fencesLocked(fences, count, all);
     }
     // Waits until the fences are signaled (all, or any) or `deadline` passes.
     Answer waitFences(const uint64_t* fences, uint32_t count, bool all, Clock::time_point deadline) {
-        std::unique_lock<std::mutex> lock(mutex_);
+        std::unique_lock<decltype(mutex_)> lock(mutex_);
         for (;;) {
             Answer answer = fencesLocked(fences, count, all);
             if (answer != Answer::NotYet) return answer;
@@ -524,7 +525,7 @@ public:
     // Waits until the timelines reach their values (all, or any) or `deadline` passes.
     Answer waitTimelines(const uint64_t* semaphores, const uint64_t* values, uint32_t count, bool all,
                          Clock::time_point deadline) {
-        std::unique_lock<std::mutex> lock(mutex_);
+        std::unique_lock<decltype(mutex_)> lock(mutex_);
         for (;;) {
             Answer answer = timelinesLocked(semaphores, values, count, all);
             if (answer != Answer::NotYet) return answer;
@@ -536,7 +537,7 @@ public:
         }
     }
     size_t pendingWatches() {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<decltype(mutex_)> lock(mutex_);
         return watches_.size();
     }
 
@@ -619,8 +620,8 @@ private:
         return (all ? reached == count : reached > 0) ? Answer::Satisfied : Answer::NotYet;
     }
 
-    std::mutex mutex_;
-    std::condition_variable changed_;
+    caboose::lock_order::Mutex<std::mutex, caboose::lock_order::kCompletion> mutex_;
+    std::condition_variable_any changed_;
     std::unordered_map<uint64_t, FenceState> fences_;
     std::unordered_map<uint64_t, SemaphoreState> semaphores_;
     std::unordered_map<uint64_t, Watch> watches_;

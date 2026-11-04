@@ -22,7 +22,9 @@ class DriverSeriesTest(unittest.TestCase):
             paths = prepare.patched_paths(patch)
             self.assertTrue(paths, patch.name)
             for path in paths:
-                self.assertTrue(path.startswith('src/gfxstream/'), (patch.name, path))
+                # Mesa's trace scopes are the one shared header the driver changes (0078).
+                self.assertTrue(path.startswith('src/gfxstream/') or path == 'src/util/perf/cpu_trace.h',
+                                (patch.name, path))
                 self.assertNotIn(path, owned, patch.name)
 
     def test_patches_describe_their_change(self):

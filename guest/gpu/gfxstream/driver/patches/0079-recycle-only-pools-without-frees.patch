@@ -1,0 +1,30 @@
+From: Caboose <caboose@local>
+Subject: [PATCH 79/81] Recycle only the sets of pools that never free sets one by one
+
+A reset batched pool kept its sets and handed them out again under their old handles. In a
+pool that frees sets individually (ANGLE's, as Chromium Embedded Framework in Halo: MCC uses
+it), a late free or use of an old handle then reached the set that now held it, and the
+process crashed in descriptor-set allocation or freed an invalid pointer. Such pools give
+each allocation a new set; DXVK's pools, which only reset, keep recycling.
+---
+diff --git a/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp b/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp
+--- a/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp
++++ b/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp
+@@ -1338,8 +1338,13 @@
+ 
+ void ResourceTracker::clearDescriptorPoolAndUnregisterDescriptorSets(void* context, VkDevice device,
+                                                                      VkDescriptorPool pool) {
+-    if (cabooseBatchedSets()) {
+-        // Caboose: a reset keeps the pool's sets for their ids' next allocation.
++    // Caboose: a reset keeps the pool's sets for their ids' next allocation, in a pool whose
++    // sets are never freed one by one (DXVK's). A pool that frees sets individually gives each
++    // allocation a new set: a kept set reallocated under its old handle would let a late free
++    // or use of that handle (ANGLE's, CEF's) reach the set that now holds it.
++    if (cabooseBatchedSets() &&
++        !(as_goldfish_VkDescriptorPool(pool)->allocInfo->createFlags &
++          VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT)) {
+         std::vector<VkDescriptorSetLayout> layouts;
+         std::vector<VkDescriptorSet> unrecycled = recycleDescriptorPool(pool, &layouts);
+         for (auto setLayout : layouts) decDescriptorSetLayoutRef(context, device, setLayout, nullptr);
+-- 
+2.43.0
