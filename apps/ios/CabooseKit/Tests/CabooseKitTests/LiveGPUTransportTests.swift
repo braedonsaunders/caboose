@@ -210,6 +210,28 @@ final class LiveGPUTransportTests: XCTestCase {
         session.abort()
     }
 
+    func testQueuedInputKeepsItsChargeUntilTheConsumerReleasesIt() throws {
+        let transport = GPUFlowTransportProbe()
+        let consumer = GPUQueuingConsumer()
+        let session = try LiveGPUSession(transport: transport, nativeBinding: consumer)
+        let ready = expectation(description: "opened")
+        session.start { if case .transportOpened = $0 { ready.fulfill() } }
+        wait(for: [ready], timeout: 2)
+        // consume returns at once, yet the queued input still counts against the budget.
+        var sent = 0
+        while !transport.paused && sent < LiveGPUBudget.countLimit {
+            transport.emit(.bytes(Data(repeating: 1, count: 64))); sent += 1
+        }
+        XCTAssertTrue(transport.paused)
+        XCTAssertEqual(sent, LiveGPUBudget.pauseCount)
+        let resumed = expectation(description: "resumed")
+        transport.onChange = { if !$0 { resumed.fulfill() } }
+        consumer.releaseAll()
+        wait(for: [resumed], timeout: 5)
+        XCTAssertEqual(transport.changes, [true, false])
+        session.abort()
+    }
+
     func testIngressOverflowCancelsBlockedConsumerAndReportsCleanupFailure() throws {
         let transport = GPUTransportProbe()
         let consumer = GPUConsumerProbe()
@@ -304,6 +326,24 @@ private final class GPUGatedConsumer: LiveGPUByteConsumer, @unchecked Sendable {
     func open() { gate.leave() }
     func start(output: @escaping @Sendable (Data) -> Bool, failed: @escaping @Sendable (Error) -> Void) throws {}
     func consume(_ bytes: Data) throws { _ = gate.wait(timeout: .now() + 5) }
+    func requestDrain() throws {}
+    func revoke() throws {}
+    func finish() throws {}
+}
+
+/// Queues every input and releases its charge only when the test says so.
+private final class GPUQueuingConsumer: LiveGPUByteConsumer, LiveGPUDeferredIngress, @unchecked Sendable {
+    private let lock = NSLock()
+    private var releases: [@Sendable () -> Void] = []
+    func start(output: @escaping @Sendable (Data) -> Bool, failed: @escaping @Sendable (Error) -> Void) throws {}
+    func consume(_ bytes: Data) throws { XCTFail("the session passes the release") }
+    func consume(_ bytes: Data, release: @escaping @Sendable () -> Void) throws {
+        lock.withLock { releases.append(release) }
+    }
+    func releaseAll() {
+        let pending = lock.withLock { () -> [@Sendable () -> Void] in defer { releases = [] }; return releases }
+        for release in pending { release() }
+    }
     func requestDrain() throws {}
     func revoke() throws {}
     func finish() throws {}

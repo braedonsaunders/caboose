@@ -1,0 +1,1234 @@
+From: Caboose <caboose@local>
+Subject: [PATCH 81/84] Check the tracker and encoder locks against the driver's lock hierarchy
+
+The tracker's lock and each encoder's stream lock report every acquisition to the lock-order
+checker (caboose-bounded-memory/lock_order.h), which with CABOOSE_LOCK_ORDER set reports a lock
+taken above one already held, so an inversion is found where it happens rather than as a
+deadlock. Unset, each acquisition costs one load.
+---
+diff --git a/src/gfxstream/guest/vulkan_enc/ResourceTracker.h b/src/gfxstream/guest/vulkan_enc/ResourceTracker.h
+--- a/src/gfxstream/guest/vulkan_enc/ResourceTracker.h
++++ b/src/gfxstream/guest/vulkan_enc/ResourceTracker.h
+@@ -22,6 +22,7 @@
+  */
+ #pragma once
+ 
++#include "caboose-bounded-memory/lock_order.h"
+ #include <vulkan/vulkan.h>
+ 
+ #include <atomic>
+@@ -1045,7 +1046,9 @@
+ 
+     void sendGuestInfo(VkEncoder* encoder);
+ 
+-    std::recursive_mutex mLock;
++    // Caboose: checked against the driver's lock hierarchy (caboose-bounded-memory/lock_order.h).
++    using TrackerMutex = caboose::lock_order::Mutex<std::recursive_mutex, caboose::lock_order::kTracker>;
++    TrackerMutex mLock;
+ 
+     // A LINEAR dma-buf imported as device memory on the socket transport, mapped read-only.
+     struct CabooseImport {
+diff --git a/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp b/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp
+--- a/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp
++++ b/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp
+@@ -264,13 +264,13 @@
+ 
+ #define HANDLE_REGISTER_IMPL_IMPL(type)                    \
+     void ResourceTracker::register_##type(type obj) {      \
+-        std::lock_guard<std::recursive_mutex> lock(mLock); \
++        std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock); \
+         info_##type[obj] = type##_Info();                  \
+     }
+ 
+ #define HANDLE_UNREGISTER_IMPL_IMPL(type)                  \
+     void ResourceTracker::unregister_##type(type obj) {    \
+-        std::lock_guard<std::recursive_mutex> lock(mLock); \
++        std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock); \
+         info_##type.erase(obj);                            \
+     }
+ 
+@@ -1112,7 +1112,7 @@
+ }
+ 
+ void ResourceTracker::unregister_VkInstance(VkInstance instance) {
+-    std::lock_guard<std::recursive_mutex> lock(mLock);
++    std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+ 
+     auto it = info_VkInstance.find(instance);
+     if (it == info_VkInstance.end()) return;
+@@ -1121,7 +1121,7 @@
+ }
+ 
+ void ResourceTracker::unregister_VkDevice(VkDevice device) {
+-    std::lock_guard<std::recursive_mutex> lock(mLock);
++    std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+ 
+     auto it = info_VkDevice.find(device);
+     if (it == info_VkDevice.end()) return;
+@@ -1134,21 +1134,21 @@
+ 
+     clearCommandPool(pool);
+ 
+-    std::lock_guard<std::recursive_mutex> lock(mLock);
++    std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+     info_VkCommandPool.erase(pool);
+ }
+ 
+ void ResourceTracker::unregister_VkSampler(VkSampler sampler) {
+     if (!sampler) return;
+ 
+-    std::lock_guard<std::recursive_mutex> lock(mLock);
++    std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+     info_VkSampler.erase(sampler);
+ }
+ 
+ void ResourceTracker::unregister_VkPrivateDataSlot(VkPrivateDataSlot privateSlot) {
+     if (!privateSlot) return;
+ 
+-    std::lock_guard<std::recursive_mutex> lock(mLock);
++    std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+     info_VkPrivateDataSlot.erase(privateSlot);
+ }
+ 
+@@ -1156,7 +1156,7 @@
+     caboose::memory::queryResults.commandBufferBegun(caboose::handle_key(commandBuffer));
+     caboose::completion::tracker().commandBufferBegun(caboose::handle_key(commandBuffer));
+     {
+-        std::lock_guard<std::recursive_mutex> lock(mLock);
++        std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+         mCabooseCommandDirtyRanges.erase(caboose::handle_key(commandBuffer));
+     }
+     resetCommandBufferStagingInfo(commandBuffer, true /* also reset primaries */,
+@@ -1180,7 +1180,7 @@
+         delete pendingSets;
+     }
+ 
+-    std::lock_guard<std::recursive_mutex> lock(mLock);
++    std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+     info_VkCommandBuffer.erase(commandBuffer);
+ }
+ 
+@@ -1191,12 +1191,12 @@
+         q->lastUsedEncoder->decRef();
+     }
+ 
+-    std::lock_guard<std::recursive_mutex> lock(mLock);
++    std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+     info_VkQueue.erase(queue);
+ }
+ 
+ void ResourceTracker::unregister_VkDeviceMemory(VkDeviceMemory mem) {
+-    std::lock_guard<std::recursive_mutex> lock(mLock);
++    std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+ 
+     auto it = info_VkDeviceMemory.find(mem);
+     if (it == info_VkDeviceMemory.end()) return;
+@@ -1217,7 +1217,7 @@
+ }
+ 
+ void ResourceTracker::unregister_VkImage(VkImage img) {
+-    std::lock_guard<std::recursive_mutex> lock(mLock);
++    std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+ 
+     auto it = info_VkImage.find(img);
+     if (it == info_VkImage.end()) return;
+@@ -1226,7 +1226,7 @@
+ }
+ 
+ void ResourceTracker::unregister_VkBuffer(VkBuffer buf) {
+-    std::lock_guard<std::recursive_mutex> lock(mLock);
++    std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+ 
+     auto it = info_VkBuffer.find(buf);
+     if (it == info_VkBuffer.end()) return;
+@@ -1235,7 +1235,7 @@
+ }
+ 
+ void ResourceTracker::unregister_VkSemaphore(VkSemaphore sem) {
+-    std::lock_guard<std::recursive_mutex> lock(mLock);
++    std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+ 
+     auto it = info_VkSemaphore.find(sem);
+     if (it == info_VkSemaphore.end()) return;
+@@ -1256,7 +1256,7 @@
+ }
+ 
+ void ResourceTracker::unregister_VkDescriptorUpdateTemplate(VkDescriptorUpdateTemplate templ) {
+-    std::lock_guard<std::recursive_mutex> lock(mLock);
++    std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+     auto it = info_VkDescriptorUpdateTemplate.find(templ);
+     if (it == info_VkDescriptorUpdateTemplate.end()) return;
+ 
+@@ -1278,7 +1278,7 @@
+ }
+ 
+ void ResourceTracker::unregister_VkFence(VkFence fence) {
+-    std::lock_guard<std::recursive_mutex> lock(mLock);
++    std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+     auto it = info_VkFence.find(fence);
+     if (it == info_VkFence.end()) return;
+ 
+@@ -1296,7 +1296,7 @@
+ 
+ #ifdef VK_USE_PLATFORM_FUCHSIA
+ void ResourceTracker::unregister_VkBufferCollectionFUCHSIA(VkBufferCollectionFUCHSIA collection) {
+-    std::lock_guard<std::recursive_mutex> lock(mLock);
++    std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+     info_VkBufferCollectionFUCHSIA.erase(collection);
+ }
+ #endif
+@@ -1310,14 +1310,14 @@
+ void ResourceTracker::unregister_VkDescriptorSet(VkDescriptorSet set) {
+     if (!set) return;
+ 
+-    std::lock_guard<std::recursive_mutex> lock(mLock);
++    std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+     unregister_VkDescriptorSet_locked(set);
+ }
+ 
+ void ResourceTracker::unregister_VkDescriptorSetLayout(VkDescriptorSetLayout setLayout) {
+     if (!setLayout) return;
+ 
+-    std::lock_guard<std::recursive_mutex> lock(mLock);
++    std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+     delete as_goldfish_VkDescriptorSetLayout(setLayout)->layoutInfo;
+     info_VkDescriptorSetLayout.erase(setLayout);
+ }
+@@ -1370,7 +1370,7 @@
+ void ResourceTracker::unregister_VkDescriptorPool(VkDescriptorPool pool) {
+     if (!pool) return;
+ 
+-    std::lock_guard<std::recursive_mutex> lock(mLock);
++    std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+ 
+     struct goldfish_VkDescriptorPool* dp = as_goldfish_VkDescriptorPool(pool);
+     delete dp->allocInfo;
+@@ -1433,7 +1433,7 @@
+ void ResourceTracker::setInstanceInfo(VkInstance instance, uint32_t enabledExtensionCount,
+                                       const char* const* ppEnabledExtensionNames,
+                                       uint32_t apiVersion) {
+-    std::lock_guard<std::recursive_mutex> lock(mLock);
++    std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+     auto& info = info_VkInstance[instance];
+     info.highestApiVersion = apiVersion;
+ }
+@@ -1443,7 +1443,7 @@
+                                     const VkPhysicalDeviceMemoryProperties& memProps,
+                                     uint32_t enabledExtensionCount,
+                                     const char* const* ppEnabledExtensionNames, const void* pNext) {
+-    std::lock_guard<std::recursive_mutex> lock(mLock);
++    std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+     auto& info = info_VkDevice[device];
+     info.physdev = physdev;
+     info.props = props;
+@@ -1473,7 +1473,7 @@
+                                           uint32_t memoryTypeIndex, void* ahw, bool imported,
+                                           zx_handle_t vmoHandle, VirtGpuResourcePtr blobPtr,
+                                           int importedFd) {
+-    std::lock_guard<std::recursive_mutex> lock(mLock);
++    std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+     auto& info = info_VkDeviceMemory[memory];
+ 
+     info.device = device;
+@@ -1491,7 +1491,7 @@
+ 
+ void ResourceTracker::setImageInfo(VkImage image, VkDevice device,
+                                    const VkImageCreateInfo* pCreateInfo) {
+-    std::lock_guard<std::recursive_mutex> lock(mLock);
++    std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+     auto& info = info_VkImage[image];
+ 
+     info.device = device;
+@@ -1499,7 +1499,7 @@
+ }
+ 
+ uint8_t* ResourceTracker::getMappedPointer(VkDeviceMemory memory) {
+-    std::lock_guard<std::recursive_mutex> lock(mLock);
++    std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+     const auto it = info_VkDeviceMemory.find(memory);
+     if (it == info_VkDeviceMemory.end()) return nullptr;
+ 
+@@ -1538,7 +1538,7 @@
+     uint32_t skippedReadbackCount = 0;
+     uint64_t skippedReadbackBytes = 0;
+     {
+-        std::lock_guard<std::recursive_mutex> lock(mLock);
++        std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+         for (const auto& [mem, info] : info_VkDeviceMemory) {
+             if (!info.socketShadow || !info.socketMapped || !info.device) continue;
+             auto devIt = info_VkDevice.find(info.device);
+@@ -1659,7 +1659,7 @@
+     };
+     std::vector<InvalidateItem> mapped;
+     {
+-        std::lock_guard<std::recursive_mutex> lock(mLock);
++        std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+         const bool feedOn = caboose::completion::feedActive.load(std::memory_order_acquire);
+         for (auto& [mem, info] : info_VkDeviceMemory) {
+             if (!info.socketShadow || !info.socketMapped || !info.device) continue;
+@@ -1770,14 +1770,14 @@
+ }
+ 
+ VkDevice ResourceTracker::cabooseGetQueueDevice(VkQueue queue) {
+-    std::lock_guard<std::recursive_mutex> lock(mLock);
++    std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+     auto it = info_VkQueue.find(queue);
+     return it != info_VkQueue.end() ? it->second.device : VK_NULL_HANDLE;
+ }
+ 
+ void ResourceTracker::cabooseCachePhysicalDeviceMemoryProperties(
+     const VkPhysicalDeviceMemoryProperties& props) {
+-    std::lock_guard<std::recursive_mutex> lock(mLock);
++    std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+     if (!mCachedPhysicalDeviceMemoryProps) {
+         mCachedPhysicalDeviceMemoryProps.emplace(props);
+     }
+@@ -1785,7 +1785,7 @@
+ 
+ void ResourceTracker::cabooseCachePhysicalDeviceMemoryProperties2(
+     const VkPhysicalDeviceMemoryProperties2& props2) {
+-    std::lock_guard<std::recursive_mutex> lock(mLock);
++    std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+     if (!mCachedPhysicalDeviceMemoryProps) {
+         mCachedPhysicalDeviceMemoryProps.emplace(props2.memoryProperties);
+     }
+@@ -1802,7 +1802,7 @@
+ bool ResourceTracker::cabooseTryFillPhysicalDeviceMemoryProperties(
+     VkPhysicalDeviceMemoryProperties* out) {
+     if (!out) return false;
+-    std::lock_guard<std::recursive_mutex> lock(mLock);
++    std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+     if (!mCachedPhysicalDeviceMemoryProps) return false;
+     *out = *mCachedPhysicalDeviceMemoryProps;
+     return true;
+@@ -1811,7 +1811,7 @@
+ bool ResourceTracker::cabooseTryFillPhysicalDeviceMemoryProperties2(
+     VkPhysicalDeviceMemoryProperties2* out) {
+     if (!out) return false;
+-    std::lock_guard<std::recursive_mutex> lock(mLock);
++    std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+     if (!mCachedPhysicalDeviceMemoryProps) return false;
+     for (auto* next = static_cast<VkBaseOutStructure*>(out->pNext); next; next = next->pNext) {
+         if (next->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT) {
+@@ -1833,7 +1833,7 @@
+ }
+ 
+ void ResourceTracker::cabooseRecordBufferMemoryBind(VkBuffer buffer, VkDeviceMemory memory, VkDeviceSize memoryOffset) {
+-    std::lock_guard<std::recursive_mutex> lock(mLock);
++    std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+     auto it = info_VkBuffer.find(buffer);
+     if (it != info_VkBuffer.end()) {
+         it->second.currentBacking = memory;
+@@ -1854,7 +1854,7 @@
+         uint64_t key = 0, begin = 0, end = 0;
+         ~ForgetRange() { if (key) caboose::memory::flushShadow.forgetRange(key, begin, end); }
+     } forget;
+-    std::lock_guard<std::recursive_mutex> lock(mLock);
++    std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+     auto bufIt = info_VkBuffer.find(buffer);
+     if (bufIt == info_VkBuffer.end() || bufIt->second.currentBacking == VK_NULL_HANDLE) return;
+     bool gpuConsumed = false;
+@@ -1928,7 +1928,7 @@
+ 
+ bool ResourceTracker::cabooseHasCommandBuffersGpuWritten(const std::vector<uint64_t>& commandBuffers) {
+     if (commandBuffers.empty()) return false;
+-    std::lock_guard<std::recursive_mutex> lock(mLock);
++    std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+     for (uint64_t cb : commandBuffers) {
+         auto it = mCabooseCommandDirtyRanges.find(cb);
+         if (it != mCabooseCommandDirtyRanges.end() && !it->second.empty()) return true;
+@@ -1938,7 +1938,7 @@
+ 
+ void ResourceTracker::cabooseSubmitCommandBuffersGpuWritten(const std::vector<uint64_t>& commandBuffers, uint64_t serial) {
+     if (commandBuffers.empty()) return;
+-    std::lock_guard<std::recursive_mutex> lock(mLock);
++    std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+     const bool feedOn = caboose::completion::feedActive.load(std::memory_order_acquire) && serial != 0;
+     for (uint64_t cb : commandBuffers) {
+         auto it = mCabooseCommandDirtyRanges.find(cb);
+@@ -1977,13 +1977,13 @@
+ }
+ 
+ VkBufferUsageFlags ResourceTracker::cabooseBufferUsage(VkDeviceMemory memory) {
+-    std::lock_guard<std::recursive_mutex> lock(mLock);
++    std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+     auto found = info_VkDeviceMemory.find(memory);
+     return found == info_VkDeviceMemory.end() ? 0 : found->second.socketBufferUsageMask;
+ }
+ 
+ bool ResourceTracker::caboosePipelineCacheHeader(VkDevice device, uint8_t header[32]) {
+-    std::lock_guard<std::recursive_mutex> lock(mLock);
++    std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+     auto owner = info_VkDevice.find(device);
+     if (owner == info_VkDevice.end()) return false;
+     const VkPhysicalDeviceProperties& props = owner->second.props;
+@@ -1995,7 +1995,7 @@
+ 
+ bool ResourceTracker::cabooseMappedRange(VkDevice device, VkDeviceMemory memory,
+                                          caboose::memory::Range& out) {
+-    std::lock_guard<std::recursive_mutex> lock(mLock);
++    std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+     auto found = info_VkDeviceMemory.find(memory);
+     auto owner = info_VkDevice.find(device);
+     if (found == info_VkDeviceMemory.end() || owner == info_VkDevice.end()) return false;
+@@ -2013,7 +2013,7 @@
+ 
+ // Fences backed by a sync file are waited on in the guest, never prefetched.
+ VkDevice ResourceTracker::caboosePrefetchFenceDevice(VkFence fence) {
+-    std::lock_guard<std::recursive_mutex> lock(mLock);
++    std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+     auto found = info_VkFence.find(fence);
+     if (found == info_VkFence.end() || found->second.external) return VK_NULL_HANDLE;
+ #if defined(VK_USE_PLATFORM_ANDROID_KHR) || DETECT_OS_LINUX
+@@ -2023,7 +2023,7 @@
+ }
+ 
+ VkDeviceSize ResourceTracker::getMappedSize(VkDeviceMemory memory) {
+-    std::lock_guard<std::recursive_mutex> lock(mLock);
++    std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+     const auto it = info_VkDeviceMemory.find(memory);
+     if (it == info_VkDeviceMemory.end()) return 0;
+ 
+@@ -2032,7 +2032,7 @@
+ }
+ 
+ bool ResourceTracker::isValidMemoryRange(const VkMappedMemoryRange& range) {
+-    std::lock_guard<std::recursive_mutex> lock(mLock);
++    std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+     const auto it = info_VkDeviceMemory.find(range.memory);
+     if (it == info_VkDeviceMemory.end()) return false;
+     const auto& info = it->second;
+@@ -2249,7 +2249,7 @@
+     }
+ 
+     if (memory) {
+-        std::lock_guard<std::recursive_mutex> lock(mLock);
++        std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+ 
+         for (uint32_t i = 0; i < memoryCount; ++i) {
+             VkDeviceMemory mem = memory[i];
+@@ -2764,7 +2764,7 @@
+ 
+     if (!pPhysicalDeviceCount) return VK_ERROR_INITIALIZATION_FAILED;
+ 
+-    std::unique_lock<std::recursive_mutex> lock(mLock);
++    std::unique_lock<ResourceTracker::TrackerMutex> lock(mLock);
+ 
+     // When this function is called, we actually need to do two things:
+     // - Get full information about physical devices from the host,
+@@ -3226,7 +3226,7 @@
+ void ResourceTracker::on_vkDestroyDevice_pre(void* context, VkDevice device,
+                                              const VkAllocationCallbacks*) {
+     (void)context;
+-    std::lock_guard<std::recursive_mutex> lock(mLock);
++    std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+ 
+     auto it = info_VkDevice.find(device);
+     if (it == info_VkDevice.end()) return;
+@@ -3271,7 +3271,7 @@
+     if (!pInfo) return VK_ERROR_INITIALIZATION_FAILED;
+     if (!pInfo->memory) return VK_ERROR_INITIALIZATION_FAILED;
+ 
+-    std::lock_guard<std::recursive_mutex> lock(mLock);
++    std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+ 
+     auto deviceIt = info_VkDevice.find(device);
+ 
+@@ -3303,7 +3303,7 @@
+     if (!pInfo) return VK_ERROR_INITIALIZATION_FAILED;
+     if (!pInfo->memory) return VK_ERROR_INITIALIZATION_FAILED;
+ 
+-    std::lock_guard<std::recursive_mutex> lock(mLock);
++    std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+ 
+     auto deviceIt = info_VkDevice.find(device);
+ 
+@@ -3346,7 +3346,7 @@
+         return VK_ERROR_INVALID_EXTERNAL_HANDLE;
+     }
+ 
+-    std::lock_guard<std::recursive_mutex> lock(mLock);
++    std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+ 
+     auto deviceIt = info_VkDevice.find(device);
+ 
+@@ -3420,7 +3420,7 @@
+     if (!pInfo) return VK_ERROR_INITIALIZATION_FAILED;
+     if (!pInfo->semaphore) return VK_ERROR_INITIALIZATION_FAILED;
+ 
+-    std::lock_guard<std::recursive_mutex> lock(mLock);
++    std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+ 
+     auto deviceIt = info_VkDevice.find(device);
+ 
+@@ -3457,7 +3457,7 @@
+     if (!pInfo) return VK_ERROR_INITIALIZATION_FAILED;
+     if (!pInfo->semaphore) return VK_ERROR_INITIALIZATION_FAILED;
+ 
+-    std::lock_guard<std::recursive_mutex> lock(mLock);
++    std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+ 
+     auto deviceIt = info_VkDevice.find(device);
+ 
+@@ -3569,7 +3569,7 @@
+ 
+     VkPhysicalDevice physicalDevice;
+     {
+-        std::lock_guard<std::recursive_mutex> lock(mLock);
++        std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+         auto deviceIt = info_VkDevice.find(device);
+         if (deviceIt == info_VkDevice.end()) {
+             return {VK_ERROR_INITIALIZATION_FAILED};
+@@ -3682,7 +3682,7 @@
+ 
+     // copy constraints to info_VkBufferCollectionFUCHSIA if
+     // |collection| is a valid VkBufferCollectionFUCHSIA handle.
+-    std::lock_guard<std::recursive_mutex> lock(mLock);
++    std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+     VkBufferCollectionFUCHSIA buffer_collection =
+         reinterpret_cast<VkBufferCollectionFUCHSIA>(pCollection);
+     if (info_VkBufferCollectionFUCHSIA.find(buffer_collection) !=
+@@ -3708,7 +3708,7 @@
+ 
+     // copy constraints to info_VkBufferCollectionFUCHSIA if
+     // |collection| is a valid VkBufferCollectionFUCHSIA handle.
+-    std::lock_guard<std::recursive_mutex> lock(mLock);
++    std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+     VkBufferCollectionFUCHSIA buffer_collection =
+         reinterpret_cast<VkBufferCollectionFUCHSIA>(pCollection);
+     if (info_VkBufferCollectionFUCHSIA.find(buffer_collection) !=
+@@ -3830,7 +3830,7 @@
+     // memoryTypeBits
+     // ====================================================================
+     {
+-        std::lock_guard<std::recursive_mutex> lock(mLock);
++        std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+         auto deviceIt = info_VkDevice.find(device);
+         if (deviceIt == info_VkDevice.end()) {
+             return VK_ERROR_INITIALIZATION_FAILED;
+@@ -3855,7 +3855,7 @@
+ 
+     auto storeProperties = [this, collection, pProperties]() -> VkResult {
+         // store properties to storage
+-        std::lock_guard<std::recursive_mutex> lock(mLock);
++        std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+         if (info_VkBufferCollectionFUCHSIA.find(collection) ==
+             info_VkBufferCollectionFUCHSIA.end()) {
+             return VK_ERROR_OUT_OF_DEVICE_MEMORY;
+@@ -3899,7 +3899,7 @@
+     // createInfoIndex
+     // ====================================================================
+     {
+-        std::lock_guard<std::recursive_mutex> lock(mLock);
++        std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+         auto getIndexResult = getBufferCollectionImageCreateInfoIndexLocked(
+             collection, info, &pProperties->createInfoIndex);
+         if (getIndexResult != VK_SUCCESS) {
+@@ -3911,7 +3911,7 @@
+     // ====================================================================
+     VkPhysicalDevice physicalDevice;
+     {
+-        std::lock_guard<std::recursive_mutex> lock(mLock);
++        std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+         auto deviceIt = info_VkDevice.find(device);
+         if (deviceIt == info_VkDevice.end()) {
+             return VK_ERROR_INITIALIZATION_FAILED;
+@@ -3996,7 +3996,7 @@
+             return coherentMemory;
+         }
+         {
+-            std::lock_guard<std::recursive_mutex> lock(mLock);
++            std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+             auto it = info_VkDeviceMemory.find(mem);
+             if (it == info_VkDeviceMemory.end()) {
+                 mesa_loge("Failed to create coherent memory: failed to find device memory.");
+@@ -4025,7 +4025,7 @@
+                 return coherentMemory;
+             }
+             {
+-                std::lock_guard<std::recursive_mutex> lock(mLock);
++                std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+                 VirtGpuDevice* instance = VirtGpuDevice::getInstance((enum VirtGpuCapset)3);
+                 createBlob.blobMem = kBlobMemHost3d;
+                 createBlob.flags = kBlobFlagMappable;
+@@ -4192,7 +4192,7 @@
+     {
+         // createCoherentMemory inside need to access info_VkDeviceMemory
+         // information. set it before use.
+-        std::lock_guard<std::recursive_mutex> lock(mLock);
++        std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+         info_VkDeviceMemory[mem] = info;
+     }
+ 
+@@ -4203,7 +4203,7 @@
+ 
+     auto coherentMemory = createCoherentMemory(device, mem, hostAllocationInfo, enc, host_res);
+     if (coherentMemory) {
+-        std::lock_guard<std::recursive_mutex> lock(mLock);
++        std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+         coherentMemory->subAllocate(pAllocateInfo->allocationSize, &ptr, offset);
+         info.allocationSize = pAllocateInfo->allocationSize;
+         info.coherentMemoryOffset = offset;
+@@ -4213,7 +4213,7 @@
+         *pMemory = mem;
+     } else {
+         enc->vkFreeMemory(device, mem, nullptr, true);
+-        std::lock_guard<std::recursive_mutex> lock(mLock);
++        std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+         info_VkDeviceMemory.erase(mem);
+     }
+     return host_res;
+@@ -4238,7 +4238,7 @@
+     uint8_t* ptr = nullptr;
+     uint64_t offset = 0;
+     {
+-        std::lock_guard<std::recursive_mutex> lock(mLock);
++        std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+         for (const auto& [memory, info] : info_VkDeviceMemory) {
+             if (info.device != device) continue;
+ 
+@@ -4462,7 +4462,7 @@
+         }
+         size_t alignment;
+         {
+-            std::lock_guard<std::recursive_mutex> lock(mLock);
++            std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+             auto deviceInfo = info_VkDevice.find(device);
+             if (deviceInfo == info_VkDevice.end()) return VK_ERROR_DEVICE_LOST;
+             alignment = std::max<size_t>(sizeof(void*), deviceInfo->second.props.limits.minMemoryMapAlignment);
+@@ -4506,7 +4506,7 @@
+                                                       &finalAllocInfo, nullptr, &memory, true);
+         if (result != VK_SUCCESS) return result;
+         try {
+-            std::lock_guard<std::recursive_mutex> lock(mLock);
++            std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+             auto& info = info_VkDeviceMemory[memory];
+             info.device = device;
+             info.allocationSize = pAllocateInfo->allocationSize;
+@@ -4591,7 +4591,7 @@
+         VkDeviceSize allocationInfoAllocSize = finalAllocInfo.allocationSize;
+ 
+         if (hasDedicatedImage) {
+-            std::lock_guard<std::recursive_mutex> lock(mLock);
++            std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+ 
+             auto it = info_VkImage.find(dedicatedAllocInfoPtr->image);
+             if (it == info_VkImage.end())
+@@ -4607,7 +4607,7 @@
+         }
+ 
+         if (hasDedicatedBuffer) {
+-            std::lock_guard<std::recursive_mutex> lock(mLock);
++            std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+ 
+             auto it = info_VkBuffer.find(dedicatedAllocInfoPtr->buffer);
+             if (it == info_VkBuffer.end())
+@@ -4705,7 +4705,7 @@
+         const VkBufferConstraintsInfoFUCHSIA* pBufferConstraintsInfo = nullptr;
+ 
+         if (hasDedicatedImage) {
+-            std::lock_guard<std::recursive_mutex> lock(mLock);
++            std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+ 
+             auto it = info_VkImage.find(dedicatedAllocInfoPtr->image);
+             if (it == info_VkImage.end()) return VK_ERROR_INITIALIZATION_FAILED;
+@@ -4715,7 +4715,7 @@
+         }
+ 
+         if (hasDedicatedBuffer) {
+-            std::lock_guard<std::recursive_mutex> lock(mLock);
++            std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+ 
+             auto it = info_VkBuffer.find(dedicatedAllocInfoPtr->buffer);
+             if (it == info_VkBuffer.end()) return VK_ERROR_INITIALIZATION_FAILED;
+@@ -4951,7 +4951,7 @@
+         const auto* dedicatedImport = vk_find_struct_const(pAllocateInfo, MEMORY_DEDICATED_ALLOCATE_INFO);
+         bool linearImage = false;
+         if (dedicatedImport && dedicatedImport->image) {
+-            std::lock_guard<std::recursive_mutex> lock(mLock);
++            std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+             auto imageIt = info_VkImage.find(dedicatedImport->image);
+             linearImage = imageIt != info_VkImage.end() && imageIt->second.cabooseDmabuf;
+         }
+@@ -4989,7 +4989,7 @@
+         if (hasDedicatedImage) {
+             VkImageCreateInfo imageCreateInfo;
+             {
+-                std::lock_guard<std::recursive_mutex> lock(mLock);
++                std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+ 
+                 auto it = info_VkImage.find(dedicatedAllocInfoPtr->image);
+                 if (it == info_VkImage.end()) return VK_ERROR_INITIALIZATION_FAILED;
+@@ -5243,7 +5243,7 @@
+     caboose::memory::flushShadow.forget(caboose::handle_key(memory));
+     // The allocation budget is released when the encoder sends the free, which it may hold
+     // until the GPU work before it has completed (deferred_destroys.h).
+-    std::unique_lock<std::recursive_mutex> lock(mLock);
++    std::unique_lock<ResourceTracker::TrackerMutex> lock(mLock);
+ 
+     auto it = info_VkDeviceMemory.find(memory);
+     if (it == info_VkDeviceMemory.end()) {
+@@ -5325,7 +5325,7 @@
+         const uint8_t* base = nullptr;
+         ~NoteRefreshed() { if (key) caboose::memory::flushShadow.noteRefreshed(key, base, allocation, offset, size); }
+     } refreshed;
+-    std::unique_lock<std::recursive_mutex> lock(mLock);
++    std::unique_lock<ResourceTracker::TrackerMutex> lock(mLock);
+ 
+     auto deviceMemoryInfoIt = info_VkDeviceMemory.find(memory);
+     if (deviceMemoryInfoIt == info_VkDeviceMemory.end()) {
+@@ -5417,7 +5417,7 @@
+ 
+ void ResourceTracker::on_vkUnmapMemory(void*, VkDevice device, VkDeviceMemory memory) {
+     caboose::memory::flushShadow.forget(caboose::handle_key(memory));
+-    std::lock_guard<std::recursive_mutex> lock(mLock);
++    std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+     auto it = info_VkDeviceMemory.find(memory);
+     if (it != info_VkDeviceMemory.end() && it->second.socketShadow && it->second.device == device) {
+         it->second.socketMapped = false;
+@@ -5428,7 +5428,7 @@
+ 
+ void ResourceTracker::transformImageMemoryRequirements2ForGuest(VkImage image,
+                                                                 VkMemoryRequirements2* reqs2) {
+-    std::lock_guard<std::recursive_mutex> lock(mLock);
++    std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+ 
+     auto it = info_VkImage.find(image);
+     if (it == info_VkImage.end()) return;
+@@ -5452,7 +5452,7 @@
+ 
+ void ResourceTracker::transformBufferMemoryRequirements2ForGuest(VkBuffer buffer,
+                                                                  VkMemoryRequirements2* reqs2) {
+-    std::lock_guard<std::recursive_mutex> lock(mLock);
++    std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+ 
+     auto it = info_VkBuffer.find(buffer);
+     if (it == info_VkBuffer.end()) return;
+@@ -5535,7 +5535,7 @@
+             (drmFmtMod || drmFmtModList)) {
+             VkPhysicalDevice physicalDevice;
+             {
+-                std::lock_guard<std::recursive_mutex> lock(mLock);
++                std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+                 auto it = info_VkDevice.find(device);
+                 if (it == info_VkDevice.end()) return VK_ERROR_UNKNOWN;
+                 physicalDevice = it->second.physdev;
+@@ -5783,7 +5783,7 @@
+         cabooseTypeBits = cabooseImportMemoryTypeBits(context, device, hostReqs.memoryTypeBits);
+     }
+ 
+-    std::lock_guard<std::recursive_mutex> lock(mLock);
++    std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+ 
+     auto it = info_VkImage.find(*pImage);
+     if (it == info_VkImage.end()) return VK_ERROR_INITIALIZATION_FAILED;
+@@ -6001,7 +6001,7 @@
+ 
+     if (input_result != VK_SUCCESS) return input_result;
+     {
+-        std::lock_guard<std::recursive_mutex> lock(mLock);
++        std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+         auto created = info_VkFence.find(*pFence);
+         if (created != info_VkFence.end()) created->second.device = device;
+     }
+@@ -6026,7 +6026,7 @@
+         }
+ 
+         MESA_TRACE_SCOPE("%s: getting fence info\n", __func__);
+-        std::lock_guard<std::recursive_mutex> lock(mLock);
++        std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+         auto it = info_VkFence.find(*pFence);
+ 
+         if (it == info_VkFence.end()) return VK_ERROR_INITIALIZATION_FAILED;
+@@ -6065,7 +6065,7 @@
+     // Permanence: temporary
+     // on fence reset, close the fence fd
+     // and act like we need to GetFenceFdKHR/ImportFenceFdKHR again
+-    std::lock_guard<std::recursive_mutex> lock(mLock);
++    std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+ #if DETECT_OS_LINUX
+     for (uint32_t i = 0; i < fenceCount; ++i) {
+         VkFence fence = pFences[i];
+@@ -6111,7 +6111,7 @@
+         return VK_ERROR_OUT_OF_HOST_MEMORY;
+     }
+ 
+-    std::lock_guard<std::recursive_mutex> lock(mLock);
++    std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+     auto it = info_VkFence.find(pImportFenceFdInfo->fence);
+     if (it == info_VkFence.end()) {
+         mesa_loge("%s: VK_ERROR_OUT_OF_HOST_MEMORY: no fence info\n", __func__);
+@@ -6179,7 +6179,7 @@
+     if (!usingDirectMapping()) {
+         VkQueue queue = VK_NULL_HANDLE;
+         {
+-            std::lock_guard<std::recursive_mutex> lock(mLock);
++            std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+             auto it = info_VkFence.find(pGetFdInfo->fence);
+             if (it == info_VkFence.end()) return VK_ERROR_OUT_OF_HOST_MEMORY;
+             queue = it->second.cabooseSubmitQueue;
+@@ -6205,7 +6205,7 @@
+         // fence, because ANGLE will use the returned fd directly to
+         // implement eglDupNativeFenceFDANDROID, where -1 is only returned
+         // when error occurs.
+-        std::lock_guard<std::recursive_mutex> lock(mLock);
++        std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+ 
+         auto it = info_VkFence.find(pGetFdInfo->fence);
+         if (it == info_VkFence.end()) {
+@@ -6259,7 +6259,7 @@
+ 
+ #if defined(VK_USE_PLATFORM_ANDROID_KHR) || DETECT_OS_LINUX
+     {
+-        std::unique_lock<std::recursive_mutex> lock(mLock);
++        std::unique_lock<ResourceTracker::TrackerMutex> lock(mLock);
+ 
+         auto fenceInfoIt = info_VkFence.find(fence);
+         if (fenceInfoIt == info_VkFence.end()) {
+@@ -6309,7 +6309,7 @@
+     std::vector<int> fencesExternalSyncFds;
+     std::vector<VkFence> fencesNonExternal;
+ 
+-    std::unique_lock<std::recursive_mutex> lock(mLock);
++    std::unique_lock<ResourceTracker::TrackerMutex> lock(mLock);
+ 
+     for (uint32_t i = 0; i < fenceCount; ++i) {
+         auto it = info_VkFence.find(pFences[i]);
+@@ -6406,7 +6406,7 @@
+ 
+     VkPrivateDataSlot_Info::PrivateDataKey key = std::make_pair(objectHandle, objectType);
+ 
+-    std::lock_guard<std::recursive_mutex> lock(mLock);
++    std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+     auto it = info_VkPrivateDataSlot.find(privateDataSlot);
+ 
+     // Do not forward calls with invalid handles to host.
+@@ -6432,7 +6432,7 @@
+                                           uint64_t* pData) {
+     VkPrivateDataSlot_Info::PrivateDataKey key = std::make_pair(objectHandle, objectType);
+ 
+-    std::lock_guard<std::recursive_mutex> lock(mLock);
++    std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+     auto it = info_VkPrivateDataSlot.find(privateDataSlot);
+ 
+     // Do not forward calls with invalid handles to host.
+@@ -6635,7 +6635,7 @@
+     // (people expect VK_SUCCESS to always be returned by vkFreeDescriptorSets)
+     std::vector<VkDescriptorSet> toActuallyFree;
+     {
+-        std::lock_guard<std::recursive_mutex> lock(mLock);
++        std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+ 
+         // Pool was destroyed
+         if (info_VkDescriptorPool.find(descriptorPool) == info_VkDescriptorPool.end()) {
+@@ -6759,7 +6759,7 @@
+ 
+     {
+         // Validate and filter samplers
+-        std::lock_guard<std::recursive_mutex> lock(mLock);
++        std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+         size_t imageInfoIndex = 0;
+         for (uint32_t i = 0; i < descriptorWriteCount; ++i) {
+             if (!isDescriptorTypeImageInfo(transformedWrites[i].descriptorType)) continue;
+@@ -6829,7 +6829,7 @@
+     caboose::memory::requirementsCache.destroyed(caboose::handle_key(image));
+ #ifdef VK_USE_PLATFORM_ANDROID_KHR
+     {
+-        std::lock_guard<std::recursive_mutex> lock(mLock);  // do not guard encoder may cause
++        std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);  // do not guard encoder may cause
+                                                             // deadlock b/243339973
+ 
+         // Wait for any pending QSRIs to prevent a race between the Gfxstream host
+@@ -6903,7 +6903,7 @@
+ 
+ void ResourceTracker::on_vkGetImageMemoryRequirements(void* context, VkDevice device, VkImage image,
+                                                       VkMemoryRequirements* pMemoryRequirements) {
+-    std::unique_lock<std::recursive_mutex> lock(mLock);
++    std::unique_lock<ResourceTracker::TrackerMutex> lock(mLock);
+ 
+     auto it = info_VkImage.find(image);
+     if (it == info_VkImage.end()) return;
+@@ -6957,7 +6957,7 @@
+     auto it = info_VkDevice.find(device);
+     if (it == info_VkDevice.end()) return VK_ERROR_UNKNOWN;
+     if (!usingDirectMapping()) {
+-        std::lock_guard<std::recursive_mutex> lock(mLock);
++        std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+         auto image_it = info_VkImage.find(image);
+         if (image_it == info_VkImage.end()) return VK_ERROR_UNKNOWN;
+         if (image_it->second.cabooseDmabuf) {
+@@ -7148,7 +7148,7 @@
+     }
+ #endif
+ 
+-    std::lock_guard<std::recursive_mutex> lock(mLock);
++    std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+ 
+     auto it = info_VkBuffer.find(*pBuffer);
+     if (it == info_VkBuffer.end()) return VK_ERROR_INITIALIZATION_FAILED;
+@@ -7187,7 +7187,7 @@
+ void ResourceTracker::on_vkGetBufferMemoryRequirements(void* context, VkDevice device,
+                                                        VkBuffer buffer,
+                                                        VkMemoryRequirements* pMemoryRequirements) {
+-    std::unique_lock<std::recursive_mutex> lock(mLock);
++    std::unique_lock<ResourceTracker::TrackerMutex> lock(mLock);
+ 
+     auto it = info_VkBuffer.find(buffer);
+     if (it == info_VkBuffer.end()) return;
+@@ -7283,7 +7283,7 @@
+     }
+ #endif
+ 
+-    std::lock_guard<std::recursive_mutex> lock(mLock);
++    std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+ 
+     auto it = info_VkSemaphore.find(*pSemaphore);
+     if (it == info_VkSemaphore.end()) return VK_ERROR_INITIALIZATION_FAILED;
+@@ -7351,7 +7351,7 @@
+     if (getSyncFd && !usingDirectMapping()) {
+         VkQueue queue = VK_NULL_HANDLE;
+         {
+-            std::lock_guard<std::recursive_mutex> lock(mLock);
++            std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+             auto it = info_VkSemaphore.find(pGetFdInfo->semaphore);
+             if (it == info_VkSemaphore.end()) return VK_ERROR_OUT_OF_HOST_MEMORY;
+             // Exporting a sync file is the semaphore's wait: its pending signal is consumed.
+@@ -7388,7 +7388,7 @@
+             // Doesn't this assume that sync file descriptor generated via the non-fence
+             // passing path during "on_vkCreateSemaphore" is the same one that would be
+             // generated via guest's "okGetSemaphoreFdKHR" call?
+-            std::lock_guard<std::recursive_mutex> lock(mLock);
++            std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+             auto it = info_VkSemaphore.find(pGetFdInfo->semaphore);
+             if (it == info_VkSemaphore.end()) return VK_ERROR_OUT_OF_HOST_MEMORY;
+             auto& semInfo = it->second;
+@@ -7430,7 +7430,7 @@
+     }
+ 
+     if (pImportSemaphoreFdInfo->handleType & VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT) {
+-        std::lock_guard<std::recursive_mutex> lock(mLock);
++        std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+ 
+         auto semaphoreIt = info_VkSemaphore.find(pImportSemaphoreFdInfo->semaphore);
+         auto& info = semaphoreIt->second;
+@@ -7476,7 +7476,7 @@
+         return VK_ERROR_INVALID_EXTERNAL_HANDLE;
+     }
+     // Sanity-check device
+-    std::lock_guard<std::recursive_mutex> lock(mLock);
++    std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+     auto deviceIt = info_VkDevice.find(device);
+     if (deviceIt == info_VkDevice.end()) {
+         return VK_ERROR_OUT_OF_HOST_MEMORY;
+@@ -7515,7 +7515,7 @@
+         return VK_ERROR_OUT_OF_HOST_MEMORY;
+     }
+     // Sanity-check device
+-    std::lock_guard<std::recursive_mutex> lock(mLock);
++    std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+     auto deviceIt = info_VkDevice.find(device);
+     if (deviceIt == info_VkDevice.end()) {
+         return VK_ERROR_OUT_OF_HOST_MEMORY;
+@@ -7591,7 +7591,7 @@
+                                 pAllocateInfo->memoryTypeIndex, nullptr, true, ZX_HANDLE_INVALID,
+                                 nullptr, -1);
+             {
+-                std::lock_guard<std::recursive_mutex> lock(mLock);
++                std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+                 info_VkDeviceMemory[*pMemory].socketDmabuf = identity;
+             }
+             // The application's descriptor is ours on success; the shared entry keeps its own.
+@@ -7641,7 +7641,7 @@
+     setDeviceMemoryInfo(device, *pMemory, hostInfo.allocationSize, nullptr, hostInfo.memoryTypeIndex,
+                         nullptr, importFdInfo != nullptr, ZX_HANDLE_INVALID, nullptr, -1);
+     {
+-        std::lock_guard<std::recursive_mutex> lock(mLock);
++        std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+         info_VkDeviceMemory[*pMemory].socketDmabuf = identity;
+     }
+     if (importFdInfo) close(importFdInfo->fd);
+@@ -7734,7 +7734,7 @@
+ }
+ 
+ void ResourceTracker::cabooseNoteQueue(VkDevice device, VkQueue queue, uint32_t family) {
+-    std::lock_guard<std::recursive_mutex> lock(mLock);
++    std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+     mCabooseDeviceQueues.emplace(device, std::make_pair(queue, family));
+     // The queue's device, for what a submission names by queue alone (media latches,
+     // completion watches): nothing else records it.
+@@ -7746,7 +7746,7 @@
+                                                  const caboose::dmabuf::Identity& identity) {
+     caboose::dmabuf::RegisteredImage registered{};
+     {
+-        std::lock_guard<std::recursive_mutex> lock(mLock);
++        std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+         auto imageIt = info_VkImage.find(image);
+         auto deviceIt = info_VkDevice.find(device);
+         auto queueIt = mCabooseDeviceQueues.find(device);
+@@ -7772,7 +7772,7 @@
+ 
+ bool ResourceTracker::cabooseRemoteImageLayout(VkImage image, const VkImageSubresource* subresource,
+                                                VkSubresourceLayout* layout) {
+-    std::lock_guard<std::recursive_mutex> lock(mLock);
++    std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+     auto it = info_VkImage.find(image);
+     if (it == info_VkImage.end() || !(it->second.socketRemote || it->second.cabooseDmabuf)) return false;
+     uint32_t plane;
+@@ -8067,7 +8067,7 @@
+             std::vector<VkCommandBuffer> rootCbs;
+             bool detachOk = true;
+             {
+-                std::lock_guard<std::recursive_mutex> lock(mLock);
++                std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+                 detachOk = cabooseDetachSubmitStagedCommands(
+                     submitCount, pSubmits, stagedBatch, stagedReservation, stagedCbCount, rootCbs);
+                 for (VkCommandBuffer cb : rootCbs) {
+@@ -8107,7 +8107,7 @@
+             std::vector<VkCommandBuffer> rootCbs;
+             bool detachOk = true;
+             {
+-                std::lock_guard<std::recursive_mutex> lock(mLock);
++                std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+                 detachOk = cabooseDetachSubmitStagedCommands(
+                     submitCount, pSubmits, stagedBatch, stagedReservation, stagedCbCount, rootCbs);
+                 for (VkCommandBuffer cb : rootCbs) {
+@@ -8286,7 +8286,7 @@
+     std::vector<std::vector<uint64_t>> prunedSignalSemaphoreValueLists(submitCount);
+ 
+     {
+-        std::unique_lock<std::recursive_mutex> lock(mLock);
++        std::unique_lock<ResourceTracker::TrackerMutex> lock(mLock);
+ 
+         // VkTimelineSemaphoreSubmitInfo must be ignored if there are no timeline semaphores given
+         // with the submit.
+@@ -8424,7 +8424,7 @@
+     int externalFenceFdToSignal = -1;
+ #if defined(VK_USE_PLATFORM_ANDROID_KHR) || DETECT_OS_LINUX
+     {
+-        std::unique_lock<std::recursive_mutex> lock(mLock);
++        std::unique_lock<ResourceTracker::TrackerMutex> lock(mLock);
+         if (fence != VK_NULL_HANDLE) {
+             auto it = info_VkFence.find(fence);
+             if (it != info_VkFence.end()) {
+@@ -8594,7 +8594,7 @@
+ VkResult ResourceTracker::on_vkMapMemoryIntoAddressSpaceGOOGLE_pre(void*, VkResult, VkDevice,
+                                                                    VkDeviceMemory memory,
+                                                                    uint64_t* pAddress) {
+-    std::lock_guard<std::recursive_mutex> lock(mLock);
++    std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+ 
+     auto it = info_VkDeviceMemory.find(memory);
+     if (it == info_VkDeviceMemory.end()) {
+@@ -8633,7 +8633,7 @@
+ VkResult ResourceTracker::initDescriptorUpdateTemplateBuffers(
+     const VkDescriptorUpdateTemplateCreateInfo* pCreateInfo,
+     VkDescriptorUpdateTemplate descriptorUpdateTemplate) {
+-    std::lock_guard<std::recursive_mutex> lock(mLock);
++    std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+ 
+     auto it = info_VkDescriptorUpdateTemplate.find(descriptorUpdateTemplate);
+     if (it == info_VkDescriptorUpdateTemplate.end()) {
+@@ -8750,7 +8750,7 @@
+     if (!userBuffer) return;
+ 
+     // TODO: Make this thread safe
+-    std::unique_lock<std::recursive_mutex> lock(mLock);
++    std::unique_lock<ResourceTracker::TrackerMutex> lock(mLock);
+ 
+     auto it = info_VkDescriptorUpdateTemplate.find(descriptorUpdateTemplate);
+     if (it == info_VkDescriptorUpdateTemplate.end()) {
+@@ -9270,18 +9270,18 @@
+ 
+ void ResourceTracker::registerEncoderCleanupCallback(const VkEncoder* encoder, void* object,
+                                                      CleanupCallback callback) {
+-    std::lock_guard<std::recursive_mutex> lock(mLock);
++    std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+     auto& callbacks = mEncoderCleanupCallbacks[encoder];
+     callbacks[object] = callback;
+ }
+ 
+ void ResourceTracker::unregisterEncoderCleanupCallback(const VkEncoder* encoder, void* object) {
+-    std::lock_guard<std::recursive_mutex> lock(mLock);
++    std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+     mEncoderCleanupCallbacks[encoder].erase(object);
+ }
+ 
+ void ResourceTracker::onEncoderDeleted(const VkEncoder* encoder) {
+-    std::unique_lock<std::recursive_mutex> lock(mLock);
++    std::unique_lock<ResourceTracker::TrackerMutex> lock(mLock);
+     if (mEncoderCleanupCallbacks.find(encoder) == mEncoderCleanupCallbacks.end()) return;
+ 
+     std::unordered_map<void*, CleanupCallback> callbackCopies = mEncoderCleanupCallbacks[encoder];
+@@ -9318,7 +9318,7 @@
+             // VkDeviceMemory filled in by getCoherentMemory()
+             // scope of mLock
+             {
+-                std::lock_guard<std::recursive_mutex> lock(mLock);
++                std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+                 const auto it = info_VkDeviceMemory.find(vkDeviceMem);
+                 if (it == info_VkDeviceMemory.end()) {
+                     mesa_loge("Coherent memory allocated %u not found", result);
+@@ -9340,7 +9340,7 @@
+             // for suballocations, deviceMemory is a alias VkDeviceMemory hand;
+             // freeCoherentMemoryLocked maps the alias to the backing VkDeviceMemory
+             VkDeviceMemory deviceMemory = memory.deviceMemory;
+-            std::unique_lock<std::recursive_mutex> lock(mLock);
++            std::unique_lock<ResourceTracker::TrackerMutex> lock(mLock);
+             auto it = info_VkDeviceMemory.find(deviceMemory);
+             if (it == info_VkDeviceMemory.end()) {
+                 mesa_loge("Device memory to free not found");
+@@ -9366,7 +9366,7 @@
+     caboose::memory::queryResults.commandBufferBegun(caboose::handle_key(commandBuffer));
+     caboose::completion::tracker().commandBufferBegun(caboose::handle_key(commandBuffer));
+     {
+-        std::lock_guard<std::recursive_mutex> lock(mLock);
++        std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+         mCabooseCommandDirtyRanges.erase(caboose::handle_key(commandBuffer));
+     }
+     resetCommandBufferStagingInfo(commandBuffer, true /* also reset primaries */,
+@@ -9465,7 +9465,7 @@
+     caboose::memory::queryResults.commandBufferBegun(caboose::handle_key(commandBuffer));
+     caboose::completion::tracker().commandBufferBegun(caboose::handle_key(commandBuffer));
+     {
+-        std::lock_guard<std::recursive_mutex> lock(mLock);
++        std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+         mCabooseCommandDirtyRanges.erase(caboose::handle_key(commandBuffer));
+     }
+ 
+@@ -9496,7 +9496,7 @@
+ #if defined(VK_USE_PLATFORM_ANDROID_KHR)
+     vk_struct_chain_iterator structChainIter = vk_make_chain_iterator(&localCreateInfo);
+     if (pCreateInfo->format == VK_FORMAT_UNDEFINED) {
+-        std::lock_guard<std::recursive_mutex> lock(mLock);
++        std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+ 
+         auto it = info_VkImage.find(pCreateInfo->image);
+         if (it != info_VkImage.end() && it->second.hasExternalFormat) {
+@@ -9524,7 +9524,7 @@
+                                               const VkCommandBuffer* pCommandBuffers) {
+     VkEncoder* enc = (VkEncoder*)context;
+     if (commandBuffer != VK_NULL_HANDLE && pCommandBuffers && commandBufferCount > 0) {
+-        std::lock_guard<std::recursive_mutex> lock(mLock);
++        std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+         const uint64_t primaryKey = caboose::handle_key(commandBuffer);
+         for (uint32_t i = 0; i < commandBufferCount; ++i) {
+             auto secIt = mCabooseCommandDirtyRanges.find(caboose::handle_key(pCommandBuffers[i]));
+@@ -9558,7 +9558,7 @@
+     }
+ 
+     {
+-        std::lock_guard<std::recursive_mutex> lock(mLock);
++        std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+         struct goldfish_VkCommandBuffer* primary = as_goldfish_VkCommandBuffer(commandBuffer);
+         if (primary) {
+             for (uint32_t i = 0; i < commandBufferCount; ++i) {
+@@ -9784,7 +9784,7 @@
+     }
+ 
+     {
+-        std::lock_guard<std::recursive_mutex> lock(mLock);
++        std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+         auto it = info_VkImage.find(image);
+         if (it == info_VkImage.end()) {
+             if (pNativeFenceFd) *pNativeFenceFd = -1;
+@@ -9795,7 +9795,7 @@
+     enc->vkQueueSignalReleaseImageANDROIDAsyncGOOGLE(queue, waitSemaphoreCount, pWaitSemaphores,
+                                                      image, true /* lock */);
+ 
+-    std::lock_guard<std::recursive_mutex> lock(mLock);
++    std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+     VkResult result;
+     if (pNativeFenceFd) {
+         result = exportSyncFdForQSRILocked(image, pNativeFenceFd);
+@@ -9894,7 +9894,7 @@
+ }
+ 
+ uint32_t ResourceTracker::getApiVersionFromInstance(VkInstance instance) {
+-    std::lock_guard<std::recursive_mutex> lock(mLock);
++    std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+     uint32_t api = kDefaultApiVersion;
+ 
+     auto it = info_VkInstance.find(instance);
+@@ -9906,7 +9906,7 @@
+ }
+ 
+ uint32_t ResourceTracker::getApiVersionFromDevice(VkDevice device) {
+-    std::lock_guard<std::recursive_mutex> lock(mLock);
++    std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+ 
+     uint32_t api = kDefaultApiVersion;
+ 
+@@ -9920,7 +9920,7 @@
+ 
+ #ifdef LINUX_GUEST_BUILD
+ bool ResourceTracker::doImageDrmFormatModifierEmulation(VkPhysicalDevice physicalDevice) {
+-    std::lock_guard<std::recursive_mutex> lock(mLock);
++    std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+ 
+     bool hostSupportsImageDrmFormatModifiers =
+         getHostDeviceExtensionIndex(VK_EXT_IMAGE_DRM_FORMAT_MODIFIER_EXTENSION_NAME) != -1;
+@@ -9946,7 +9946,7 @@
+ void ResourceTracker::resetCommandBufferStagingInfo(VkCommandBuffer commandBuffer,
+                                                     bool alsoResetPrimaries,
+                                                     bool alsoClearPendingDescriptorSets) {
+-    std::lock_guard<std::recursive_mutex> lock(mLock);
++    std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+     struct goldfish_VkCommandBuffer* cb = as_goldfish_VkCommandBuffer(commandBuffer);
+     if (!cb) {
+         return;
+@@ -10031,7 +10031,7 @@
+         caboose::memory::queryResults.commandBufferBegun(caboose::handle_key((VkCommandBuffer)commandBuffer));
+         caboose::completion::tracker().commandBufferBegun(caboose::handle_key((VkCommandBuffer)commandBuffer));
+         {
+-            std::lock_guard<std::recursive_mutex> lock(this->mLock);
++            std::lock_guard<ResourceTracker::TrackerMutex> lock(this->mLock);
+             this->mCabooseCommandDirtyRanges.erase(caboose::handle_key((VkCommandBuffer)commandBuffer));
+         }
+         this->resetCommandBufferStagingInfo((VkCommandBuffer)commandBuffer,
+@@ -10063,7 +10063,7 @@
+     void* context, VkDevice device, VkPhysicalDevice physicalDevice) {
+     if (!mCachedPhysicalDeviceMemoryProps) {
+         if (physicalDevice == VK_NULL_HANDLE) {
+-            std::lock_guard<std::recursive_mutex> lock(mLock);
++            std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+ 
+             auto deviceInfoIt = info_VkDevice.find(device);
+             if (deviceInfoIt == info_VkDevice.end()) {
+@@ -10093,7 +10093,7 @@
+ }
+ 
+ void ResourceTracker::cabooseNewGeneration() {
+-    std::lock_guard<std::recursive_mutex> lock(mLock);
++    std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+     // The previous executor's memory types, heaps and budget, and what its device features
+     // made the driver emulate, are not the next executor's.
+     mCachedPhysicalDeviceMemoryProps.reset();
+diff --git a/src/gfxstream/guest/vulkan_enc/VkEncoder.cpp.inl b/src/gfxstream/guest/vulkan_enc/VkEncoder.cpp.inl
+--- a/src/gfxstream/guest/vulkan_enc/VkEncoder.cpp.inl
++++ b/src/gfxstream/guest/vulkan_enc/VkEncoder.cpp.inl
+@@ -8,6 +8,7 @@
+ static constexpr uint32_t kWatchdogBufferMax = 1'000;
+ 
+ #if DETECT_OS_ANDROID
++#include "caboose-bounded-memory/lock_order.h"
+ #include <mutex>
+ #include <cutils/properties.h>
+ #endif
+@@ -61,6 +62,7 @@
+                     self);
+             abort();
+         }
++        caboose::lock_order::acquired(caboose::lock_order::kEncoder);
+         mLock.lock();
+         mOwner.store(self, std::memory_order_relaxed);
+     }
+@@ -68,6 +70,7 @@
+     void unlock() {
+         mOwner.store(0, std::memory_order_relaxed);
+         mLock.unlock();
++        caboose::lock_order::released(caboose::lock_order::kEncoder);
+     }
+ 
+    private:
+-- 
+2.43.0

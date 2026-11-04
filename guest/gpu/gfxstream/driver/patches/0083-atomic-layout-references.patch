@@ -1,0 +1,46 @@
+From: Caboose <caboose@local>
+Subject: [PATCH 83/84] Count descriptor set layout references atomically
+
+DXVK allocates descriptor sets on its command-stream thread and resets their pools on its
+queue thread, so a layout's reference count was raised and lowered by two threads at once.
+The plain count lost updates, the layout was destroyed while sets still used it, and the next
+allocation read freed memory (Halo: MCC crashed in vkAllocateDescriptorSets and in
+vkUpdateDescriptorSets). The count is atomic.
+---
+diff --git a/src/gfxstream/guest/vulkan_enc/DescriptorSetVirtualization.h b/src/gfxstream/guest/vulkan_enc/DescriptorSetVirtualization.h
+--- a/src/gfxstream/guest/vulkan_enc/DescriptorSetVirtualization.h
++++ b/src/gfxstream/guest/vulkan_enc/DescriptorSetVirtualization.h
+@@ -6,6 +6,7 @@
+ 
+ #include <vulkan/vulkan.h>
+ 
++#include <atomic>
+ #include <functional>
+ #include <unordered_map>
+ #include <unordered_set>
+@@ -96,7 +97,10 @@
+ 
+ struct DescriptorSetLayoutInfo {
+     std::vector<VkDescriptorSetLayoutBinding> bindings;
+-    uint32_t refcount;
++    // Caboose: atomic. A layout is referenced and released from several threads at once
++    // (DXVK allocates sets on its command-stream thread and resets their pools on its queue
++    // thread); a plain count lost updates and destroyed layouts still in use.
++    std::atomic<uint32_t> refcount{0};
+ };
+ 
+ void clearReifiedDescriptorSet(ReifiedDescriptorSet* set);
+diff --git a/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp b/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp
+--- a/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp
++++ b/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp
+@@ -1092,7 +1092,7 @@
+     struct goldfish_VkDescriptorSetLayout* setLayout =
+         as_goldfish_VkDescriptorSetLayout(descriptorSetLayout);
+ 
+-    if (0 == --setLayout->layoutInfo->refcount) {
++    if (1 == setLayout->layoutInfo->refcount.fetch_sub(1, std::memory_order_acq_rel)) {
+         VkEncoder* enc = (VkEncoder*)context;
+         enc->vkDestroyDescriptorSetLayout(device, descriptorSetLayout, pAllocator,
+                                           true /* do lock */);
+-- 
+2.43.0

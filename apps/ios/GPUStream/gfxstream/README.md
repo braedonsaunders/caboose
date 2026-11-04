@@ -113,8 +113,10 @@ handle validation is not established by these checks.
 answers `COMPLETION_WATCH` and `COMPLETION_FEED` itself, before framing and decoding,
 and only for a process that has a feed (`process_registry.cpp` creates one per process).
 A watch submits a marker through `VkDecoderGlobalState::submitCabooseCompletionMarker`
-(fork commit 0028) and returns; the feed's watcher thread waits for markers in order, and the
-feed stream writes their records. Finishing a process waits for its outstanding
+(fork commit 0028) and returns. Each queue has its own watcher lane (up to eight per
+process; a marker of a further queue joins the least-loaded lane), which waits for that
+queue's markers in order and queues each record as soon as its marker completes, so a queue
+with long work holds back no record of another queue. The feed stream writes the records. Finishing a process waits for its outstanding
 markers. The portable fixture uses a fake marker backend and real socket pairs:
 
 ```sh

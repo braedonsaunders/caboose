@@ -760,6 +760,63 @@ static void childWindowsCase(void) {
            presenters[0].presented, presenters[1].presented, presenters[2].presented, covering, inset, lone);
 }
 
+// A popup as a toolkit makes a menu: an override-redirect window, still unmapped, gets its
+// surface and swapchain (which sends the bind) and its first frame; another process maps it
+// half a second later, as a toolkit's UI process shows a menu its GPU process drew, and 30
+// more frames follow. The compositor holds the bind until the window maps and answers it
+// then (unmapped-bind check: linux-executor/check-unmapped-bind.sh). Run only by name.
+static void unmappedPopupCase(void) {
+    if (!surfaces) fail("unmapped_popup needs an X11 display", VK_ERROR_INITIALIZATION_FAILED);
+    xcb_connection_t* connection = xcb_connect(NULL, NULL);
+    if (xcb_connection_has_error(connection)) fail("unmapped_popup X11", VK_ERROR_INITIALIZATION_FAILED);
+    xcb_screen_t* screen = xcb_setup_roots_iterator(xcb_get_setup(connection)).data;
+    const xcb_window_t parent = createWindow(connection, screen->root, screen->root_visual, 0, 0, 640, 480);
+    const xcb_window_t popup = xcb_generate_id(connection);
+    const uint32_t overrideRedirect = 1;
+    xcb_create_window(connection, XCB_COPY_FROM_PARENT, popup, screen->root, 40, 40, 320, 200, 0,
+                      XCB_WINDOW_CLASS_INPUT_OUTPUT, screen->root_visual, XCB_CW_OVERRIDE_REDIRECT, &overrideRedirect);
+    xcb_flush(connection);
+    fflush(stdout);
+    const pid_t mapper = fork();
+    if (mapper < 0) fail("fork", VK_ERROR_INITIALIZATION_FAILED);
+    if (mapper == 0) {
+        char windowArg[16];
+        snprintf(windowArg, sizeof(windowArg), "%u", popup);
+        execl("/proc/self/exe", "sync_check", "--map-window", windowArg, "500", (char*)NULL);
+        _exit(4);
+    }
+    struct Presenter presenter;
+    presenterCreate(&presenter, connection, popup, 320, 200);
+    const uint64_t start = nowUs();
+    presenterFrame(&presenter, 0.0f);
+    const double firstMs = (double)(nowUs() - start) / 1000.0;
+    int status = 0;
+    waitpid(mapper, &status, 0);
+    const int mapped = WIFEXITED(status) && WEXITSTATUS(status) == 0;
+    const int frames = 30;
+    for (int i = 0; i < frames; ++i) presenterFrame(&presenter, (float)i / frames);
+    presenterDestroy(&presenter);
+    xcb_destroy_window(connection, popup);
+    xcb_destroy_window(connection, parent);
+    xcb_flush(connection);
+    xcb_disconnect(connection);
+    report("unmapped_popup", mapped && presenter.presented == frames + 1,
+           "accepted=%d window=%#x mapped_by_other_process=%d first_frame_ms=%.1f", presenter.presented, popup, mapped,
+           firstMs);
+}
+
+// The mapper of unmappedPopupCase: maps `window` after `delayMs` on a connection of its own.
+static int mapWindowChild(xcb_window_t window, int delayMs) {
+    xcb_connection_t* connection = xcb_connect(NULL, NULL);
+    if (xcb_connection_has_error(connection)) return 2;
+    struct timespec pause = {delayMs / 1000, (long)(delayMs % 1000) * 1000000L};
+    nanosleep(&pause, NULL);
+    xcb_generic_error_t* error = xcb_request_check(connection, xcb_map_window_checked(connection, window));
+    xcb_disconnect(connection);
+    if (error) { free(error); return 3; }
+    return 0;
+}
+
 // Exactly one present followed by no Vulkan calls: a delayed bind must progress
 // independently. The executor verifies the frame, not merely the API return value.
 static void oneShotCase(void) {
@@ -1137,6 +1194,7 @@ int main(int argc, char** argv) {
         return 0;
     }
     if (argc > 3 && !strcmp(argv[1], "--exit-child")) return exitChild(atoi(argv[2]), atoi(argv[3]));
+    if (argc > 3 && !strcmp(argv[1], "--map-window")) return mapWindowChild((xcb_window_t)strtoul(argv[2], NULL, 10), atoi(argv[3]));
     const int abandon = argc > 1 && !strcmp(argv[1], "--abandon");
     const char* only = argc > 1 && !abandon ? argv[1] : NULL;
     VkApplicationInfo app = {VK_STRUCTURE_TYPE_APPLICATION_INFO};
@@ -1238,6 +1296,8 @@ int main(int argc, char** argv) {
     RUN("coherent_rewrite", coherentRewriteCase());
     RUN("exit_latency", exitLatencyCase());
     RUN("abandoned_work", abandonedWorkCase());
+    // Needs a compositor that maps windows (a running computer), so only when named.
+    if (only && !strcmp(only, "unmapped_popup")) unmappedPopupCase();
 
     CHECK(vkDeviceWaitIdle(device));
     vkDestroySemaphore(device, timeline, NULL);

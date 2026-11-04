@@ -57,3 +57,34 @@ struct LaptopLayoutTests {
         #expect(LaptopLayout.frames(size: size, division: nil, keyboard: 0) == first)
     }
 }
+
+/// Laptop's upper screen on a fold whose top edge falls between device pixels.
+@Suite struct LaptopFractionalPanelTests {
+    @Test func displayCoversTheWholeUpperPanel() throws {
+        for height in [455.5, 455.33, 455.67, 456.0, 455.999_9] as [CGFloat] {
+            let pixels = try #require(MonitorPolicy.pixels(Double(height), scale: 2))
+            #expect(CGFloat(pixels) / 2 >= height - 0.001, "\(height) pt is covered")
+            #expect(CGFloat(pixels) / 2 < height + 0.5, "by less than a pixel more")
+        }
+        #expect(MonitorPolicy.pixels(669, scale: 2) == 1338)
+        #expect(MonitorPolicy.pixels(0, scale: 2) == nil)
+    }
+
+    @Test func fullscreenPictureFillsTheUpperPanel() {
+        for height in [455.5, 455.33, 455.67] as [CGFloat] {
+            let panel = CGSize(width: 669, height: height)
+            let pixels = CGFloat(MonitorPolicy.pixels(Double(height), scale: 2) ?? 0)
+            let natural = CGSize(width: 669, height: pixels / 2)
+            let shown = DesktopGeometry.surfaceFrame(natural: natural, available: panel, resizing: false, fullscreen: true)
+            #expect(shown == CGRect(origin: .zero, size: panel))
+        }
+    }
+
+    @Test func divisionStartsAtThePixelRowOfTheFold() {
+        let division = CGRect(x: 0, y: 455.67, width: 669, height: 30)
+        let top = LaptopLayout.divisionTop(division, scale: 3)
+        #expect(top <= division.minY && division.minY - top < 1.0 / 3)
+        #expect(abs((top * 3).rounded() - top * 3) < 0.0001)
+        #expect(LaptopLayout.divisionTop(CGRect(x: 0, y: 456, width: 669, height: 30), scale: 2) == 456)
+    }
+}

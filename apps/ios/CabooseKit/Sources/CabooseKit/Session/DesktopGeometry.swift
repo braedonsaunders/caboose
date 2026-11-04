@@ -149,6 +149,10 @@ public enum DesktopGeometry {
         return natural
     }
 
+    /// How far, in points, a picture may differ from its space on each axis and still be its
+    /// size: a computer display or window is a whole number of pixels.
+    public static let roundingTolerance: CGFloat = 2
+
     /// The entire remote picture normally stays visible while a new size is arriving.
     /// During a tiled keyboard resize, retain its width and top anchor; the viewport
     /// clips the bottom until the guest redraws instead of briefly shrinking the page.
@@ -163,6 +167,13 @@ public enum DesktopGeometry {
             let scale = min(1, available.width / natural.width)
             return CGRect(x: max(0, (available.width - natural.width * scale) / 2), y: 0,
                           width: natural.width * scale, height: natural.height * scale)
+        }
+        // A fullscreen picture the size of its space but for whole-pixel rounding (made for a
+        // panel of fractional pixels) fills the space, so no sliver of what lies behind shows
+        // at its edges.
+        if fullscreen, abs(natural.width - available.width) <= roundingTolerance,
+           abs(natural.height - available.height) <= roundingTolerance {
+            return CGRect(origin: .zero, size: available)
         }
         let scale = min(1, available.width / natural.width, available.height / natural.height)
         let shown = CGSize(width: natural.width * scale, height: natural.height * scale)

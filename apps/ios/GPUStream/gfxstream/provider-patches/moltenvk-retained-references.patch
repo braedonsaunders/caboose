@@ -1,0 +1,145 @@
+diff --git a/MoltenVK/MoltenVK/GPUObjects/MVKQueue.h b/MoltenVK/MoltenVK/GPUObjects/MVKQueue.h
+index b18549c..713093c 100644
+--- a/MoltenVK/MoltenVK/GPUObjects/MVKQueue.h
++++ b/MoltenVK/MoltenVK/GPUObjects/MVKQueue.h
+@@ -24,6 +24,7 @@
+ #include "MVKSync.h"
+ #include "MVKSmallVector.h"
+ #include <mutex>
++#include <deque>
+ #include <condition_variable>
+ 
+ #import <Metal/Metal.h>
+@@ -144,6 +145,23 @@ protected:
+ 	VkResult submit(MVKQueueSubmission* qSubmit);
+ 	NSString* getMTLCommandBufferLabel(MVKCommandUse cmdUse);
+ 	void handleMTLCommandBufferError(id<MTLCommandBuffer> mtlCmdBuff);
++	// Caboose: whether a command buffer completes before one committed ahead of it on this
++	// queue (an empty one carrying only a fence, say). Logged as CABOOSE_MVK_COMPLETION_ORDER.
++	friend class MVKQueueCommandBufferSubmission;
++	uint64_t cabooseCommitted(id<MTLCommandBuffer> mtlCmdBuff);
++	void cabooseCompleted(uint64_t sequence, id<MTLCommandBuffer> mtlCmdBuff);
++	std::mutex _cabooseOrderLock;
++	uint64_t _cabooseSequence = 0;
++	std::deque<std::pair<uint64_t, id<MTLCommandBuffer>>> _caboosePending;
++	uint32_t _cabooseOrderReports = 0;
++	// Caboose: each second, the GPU's busy time on this queue (the union of its command
++	// buffers' GPU start-to-end spans), the CPU time spent encoding submissions, and the
++	// command buffers completed (CABOOSE_MVK_QUEUE_PERIOD).
++	void cabooseEncoded(uint64_t nanoseconds);
++	uint64_t _cabooseEncodeNs = 0;
++	double _cabooseGpuBusy = 0, _cabooseGpuLastEnd = 0;
++	uint32_t _cabooseCompleted = 0;
++	uint64_t _caboosePeriodStartNs = 0;
+ 
+ 	MVKQueueFamily* _queueFamily;
+ 	std::string _name;
+diff --git a/MoltenVK/MoltenVK/GPUObjects/MVKQueue.mm b/MoltenVK/MoltenVK/GPUObjects/MVKQueue.mm
+index 4deeb89..6a1c23c 100644
+--- a/MoltenVK/MoltenVK/GPUObjects/MVKQueue.mm
++++ b/MoltenVK/MoltenVK/GPUObjects/MVKQueue.mm
+@@ -18,6 +18,7 @@
+ 
+ #include "MVKInstance.h"
+ #include "MVKQueue.h"
++#include <chrono>
+ #include "MVKSurface.h"
+ #include "MVKSwapchain.h"
+ #include "MVKSync.h"
+@@ -163,6 +164,55 @@ VkResult MVKQueue::waitIdle(MVKCommandUse cmdUse) {
+ 	return _device->getConfigurationResult();
+ }
+ 
++void MVKQueue::cabooseEncoded(uint64_t nanoseconds) {
++	std::lock_guard<std::mutex> lock(_cabooseOrderLock);
++	_cabooseEncodeNs += nanoseconds;
++}
++
++uint64_t MVKQueue::cabooseCommitted(id<MTLCommandBuffer> mtlCmdBuff) {
++	std::lock_guard<std::mutex> lock(_cabooseOrderLock);
++	uint64_t sequence = ++_cabooseSequence;
++	if (_caboosePending.size() < 4096) { _caboosePending.emplace_back(sequence, [mtlCmdBuff retain]); }
++	return sequence;
++}
++
++// Completion handlers can run late, so an earlier command buffer counts as unfinished only
++// when Metal's own status says so at the moment this one has completed.
++void MVKQueue::cabooseCompleted(uint64_t sequence, id<MTLCommandBuffer> mtlCmdBuff) {
++	std::lock_guard<std::mutex> lock(_cabooseOrderLock);
++	size_t unfinished = 0;
++	uint64_t oldest = 0;
++	for (auto it = _caboosePending.begin(); it != _caboosePending.end(); ) {
++		if (it->first == sequence) { [it->second release]; it = _caboosePending.erase(it); continue; }
++		if (it->first < sequence && it->second.status < MTLCommandBufferStatusCompleted) {
++			if (!unfinished) { oldest = it->first; }
++			++unfinished;
++		}
++		++it;
++	}
++	const double start = mtlCmdBuff.GPUStartTime, end = mtlCmdBuff.GPUEndTime;
++	if (end > start && start > 0) {
++		if (start >= _cabooseGpuLastEnd) { _cabooseGpuBusy += end - start; }
++		else if (end > _cabooseGpuLastEnd) { _cabooseGpuBusy += end - _cabooseGpuLastEnd; }
++		if (end > _cabooseGpuLastEnd) { _cabooseGpuLastEnd = end; }
++	}
++	++_cabooseCompleted;
++	const uint64_t now = (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(
++		std::chrono::steady_clock::now().time_since_epoch()).count();
++	if (!_caboosePeriodStartNs) { _caboosePeriodStartNs = now; }
++	if (now - _caboosePeriodStartNs >= 1000000000ull) {
++		fprintf(stderr, "CABOOSE_MVK_QUEUE_PERIOD queue=%s ms=%.0f gpu_busy_ms=%.1f encode_ms=%.1f command_buffers=%u\n",
++		        _name.c_str(), (now - _caboosePeriodStartNs) / 1e6, _cabooseGpuBusy * 1e3, _cabooseEncodeNs / 1e6, _cabooseCompleted);
++		_caboosePeriodStartNs = now; _cabooseGpuBusy = 0; _cabooseEncodeNs = 0; _cabooseCompleted = 0;
++	}
++	if (unfinished && _cabooseOrderReports < 64) {
++		++_cabooseOrderReports;
++		fprintf(stderr, "CABOOSE_MVK_COMPLETION_ORDER queue=%s sequence=%llu unfinished_earlier=%zu oldest=%llu label=%s\n",
++		        _name.c_str(), (unsigned long long)sequence, unfinished, (unsigned long long)oldest,
++		        mtlCmdBuff.label.UTF8String ?: "");
++	}
++}
++
+ id<MTLCommandBuffer> MVKQueue::getMTLCommandBuffer(MVKCommandUse cmdUse, bool retainRefs) {
+ 	id<MTLCommandBuffer> mtlCmdBuff = nil;
+ 	uint64_t startTime = getPerformanceTimestamp();
+@@ -464,6 +514,7 @@ MVKQueueSubmission::~MVKQueueSubmission() {
+ VkResult MVKQueueCommandBufferSubmission::execute() {
+ 
+ 	_queue->_submissionCaptureScope->beginScope();
++	const auto cabooseEncodeStart = std::chrono::steady_clock::now();
+ 
+ 	// If using encoded semaphore waiting, do so now.
+ 	for (auto& ws : _waitSemaphores) { ws.encodeWait(getActiveMTLCommandBuffer()); }
+@@ -476,6 +527,8 @@ VkResult MVKQueueCommandBufferSubmission::execute() {
+ 
+ 	// If using encoded semaphore signaling, do so now.
+ 	for (auto& ss : _signalSemaphores) { ss.encodeSignal(getActiveMTLCommandBuffer()); }
++	_queue->cabooseEncoded((uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(
++		std::chrono::steady_clock::now() - cabooseEncodeStart).count());
+ 
+ 	// Commit the last MTLCommandBuffer.
+ 	// Nothing after this because callback might destroy this instance before this function ends.
+@@ -485,7 +538,11 @@ VkResult MVKQueueCommandBufferSubmission::execute() {
+ // Returns the active MTLCommandBuffer, lazily retrieving it from the queue if needed.
+ id<MTLCommandBuffer> MVKQueueCommandBufferSubmission::getActiveMTLCommandBuffer() {
+ 	if ( !_activeMTLCommandBuffer ) {
+-		bool needsRetain = false;
++		// Caboose: always retained. An application may destroy a resource once its own
++		// synchronization says the GPU is done with it, or one only bound in a descriptor it
++		// never uses; Metal then keeps whatever this command buffer refers to alive until it
++		// completes, rather than faulting it (kIOGPUCommandBufferCallbackErrorInvalidResource).
++		bool needsRetain = true;
+ 		if (!_device->hasResidencySet() && (getEnabledDescriptorIndexingFeatures().descriptorBindingPartiallyBound || getMVKConfig().liveCheckAllResources)) {
+ 			// Partially bound descriptors will get bound by us even if they're not used at runtime by the shader.
+ 			// The application is free to destroy them even if they're not used at runtime even if we bound them.
+@@ -546,7 +603,10 @@ VkResult MVKQueueCommandBufferSubmission::commitActiveMTLCommandBuffer(bool sign
+ 	_activeMTLCommandBuffer = nil;
+ 
+ 	uint64_t startTime = getPerformanceTimestamp();
++	MVKQueue* cabooseQueue = _queue;
++	uint64_t cabooseSequence = mtlCmdBuff ? _queue->cabooseCommitted(mtlCmdBuff) : 0;
+ 	[mtlCmdBuff addCompletedHandler: ^(id<MTLCommandBuffer> mtlCB) {
++		cabooseQueue->cabooseCompleted(cabooseSequence, mtlCB);
+ 		addPerformanceInterval(getPerformanceStats().queue.mtlCommandBufferExecution, startTime);
+ 		if (signalCompletion) { this->finish(); }	// Must be the last thing the completetion callback does.
+ 	}];

@@ -44,6 +44,14 @@ when the device cannot be set up. A full run takes about fifteen seconds.
 It also prints the mean time of `vkGetImageMemoryRequirements2` for a new image shape,
 which asks the phone once.
 
+`unmapped_popup` runs only when named, against a compositor that maps windows: an
+override-redirect window, still unmapped, gets its swapchain (which sends the bind) and a
+first frame; a second process (the probe again, `--map-window`) maps it half a second later,
+and 30 frames cleared to colours with green half on follow. It passes when all 31 presents
+are accepted and the mapper succeeded, and prints the window and how long the first present
+took. [`check-unmapped-bind.sh`](../../../../../apps/ios/GPUStream/gfxstream/linux-executor/README.md#bind-of-an-unmapped-popup)
+checks what the compositor and the executor did with it.
+
 `one_shot` submits one cleared frame and makes no Vulkan calls for two seconds. The Linux
 executor check requires exactly one retired frame. `--lifetime-child` repeats instance,
 device, surface and swapchain creation/destruction 32 times with custom allocators. Every

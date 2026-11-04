@@ -176,16 +176,41 @@ private final class LiveGPUDuplex: @unchecked Sendable {
         bridge = descriptors[0]; native = descriptors[1]
         for fd in descriptors {
             var one: Int32 = 1
-            var size: Int32 = 16 * 1024
             guard setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, socklen_t(MemoryLayout.size(ofValue: one))) == 0,
-                  setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &size, socklen_t(MemoryLayout.size(ofValue: size))) == 0,
-                  setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &size, socklen_t(MemoryLayout.size(ofValue: size))) == 0,
                   fcntl(fd, F_SETFD, FD_CLOEXEC) == 0 else {
                 let code = errno
                 Darwin.close(bridge); Darwin.close(native)
                 throw LiveGPUBindingError.system(operation: "socket configuration", code: code)
             }
         }
+        // Commands to the decoder get a deep buffer, so a decoder that is briefly busy (a
+        // pipeline compile, a wait) never stalls its writer; replies a smaller one. The
+        // largest size the kernel takes, from these down.
+        guard Self.setBuffer(bridge, SO_SNDBUF, Self.commandBuffer), Self.setBuffer(native, SO_RCVBUF, Self.commandBuffer),
+              Self.setBuffer(native, SO_SNDBUF, Self.replyBuffer), Self.setBuffer(bridge, SO_RCVBUF, Self.replyBuffer),
+              // The bridge never blocks: its writer and reader poll, and see a stop between polls.
+              fcntl(bridge, F_SETFL, fcntl(bridge, F_GETFL) | O_NONBLOCK) == 0 else {
+            let code = errno
+            Darwin.close(bridge); Darwin.close(native)
+            throw LiveGPUBindingError.system(operation: "socket configuration", code: code)
+        }
+    }
+    static let commandBuffer: Int32 = 1024 * 1024
+    static let replyBuffer: Int32 = 256 * 1024
+    private static func setBuffer(_ fd: Int32, _ option: Int32, _ preferred: Int32) -> Bool {
+        var size = preferred
+        while size >= 16 * 1024 {
+            if setsockopt(fd, SOL_SOCKET, option, &size, socklen_t(MemoryLayout.size(ofValue: size))) == 0 { return true }
+            guard errno == ENOBUFS || errno == EINVAL else { return false }
+            size /= 2
+        }
+        return false
+    }
+    /// The socket's buffer size as the kernel set it.
+    func bufferSize(_ fd: Int32, _ option: Int32) -> Int32 {
+        var value: Int32 = 0
+        var size = socklen_t(MemoryLayout<Int32>.size)
+        return getsockopt(fd, SOL_SOCKET, option, &value, &size) == 0 ? value : -1
     }
     func beginNativeRun() {
         stateLock.withLock { nativeReaderThread = pthread_self() }
@@ -228,6 +253,7 @@ private final class LiveGPUDuplex: @unchecked Sendable {
                 _ = pthread_kill(thread, SIGUSR1)
             }
         }
+        cancelWriter()
     }
     func waitForWorkers() {
         while workers.wait(timeout: .now() + .milliseconds(2)) == .timedOut {
@@ -243,16 +269,122 @@ private final class LiveGPUDuplex: @unchecked Sendable {
         return true
     }
     func closeAfterJoin() { waitForWorkers(); Darwin.close(bridge); Darwin.close(native) }
-    func write(_ bytes: Data) throws {
+
+    // Inbound commands wait here for this stream's own writer, so a decoder that is busy or
+    // blocked holds back only its own stream, never the serial consumer or another stream.
+    // Each payload keeps its ingress charge until it is in the socket (LiveGPUIngressHold),
+    // so the session's ingress budget still bounds every byte waiting here.
+    private enum Inbound { case data(Data, LiveGPUIngressHold?), fin }
+    private let inbound = NSCondition()
+    private var inboundQueue: [Inbound] = []
+    private var inboundHead = 0
+    private var writerCancelled = false
+    private var writerGone = false
+    /// Queues bytes for the decoder; false once the writer has ended (they are dropped).
+    @discardableResult
+    func enqueue(_ bytes: Data, hold: LiveGPUIngressHold?) -> Bool {
+        inbound.lock()
+        guard !writerGone, !writerCancelled else { inbound.unlock(); return false }
+        hold?.retain()
+        inboundQueue.append(.data(bytes, hold))
+        inbound.signal()
+        inbound.unlock()
+        return true
+    }
+    /// The decoder's input ends after everything queued before it.
+    func enqueueFin() {
+        inbound.withLock {
+            guard !writerGone, !writerCancelled else { return }
+            inboundQueue.append(.fin)
+            inbound.signal()
+        }
+    }
+    /// Bytes queued for the decoder and not yet in its socket.
+    var queuedInbound: Int {
+        inbound.withLock {
+            inboundQueue[inboundHead...].reduce(0) { total, item in
+                if case .data(let bytes, _) = item { return total + bytes.count }
+                return total
+            }
+        }
+    }
+    private func cancelWriter() {
+        inbound.withLock { writerCancelled = true; inbound.broadcast() }
+    }
+    /// The writer worker: writes queued commands in order until FIN, cancel or a failure.
+    /// `discard` says the decoder has ended (its bytes are dropped); `failed` reports a
+    /// write failure that is not a stop.
+    func runWriter(discard: () -> Bool, failed: (Error) -> Void) {
+        defer {
+            let dropped = inbound.withLock { () -> ArraySlice<Inbound> in
+                writerGone = true
+                defer { inboundQueue = []; inboundHead = 0 }
+                return inboundQueue[inboundHead...]
+            }
+            for case .data(_, let hold) in dropped { hold?.release() }
+        }
+        while true {
+            inbound.lock()
+            while inboundHead == inboundQueue.count && !writerCancelled { inbound.wait() }
+            if writerCancelled { inbound.unlock(); return }
+            let item = inboundQueue[inboundHead]
+            inboundQueue[inboundHead] = .fin  // drop the payload reference
+            inboundHead += 1
+            if inboundHead == inboundQueue.count { inboundQueue.removeAll(keepingCapacity: true); inboundHead = 0 }
+            else if inboundHead >= 1024 { inboundQueue.removeFirst(inboundHead); inboundHead = 0 }
+            inbound.unlock()
+            switch item {
+            case .data(let bytes, let hold):
+                defer { hold?.release() }
+                if discard() { continue }
+                do { try write(bytes, stop: { [self] in discard() || inbound.withLock { writerCancelled } }) }
+                catch {
+                    if discard() || inbound.withLock({ writerCancelled }) { continue }
+                    failed(error); return
+                }
+            case .fin:
+                do { try halfCloseBridgeWrite() } catch { failed(error) }
+                return
+            }
+        }
+    }
+    /// Writes all of `bytes` to the non-blocking bridge, waiting for room between writes;
+    /// returns early once `stop` holds.
+    private func write(_ bytes: Data, stop: () -> Bool) throws {
         try bytes.withUnsafeBytes { buffer in
             var offset = 0
             while offset < buffer.count {
                 let count = Darwin.write(bridge, buffer.baseAddress!.advanced(by: offset), buffer.count - offset)
+                if count > 0 { offset += count; continue }
                 if count < 0 && errno == EINTR { continue }
-                guard count > 0 else { throw LiveGPUBindingError.system(operation: "write", code: count == 0 ? EPIPE : errno) }
-                offset += count
+                if count < 0 && errno == EAGAIN {
+                    if stop() { return }
+                    var pfd = pollfd(fd: bridge, events: Int16(POLLOUT), revents: 0)
+                    _ = Darwin.poll(&pfd, 1, 50)
+                    continue
+                }
+                throw LiveGPUBindingError.system(operation: "write", code: count == 0 ? EPIPE : errno)
             }
         }
+    }
+}
+
+/// One ingress charge (a transport message) held until every payload decoded from it is
+/// in its stream's socket or dropped; `release` then runs once.
+final class LiveGPUIngressHold: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 1
+    private var done: (() -> Void)?
+    init(_ done: @escaping () -> Void) { self.done = done }
+    func retain() { lock.withLock { count += 1 } }
+    func release() {
+        let callback = lock.withLock { () -> (() -> Void)? in
+            count -= 1
+            guard count == 0 else { return nil }
+            defer { done = nil }
+            return done
+        }
+        callback?()
     }
 }
 
@@ -280,7 +412,7 @@ private final class LiveGPUProcess: @unchecked Sendable {
 
 /// One authenticated CGLV lease. start/consume/finish are serial worker calls;
 /// revoke may run concurrently, including before start. No presentation claim is made.
-public final class LiveGPUNativeBinding: LiveGPUByteConsumer, LiveGPURetirementReporting, LiveGPUSurfaceRevoking, LiveGPUIngressAccounting, LiveGPUSuspending, LiveGPUTeardownReporting, @unchecked Sendable {
+public final class LiveGPUNativeBinding: LiveGPUByteConsumer, LiveGPURetirementReporting, LiveGPUSurfaceRevoking, LiveGPUIngressAccounting, LiveGPUDeferredIngress, LiveGPUSuspending, LiveGPUTeardownReporting, @unchecked Sendable {
     private let backend: LiveGPURuntimeBackend
     private let decoder: LiveGPUEnvelopeDecoder
     private let surfaces: LiveGPUSurfaceController?
@@ -331,6 +463,8 @@ public final class LiveGPUNativeBinding: LiveGPUByteConsumer, LiveGPURetirementR
     private let surfaceLock = NSLock()
     private var retiring = Set<UInt64>() // guarded by lock
     private var decodingFailed = false
+    /// The charge of the input the serial consumer is handling (worker only).
+    private var ingressHold: LiveGPUIngressHold?
     // Suspension, all on the serial worker except nativeSuspended (guarded by lock).
     private var suspendSent = false
     private var quiesceReceived = false
@@ -393,7 +527,13 @@ public final class LiveGPUNativeBinding: LiveGPUByteConsumer, LiveGPURetirementR
         }
         // Initialization is deliberately postponed until the exact SESSION hello arrives.
     }
-    public func consume(_ bytes: Data) throws {
+    public func consume(_ bytes: Data) throws { try consume(bytes, release: {}) }
+    /// The serial consumer's input: `release` runs once every stream payload in `bytes` is in
+    /// its stream's socket or dropped, so the session's ingress charge bounds queued input.
+    func consume(_ bytes: Data, release: @escaping @Sendable () -> Void) throws {
+        let hold = LiveGPUIngressHold(release)
+        ingressHold = hold
+        defer { ingressHold = nil; hold.release() }
         guard lock.withLock({ started && !cancelled && !finished && !peerRevoked }) else { throw LiveGPUError.closed }
         do {
             let algorithm = lock.withLock { compression }
@@ -591,10 +731,8 @@ public final class LiveGPUNativeBinding: LiveGPUByteConsumer, LiveGPURetirementR
                 // Input for a stream that is gone or already ended belongs to nobody.
                 return dropped("stream data", frame)
             }
-            if frame.kind == .data { if !ended { try stream.write(frame.payload) } }
-            else {
-                try stream.halfCloseBridgeWrite()
-            }
+            if frame.kind == .data { if !ended { stream.enqueue(frame.payload, hold: ingressHold) } }
+            else { stream.enqueueFin() }
         case .surfaceBind, .surfaceQuery, .present, .surfaceRetire, .swapchainCreate, .swapchainMap, .swapchainAcquire, .swapchainCancelAcquire, .swapchainRetire, .swapchainPresent, .swapchainPresentOrdered:
             guard let surfaces else { throw LiveGPUBindingError.protocolViolation("presentation is unavailable") }
             let message = try LiveGPUSurfaceMessage.decode(kind: frame.kind, payload: frame.payload)
@@ -676,8 +814,8 @@ public final class LiveGPUNativeBinding: LiveGPUByteConsumer, LiveGPURetirementR
             return try send(.fin, process: frame.process, stream: frame.stream)
         }
         let stream = try LiveGPUDuplex()
-        // Reserve both workers before publishing the descriptors to concurrent revoke.
-        stream.workers.enter(); stream.workers.enter()
+        // Reserve every worker before publishing the descriptors to concurrent revoke.
+        stream.workers.enter(); stream.workers.enter(); stream.workers.enter()
         process.lock.withLock {
             process.streams[frame.stream] = stream
             if process.stopped { stream.cancel() }
@@ -699,14 +837,20 @@ public final class LiveGPUNativeBinding: LiveGPUByteConsumer, LiveGPURetirementR
             if result != 0 && !expectedStreamEnd {
                 // One stream's failure (a refused feed, a malformed command) ends that stream:
                 // its write half closed above sends FIN, and the session and every other
-                // stream go on.
+                // stream go on. Its writer drops what is still queued.
                 process.lock.withLock { stream.nativeEnded = true }
             }
         }
         Thread.detachNewThread { [self] in
             defer { stream.workers.leave() }
             gate.wait()
-            var buffer = [UInt8](repeating: 0, count: 16 * 1024)
+            stream.runWriter(discard: { process.lock.withLock { stream.nativeEnded || process.stopped } },
+                             failed: { [self] error in self.fail(error) })
+        }
+        Thread.detachNewThread { [self] in
+            defer { stream.workers.leave() }
+            gate.wait()
+            var buffer = [UInt8](repeating: 0, count: 64 * 1024)
             while true {
                 // Poll before read so bridge never enters XNU sbwait on an empty buffer
                 // while native is concurrently calling shutdown(native, SHUT_WR).
@@ -725,7 +869,7 @@ public final class LiveGPUNativeBinding: LiveGPUByteConsumer, LiveGPURetirementR
                 stream.replying = true
                 defer { stream.replying = false }
                 let count = Darwin.read(stream.bridge, &buffer, buffer.count)
-                if count < 0 && errno == EINTR { continue }
+                if count < 0 && (errno == EINTR || errno == EAGAIN) { continue }
                 if process.lock.withLock({ process.stopped }) { return }
                 do {
                     if count < 0 { throw LiveGPUBindingError.system(operation: "read", code: errno) }
@@ -737,7 +881,7 @@ public final class LiveGPUNativeBinding: LiveGPUByteConsumer, LiveGPURetirementR
         // STREAM_READY reserves the bounded socketpair and both workers for an
         // already-open native token. It is not a TLS-admission or GPU receipt.
         // The frozen CGLV contract permits run to fail after this reservation.
-        defer { gate.signal(); gate.signal() }
+        defer { gate.signal(); gate.signal(); gate.signal() }
         try send(.streamReady, process: frame.process, stream: frame.stream)
     }
     private func retire(_ id: UInt64, _ process: LiveGPUProcess) throws {

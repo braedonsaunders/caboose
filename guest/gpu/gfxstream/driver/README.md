@@ -149,6 +149,12 @@ Each patch is one feature. Several change Mesa's generated encoder
 | 0076 sleeping-encoder-lock | Threads waiting for the shared encoder sleep instead of spinning |
 | 0077 executor-generations | Every dispatchable object records its executor generation; calls on an earlier generation's objects report device loss, and one reset hook forgets the previous executor's cached answers and tables |
 | 0078 trace-scopes-without-a-tracer | Trace scopes compile to nothing without a tracer, instead of formatting their names on every call |
+| 0079 recycle-only-pools-without-frees | A reset batched pool recycles its sets only when the pool never frees sets one by one, so a late free or use of an old handle never reaches a reallocated set |
+| 0080 flush-shadow-outside-the-tracker-lock | The flush shadow is told outside the tracker lock, whose order against the shadow's lock deadlocked recording and submitting threads |
+| 0081 checked-lock-order | The tracker and encoder locks are checked against the driver's lock hierarchy (`CABOOSE_LOCK_ORDER`) |
+| 0082 bounded-descriptor-writes | Batched descriptor writes, copies and template updates stop at their layout's last binding instead of writing past the set's table |
+| 0083 atomic-layout-references | Descriptor set layout references are counted atomically (DXVK raises and lowers them from two threads) |
+| 0084 event-status-recheck | A reset event the tracker keeps answering locally is asked about on the device every 250 ms while it is polled |
 
 The patch messages describe each change. To change the driver, prepare a tree, commit
 the prepared state, edit, and regenerate the affected patch with `git format-patch`

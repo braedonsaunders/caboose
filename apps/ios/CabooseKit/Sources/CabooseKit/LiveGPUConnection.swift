@@ -35,7 +35,7 @@ protocol LiveGPUReceiveFlow: AnyObject {
 final class LiveGPUBudget: @unchecked Sendable {
     static let messageLimit = 256 * 1024
     /// Outbound work the phone may queue while the network or host is slower than the
-    /// decoder's replies: replies leave the native bridge in 16 KiB pieces, so a busy
+    /// decoder's replies: replies leave the native bridge in pieces of up to 64 KiB, so a busy
     /// stream (video, a pipeline compile backlog) queues many small messages.
     static let byteLimit = 8 * 1024 * 1024
     static let countLimit = 2048

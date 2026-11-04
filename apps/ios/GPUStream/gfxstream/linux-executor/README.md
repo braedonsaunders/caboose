@@ -199,6 +199,21 @@ computer's own executor and displays are untouched. Each case requires DXVK to r
 without skipping it, a D3D11 device, a swapchain and presented frames, and no executor fault.
 The release seal runs it.
 
+## Bind of an unmapped popup
+
+```sh
+sh apps/ios/GPUStream/gfxstream/linux-executor/check-unmapped-bind.sh COMPUTER WORK DRIVER SYNC_CHECK OUT
+```
+
+Runs against a running computer container, as the bind retry check does, with the executor
+writing pictures (`--pictures`). `SYNC_CHECK`
+(`guest/gpu/gfxstream/driver/sync-check/sync_check.c`) runs its `unmapped_popup` case through
+`DRIVER`: an override-redirect window binds its swapchain and presents while unmapped, another
+process maps it half a second later, and 30 frames follow. The check requires the compositor's
+log to show the bind held and then attached to a window when the popup mapped, the executor to
+retire that window's swapchain with frames presented, and the window's newest picture to have
+at least half its pixels lit (the client's colours keep green half on; black fails).
+
 ## Pictures after an executor loss
 
 ```sh

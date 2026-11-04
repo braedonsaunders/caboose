@@ -86,8 +86,17 @@ CompletionFeed::State CompletionFeed::state() {
         std::lock_guard<std::mutex> lock(mutex_);
         s.watches = watches_;
         s.unwatched = unwatched_;
-        s.outstanding = markers_.size() + (waiting_.serial ? 1 : 0);
-        const Pending* oldest = waiting_.serial ? &waiting_ : markers_.empty() ? nullptr : &markers_.front();
+        s.outstanding = outstanding_;
+        s.lanes = lanes_.size();
+        // The marker watched longest ago over every lane: the front of each lane's order.
+        const Pending* oldest = nullptr;
+        for (const auto& lane : lanes_) {
+            const Pending* front = lane->waiting.serial ? &lane->waiting
+                                   : lane->markers.empty() ? nullptr : &lane->markers.front();
+            if (front && (!oldest || front->watchedMs < oldest->watchedMs ||
+                          (front->watchedMs == oldest->watchedMs && front->serial < oldest->serial)))
+                oldest = front;
+        }
         if (oldest) {
             s.oldestSerial = oldest->serial;
             s.oldestQueue = oldest->queue;
@@ -112,7 +121,6 @@ CompletionFeed::CompletionFeed(Submit submit) : submit_(std::move(submit)) {
         fcntl(fd, F_SETFD, FD_CLOEXEC);
         fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK);
     }
-    watcher_ = std::thread([this] { watcherLoop(); });
 }
 
 CompletionFeed::~CompletionFeed() {
@@ -122,12 +130,38 @@ CompletionFeed::~CompletionFeed() {
 
 void CompletionFeed::close() {
     cancelOrders();
+    std::vector<std::thread*> threads;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         closing_ = true;
+        // No lane is made once closing: this is every thread there will be.
+        for (auto& lane : lanes_) {
+            lane->changed.notify_all();
+            threads.push_back(&lane->thread);
+        }
     }
-    markersChanged_.notify_all();
-    if (watcher_.joinable() && watcher_.get_id() != std::this_thread::get_id()) watcher_.join();
+    for (std::thread* thread : threads)
+        if (thread->joinable() && thread->get_id() != std::this_thread::get_id()) thread->join();
+}
+
+CompletionFeed::Lane& CompletionFeed::laneForLocked(uint64_t queue) {
+    auto found = laneOfQueue_.find(queue);
+    if (found != laneOfQueue_.end()) return *lanes_[found->second];
+    if (lanes_.size() < kMaxLanes) {
+        lanes_.push_back(std::make_unique<Lane>());
+        Lane& lane = *lanes_.back();
+        lane.thread = std::thread([this, &lane] { watcherLoop(lane); });
+        laneOfQueue_.emplace(queue, lanes_.size() - 1);
+        return lane;
+    }
+    // Every lane is taken: the marker joins the lane with the fewest markers. A queue's
+    // markers may then wait in different lanes; records may arrive in any order.
+    Lane* least = lanes_.front().get();
+    for (auto& lane : lanes_) {
+        const size_t load = lane->markers.size() + (lane->waiting.serial ? 1 : 0);
+        if (load < least->markers.size() + (least->waiting.serial ? 1 : 0)) least = lane.get();
+    }
+    return *least;
 }
 
 void CompletionFeed::watch(uint64_t boxedQueue, uint64_t serial) {
@@ -135,7 +169,7 @@ void CompletionFeed::watch(uint64_t boxedQueue, uint64_t serial) {
         std::lock_guard<std::mutex> lock(mutex_);
         if (closing_ || detached_) return;
         ++watches_;
-        if (markers_.size() >= kMaxOutstanding) {
+        if (outstanding_ >= kMaxOutstanding) {
             ++unwatched_;
             records_.push_back({serial, kUnwatched});
             char one = 1;
@@ -156,33 +190,36 @@ void CompletionFeed::watch(uint64_t boxedQueue, uint64_t serial) {
     {
         std::unique_lock<std::mutex> lock(mutex_);
         if (closing_) {
-            // The watcher may be gone: the marker is waited for here, releasing its device.
+            // The lanes may be gone: the marker is waited for here, releasing its device.
             lock.unlock();
             wait();
             return;
         }
-        markers_.push_back({serial, std::move(wait), boxedQueue, nowMs()});
+        Lane& lane = laneForLocked(boxedQueue);
+        lane.markers.push_back({serial, std::move(wait), boxedQueue, nowMs()});
+        ++outstanding_;
+        lane.changed.notify_one();
     }
-    markersChanged_.notify_one();
 }
 
-void CompletionFeed::watcherLoop() {
+void CompletionFeed::watcherLoop(Lane& lane) {
     for (;;) {
         Pending next;
         {
             std::unique_lock<std::mutex> lock(mutex_);
-            markersChanged_.wait(lock, [this] { return closing_ || !markers_.empty(); });
+            lane.changed.wait(lock, [&] { return closing_ || !lane.markers.empty(); });
             // Outstanding markers are always waited for: each holds its device alive.
-            if (markers_.empty()) return;
-            next = std::move(markers_.front());
-            markers_.pop_front();
-            waiting_ = {next.serial, nullptr, next.queue, next.watchedMs};
+            if (lane.markers.empty()) return;
+            next = std::move(lane.markers.front());
+            lane.markers.pop_front();
+            lane.waiting = {next.serial, nullptr, next.queue, next.watchedMs};
         }
         const int32_t result = next.wait();
         next.wait = nullptr;
         {
             std::lock_guard<std::mutex> lock(mutex_);
-            waiting_ = {};
+            lane.waiting = {};
+            --outstanding_;
             lastCompletedSerial_ = next.serial;
             lastStatus_ = result == 0 ? kCompleted : kDeviceLost;
             lastCompletedMs_ = nowMs();
@@ -218,7 +255,7 @@ int CompletionFeed::run(int fd, const std::atomic_bool& stop) {
         ~Detach() {
             std::lock_guard<std::mutex> lock(feed->mutex_);
             if (feed->generation_ != generation) return;  // superseded: the new feed owns records
-            // The guest is gone: records have no reader. The watcher keeps waiting for
+            // The guest is gone: records have no reader. The lanes keep waiting for
             // markers until close(), since each holds its device alive.
             feed->records_.clear();
             feed->detached_ = true;
