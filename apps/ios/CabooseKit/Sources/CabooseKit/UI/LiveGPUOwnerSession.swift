@@ -128,10 +128,13 @@ public final class LiveGPUOwnerSession {
     /// Back in the foreground: reconnects if needed and continues the suspended executor.
     public func resume() {
         guard suspension != .none else { return }
+        // Only an executor taken into the background had its socket left to go quiet; one
+        // suspended for a moment in the foreground keeps its live socket.
+        let afterBackground = closesTransportWhenQuiesced
         suspension = .none; closesTransportWhenQuiesced = false
         Self.log.info("Owner executor resumed")
-        print("CABOOSE_GPU_OWNER resume"); fflush(stdout)
-        executor.resume()
+        print("CABOOSE_GPU_OWNER resume background=\(afterBackground ? 1 : 0)"); fflush(stdout)
+        executor.resume(afterBackground: afterBackground)
     }
     public func close() {
         switch state {

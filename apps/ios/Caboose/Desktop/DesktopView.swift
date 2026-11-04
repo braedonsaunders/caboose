@@ -520,7 +520,7 @@ struct Launchpad: View {
                 let pages = layout.pageCount(apps.count)
                 let current = layout.clampedPage(desktop.launcherPage, count: apps.count)
                 HStack(spacing: 16 * ui) {
-                    if current > 0 { pageArrow(-1, symbol: "chevron.left", ui: ui) } else { Color.clear.frame(width: 44 * ui, height: 44 * ui) }
+                    pageArrow(-1, symbol: "chevron.left", ui: ui, enabled: current > 0)
                     HStack(spacing: 9 * ui) {
                         ForEach(0..<pages, id: \.self) { page in
                             Circle()
@@ -530,7 +530,7 @@ struct Launchpad: View {
                     }
                     .accessibilityElement()
                     .accessibilityLabel("Page \(current + 1) of \(pages)")
-                    if current < pages - 1 { pageArrow(1, symbol: "chevron.right", ui: ui) } else { Color.clear.frame(width: 44 * ui, height: 44 * ui) }
+                    pageArrow(1, symbol: "chevron.right", ui: ui, enabled: current < pages - 1)
                 }
                 .animation(.smooth(duration: 0.2), value: current)
                 .frame(maxHeight: .infinity, alignment: .bottom)
@@ -570,18 +570,25 @@ struct Launchpad: View {
         desktop.launcherPage = layout.clampedPage(desktop.launcherPage, count: count)
     }
 
-    private func pageArrow(_ direction: Int, symbol: String, ui: CGFloat) -> some View {
+    /// A page arrow at the end of the pages stays in place, dimmed, and swallows its click:
+    /// a click where an arrow was a moment ago must not count as a click outside Launchpad.
+    private func pageArrow(_ direction: Int, symbol: String, ui: CGFloat, enabled: Bool) -> some View {
         Image(systemName: symbol)
-            .font(.system(size: 16 * ui, weight: .semibold)).foregroundStyle(.white)
+            .font(.system(size: 16 * ui, weight: .semibold)).foregroundStyle(.white.opacity(enabled ? 1 : 0.3))
             .frame(width: 44 * ui, height: 44 * ui)
-            .background(.white.opacity(0.16), in: Circle())
+            .background(.white.opacity(enabled ? 0.16 : 0.06), in: Circle())
+            .contentShape(Circle())
             .onTapGesture {
+                guard enabled else { return }
                 movingForward = direction > 0
                 desktop.launcherFrames = [:]; desktop.launcherPageFrames = [:]
                 desktop.launcherPage += direction
             }
-            .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("desktop")) } action: { desktop.launcherPageFrames[direction] = $0 }
-            .onDisappear { desktop.launcherPageFrames[direction] = nil }
+            .accessibilityHidden(!enabled)
+            .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("desktop")) } action: {
+                desktop.launcherPageFrames[enabled ? direction : 0] = $0
+            }
+            .onDisappear { desktop.launcherPageFrames[enabled ? direction : 0] = nil }
     }
 }
 

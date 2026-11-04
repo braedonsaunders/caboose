@@ -199,6 +199,20 @@ final class LiveGPUResumeTests: XCTestCase {
         XCTAssertEqual(LiveGPUResumeWire.header(factory.sockets[1].sent[0])?.kind, LiveGPUResumeWire.resume)
     }
 
+    /// A fold, rotation or pulled-down notification suspends the executor in the foreground for
+    /// a moment; its quiet socket is live and is kept. Only one kept across the background is
+    /// replaced when it has heard nothing.
+    func testForegroundResumeKeepsAQuietSocket() throws {
+        let (transport, factory, _) = try resumable()
+        defer { withExtendedLifetime(transport) {} }
+        factory.sockets[0].silence = 12
+        transport.resumeTransport(afterBackground: false)
+        XCTAssertEqual(factory.sockets[0].abnormalCloses, 0)
+        XCTAssertEqual(factory.sockets.count, 1)
+        transport.resumeTransport(afterBackground: true)
+        XCTAssertEqual(factory.sockets[0].abnormalCloses, 1)
+    }
+
     func testCredentialFormatAndResumeRequest() throws {
         XCTAssertTrue(LiveGPUConnection.validCredential(credential))
         XCTAssertFalse(LiveGPUConnection.validCredential(credential + "A"))

@@ -141,6 +141,48 @@ def _load_xlib():
     return lib
 
 
+class _XResClientIdSpec(ctypes.Structure):
+    _fields_ = [("client", ctypes.c_ulong), ("mask", ctypes.c_uint)]
+
+
+class _XResClientIdValue(ctypes.Structure):
+    _fields_ = [("spec", _XResClientIdSpec), ("length", ctypes.c_long), ("value", ctypes.c_void_p)]
+
+
+_xres = None
+
+
+def client_pid(handle, window):
+    """The process of the X client that made `window`, from the X server (the X-Resource
+    extension): for a program that does not set _NET_WM_PID. None where the server or
+    libXRes cannot say."""
+    global _xres
+    if _xres is None:
+        try:
+            _xres = ctypes.CDLL(ctypes.util.find_library("XRes") or "libXRes.so.1")
+            _xres.XResQueryClientIds.argtypes = [ctypes.c_void_p, ctypes.c_long, ctypes.POINTER(_XResClientIdSpec),
+                                                 ctypes.POINTER(ctypes.c_long), ctypes.POINTER(ctypes.POINTER(_XResClientIdValue))]
+            _xres.XResGetClientPid.argtypes = [ctypes.POINTER(_XResClientIdValue)]
+            _xres.XResGetClientPid.restype = ctypes.c_int
+            _xres.XResClientIdsDestroy.argtypes = [ctypes.c_long, ctypes.POINTER(_XResClientIdValue)]
+        except (OSError, AttributeError):
+            _xres = False
+    if not _xres or not handle:
+        return None
+    spec = _XResClientIdSpec(window, 2)  # XRES_CLIENT_ID_PID_MASK
+    count, values = ctypes.c_long(0), ctypes.POINTER(_XResClientIdValue)()
+    if _xres.XResQueryClientIds(handle, 1, ctypes.byref(spec), ctypes.byref(count), ctypes.byref(values)) != 0:
+        return None
+    try:
+        for index in range(count.value):
+            pid = _xres.XResGetClientPid(ctypes.byref(values[index]))
+            if pid > 0:
+                return pid
+    finally:
+        _xres.XResClientIdsDestroy(count, values)
+    return None
+
+
 _xlib = None
 # The default handler exits the process on BadWindow; a window can vanish mid-query.
 _ignore_errors = _ERROR_HANDLER(lambda display, event: 0)
@@ -219,7 +261,7 @@ class Display:
 
     def pid(self, window):
         values = self.cardinals(window, "_NET_WM_PID")
-        return values[0] if values else None
+        return values[0] if values else client_pid(self.handle, window)
 
     def attributes(self, window):
         attrs = XWindowAttributes()
@@ -514,7 +556,11 @@ class SeatScreen:
         return (self.records.get(wid) or {}).get("title") or ""
 
     def pid(self, wid):
-        return (self.records.get(wid) or {}).get("pid")
+        record = self.records.get(wid) or {}
+        if record.get("pid") is None and record.get("x11") and self.display is not None:
+            # An X11 window the compositor has no process for: the X server knows its client.
+            return client_pid(self.display.handle, record["x11"])
+        return record.get("pid")
 
     def rect(self, wid):
         record = self.records.get(wid)

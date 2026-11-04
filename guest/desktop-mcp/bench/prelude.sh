@@ -69,6 +69,9 @@ use_run_home() { seat_home "$HOME"; }
 restore_home() { seat_home "$AGENT_HOME"; }
 # End every process on the agent seat's windows, and anything still running from this run.
 end_apps() {
+  # Close each window first, as its close button would; then signals for what is left.
+  python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); from seat import Seat; s = Seat(); [s.request("close %d" % w["id"]) for w in s.windows()["windows"]]' "$TOOLS" 2>/dev/null
+  for _ in $(seq 1 30); do [ "$(windows | python3 -c 'import json, sys; print(len(json.load(sys.stdin)["windows"]))')" = 0 ] && break; sleep 0.1; done
   for pid in $(windows | python3 -c 'import json, sys; print(" ".join({str(w["pid"]) for w in json.load(sys.stdin)["windows"] if w.get("pid")}))'); do kill "$pid" 2>/dev/null; done
   pkill -u "$(id -u)" -f -- "$BENCH" 2>/dev/null
   for _ in $(seq 1 50); do [ "$(windows | python3 -c 'import json, sys; print(len(json.load(sys.stdin)["windows"]))')" = 0 ] && break; sleep 0.1; done
