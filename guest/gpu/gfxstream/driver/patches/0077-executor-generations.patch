@@ -119,7 +119,7 @@ index fc89b85..307cf4b 100644
  
      for (uint32_t i = 0; i < pAllocateInfo->descriptorSetCount; ++i) {
 diff --git a/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp b/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp
-index beb80d2..6d9ebe6 100644
+index beb80d2..4b08290 100644
 --- a/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp
 +++ b/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp
 @@ -10,6 +10,7 @@
@@ -130,7 +130,27 @@ index beb80d2..6d9ebe6 100644
  #include "caboose-bounded-memory/static_query_cache.h"
  #include "caboose-bounded-memory/source_identity.h"
  
-@@ -3215,6 +3216,7 @@ void ResourceTracker::on_vkDestroyDevice_pre(void* context, VkDevice device,
+@@ -2780,7 +2781,8 @@ VkResult ResourceTracker::on_vkEnumeratePhysicalDevices(void* context, VkResult,
+                 "%s: failed: could not count host physical devices. "
+                 "Error %d\n",
+                 __func__, countRes);
+-            return countRes;
++            // Caboose: an executor lost meanwhile is not a result this command may return.
++            return countRes == VK_ERROR_DEVICE_LOST ? VK_ERROR_INITIALIZATION_FAILED : countRes;
+         }
+ 
+         info.physicalDevices.resize(hostPhysicalDeviceCount);
+@@ -2795,7 +2797,8 @@ VkResult ResourceTracker::on_vkEnumeratePhysicalDevices(void* context, VkResult,
+                 "%s: failed: could not retrieve host physical devices. "
+                 "Error %d\n",
+                 __func__, enumRes);
+-            return enumRes;
++            info.physicalDevices.clear();
++            return enumRes == VK_ERROR_DEVICE_LOST ? VK_ERROR_INITIALIZATION_FAILED : enumRes;
+         }
+     }
+ 
+@@ -3215,6 +3218,7 @@ void ResourceTracker::on_vkDestroyDevice_pre(void* context, VkDevice device,
  
      auto it = info_VkDevice.find(device);
      if (it == info_VkDevice.end()) return;
@@ -138,7 +158,7 @@ index beb80d2..6d9ebe6 100644
      caboose::memory::asyncAllocationBudget.deviceDestroyed(caboose::handle_key(device));
      caboose::memory::requirementsCache.deviceDestroyed(caboose::handle_key(device));
  
-@@ -6271,7 +6273,7 @@ VkResult ResourceTracker::on_vkGetFenceStatus(void* context, VkResult input_resu
+@@ -6271,7 +6275,7 @@ VkResult ResourceTracker::on_vkGetFenceStatus(void* context, VkResult input_resu
                  return VK_NOT_READY;
              case caboose::completion::Tracker::Answer::DeviceLost:
                  caboose::completion::awaitExecutorReturn();
@@ -147,7 +167,7 @@ index beb80d2..6d9ebe6 100644
              case caboose::completion::Tracker::Answer::AskDevice:
                  break;
          }
-@@ -6354,7 +6356,7 @@ VkResult ResourceTracker::on_vkWaitForFences(void* context, VkResult, VkDevice d
+@@ -6354,7 +6358,7 @@ VkResult ResourceTracker::on_vkWaitForFences(void* context, VkResult, VkDevice d
                  return VK_TIMEOUT;
              case caboose::completion::Tracker::Answer::DeviceLost:
                  caboose::completion::awaitExecutorReturn();
@@ -156,7 +176,7 @@ index beb80d2..6d9ebe6 100644
              case caboose::completion::Tracker::Answer::AskDevice:
                  break;
          }
-@@ -10066,7 +10068,27 @@ static ResourceTracker* sTracker = nullptr;
+@@ -10066,7 +10070,27 @@ static ResourceTracker* sTracker = nullptr;
  ResourceTracker::ResourceTracker() {
      mCreateMapping = new CreateMapping();
      mDestroyMapping = new DestroyMapping();
