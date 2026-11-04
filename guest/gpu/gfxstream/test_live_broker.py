@@ -466,6 +466,11 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(negotiate(hello(0x200270), everything - {'completion-payloads'}), hello(0x270))
         self.assertEqual(negotiate(hello(0x200270), everything - {'completion-feed'}), hello(0x70))
         self.assertIsNone(negotiate(hello(0x200070), everything))
+        # WAIT_SERIAL (0x400000) likewise needs the phone's declaration and the completion feed.
+        self.assertEqual(negotiate(hello(0x400270), everything), hello(0x400270))
+        self.assertEqual(negotiate(hello(0x400270), everything - {'wait-serial'}), hello(0x270))
+        self.assertEqual(negotiate(hello(0x400270), everything - {'completion-feed'}), hello(0x70))
+        self.assertIsNone(negotiate(hello(0x400070), everything))
         # Buffer view handles need guest handles too.
         self.assertEqual(negotiate(hello(0x100F0), everything), hello(0x100F0))
         self.assertEqual(negotiate(hello(0x100F0), everything - {'guest-buffer-views'}), hello(0xF0))

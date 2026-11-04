@@ -219,8 +219,8 @@ only known names, lowercased and sorted: `guest-handles`, `guest-handle-arrays`,
 `shader-cache`, `executor-resume`, `zstd-stream` ([Compressed commands](#compressed-commands)),
 `upload-cache` ([Upload cache](#upload-cache)), `guest-buffer-views`,
 `batched-descriptor-sets` ([Batched descriptor sets](#batched-descriptor-sets)),
-`guest-set-ids` ([Guest-chosen set ids](#guest-chosen-set-ids)) and `completion-payloads`
-([Completion payloads](#completion-payloads)).
+`guest-set-ids` ([Guest-chosen set ids](#guest-chosen-set-ids)), `completion-payloads`
+([Completion payloads](#completion-payloads)) and `wait-serial` ([Completion feed](#completion-feed)).
 The broker reads them from the authenticated upgrade request.
 
 A local process on the indexed v4 path may offer optional features in its 48-byte
@@ -229,14 +229,15 @@ hello by setting bits above the required mask `0x70`: `0x80` (guest-assigned han
 `0x200` (completion feed), `0x400` (ordered presents), `0x800` (guest-owned swapchain
 images), `0x1000` (guest-assigned query pools; requires `0x80`) and `0x2000` (shader
 cache), `0x8000` (upload cache), `0x10000` (guest-assigned buffer views; requires `0x80`),
-`0x40000` (batched descriptor sets), `0x100000` (guest-chosen set ids; requires `0x80`) and
-`0x200000` (completion payloads; requires `0x200`).
+`0x40000` (batched descriptor sets), `0x100000` (guest-chosen set ids; requires `0x80`),
+`0x200000` (completion payloads; requires `0x200`) and `0x400000` (WAIT_SERIAL; requires `0x200`).
 The broker replies with the required mask plus the offered bits whose capability
 the phone declared (`guest-handles`, `guest-handle-arrays`, `completion-feed`,
 `ordered-present`, `guest-images`, `guest-query-pools`, `shader-cache`, `upload-cache`,
-`guest-buffer-views`, `batched-descriptor-sets`, `guest-set-ids`, `completion-payloads` respectively); it drops `0x100`, `0x1000`,
-`0x10000` and `0x100000` when it does not grant `0x80`, and `0x200000` when it does not grant `0x200`.
-An offer with unknown bits, one of those without `0x80`, `0x200000` without `0x200`, or any other difference from the v4
+`guest-buffer-views`, `batched-descriptor-sets`, `guest-set-ids`, `completion-payloads`,
+`wait-serial` respectively); it drops `0x100`, `0x1000`, `0x10000` and `0x100000` when it does
+not grant `0x80`, and `0x200000` and `0x400000` when it does not grant `0x200`.
+An offer with unknown bits, one of those without `0x80`, `0x200000` or `0x400000` without `0x200`, or any other difference from the v4
 hello closes the local connection. A process falls back to offering fewer features.
 
 ### Batched descriptor sets
