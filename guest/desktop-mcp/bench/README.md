@@ -18,8 +18,8 @@ environment and `HOME=/home/caboose/caboose-bench/home`, after `prelude.sh`.
 
 ## Run
 
-Needs the Claude Code CLI (`claude`, signed in) on the machine running the benchmark and a
-command that reaches the computer. The agent seat must be empty: the run ends every
+Needs the Claude Code CLI (`claude`, signed in) on the machine running the benchmark, or with
+`--agent codex` the Codex CLI (`codex`, signed in), and a command that reaches the computer. The agent seat must be empty: the run ends every
 application on it between tasks.
 
 ```sh
@@ -33,7 +33,7 @@ python3 run.py --mode native --model claude-sonnet-5-5 --output native.jsonl \
 so an application the agent launches has the same home as the task's files.
 
 A run stops, recording nothing for the task, when the agent itself reports an error before any
-tool call (no usable account, a provider outage). `repeat.sh OUT-DIR [N] [MODEL]` (with `EXEC` and `MCP` set as above, `MCP` with
+tool call (no usable account, a provider outage, a desktop server Codex could not start). `repeat.sh OUT-DIR [N] [MODEL]` (with `EXEC` and `MCP` set as above, `MCP` with
 `CABOOSE_DESKTOP_TRACE=/tmp/caboose-bench-trace.jsonl`) runs every task N times, native then
 pixels each round, and writes `summary.md` with `summarize.py`, which totals any record files
 per set (single-application, `flow-`, `direct-`) and mode, then each task. `results/` keeps
