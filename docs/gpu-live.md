@@ -327,6 +327,8 @@ completion commands use the ordinary 8-byte packet header, little-endian:
 | COMPLETION_WATCH | `0x4342FE02` | 24 | boxed queue u64, serial u64 (both nonzero) |
 | COMPLETION_ORDER | `0x4342FE03` | 16 | order serial u64 (nonzero) |
 | WAIT_SERIAL | `0x4342FE04` | 16 | watch serial u64 (nonzero) |
+| COMPLETION_WATCH2 | `0x4342FE05` | 32 + 32·n | queue u64, serial u64, n u32 (at most 256), flags u32 = 0, then n captures |
+| REPLY_MODE | `0x4342FE06` | 16 | mode u32 = 1 (silent success), reserved u32 = 0 |
 
 After each queue submission that signals a fence or timeline semaphore, sets or resets an
 event, ends or resets a query or writes coherent memory, the process sends
@@ -339,8 +341,8 @@ device alive until a watcher thread has waited for and destroyed that fence. Eac
 has its own watcher, so a record is written as soon as its queue's work completes, whatever
 another queue is still doing. Queues of
 another process and virtually shared queues are not watched. On the feed stream the
-phone writes one 16-byte record per watch: serial u64, status i32 and reserved u32
-zero. Status 0 means the work completed, `-4` the device was lost, and `1` the queue
+phone writes one 16-byte record per watch: serial u64, status i32 and payload bytes u32,
+zero except for captures (below). Status 0 means the work completed, `-4` the device was lost, and `1` the queue
 cannot be watched. Records may arrive in any order. Watches made before the feed stream
 attaches are kept for it. Further bytes from the process on the feed stream are a
 protocol error; its end, or process stop, ends the feed. Watches still outstanding are
@@ -352,6 +354,31 @@ record (its marker completed, its device was lost, or its queue cannot be watche
 work the process sends after it reaches the GPU after the work the watch names, without the
 process waiting for the feed. A serial above the process's last watch is a protocol error
 that ends the stream; process stop ends the wait.
+
+With `0x200000` a process may send `COMPLETION_WATCH2` in place of a watch. Each 32-byte
+capture is kind u32 (1 a query range, 2 a memory range), reserved u32 = 0, the boxed query
+pool or device memory u64, then first query and count, or offset and size (u64 each, the
+count or size nonzero). Once the marker completes, and before it releases the device, the
+phone captures each range and puts it in that watch's record: a record's last u32 is the
+number of payload bytes that follow it (0 for every record of a plain watch), and the
+payload holds one entry per capture, a 32-byte header (kind u32, the capture's VkResult
+i32, handle, and the two u64s as sent) and its data padded to 8 bytes. Query data is a
+value u64 and an availability u64 per query, read 64-bit with availability and without
+waiting; memory data is the range's bytes from the phone's mapping, invalidated first, with
+the device, mapping and bounds checked under the decoder lock. A record whose payload would
+pass 1 MiB, or that would take the process's unwritten payloads past 16 MiB, and a lost
+device's record, carry none; the process then asks as before. A process captures only query
+pools of the watched queue's device whose queries return one value each (occlusion,
+timestamp), and destroys such a pool only after every record capturing it has arrived: the
+decoder destroys query pools without holding them for captures.
+
+With `0x800000` a process may send `REPLY_MODE(1)` once on a device stream, which needs the
+process's completion feed (without one the stream ends). From then on the commands listed in
+`apps/ios/GPUStream/gfxstream/silent-success-opcodes.inc` (the commands whose replies the
+guest defers: guest-assigned creates and allocates, submits, binds, event sets) write no
+reply on that stream. One that fails writes a FAULT record on the feed instead: serial 0,
+status `0x7FFF0001`, 8 payload bytes of opcode u32 and result i32; the process treats it as
+loss of its devices.
 
 The process then knows the state of every fence and timeline semaphore whose signal
 operations it has seen, of its events, and whether each query's result is available.
