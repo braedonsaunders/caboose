@@ -68,7 +68,10 @@ static constexpr unsigned char kHello[48] = {
 // caboose-bounded-memory/completion_feed.h, Speculation); 0x800000 its device streams switch to
 // silent success, where the phone writes no reply for the commands the process does not wait for
 // and reports their failure on the feed (requires 0x80 and 0x200; docs/gpu-live.md, "Silent
-// success"). It never offers 0x40000, the same without inline uniform blocks. The broker replies with the features both
+// success"); 0x1000000 it names its instances, physical devices, devices and queues itself and
+// sends the commands that make them without their reply once an identical one succeeded in the
+// session (requires 0x80, 0x200 and 0x800000; caboose-bounded-memory/one_way_start.h,
+// docs/gpu-live.md, "One-way start"). It never offers 0x40000, the same without inline uniform blocks. The broker replies with the features both
 // the process and the connected phone support. A broker that predates a feature closes
 // the connection instead, so the offer falls back to fewer features.
 static constexpr uint32_t kGuestHandles = 0x80, kGuestHandleArrays = 0x100, kCompletionFeed = 0x200,
@@ -76,8 +79,10 @@ static constexpr uint32_t kGuestHandles = 0x80, kGuestHandleArrays = 0x100, kCom
                           kShaderCache = 0x2000, kExecutorResume = 0x4000, kUploadCache = 0x8000,
                           kGuestBufferViews = 0x10000, kBatchedDescriptorSets = 0x80000,
                           kGuestSetIds = 0x100000, kCompletionPayloads = 0x200000, kWaitSerial = 0x400000,
-                          kSilentSuccess = caboose::silent::kHelloBit;
-static const uint32_t kOffers[] = {0x3ff80 | kBatchedDescriptorSets | kGuestSetIds | kCompletionPayloads | kWaitSerial | kSilentSuccess,
+                          kSilentSuccess = caboose::silent::kHelloBit, kOneWayStart = caboose::silent::kOneWayStartBit;
+static const uint32_t kOffers[] = {0x3ff80 | kBatchedDescriptorSets | kGuestSetIds | kCompletionPayloads | kWaitSerial | kSilentSuccess |
+                                       kOneWayStart,
+                                   0x3ff80 | kBatchedDescriptorSets | kGuestSetIds | kCompletionPayloads | kWaitSerial | kSilentSuccess,
                                    0x3ff80 | kBatchedDescriptorSets | kGuestSetIds | kCompletionPayloads | kWaitSerial,
                                    0x3ff80 | kBatchedDescriptorSets | kGuestSetIds | kCompletionPayloads,
                                    0x3ff80 | kBatchedDescriptorSets | kGuestSetIds,
@@ -444,6 +449,7 @@ int CabooseSocketStream::connectWith(const char* path, const unsigned char* offe
     const uint32_t silentNeeds = kSilentSuccess | kGuestHandles | kGuestHandleArrays | kCompletionFeed |
                                  kGuestQueryPools | kGuestBufferViews;
     caboose::silent::replyMode().granted((features & silentNeeds) == silentNeeds);
+    caboose::silent::replyMode().startGranted((features & kOneWayStart) != 0);
     const bool waitSerial = (features & kCompletionFeed) && (features & kWaitSerial);
     __atomic_store_n(&caboose_gfxstream_wait_serial, waitSerial ? 1 : 0, __ATOMIC_RELEASE);
 #else

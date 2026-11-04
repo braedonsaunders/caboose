@@ -29,6 +29,7 @@ transfer and reply handling, so it can be tested without Mesa.
 | `completion_payloads.h` | Completion payloads with hello `0x200000` (docs/gpu-live.md, "Completion payloads"): `COMPLETION_WATCH2`, the captures in a record's payload, which query pools are captured, and `vkGetQueryPoolResults`' output written from captured values for every flag and layout |
 | `guest_set_ids.h` | Set ids a batched descriptor pool chooses with hello `0x100000`: the guest handles after the pool's own, in one block of the handle counter, and the create flag that tells the decoder so (docs/gpu-live.md, "Guest-chosen set ids") |
 | `silent_success.h` | Silent success with hello `0x800000` (docs/gpu-live.md, "Silent success"): its commands, the REPLY_MODE packet, which device streams have switched, feed records with payloads and the FAULT record, which is device loss |
+| `one_way_start.h` | One-way start with hello `0x1000000` (docs/gpu-live.md, "One-way start"): the start commands REPLY_MODE(3) silences, the questions that say an identical one succeeded earlier in the session, kept in its instance scope, and the wait for the feed |
 | `handles.h` | Vulkan handles as 64-bit keys and back, without the cast through `uintptr_t` that drops the upper half of a non-dispatchable handle in 32-bit builds |
 | `flush_timing.h`, `rpc_timing.h` | Bounded opt-in timing records (`CABOOSE_PRIVATE_GPU_FLUSH_TIMING=1`, `CABOOSE_PRIVATE_GPU_RPC_TIMING=1`) |
 

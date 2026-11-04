@@ -10,6 +10,8 @@ import check_silent_success  # noqa: E402
 
 DECODER = HERE.parents[2] / 'apps/ios/GPUStream/gfxstream/silent-success-opcodes.inc'
 GUEST = HERE / 'bounded-memory/silent_success.h'
+DECODER_START = HERE.parents[2] / 'apps/ios/GPUStream/gfxstream/silent_replies.h'
+GUEST_START = HERE / 'bounded-memory/one_way_start.h'
 
 
 def opcodes(text):
@@ -22,6 +24,18 @@ class SilentSuccessListTest(unittest.TestCase):
         decoder = opcodes(DECODER.read_text())
         self.assertTrue(decoder)
         self.assertEqual(guest, decoder)
+
+    def test_guest_and_decoder_name_the_same_start_commands(self):
+        # One-way start's REPLY_MODE(3) commands (docs/gpu-live.md, "One-way start").
+        guest = opcodes(GUEST_START.read_text().split('kStartOpcodes[] = {', 1)[1].split('};', 1)[0])
+        decoder_text = DECODER_START.read_text()
+        listed = decoder_text.split('if ((mode & kSilentStart) && (', 1)[1].split('))', 1)[0]
+        names = re.findall(r'opcode == (k\w+)', listed)
+        values = dict(re.findall(r'(k\w+) = (\d+)u', decoder_text))
+        decoder = {int(values[name]) for name in names}
+        self.assertEqual(len(decoder), 5)
+        self.assertEqual(set(guest), decoder)
+        self.assertEqual(set(guest) & set(opcodes(DECODER.read_text())), set())
 
     def test_header_list_is_what_the_tree_check_reads(self):
         self.assertEqual(set(check_silent_success.guest_opcodes(GUEST.read_text())),

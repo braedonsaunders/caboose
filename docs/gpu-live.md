@@ -912,6 +912,21 @@ is a FAULT, and the device lost. `apps/ios/GPUStream/gfxstream/silent_replies.h`
 and the commands; `caboose_gpu_native_one_way_start` checks them against the real decoder
 (`apps/ios/GPUStream/gfxstream/README.md`).
 
+The guest driver offers `0x1000000` with everything else it offers, and with it granted names
+every instance, physical device, device and queue it makes. Its device stream stays in
+`REPLY_MODE(1)`: a start command goes one-way inside `REPLY_MODE(3)` … `REPLY_MODE(1)` around it,
+in order on the stream, only when an identical one succeeded earlier in the executor session.
+An instance is identical when its flags, application, layers and extensions are (the loader's
+own structures aside; any other chained structure is always asked); a device when its
+fingerprint is ([Physical capability cache](#physical-capability-cache)) on the session's one
+GPU; a queue when its device's fingerprint, flags, family and index are; a list of physical
+devices when it asks for as many as the session's earlier list found. The first of each is asked
+and waited for, and its success is kept in the session's instance scope, so every process after
+it in the session starts without those round trips; a new executor connection starts with none.
+A process's first start command may come before its feed runs: it waits up to 100 ms for the
+feed, then asks the command instead (`guest/gpu/gfxstream/bounded-memory/one_way_start.h`).
+`CABOOSE_ONE_WAY_START=0` asks every start command.
+
 ## Lock order
 
 The guest driver's locks form one hierarchy; a thread holding a lock takes only locks below it:
