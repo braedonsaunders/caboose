@@ -161,6 +161,21 @@ record per new answer, the cold process may take at most 10% plus 50 ms longer t
 baseline, and the executor must drain cleanly. These Linux measurements do not establish
 phone latency.
 
+## GL start at a phone's round-trip time
+
+```sh
+python3 apps/ios/GPUStream/gfxstream/linux-executor/gl_start_rtt.py COMPUTER WORK RELEASE OUT \
+    [--rtt-ms 30] [--starts 6] [--command 'glxinfo -B'] [--profile all] [--env NAME=VALUE]
+```
+
+starts a private seat (check_chaos.py's, on port 14741 and X display :201) whose Linux
+executor connects through a proxy that holds each direction's bytes for half of `--rtt-ms`,
+then runs `--command` (a Zink GL program that exits) `--starts` times in a row, each a new
+process, with the guest's read profile on. `OUT/report.txt` gives each start's wall time and
+its synchronous round trips per command. The first start is its session's first of its kind;
+the later ones are what every further GL process of the session pays. A run at
+`--rtt-ms 0` beside one at 30 gives the round trips from wall time alone.
+
 ## GL client after its executor leaves
 
 ```sh
