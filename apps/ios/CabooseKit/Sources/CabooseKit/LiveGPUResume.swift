@@ -232,10 +232,14 @@ final class LiveGPUResumableTransport: LiveGPUTransport, LiveGPUReceiveFlow, @un
     }
 
     /// Reconnects a suspended transport, or one still trying to resume, at once. A socket kept
-    /// across the background that has heard nothing since is replaced rather than trusted.
-    func resumeTransport() {
+    /// across the background (`afterBackground`) that has heard nothing since is replaced
+    /// rather than trusted. A socket kept in the foreground is quiet only because its executor
+    /// was suspended for a moment (a fold, a rotation, a notification pulled down): it is
+    /// live, and it is kept.
+    func resumeTransport(afterBackground: Bool = true) {
         let stale = condition.withLock { () -> LiveGPUResumeSocket? in
-            guard !ended, mode == .resumable, case .live = link, let current = self.socket, current.silence > 2 else { return nil }
+            guard afterBackground, !ended, mode == .resumable, case .live = link, let current = self.socket,
+                  current.silence > 2 else { return nil }
             return current
         }
         if let stale {

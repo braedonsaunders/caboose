@@ -139,11 +139,12 @@ public final class LiveGPUSession: @unchecked Sendable {
         lock.unlock()
     }
 
-    /// Ends a suspension, also one whose QUIESCE has not arrived yet.
-    public func resume() {
+    /// Ends a suspension, also one whose QUIESCE has not arrived yet. `afterBackground` says
+    /// whether the app was in the background meanwhile; only then is a quiet socket suspect.
+    public func resume(afterBackground: Bool = true) {
         lock.lock()
         guard started, !stopping, let suspending = consumer as? LiveGPUSuspending else { lock.unlock(); return }
-        (transport as? LiveGPUResumableTransport)?.resumeTransport()
+        (transport as? LiveGPUResumableTransport)?.resumeTransport(afterBackground: afterBackground)
         worker.async { [self] in
             guard ingress.active else { return }
             do { try suspending.resumeExecutor() } catch { stop(error) }
