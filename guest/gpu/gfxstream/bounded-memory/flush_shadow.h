@@ -20,6 +20,9 @@ inline constexpr size_t shadowMaxTotalBytes = 48 * 1024 * 1024;
 // Allocations no copy fits are known by a 64-bit hash of each block instead: 1/32 of their
 // size, so 16 MiB knows 512 MiB of mapped memory.
 inline constexpr size_t shadowMaxHashBytes = 16 * 1024 * 1024;
+// A known block with a copy sends the words that differ; changed bytes this close together go
+// as one run, since a flush fragment's overhead (flush_packet.h) costs more than the gap.
+inline constexpr uint64_t fineWordBytes = 8, fineGapBytes = 40;
 
 // XXH64 of one block (Yann Collet's xxHash, seed 0).
 inline uint64_t blockHash(const uint8_t* p, size_t size) {
@@ -52,11 +55,14 @@ inline uint64_t blockHash(const uint8_t* p, size_t size) {
 }
 
 // Last bytes the host received for each flushed allocation. The host's copy is
-// known per 256-byte block: a flush sends only the known blocks that differ and
+// known per 256-byte block: a flush sends only what differs in the known blocks and
 // every block it does not know, and a block becomes known once it was sent or
 // refreshed whole. Applications flush small ranges (ANGLE and Zink a few hundred
 // bytes to a few KiB of a large allocation), so knowledge kept per page would never
-// form and every range would be sent again in full. Unmap and free drop knowledge
+// form and every range would be sent again in full. Of a known block with a copy, only
+// the 8-byte words that differ are sent: DXVK, for one, rewrites a few words of each
+// 256-byte constant buffer slot. Words closer together than a flush fragment's overhead
+// (flush_packet.h) go as one run. Unmap and free drop knowledge
 // of the host's copy, while a successful invalidate updates the known host baseline
 // with the refreshed bytes. An allocation too large for a copy, or past the copies'
 // share of the budget, is known by block hashes: a whole block whose hash matches what
@@ -67,28 +73,56 @@ public:
     explicit FlushShadow(Budget& budget = processBudget) : budget_(budget) {}
     ~FlushShadow() { std::lock_guard<decltype(mutex_)> lock(mutex_); clearLocked(); }
 
-    // Calls emit(offset, size) for each maximal run of changed blocks inside
-    // [offset, offset + size) of the mapping `base`, and records those bytes as
-    // sent. Run boundaries are block-aligned or equal to the chunk's own bounds.
+    // Calls emit(offset, size) for each run of changed bytes inside [offset, offset + size)
+    // of the mapping `base`, and records those bytes as sent. A run is whole blocks (or the
+    // chunk's own bounds) where the host's block is not known or known by its hash, and the
+    // changed words of known blocks with a copy, joined across gaps of up to fineGapBytes.
+    // `usage` is the usage flags of the allocation's buffers, for the traffic counters only.
     template<class Emit>
     int emitChanged(uint64_t key, const uint8_t* base, uint64_t allocation,
-                    uint64_t offset, uint64_t size, Emit emit) {
+                    uint64_t offset, uint64_t size, Emit emit, uint32_t usage = 0) {
         std::lock_guard<decltype(mutex_)> lock(mutex_);
         Entry* entry = entryLocked(key, allocation);
         auto& traffic = traffic::counters();
+        traffic::Counters::Shadowed counted;
+        counted.allocation = key; counted.allocationBytes = allocation; counted.usage = usage;
+        counted.considered = size;
         if (!entry) {
-            traffic.shadowed(traffic::unshadowed, size, size);
+            counted.kind = traffic::unshadowed;
+            counted.sent = counted.blockBytes = size;
+            counted.runs = counted.blockRuns = size ? 1 : 0;
+            traffic.shadowed(counted);
             return emit(offset, size);
         }
-        const auto kind = entry->bytes ? traffic::copied : traffic::hashed;
-        uint64_t sent = 0;
-        auto send = [&](uint64_t runOffset, uint64_t runSize) {
-            sent += runSize;
-            return emit(runOffset, runSize);
+        counted.kind = entry->bytes ? traffic::copied : traffic::hashed;
+        // The run being gathered, sent once the next changed bytes are too far from it.
+        uint64_t runBegin = 0, runEnd = 0;
+        bool inRun = false;
+        auto flushRun = [&]() {
+            if (!inRun) return int(success);
+            inRun = false;
+            counted.sent += runEnd - runBegin;
+            ++counted.runs;
+            return emit(runBegin, runEnd - runBegin);
+        };
+        auto add = [&](uint64_t begin, uint64_t stop) {
+            if (inRun && begin <= runEnd + fineGapBytes) {
+                if (stop > runEnd) runEnd = stop;
+                return int(success);
+            }
+            const int result = flushRun();
+            runBegin = begin; runEnd = stop; inRun = true;
+            return result;
+        };
+        // What whole changed blocks would have sent, for the traffic counters.
+        uint64_t blockRunEnd = 0;
+        bool blockOpen = false;
+        auto countBlock = [&](uint64_t begin, uint64_t stop) {
+            counted.blockBytes += stop - begin;
+            if (!blockOpen || begin != blockRunEnd) ++counted.blockRuns;
+            blockRunEnd = stop; blockOpen = true;
         };
         const uint64_t end = offset + size;
-        uint64_t runBegin = 0;
-        bool inRun = false;
         for (uint64_t block = offset; block < end;) {
             const uint64_t first = block - block % shadowBlockBytes;
             const uint64_t next = first + shadowBlockBytes;
@@ -96,37 +130,49 @@ public:
             const size_t index = size_t(first / shadowBlockBytes);
             const bool known = entry->valid[index];
             const bool whole = block == first && blockStop == blockEnd(first, allocation);
-            bool changed;
+            int result = success;
             if (entry->bytes) {
-                changed = !known ||
+                const bool changed = !known ||
                     std::memcmp(entry->bytes.get() + block, base + block, size_t(blockStop - block)) != 0;
-                if (changed) std::memcpy(entry->bytes.get() + block, base + block, size_t(blockStop - block));
+                if (changed && !known) {
+                    result = add(block, blockStop);
+                } else if (changed) {
+                    for (uint64_t word = block; word < blockStop && result == success; word += fineWordBytes) {
+                        const uint64_t wordStop = word + fineWordBytes < blockStop ? word + fineWordBytes : blockStop;
+                        if (std::memcmp(entry->bytes.get() + word, base + word, size_t(wordStop - word)) != 0)
+                            result = add(word, wordStop);
+                    }
+                }
+                if (changed) {
+                    std::memcpy(entry->bytes.get() + block, base + block, size_t(blockStop - block));
+                    countBlock(block, blockStop);
+                }
                 // A partially sent block is only known on the host where it was sent.
                 entry->valid[index] = known || whole;
-            } else if (whole) {
-                const uint64_t hash = blockHash(base + block, size_t(blockStop - block));
-                changed = !known || entry->hashes[index] != hash;
-                entry->hashes[index] = hash;
-                entry->valid[index] = true;
             } else {
-                // Part of a block changes the host's whole block from the hash it had.
-                changed = true;
-                entry->valid[index] = false;
+                bool changed;
+                if (whole) {
+                    const uint64_t hash = blockHash(base + block, size_t(blockStop - block));
+                    changed = !known || entry->hashes[index] != hash;
+                    entry->hashes[index] = hash;
+                    entry->valid[index] = true;
+                } else {
+                    // Part of a block changes the host's whole block from the hash it had.
+                    changed = true;
+                    entry->valid[index] = false;
+                    counted.partial += blockStop - block;
+                }
+                if (changed) {
+                    result = add(block, blockStop);
+                    countBlock(block, blockStop);
+                }
             }
-            if (changed) {
-                if (!inRun) { runBegin = block; inRun = true; }
-            } else if (inRun) {
-                const int result = send(runBegin, block - runBegin);
-                if (result != success) { forgetLocked(key); return result; }
-                inRun = false;
-            }
+            if (result != success) { forgetLocked(key); return result; }
             block = blockStop;
         }
-        if (inRun) {
-            const int result = send(runBegin, end - runBegin);
-            if (result != success) { forgetLocked(key); return result; }
-        }
-        traffic.shadowed(kind, size, sent);
+        const int result = flushRun();
+        if (result != success) { forgetLocked(key); return result; }
+        traffic.shadowed(counted);
         return success;
     }
 

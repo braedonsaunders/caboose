@@ -74,7 +74,7 @@ Each patch is one feature. Several change Mesa's generated encoder
 | 0002 virtual-wsi | Wayland surfaces and the indexed swapchain present through the broker; Caboose build configuration |
 | 0003 bounded-memory | Mapped memory moves in bounded, packed chunks within one process memory budget |
 | 0004 staged-command-buffers | Command buffers are recorded locally and sent with their submit in one round trip |
-| 0005 changed-block-flush | A flush sends only the 256-byte blocks the host does not already hold |
+| 0005 changed-block-flush | A flush sends only what the host does not already hold, compared per 256-byte block and, where the shadow keeps a copy, per 8-byte word (`../bounded-memory/flush_shadow.h`) |
 | 0006 deferred-replies | Flush and fence-reset replies are drained later instead of waited for |
 | 0007 fence-prefetch | The frame fence's wait is sent with its submit and answered locally afterwards |
 | 0008 chromium-angle-and-x11 | ANGLE's ES 3.0 requirements; X11 (XCB) surfaces |
@@ -167,6 +167,7 @@ Each patch is one feature. Several change Mesa's generated encoder
 | 0094 start-from-the-session | Instance extensions, the physical device count and the session's one physical identity are kept in the instance scope, so a later process finds its capability answers before asking any; features, memory properties and sparse image format answers join the capability cache; an invalidate of memory nothing sent since its allocation could have written, and a queue idle wait with nothing sent since the device last reported it idle, are answered without asking (`../bounded-memory/device_work.h`) |
 | 0095 one-way-start | With one-way start granted, instances, physical devices, devices and queues get guest-assigned handles, and a vkCreateInstance, vkEnumeratePhysicalDevices, vkCreateDevice or vkGetDeviceQueue2 identical to one that succeeded earlier in the session goes between REPLY_MODE(3) and REPLY_MODE(1) without its reply; the first of each is asked and kept in the session's instance scope (`../bounded-memory/one_way_start.h`) |
 | 0096 zink-vertex-divisor | The device offers `VK_EXT_vertex_attribute_divisor` with the KHR name when the host has it: zink takes vertex attribute divisors from the EXT name only, and without them it offers OpenGL 3.2 and OpenGL ES 2.0, which Chromium's GPU process (ES 3.0, no fallback) cannot start on |
+| 0097 shadow-detail | A flush gives the flush shadow its range's buffer usage, which the memory traffic counters report with the window's busiest allocations (`../bounded-memory/memory_traffic.h`) |
 
 The patch messages describe each change. To change the driver, prepare a tree, commit
 the prepared state, edit, and regenerate the affected patch with `git format-patch`

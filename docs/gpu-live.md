@@ -935,7 +935,9 @@ The guest driver's locks form one hierarchy; a thread holding a lock takes only 
 the encoder's stream lock, then the flush shadow, the tracker (`ResourceTracker::mLock`), the
 deferred replies, the completion tracker and the write watch. Lazy readback's fills take none
 of them: they read on an auxiliary stream of the process's own. The silent-success switch table
-(`bounded-memory/silent_success.h`) is taken under the encoder's lock and takes no other lock. Taking the same lock again (the tracker's is
+(`bounded-memory/silent_success.h`) is taken under the encoder's lock and takes no other lock,
+and the memory traffic counters' allocation table (`bounded-memory/memory_traffic.h`) is taken
+under any of them and takes no other lock. Taking the same lock again (the tracker's is
 recursive) or another encoder's is allowed. `bounded-memory/lock_order.h` holds the hierarchy and
 a checker: with `CABOOSE_LOCK_ORDER=1` every acquisition of those locks is checked and a lock
 taken above one already held is reported once with its calling frames
