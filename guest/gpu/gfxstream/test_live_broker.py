@@ -508,6 +508,15 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(negotiate(hello(0x8000F0), everything))
         self.assertEqual(negotiate(hello(0x8002F0), everything - {'completion-feed'}), hello(0xF0))
         self.assertEqual(negotiate(hello(0x8002F0), everything - {'guest-handles'}), hello(0x270))
+        # One-way start (0x1000000) is granted with silent success, guest handles and the completion
+        # feed; an offer without any of them is malformed, and a phone that grants silent success
+        # but not one-way start (an older phone) leaves the process waiting for those replies.
+        self.assertEqual(negotiate(hello(0x18002F0), everything), hello(0x18002F0))
+        self.assertEqual(negotiate(hello(0x18002F0), everything - {'one-way-start'}), hello(0x8002F0))
+        self.assertEqual(negotiate(hello(0x18002F0), everything - {'silent-success'}), hello(0x2F0))
+        self.assertIsNone(negotiate(hello(0x10002F0), everything))
+        self.assertIsNone(negotiate(hello(0x1800270), everything))
+        self.assertIsNone(negotiate(hello(0x18000F0), everything))
         # Buffer view handles need guest handles too.
         self.assertEqual(negotiate(hello(0x100F0), everything), hello(0x100F0))
         self.assertEqual(negotiate(hello(0x100F0), everything - {'guest-buffer-views'}), hello(0xF0))

@@ -46,7 +46,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.abspath(os.path.join(HERE, '../../../../..'))
 PHONE = ('guest-handles,guest-handle-arrays,completion-feed,ordered-present,guest-images,guest-query-pools,'
          'executor-resume,zstd-stream,guest-buffer-views,batched-descriptor-sets-inline,guest-set-ids,completion-payloads,'
-         'wait-serial,silent-success')
+         'wait-serial,silent-success,one-way-start')
 PICTURE = re.compile(r'^(\S+) CABOOSE_LINUX_EXECUTOR picture window=(\S+) serial=\d+ (\d+)x(\d+) format=\d+ '
                      r'content=([0-9.]+) colours=(\d+)')
 # The seat's port and X display (CHAOS_PORT, CHAOS_X_DISPLAY), so two checks can share a computer.
@@ -115,7 +115,7 @@ class Seat:
         env = '\n'.join([
             f'export PATH=/usr/local/bin:/usr/bin:/bin HOME={d}/home XDG_RUNTIME_DIR={d}/run',
             f'export VK_DRIVER_FILES={d}/icd.json:/usr/share/vulkan/icd.d/lvp_icd.json CABOOSE_GPU_ROUTING=1 NODEVICE_SELECT=1',
-            'export GALLIUM_DRIVER=zink LIBGL_KOPPER_DRI2=1 MESA_GL_VERSION_OVERRIDE=4.5COMPAT MESA_GLSL_VERSION_OVERRIDE=450 ZINK_DESCRIPTORS=lazy',
+            'export GALLIUM_DRIVER=zink LIBGL_KOPPER_DRI2=1 MESA_GL_VERSION_OVERRIDE=4.5COMPAT MESA_GLSL_VERSION_OVERRIDE=450 MESA_GLES_VERSION_OVERRIDE=3.2 ZINK_DESCRIPTORS=lazy',
             f'export CABOOSE_GAME_SOCKET={d}/run/game.sock CABOOSE_CHAOS_SEAT={os.getpid()}', ''])
         self.sh(f"printf '%s' {shlex.quote(icd)} > {d}/icd.json && printf '%s' {shlex.quote(icd32)} > {d}/icd32.json && "
                 f"printf '%s' {shlex.quote(env)} > {d}/env && chown -R caboose {d}")

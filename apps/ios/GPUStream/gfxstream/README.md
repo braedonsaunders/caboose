@@ -101,6 +101,19 @@ naming a device the decoder never created and requires the refusal (`kGuestFault
 stage `guestInput`), clean process cleanup and a working runtime afterwards. On Linux it
 builds beside the executor (`linux-executor/`) and runs against lavapipe's loader.
 
+`caboose_gpu_native_one_way_start LOADER` checks one-way start ([gpu-live.md](../../../../docs/gpu-live.md#one-way-start))
+against the real decoder: a device stream sends `REPLY_MODE(3)`, a `vkCreateInstance` that fails
+(an extension no driver has), then `vkCreateInstance`, a `vkEnumeratePhysicalDevices` naming
+more physical devices than there are and one naming as many, a `vkCreateDevice` asking a family
+for more queues than it has, then `vkCreateDevice` and `vkGetDeviceQueue2` under handles of its
+own, `vkQueueWaitIdle` on its queue, both destroys and `vkEnumerateInstanceVersion`, without
+reading anything. It requires the two replies of `vkQueueWaitIdle` and
+`vkEnumerateInstanceVersion` and nothing else on the stream, and three FAULT records on the
+process's completion feed: the instance's, with `VK_ERROR_EXTENSION_NOT_PRESENT`, then the
+list's and the device's, with `VK_ERROR_INITIALIZATION_FAILED`. A handle the decoder did not take would end the stream as
+invalid input. It builds with the other runtime fixtures and runs beside the executor the same
+way.
+
 The standalone framing fixture passes on macOS with assertions enabled. It does
 not invoke the upstream decoder or validate arbitrary Vulkan command fields;
 the integrated Linux receiver also exercises the decoder. Arbitrary payload and
@@ -124,6 +137,16 @@ c++ -std=c++17 -Wall -Wextra -Werror -pthread -I apps/ios/GPUStream/gfxstream \
   apps/ios/GPUStream/gfxstream/tests/completion_feed_test.cpp \
   apps/ios/GPUStream/gfxstream/completion_feed.cpp -o /tmp/caboose-completion-feed-test
 /tmp/caboose-completion-feed-test
+```
+
+`pipeline_report.h` is the phone's `CABOOSE_GPU_PIPELINES` line (docs/gpu-live.md, "Launch
+timeline"), which the registry's watchdog writes from the compile lane's timing and the Metal
+binary archive's counts:
+
+```sh
+c++ -std=c++17 -Wall -Wextra -Werror -UNDEBUG -I apps/ios/GPUStream/gfxstream \
+  apps/ios/GPUStream/gfxstream/tests/pipeline_report_test.cpp -o /tmp/caboose-pipeline-report-test
+/tmp/caboose-pipeline-report-test
 ```
 
 The fixture also covers per-queue lanes, `WAIT_SERIAL`, `COMPLETION_WATCH2` captures and their

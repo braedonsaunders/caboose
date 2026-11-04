@@ -166,6 +166,7 @@ it('forwards only known phone GPU features, normalized', () => {
   expect(gpuFeatures('completion-payloads,completion-feed')).toEqual(['completion-feed', 'completion-payloads'])
   expect(gpuFeatures('silent-success,completion-feed')).toEqual(['completion-feed', 'silent-success'])
   expect(gpuFeatures('wait-serial,completion-feed')).toEqual(['completion-feed', 'wait-serial'])
+  expect(gpuFeatures('one-way-start,silent-success')).toEqual(['one-way-start', 'silent-success'])
   expect(gpuFeatures('completion-feed, guest-handle-arrays,GUEST-HANDLES,ordered-present')).toEqual(['completion-feed', 'guest-handle-arrays', 'guest-handles', 'ordered-present'])
   const client = new WebSocket('ws://test') as ControlledSocket
   void relayGPU(client, { displayURL: 'ws://guest:14600', displayToken: 't', computer: 'owner', executor: 'e', features: ['guest-handles'] })

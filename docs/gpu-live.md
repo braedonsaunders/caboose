@@ -281,7 +281,8 @@ only known names, lowercased and sorted: `guest-handles`, `guest-handle-arrays`,
 ([Batched descriptor sets](#batched-descriptor-sets)), `guest-set-ids`
 ([Guest-chosen set ids](#guest-chosen-set-ids)), `completion-payloads`
 ([Completion payloads](#completion-payloads)), `wait-serial` ([Completion feed](#completion-feed))
-and `silent-success` ([Silent success](#silent-success)).
+`silent-success` ([Silent success](#silent-success)) and `one-way-start`
+([One-way start](#one-way-start)).
 The broker reads them from the authenticated upgrade request.
 
 A local process on the indexed v4 path may offer optional features in its 48-byte
@@ -292,17 +293,19 @@ images), `0x1000` (guest-assigned query pools; requires `0x80`) and `0x2000` (sh
 cache), `0x8000` (upload cache), `0x10000` (guest-assigned buffer views; requires `0x80`),
 `0x40000` (batched descriptor sets without inline uniform blocks), `0x80000` (batched
 descriptor sets with inline uniform blocks), `0x100000` (guest-chosen set ids; requires `0x80`),
-`0x200000` (completion payloads; requires `0x200`), `0x400000` (WAIT_SERIAL; requires `0x200`)
-and `0x800000` (silent success; requires `0x80` and `0x200`).
+`0x200000` (completion payloads; requires `0x200`), `0x400000` (WAIT_SERIAL; requires `0x200`),
+`0x800000` (silent success; requires `0x80` and `0x200`) and `0x1000000` (one-way start;
+requires `0x80`, `0x200` and `0x800000`).
 The broker replies with the required mask plus the offered bits whose capability
 the phone declared (`guest-handles`, `guest-handle-arrays`, `completion-feed`,
 `ordered-present`, `guest-images`, `guest-query-pools`, `shader-cache`, `upload-cache`,
 `guest-buffer-views`, `batched-descriptor-sets`, `batched-descriptor-sets-inline`, `guest-set-ids`,
-`completion-payloads`, `wait-serial`, `silent-success` respectively); it drops `0x100`, `0x1000`,
-`0x10000`, `0x100000` and `0x800000` when it does not grant `0x80`, and `0x200000`, `0x400000` and
-`0x800000` when it does not grant `0x200`. An offer with unknown bits, one of those without `0x80`,
-`0x200000`, `0x400000` or `0x800000` without `0x200`, or any other difference from the v4 hello
-closes the local connection. A process falls back to offering fewer features.
+`completion-payloads`, `wait-serial`, `silent-success`, `one-way-start` respectively); it drops
+`0x100`, `0x1000`, `0x10000`, `0x100000`, `0x800000` and `0x1000000` when it does not grant `0x80`,
+`0x200000`, `0x400000`, `0x800000` and `0x1000000` when it does not grant `0x200`, and `0x1000000`
+when it does not grant `0x800000`. An offer with unknown bits, one of those without `0x80`,
+`0x200000`, `0x400000`, `0x800000` or `0x1000000` without `0x200`, `0x1000000` without `0x800000`,
+or any other difference from the v4 hello closes the local connection. A process falls back to offering fewer features.
 
 ### Feature negotiation
 
@@ -404,6 +407,17 @@ latter for pools that free individual sets), the decoder allocates the sets from
 pool it creates with the same flags and sizes. Overflow pools are reset and destroyed with
 their application pool, and their sets are freed back to them.
 
+The decoder also takes guest-assigned handles for the dispatchable objects that start a
+process's Vulkan: `vkCreateInstance` and `vkCreateDevice` register the instance or device
+under the handle the process wrote as their output. Physical devices and queues exist
+before the process names them, so `vkEnumeratePhysicalDevices` (the i-th physical device under
+the i-th handle of the array) and `vkGetDeviceQueue`/`vkGetDeviceQueue2` register the object
+under the process's handle the first time it names one; naming it again with the same handle,
+or with a value without `0xCA` in its top byte, reads it back, and naming it with another
+guest-assigned handle ends the stream as invalid input. Physical devices enumerated again
+keep their handles. A decoder that has these offers `one-way-start`
+([One-way start](#one-way-start)); an older one mints these handles whatever the process wrote.
+
 ### Invalid commands
 
 Nothing a process sends ends the phone's runtime or another process. A command the
@@ -431,7 +445,7 @@ completion commands use the ordinary 8-byte packet header, little-endian:
 | COMPLETION_ORDER | `0x4342FE03` | 16 | order serial u64 (nonzero) |
 | WAIT_SERIAL | `0x4342FE04` | 16 | watch serial u64 (nonzero) |
 | COMPLETION_WATCH2 | `0x4342FE05` | 32 + 32 × count | boxed queue u64, serial u64, count u32, flags u32 = 0, then the entries ([Completion payloads](#completion-payloads)) |
-| REPLY_MODE | `0x4342FE06` | 16 | mode u32 = 1 (silent success), reserved u32 = 0 |
+| REPLY_MODE | `0x4342FE06` | 16 | mode u32 = 1 (silent success) or 3 ([one-way start](#one-way-start)), reserved u32 = 0 |
 
 After each queue submission that signals a fence or timeline semaphore, sets or resets an
 event, ends or resets a query or writes coherent memory, the process sends
@@ -846,12 +860,14 @@ it after the client-flags word like any command:
 
 | Command | Opcode | Size | Payload |
 | --- | --- | --- | --- |
-| REPLY_MODE | `0x4342FE06` | 16 | mode u32 = 1 (silent success), reserved u32 = 0 |
+| REPLY_MODE | `0x4342FE06` | 16 | mode u32 = 1 (silent success) or 3 ([one-way start](#one-way-start)), reserved u32 = 0 |
 
-It has no reply, and it holds for that stream from then on. The process sends it once on each
-device stream, including a stream it connects again after its executor changed, only while its
-completion feed runs, and before the first command whose reply it will not read; a stream
-without the switch is answered as before. The decoder ends the stream of a process without a
+It has no reply, and it holds for that stream until the stream's next REPLY_MODE. The process
+sends `REPLY_MODE(1)` once on each device stream, including a stream it connects again after its
+executor changed, only while its completion feed runs, and before the first command whose reply
+it will not read; with [one-way start](#one-way-start) it switches to `REPLY_MODE(3)` for a
+start command and back to `REPLY_MODE(1)` after it. A stream without the switch is answered as
+before. The decoder ends the stream of a process without a
 feed that sends it (`EPROTO`). The decoder does not see the hello, so the switch is the only
 signal.
 
@@ -903,13 +919,75 @@ channel names objects or work the stream made, the process reads the reply of on
 An allocation or create the phone refuses is then device loss, never a result the application
 sees.
 
+### One-way start
+
+With `0x1000000` (granted with `0x80`, `0x200` and `0x800000`) a process may send
+`REPLY_MODE(3)` instead of `REPLY_MODE(1)`. Mode 3 is silent success, and it also silences the
+commands that start a process's Vulkan, whose handles the process chooses itself
+([Guest-assigned handles](#guest-assigned-handles)):
+
+| Command | Opcode | A failure |
+| --- | --- | --- |
+| `vkCreateInstance` | 20000 | its result |
+| `vkEnumeratePhysicalDevices` | 20002 | its result, `VK_INCOMPLETE` included; `VK_ERROR_INITIALIZATION_FAILED` when it found fewer than the process named |
+| `vkCreateDevice` | 20011 | its result; `VK_ERROR_INITIALIZATION_FAILED`, without reaching the driver, for queues the physical device does not have |
+| `vkGetDeviceQueue` | 20017 | `VK_ERROR_INITIALIZATION_FAILED` when no queue matches |
+| `vkGetDeviceQueue2` | 20155 | `VK_ERROR_INITIALIZATION_FAILED` when no queue matches |
+
+On success the decoder writes nothing for them; a failure is a FAULT record with the opcode and
+that result, as for silent success. A decoder without one-way start ends a stream that sends
+`REPLY_MODE(3)` (`EPROTO`), so a process sends it only with `0x1000000` granted. The process
+predicts each answer from an identical call that succeeded earlier in the session (a
+vkEnumeratePhysicalDevices count, a device's queues); a prediction the phone does not bear out
+is a FAULT, and the device lost. `apps/ios/GPUStream/gfxstream/silent_replies.h` holds the mode
+and the commands; `caboose_gpu_native_one_way_start` checks them against the real decoder
+(`apps/ios/GPUStream/gfxstream/README.md`).
+
+The guest driver offers `0x1000000` with everything else it offers, and with it granted names
+every instance, physical device, device and queue it makes. Its device stream stays in
+`REPLY_MODE(1)`: a start command goes one-way inside `REPLY_MODE(3)` … `REPLY_MODE(1)` around it,
+in order on the stream, only when an identical one succeeded earlier in the executor session.
+An instance is identical when its flags, application, layers and extensions are (the loader's
+own structures aside; any other chained structure is always asked); a device when its
+fingerprint is ([Physical capability cache](#physical-capability-cache)) on the session's one
+GPU; a queue when its device's fingerprint, flags, family and index are; a list of physical
+devices when it asks for as many as the session's earlier list found. The first of each is asked
+and waited for, and its success is kept in the session's instance scope, so every process after
+it in the session starts without those round trips; a new executor connection starts with none.
+A process's first start command may come before its feed runs: it waits up to 100 ms for the
+feed, then asks the command instead (`guest/gpu/gfxstream/bounded-memory/one_way_start.h`).
+`CABOOSE_ONE_WAY_START=0` asks every start command.
+
+## Launch timeline
+
+The guest driver writes where a process's start went, always, to standard error
+(`guest/gpu/gfxstream/bounded-memory/launch_timeline.h`). Once each, in milliseconds since the
+process started: its first instance, device, shader module and pipeline, and its first present
+(`CABOOSE_GPU_LAUNCH pid=… process=… event=first_device ms=…`; the process name is the
+executable's under Wine). For its first fifteen minutes, every ten seconds in which it made
+anything, one line with what those seconds made: shader modules and their bytes, pipelines (a
+`vkCreate*Pipelines` call each), presents, and commands and their bytes, with the running
+totals of modules, pipelines and presents. Shaders a pipeline carries inline
+(`VK_KHR_maintenance5`, as DXVK passes them) count in its command's bytes, not as modules.
+
+The decoder writes the phone's side every ten seconds in which it compiled a pipeline, waited
+for one or looked one up in the Metal binary archive
+(`apps/ios/GPUStream/gfxstream/pipeline_report.h`): `CABOOSE_GPU_PIPELINES` with the pipelines
+its compile lane made and the time the lane's jobs ran, those made in place on a decode thread
+and their time, the longest job, how often and for how long a decode thread waited for a
+compile it needed (time it decoded nothing else), and the archive's hits and misses. Where the process waited
+for the phone in the same time is the read profile's (`CABOOSE_READ_PROFILE=1`), and what it
+sent the memory traffic line's.
+
 ## Lock order
 
 The guest driver's locks form one hierarchy; a thread holding a lock takes only locks below it:
 the encoder's stream lock, then the flush shadow, the tracker (`ResourceTracker::mLock`), the
 deferred replies, the completion tracker and the write watch. Lazy readback's fills take none
 of them: they read on an auxiliary stream of the process's own. The silent-success switch table
-(`bounded-memory/silent_success.h`) is taken under the encoder's lock and takes no other lock. Taking the same lock again (the tracker's is
+(`bounded-memory/silent_success.h`) is taken under the encoder's lock and takes no other lock,
+and the memory traffic counters' allocation table (`bounded-memory/memory_traffic.h`) is taken
+under any of them and takes no other lock. Taking the same lock again (the tracker's is
 recursive) or another encoder's is allowed. `bounded-memory/lock_order.h` holds the hierarchy and
 a checker: with `CABOOSE_LOCK_ORDER=1` every acquisition of those locks is checked and a lock
 taken above one already held is reported once with its calling frames
@@ -1580,9 +1658,9 @@ reaches the compositor as shared memory. Mesa reports that renderer as unacceler
 application that declines unaccelerated OpenGL draws with its own CPU renderer. The driver offers the logic operations and
 custom border colours Zink needs for desktop OpenGL where the phone lacks them
 (`gfxstream/feature-emulation`). The phone has no geometry shaders or transform feedback,
-for which Zink would offer only OpenGL 2.1: `MESA_GL_VERSION_OVERRIDE=4.5COMPAT` and
-`MESA_GLSL_VERSION_OVERRIDE=450` offer what the computer's renderer offers without a phone,
-and a shader that uses either feature fails to compile or draw. Zink settles its descriptor mode once per process, on the first
+for which Zink would offer only OpenGL 2.1 and OpenGL ES 2.0: `MESA_GL_VERSION_OVERRIDE=4.5COMPAT`,
+`MESA_GLSL_VERSION_OVERRIDE=450` and `MESA_GLES_VERSION_OVERRIDE=3.2` offer what the computer's
+renderer offers without a phone, and a shader that uses either feature fails to compile or draw. Zink settles its descriptor mode once per process, on the first
 device it opens: the CPU device has descriptor buffers and the phone's GPU has none, so a
 process that started without a phone would fail every later renderer on it.
 `ZINK_DESCRIPTORS=lazy`, set for applications and for caboose-display itself, keeps one mode

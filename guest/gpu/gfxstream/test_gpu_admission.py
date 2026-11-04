@@ -24,6 +24,8 @@ class AdmissionTests(unittest.TestCase):
         self.assertEqual(admission.features(request(
             extra=b'X-Caboose-GPU-Features: guest-handles,guest-handle-arrays,completion-feed,ordered-present\r\n')),
             frozenset({'guest-handles', 'guest-handle-arrays', 'completion-feed', 'ordered-present'}))
+        self.assertEqual(admission.features(request(extra=b'X-Caboose-GPU-Features: silent-success,one-way-start\r\n')),
+                         frozenset({'silent-success', 'one-way-start'}))
         self.assertEqual(admission.features(request()), frozenset())
         self.assertEqual(admission.features(request(extra=b'X-Caboose-GPU-Features: \xff\r\n')), frozenset())
 

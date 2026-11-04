@@ -9,7 +9,7 @@ transfer and reply handling, so it can be tested without Mesa.
 | --- | --- |
 | `ranges.h` | The process memory budget (96 MiB) shared by shadows and staging, and the planning of flush and invalidate ranges into atom-aligned chunks of at most 64 KiB per RPC |
 | `flush_packet.h` | One multi-range flush packet: up to 64 fragments under 15 × 64 KiB; an upload cache piece takes a fragment of its own |
-| `flush_shadow.h` | The bytes the host last received per allocation; a flush sends only the 256-byte blocks that differ among the blocks the host holds whole, and every block the device wrote is sent again |
+| `flush_shadow.h` | The bytes the host last received per allocation; a flush sends only the 8-byte words that differ in the 256-byte blocks the host holds whole (the blocks that differ, where it knows them by hash), and every block the device wrote is sent again |
 | `poll_stall.h` | Status polls that never change: an object polled for 10 seconds without change is named in `CABOOSE_GPU_POLL_STALLED`, again every minute |
 | `write_watch.h` | The blocks an application wrote to coherent memory since they were last sent, recorded with userfaultfd write protection (`/dev/userfaultfd`), so the flush before a submit sends only those; without the device, whole mappings. Lazy readback (below) uses the same descriptor |
 | `upload_cache.h` | The phone's upload cache (docs/gpu-live.md, "Upload cache"): the inventory and allowance per executor, the pieces each device stream stored, what a whole 4096-byte piece of a range of at least 16 KiB is sent as, and its wire form; BLAKE3 and the bytes are checked against `../upload-cache/vectors.json` by `../upload-cache/test_upload_cache_vectors.cpp` |
@@ -17,7 +17,8 @@ transfer and reply handling, so it can be tested without Mesa.
 | `deferred_replies.h` | Replies the caller does not wait for, read as they arrive and drained in order once 64 KiB of replies or 24 MiB of their commands are owed; prefetched fence waits; guest-assigned handle checks |
 | `deferred_destroys.h` | Frees and destroys held until every queue submission sent before them has completed (Deferred frees, below) |
 | `event_status.h` | Event status asked for without waiting when the completion tracker does not follow the event |
-| `memory_traffic.h` | What a process moves, always counted and reported every five seconds in which anything moved: bytes its sockets sent and received, mapped memory flushed and read back by the application or the driver's coherent upkeep, and the readback ranges copies into buffers marked |
+| `memory_traffic.h` | What a process moves, always counted and reported every five seconds in which anything moved: bytes its sockets sent and received, mapped memory flushed and read back by the application or the driver's coherent upkeep, the readback ranges copies into buffers marked, and what the flush shadow sent against what whole changed blocks would have, in all and for the window's eight busiest allocations (`CABOOSE_GPU_MEMORY_ALLOCATION`: shadow kind, size, buffer usage) |
+| `launch_timeline.h` | A process's start, always counted: when it made its first instance, device, shader module and pipeline and presented its first frame (one `CABOOSE_GPU_LAUNCH event=` line each, in milliseconds since the process started), and every ten seconds of its first fifteen minutes the shader modules, pipelines, presents and commands it made |
 | `async_allocation.h` | Which device-memory allocations may skip the round trip: plain ones that keep their heap at most half committed |
 | `requirements_cache.h` | Image and buffer memory requirements by exact creation parameters, so an identical object needs no query; kept by device identity in a file shared by every process made the same way, appended under an exclusive lock so only the process that finds it empty writes its header (a header met inside the file is skipped) |
 | `static_query_cache.h` | Answers of physical-device format queries, which cannot change, by their exact parameters |
@@ -29,6 +30,7 @@ transfer and reply handling, so it can be tested without Mesa.
 | `completion_payloads.h` | Completion payloads with hello `0x200000` (docs/gpu-live.md, "Completion payloads"): `COMPLETION_WATCH2`, the captures in a record's payload, which query pools are captured, and `vkGetQueryPoolResults`' output written from captured values for every flag and layout |
 | `guest_set_ids.h` | Set ids a batched descriptor pool chooses with hello `0x100000`: the guest handles after the pool's own, in one block of the handle counter, and the create flag that tells the decoder so (docs/gpu-live.md, "Guest-chosen set ids") |
 | `silent_success.h` | Silent success with hello `0x800000` (docs/gpu-live.md, "Silent success"): its commands, the REPLY_MODE packet, which device streams have switched, feed records with payloads and the FAULT record, which is device loss |
+| `one_way_start.h` | One-way start with hello `0x1000000` (docs/gpu-live.md, "One-way start"): the start commands REPLY_MODE(3) silences, the questions that say an identical one succeeded earlier in the session, kept in its instance scope, and the wait for the feed |
 | `handles.h` | Vulkan handles as 64-bit keys and back, without the cast through `uintptr_t` that drops the upper half of a non-dispatchable handle in 32-bit builds |
 | `flush_timing.h`, `rpc_timing.h` | Bounded opt-in timing records (`CABOOSE_PRIVATE_GPU_FLUSH_TIMING=1`, `CABOOSE_PRIVATE_GPU_RPC_TIMING=1`) |
 
@@ -40,7 +42,11 @@ keeps only the blocks the host does not already hold, and packs them into flush 
 What the host holds is known per 256-byte block (`flush_shadow.h`): from a copy of the bytes
 it was sent for an allocation up to 32 MiB (48 MiB of copies in all), and otherwise from an
 XXH64 hash of each whole block (16 MiB of hashes, for 512 MiB of mappings), so memory an
-application rewrites with the bytes it already held is not sent again.
+application rewrites with the bytes it already held is not sent again. Of a block known by its
+copy only the 8-byte words that differ are sent, joined into one run where they are less than a
+fragment's 40 bytes of overhead apart: DXVK places each dynamic constant buffer in its own
+256-byte-aligned slot and rewrites the few words it holds. A block known by its hash, or not
+known, is sent whole.
 The first failed packet's result is returned and no later packet is sent; a partial send
 or a failed reply read invalidates the stream. An invalidate retains every chunk until
 all ranges succeed, then publishes them in their original order, overlaps included;

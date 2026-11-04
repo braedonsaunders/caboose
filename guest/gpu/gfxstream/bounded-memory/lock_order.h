@@ -11,6 +11,9 @@
 //             registration (dmabuf registrations)
 //               write watch (caboose::memory::writeWatch(), its own std::mutex: unchecked)
 //
+// The memory traffic counters' allocation table (memory_traffic.h, its own std::mutex:
+// unchecked) is taken under any of them and takes no other lock.
+//
 // Taking the same lock again (the tracker's is recursive) or another instance of the same
 // lock (two encoders) is allowed. With CABOOSE_LOCK_ORDER=1 every acquisition is checked
 // against the hierarchy, and each lock taken above one already held is reported once

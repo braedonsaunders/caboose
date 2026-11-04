@@ -10,6 +10,8 @@
 #endif
 #include "vk_decoder_global_state.h"
 #include "caboose_teardown.h"
+#include "caboose_pipeline_lane.h"
+#include "pipeline_report.h"
 #include <atomic>
 #include <condition_variable>
 #include <cstdio>
@@ -62,6 +64,7 @@ struct caboose_gfx_registry {
     bool watchdogStopping = false;
     std::thread watchdog;
 };
+extern "C" void mvkCabooseGetPipelineArchiveStats(uint64_t* hits, uint64_t* misses) __attribute__((weak));
 namespace {
 constexpr int64_t kStallMs = 3000;
 constexpr int64_t kStallRepeatMs = 30000;
@@ -72,7 +75,16 @@ constexpr int64_t kStallRepeatMs = 30000;
 // decoders are doing, and what each queue last submitted and waits on.
 void watchStalls(caboose_gfx_registry* registry) {
     std::unique_lock<std::mutex> wake(registry->watchdogMutex);
+    caboose::gpuv2::PipelineReport pipelines;  // pipeline_report.h, every ten seconds
     while (!registry->watchdogWake.wait_for(wake, std::chrono::seconds(1), [registry] { return registry->watchdogStopping; })) {
+        {
+            const auto t = caboose::gpuv2::PipelineLane::instance().takeTiming();
+            uint64_t hits = 0, misses = 0;
+            if (mvkCabooseGetPipelineArchiveStats) mvkCabooseGetPipelineArchiveStats(&hits, &misses);
+            pipelines.add({t.laneCompiled, t.laneUs, t.longestUs, t.inPlace, t.inPlaceUs, t.waits, t.waitUs}, hits, misses);
+            const std::string line = pipelines.take(caboose::gpuv2::CompletionFeed::nowMs());
+            if (!line.empty()) std::fputs(line.c_str(), stderr);
+        }
         struct Seen { uint64_t token; std::shared_ptr<Process> process; size_t count; std::string streams; };
         std::vector<Seen> seen;
         {

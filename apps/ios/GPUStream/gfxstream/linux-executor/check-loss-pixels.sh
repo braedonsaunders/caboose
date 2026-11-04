@@ -53,7 +53,7 @@ seat "printf '%s' '{\"file_format_version\":\"1.0.0\",\"ICD\":{\"library_path\":
 seat "cat > $dir/env <<ENV
 export PATH=/usr/local/bin:/usr/bin:/bin HOME=$dir/home XDG_RUNTIME_DIR=$dir/run
 export VK_DRIVER_FILES=$dir/icd.json:/usr/share/vulkan/icd.d/lvp_icd.json CABOOSE_GPU_ROUTING=1 NODEVICE_SELECT=1
-export GALLIUM_DRIVER=zink LIBGL_KOPPER_DRI2=1 MESA_GL_VERSION_OVERRIDE=4.5COMPAT MESA_GLSL_VERSION_OVERRIDE=450 ZINK_DESCRIPTORS=lazy
+export GALLIUM_DRIVER=zink LIBGL_KOPPER_DRI2=1 MESA_GL_VERSION_OVERRIDE=4.5COMPAT MESA_GLSL_VERSION_OVERRIDE=450 MESA_GLES_VERSION_OVERRIDE=3.2 ZINK_DESCRIPTORS=lazy
 export CABOOSE_GAME_SOCKET=$dir/run/game.sock
 ENV
 chown caboose $dir/env"

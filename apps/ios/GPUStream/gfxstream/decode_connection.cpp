@@ -202,7 +202,7 @@ int decodeConnection(int fd, size_t max_packet, size_t max_reply_buffer,
         const bool sequenced = gfxstream::host::FrameBuffer::getFB()->getFeatures()
                                    .VulkanQueueSubmitWithCommands.enabled();
         bool decodedAny = false;
-        bool silentReplies = false;  // REPLY_MODE(1): listed commands answer only on failure
+        uint32_t silentReplies = 0;  // REPLY_MODE: listed commands answer only on failure
         while (!stop.load()) {
             snapshot();
             if (diagnostic) { diagnostic->frameSize = 0; diagnostic->consumed = 0; diagnostic->frame = {}; }
@@ -287,9 +287,8 @@ int decodeConnection(int fd, size_t max_packet, size_t max_reply_buffer,
                         }
                         continue;
                     }
-                    if (!silent_replies::parseReplyMode(pending.data(), declared))
-                        return finish(DecodeStage::framing, EPROTO);
-                    silentReplies = true;
+                    silentReplies = silent_replies::parseReplyMode(pending.data(), declared);
+                    if (!silentReplies) return finish(DecodeStage::framing, EPROTO);
                     pending.erase(pending.begin(), pending.begin() + declared);
                     decodedAny = true;
                     continue;
@@ -407,14 +406,15 @@ int decodeConnection(int fd, size_t max_packet, size_t max_reply_buffer,
             }
             uint32_t replyOpcode = 0;
             if (frame.size >= 4) std::memcpy(&replyOpcode, pending.data(), 4);
-            const bool silent = silentReplies && silent_replies::listed(replyOpcode);
+            const bool silent = silentReplies && silent_replies::listed(replyOpcode, silentReplies);
             if (silent) { stream.held().clear(); stream.hold(true); }
             const size_t consumed = thread_info.m_vkInfo->m_vkDec.decode(
                 pending.data(), frame.size, &stream, thread_info.getProcessResources().get(), context);
             if (silent) {
                 stream.hold(false);
                 // The guest reads no reply: success writes nothing, failure is a FAULT record.
-                const int32_t result = silent_replies::resultOf(replyOpcode, stream.held());
+                const int32_t result =
+                    silent_replies::resultOf(replyOpcode, stream.held(), pending.data(), frame.size);
                 if (result != 0) completions->fault(replyOpcode, result);
                 stream.held().clear();
             }
