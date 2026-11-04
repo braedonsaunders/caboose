@@ -385,6 +385,6 @@ describe('the Library record', () => {
 
   it('never records a Flathub app: the computer\'s Flatpak volume keeps it', async () => {
     const { recordFor, flathubEntry } = await import('./app-catalog.js')
-    expect(recordFor(flathubEntry({ appId: 'org.gimp.GIMP', name: 'GIMP', summary: 'Images', developer: null, license: null, verified: false, icon: '', categories: ['Graphics'], keywords: [], runtime: 'org.gnome.Platform/x86_64/49', installs: 1 }))).toBeNull()
+    expect(recordFor(flathubEntry({ appId: 'org.gimp.GIMP', name: 'GIMP', summary: 'Images', developer: null, license: null, verified: false, icon: '', categories: ['Create'], keywords: [], runtime: 'org.gnome.Platform/x86_64/49', installs: 1 }))).toBeNull()
   })
 })
