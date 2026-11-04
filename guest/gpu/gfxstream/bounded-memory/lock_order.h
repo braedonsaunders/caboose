@@ -55,6 +55,9 @@ inline int mode() {
 
 struct Held {
     uint8_t counts[kClasses] = {};
+    // Where each held class was first taken, for the report.
+    void* where[kClasses][16] = {};
+    int depth[kClasses] = {};
 };
 inline thread_local Held held;
 inline std::atomic<uint64_t> reported{0};  // bit (held * kClasses + taken)
@@ -85,12 +88,16 @@ inline void report(Class held, Class taken) {
     void* frames[24];
     const int count = backtrace(frames, 24);
     backtrace_symbols_fd(frames, count, 2);
+    static const char kWhere[] = "CABOOSE_LOCK_ORDER the held lock was taken at:\n";
+    (void)!write(2, kWhere, sizeof(kWhere) - 1);
+    backtrace_symbols_fd(lock_order::held.where[held], lock_order::held.depth[held], 2);
     if (mode() == 2) std::abort();
 }
 
 inline void acquired(Class c) {
     if (!mode()) return;
     if (Class over = violation(held, c)) report(over, c);
+    if (!held.counts[c]) held.depth[c] = backtrace(held.where[c], 16);
     if (held.counts[c] < 255) ++held.counts[c];
 }
 
