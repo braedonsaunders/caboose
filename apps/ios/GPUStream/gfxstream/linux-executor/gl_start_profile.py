@@ -24,6 +24,7 @@ round-trip time.
 import argparse
 import os
 import re
+import shlex
 import sys
 import time
 
@@ -54,6 +55,9 @@ def main():
     parser.add_argument('out')
     parser.add_argument('--steam-home', required=True, help="a home of the check's own with a Steam Flatpak profile")
     parser.add_argument('--seconds', type=int, default=180)
+    parser.add_argument('--prepare', default='', help="shell run in the seat before Steam starts (SEAT is its directory)")
+    parser.add_argument('--flatpak-env', action='append', default=[], metavar='NAME=VALUE',
+                        help="an environment variable for Steam's Flatpak (SEAT is the seat's directory)")
     o = parser.parse_args()
     o.work, o.release = os.path.abspath(o.work), os.path.abspath(o.release)
     os.makedirs(o.out, exist_ok=True)
@@ -69,9 +73,12 @@ def main():
         seat.viewer()
         time.sleep(3)
         mark = check_chaos.now()
+        if o.prepare:
+            seat.sh(o.prepare.replace('SEAT', seat.dir), user='caboose')
+        extra = ''.join(f'--env={shlex.quote(e.replace("SEAT", seat.dir))} ' for e in o.flatpak_env)
         started = time.time()
         seat.app('steam', f'env HOME={o.steam_home} CABOOSE_READ_PROFILE=1 dbus-run-session -- flatpak run '
-                 f'--env=CABOOSE_CHAOS_SEAT={os.getpid()} --env=CABOOSE_READ_PROFILE=1 '
+                 f'--env=CABOOSE_CHAOS_SEAT={os.getpid()} --env=CABOOSE_READ_PROFILE=1 {extra}'
                  '--env=CABOOSE_GFXSTREAM_SOCKET=$CABOOSE_GFXSTREAM_SOCKET --env=CABOOSE_GFXSTREAM_SURFACE_SOCKET=$CABOOSE_GFXSTREAM_SURFACE_SOCKET '
                  f'--env=VK_DRIVER_FILES={seat.dir}/icd.json:{seat.dir}/icd32.json:{check_chaos.FLATPAK_LAVAPIPE} '
                  f'--env=PRESSURE_VESSEL_FILESYSTEMS_RW={seat.dir} --filesystem={seat.dir} com.valvesoftware.Steam')
