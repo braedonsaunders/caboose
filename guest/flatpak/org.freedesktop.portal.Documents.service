@@ -1,3 +1,0 @@
-[D-BUS Service]
-Name=org.freedesktop.portal.Documents
-Exec=/usr/libexec/caboose-document-portal

@@ -23,11 +23,13 @@ where the host's app listing finds them.
 A container computer may not mount, so FUSE (the document portal's `/run/user/1000/doc`, through
 which a sandboxed app receives the files chosen for it) goes through the host's FUSE broker
 beside it (docs/architecture.md § FUSE): `install.sh` installs `caboose-fusermount` over
-`fusermount3` (a dpkg diversion keeps the original as `fusermount3.caboose-off`),
-`caboose-fuse-broker` for the host's sidecar to run, and the document portal's D-Bus service
-as `caboose-document-portal`, which gives the agent seat's portal a runtime directory of its
-own so the two seats' mounts do not collide. `python3 -m unittest discover -s guest/flatpak`
-checks the broker's option and mountpoint rules and the fusermount protocol parsing.
+`fusermount3` (a dpkg diversion keeps the original as `fusermount3.caboose-off`) and
+`caboose-fuse-broker` for the host's sidecar to run. On every computer the agent seat's bus
+gets `caboose-documents-forwarder` as its document portal
+(`/opt/caboose/agent-services.d`, read by `keyring/install-services.py`): it forwards to the
+owner bus's one portal, so both seats' sandboxes find their documents at the same path.
+`python3 -m unittest discover -s guest/flatpak` checks the broker's option and mountpoint
+rules and the fusermount protocol parsing.
 
 `apps/host/scripts/check-flathub.sh` exercises the remote, the depot and an install, run and
 removal in disposable containers (see the host README).

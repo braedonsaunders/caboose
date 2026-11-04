@@ -71,11 +71,30 @@ def main(argv):
     commfd = os.environ.get('_FUSE_COMMFD')
     if not commfd or not commfd.isdigit():
         raise SystemExit('fusermount3: mounting needs _FUSE_COMMFD (run by libfuse)')
+    # auto_unmount, as fusermount3 does it: stay until the file system's process closes the
+    # socket (it has ended), then unmount.
+    words = [o for o in options.split(',') if o]
+    auto = 'auto_unmount' in words
+    options = ','.join(o for o in words if o != 'auto_unmount')
     device = ask({'op': 'mount', 'mountpoint': mountpoint, 'options': options})
     if device is None:
         raise SystemExit('fusermount3: the FUSE broker sent no device')
     with socket.socket(fileno=int(commfd)) as channel:
         channel.sendmsg([b'\0'], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, array.array('i', [device]))])
+        os.close(device)
+        if auto:
+            if os.fork():
+                return 0  # libfuse waits for this process only without auto_unmount
+            os.setsid()
+            try:
+                while channel.recv(4096):
+                    pass
+            except OSError:
+                pass
+            try:
+                ask({'op': 'unmount', 'mountpoint': mountpoint, 'lazy': True})
+            except SystemExit:
+                pass
     return 0
 
 

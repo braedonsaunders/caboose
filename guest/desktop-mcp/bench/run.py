@@ -39,7 +39,7 @@ p.add_argument('--trace', help='CABOOSE_DESKTOP_TRACE file of the --mcp server i
 a = p.parse_args()
 tasks = [t for t in json.loads((here / 'tasks.json').read_text())['tasks'] if not a.task or t['id'] in a.task]
 prelude = (here / 'prelude.sh').read_text()
-BENCH = '/tmp/caboose-bench'
+BENCH = '/home/caboose/caboose-bench'
 
 
 def computer(script, timeout=120):
