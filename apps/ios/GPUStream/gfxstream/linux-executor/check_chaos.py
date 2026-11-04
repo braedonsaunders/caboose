@@ -325,9 +325,11 @@ def main():
         # Wine session (its desktop, or a session left hung by an executor loss). Each DXVK run
         # is its own Flatpak sandbox, a PID namespace: ending the sandbox ends every process of
         # its Wine session, including wineserver (which cannot be told apart by its environment)
-        # and the Windows services. Only the seat's own sandboxes are ended.
-        seat.stop('triangle.exe')
+        # and the Windows services. Only the seat's own sandboxes are ended, and only its own
+        # triangle is asked to quit: other checks on the computer run triangle.exe too.
         marker = f'CABOOSE_CHAOS_SEAT={os.getpid()}'
+        seat.sh(f'for p in $(pgrep -u caboose -f "triangle.exe"); do tr "\\0" "\\n" < /proc/$p/environ 2>/dev/null | '
+                f'grep -qx {marker} && kill -TERM $p; done', user='caboose', check=False)
         for attempt in range(30):
             alive = seat.sh(f'for p in $(pgrep -u caboose -f "waitforexitandrun {o.triangle}"); do '
                             f'tr "\\0" "\\n" < /proc/$p/environ 2>/dev/null | grep -qx {marker} && echo $p; done',
