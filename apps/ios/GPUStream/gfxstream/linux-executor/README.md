@@ -84,6 +84,9 @@ CABOOSE_LINUX_EXECUTOR picture window=0x1 serial=32 868x558 format=44 content=0.
 
 `python3 test_pictures.py` covers the measures and the PPM output.
 
+A broker that answers the upgrade with 503 (restarting, say) is tried again for up to 10 s,
+with a backoff from 0.25 s to 2 s; `python3 test_connect.py` covers it.
+
 `--fail-binds N` answers each session's first N
 surface binds with EAGAIN, as a phone whose layer for the window is not ready does. `CABOOSE_LINUX_EXECUTOR_TRACE=1` also logs each
 present as it is run. SIGUSR1 prints every Python thread's stack.

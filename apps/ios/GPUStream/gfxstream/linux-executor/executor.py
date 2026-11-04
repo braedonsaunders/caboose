@@ -51,6 +51,34 @@ SURFACE_KINDS = frozenset((16, 18, 20, 23, 25, 27, 29, 31, 32, 34, 39))
 _GUID = b'258EAFA5-E914-47DA-95CA-C5AB0DC85B11'
 
 
+class Unavailable(OSError):
+    """The broker answered 503: it is not serving executors right now (restarting, say)."""
+
+
+# How long an executor keeps trying a broker that answers 503 before giving up: a broker
+# restart (the compositor restarts it on a control failure) takes about a second.
+UNAVAILABLE_SECONDS = 10
+
+
+def connect_retrying(attempt, deadline, unavailable_deadline, sleep=time.sleep, now=time.monotonic):
+    """`attempt()` until it connects. A refused or unreachable broker is tried again until
+    `deadline`; one that answers 503 until `unavailable_deadline`, with a backoff from 0.25 s
+    to 2 s."""
+    delay = 0.25
+    while True:
+        try:
+            return attempt()
+        except Unavailable:
+            if now() >= unavailable_deadline:
+                raise
+            sleep(delay)
+            delay = min(delay * 2, 2.0)
+        except OSError:
+            if now() >= deadline:
+                raise
+            sleep(0.5)
+
+
 class Closed(Exception):
     pass
 
@@ -88,6 +116,9 @@ class WebSocket:
         lines = head.split(b'\r\n')
         headers = {k.strip().lower(): v.strip() for k, _, v in (line.partition(b':') for line in lines[1:])}
         accept = base64.b64encode(hashlib.sha1(key + _GUID).digest())
+        if lines[0].startswith(b'HTTP/1.1 503 '):
+            sock.close()
+            raise Unavailable('broker unavailable: ' + lines[0].decode(errors='replace'))
         if (not lines[0].startswith(b'HTTP/1.1 101 ') or headers.get(b'sec-websocket-accept') != accept or
                 headers.get(b'sec-websocket-protocol') != PROTOCOL.encode() or b'sec-websocket-extensions' in headers):
             raise Closed('invalid upgrade response: ' + lines[0].decode(errors='replace'))
@@ -693,17 +724,16 @@ def main():
     code = 1
     for session in range(options.sessions):
         # A later session waits for the broker to come back, as the phone reconnects.
-        deadline = time.monotonic() + (0 if session == 0 else 60)
-        while True:
-            try:
-                token = options.token_file.read_bytes().strip()
-                executor_id = uuid.uuid4()
-                socket_ = WebSocket.connect(options.connect, token, options.computer, executor_id, options.features)
-                break
-            except OSError:
-                if time.monotonic() >= deadline:
-                    raise
-                time.sleep(0.5)
+        started = time.monotonic()
+        deadline = started + (0 if session == 0 else 60)
+
+        def attempt():
+            nonlocal executor_id
+            token = options.token_file.read_bytes().strip()
+            executor_id = uuid.uuid4()
+            return WebSocket.connect(options.connect, token, options.computer, executor_id, options.features)
+        executor_id = None
+        socket_ = connect_retrying(attempt, deadline, max(deadline, started + UNAVAILABLE_SECONDS))
         log(f'connected to {options.connect} executor={executor_id} features={options.features} '
             f'session={session + 1} rss={resident_bytes() // (1 << 20)} MiB')
         executor = Executor(runtime, socket_, options)

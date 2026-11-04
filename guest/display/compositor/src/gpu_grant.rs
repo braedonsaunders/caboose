@@ -225,15 +225,24 @@ impl Grants {
         Some(*grant)
     }
 
-    /// An authenticated request is idempotent only while this exact grant is revoking.
+    /// An authenticated request to end a grant. It is idempotent: a grant already revoking
+    /// needs nothing more, and a grant this compositor has already retired (its window
+    /// unmapped, its executor gone, or an earlier epoch) has nothing left to end. The broker
+    /// can ask after the compositor retired the grant (a late bind answer it revokes at once),
+    /// so that is not a control failure. Only a request with the wrong generation for a live
+    /// grant is refused.
     pub fn request_revoke(&mut self, epoch: [u8; 16], token: [u8; 16], generation: u64) -> io::Result<Option<Grant>> {
-        let (grant, phase) = self.windows.values_mut().find(|(grant, _)|
-            grant.epoch == epoch && grant.token == token && grant.generation == generation)
-            .ok_or_else(|| io::Error::other("unknown surface revoke request"))?;
+        let Some((grant, phase)) = self.windows.values_mut().find(|(grant, _)|
+            grant.epoch == epoch && grant.token == token) else {
+            tracing::info!("GPU revoke request for a grant already retired (generation {generation})");
+            return Ok(None);
+        };
+        if grant.generation != generation {
+            return Err(io::Error::other("surface revoke request for another generation"));
+        }
         match *phase {
             GrantPhase::Active => { *phase = GrantPhase::RevokeQueued; Ok(Some(*grant)) }
-            GrantPhase::RevokeQueued | GrantPhase::AwaitingRetirement => Ok(None),
-            GrantPhase::RetiredBeforeSendCallback => Err(io::Error::other("surface already retired")),
+            GrantPhase::RevokeQueued | GrantPhase::AwaitingRetirement | GrantPhase::RetiredBeforeSendCallback => Ok(None),
         }
     }
 }
@@ -255,7 +264,23 @@ mod tests {
         grants.revoke_sent(grant).unwrap();
         assert_eq!(grants.request_revoke(grant.epoch, grant.token, grant.generation).unwrap(), None);
         grants.surface_retired(grant).unwrap();
-        assert!(grants.request_revoke(grant.epoch, grant.token, grant.generation).is_err());
+        // The grant is retired: a late request has nothing to end and is not a failure.
+        assert_eq!(grants.request_revoke(grant.epoch, grant.token, grant.generation).unwrap(), None);
+    }
+    #[test]
+    fn revoke_request_after_retirement_is_harmless() {
+        let mut grants = Grants::new().unwrap();
+        grants.ready([1; 16], 1).unwrap();
+        let grant = grants.bind(1, 0, (1, 2, 3, 4), &[7]).unwrap();
+        // The compositor revokes and the surface retires before its send callback.
+        assert_eq!(grants.begin_revoke(7), Some(grant));
+        grants.surface_retired_by_identity(grant.epoch, grant.token, grant.generation).unwrap();
+        assert_eq!(grants.request_revoke(grant.epoch, grant.token, grant.generation).unwrap(), None);
+        // A grant this compositor no longer knows (an earlier epoch's, say).
+        assert_eq!(grants.request_revoke([9; 16], [8; 16], 3).unwrap(), None);
+        // A live grant asked with another generation is still refused.
+        let next = grants.bind(1, 0, (5, 6, 7, 8), &[8]).unwrap();
+        assert!(grants.request_revoke(next.epoch, next.token, next.generation + 1).is_err());
     }
     #[test]
     fn ambiguous_wayland_connections_cannot_receive_a_grant() {

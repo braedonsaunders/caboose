@@ -671,7 +671,9 @@ Disconnected streams send FIN, discard undeliverable reverse DATA, and wait for
 the phone's reverse FIN; a truncated stream closed by a crashing peer at `FIN` or
 `PROCESS_STOP` completes that stream's retirement rather than failing the session.
 Disconnected surfaces cancel any pending indexed acquisition
-(`SWAPCHAIN_CANCEL_ACQUIRE`), request compositor grant revocation (`RevokeRequest`),
+(`SWAPCHAIN_CANCEL_ACQUIRE`), request compositor grant revocation (`RevokeRequest`;
+the compositor answers a request for a grant it has already retired by doing nothing,
+so a late request is never a control failure),
 wait for the crashed process's active command streams to drain before sending
 `SURFACE_RETIRE`, and release the compositor grant (`GrantRetired`) only after
 receiving the phone's `SURFACE_RETIRED` receipt, followed by `PROCESS_STOP` and
