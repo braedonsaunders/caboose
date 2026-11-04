@@ -313,13 +313,15 @@ if __name__ == "__main__":
                         help="a built libVkLayer_caboose_gpu_routing.so to install as an implicit layer")
     parser.add_argument("--gbm", type=Path, action="append", default=[],
                         help="a built vgem_gbm.so to install for Flatpak applications")
+    parser.add_argument("--machine", default=os.uname().machine,
+                        help="the computer's architecture (default this machine's), for staging another's install")
     args = parser.parse_args()
-    install(args.source_root, args.destdir)
+    install(args.source_root, args.destdir, args.machine)
     for backend in args.gbm:
-        install_gbm(backend, args.destdir)
+        install_gbm(backend, args.destdir, args.machine)
     for driver in args.driver:
-        install_driver(driver, args.destdir)
+        install_driver(driver, args.destdir, args.machine)
     for layer in args.executor_switch:
-        install_layer("executor-switch", layer, args.destdir)
+        install_layer("executor-switch", layer, args.destdir, args.machine)
     for layer in args.routing_layer:
-        install_layer("routing", layer, args.destdir)
+        install_layer("routing", layer, args.destdir, args.machine)
