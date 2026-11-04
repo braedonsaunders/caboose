@@ -271,7 +271,7 @@ public enum RunningAppsRoute {
     }
 
     /// Everything but RFC 3986's unreserved ASCII is escaped: a scope's backslashes
-    /// (`app-firefox\x2desr-3.scope`) become `%5C`, and a `/`, `?`, `#` or `%` cannot change
+    /// (`app-xfce4\x2dterminal-3.scope`) become `%5C`, and a `/`, `?`, `#` or `%` cannot change
     /// the route.
     public static func encode(_ id: String) -> String {
         id.addingPercentEncoding(withAllowedCharacters: unreserved) ?? id

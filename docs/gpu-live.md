@@ -1146,10 +1146,9 @@ application that recovers from device loss moves to the phone when it attaches. 
 driver's X11 windows (Kopper); without a DRM render node it cannot present through
 Wayland, so toolkits that draw with OpenGL run as X11 clients on this seat:
 `QT_QPA_PLATFORM=xcb;wayland` (Qt 5 Quick) and `SDL_VIDEODRIVER=x11,wayland`. A Wayland
-client that draws with OpenGL (Firefox, which chooses Wayland whenever `WAYLAND_DISPLAY` is
-set) gets EGL's software platform: Zink renders, and each frame reaches the compositor as
-shared memory. Mesa reports that renderer as unaccelerated, so Firefox draws its pages with
-its own CPU renderer. The driver offers the logic operations and
+client that draws with OpenGL gets EGL's software platform: Zink renders, and each frame
+reaches the compositor as shared memory. Mesa reports that renderer as unaccelerated, so an
+application that declines unaccelerated OpenGL draws with its own CPU renderer. The driver offers the logic operations and
 custom border colours Zink needs for desktop OpenGL where the phone lacks them
 (`gfxstream/feature-emulation`). The phone has no geometry shaders or transform feedback,
 for which Zink would offer only OpenGL 2.1: `MESA_GL_VERSION_OVERRIDE=4.5COMPAT` and

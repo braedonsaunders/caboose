@@ -103,7 +103,7 @@ The system image builder (`guest/image/make-system-image.sh`) defaults to `CABOO
 
 The image contains:
 
-- **Applications.** Chromium, Firefox ESR, VS Code, xfce4-terminal, Thunar, Mousepad,
+- **Applications.** Chromium (the one browser and the default for web pages and links), VS Code, xfce4-terminal, Thunar, Mousepad,
   LibreOffice, Obsidian, Evince, KeePassXC, mpv and other document and media tools;
   developer tools including Git, Neovim, Lazygit, Lazydocker, btop, tmux, mise and modern
   shell tools; Docker; official Claude Desktop (including Claude Code) and ChatGPT
@@ -2133,7 +2133,7 @@ protocol used by GTK 3, with server-side decorations preferred. Ordinary GTK win
 therefore omit their automatic titlebars. `GTK_CSD=0` applies the same default to
 GTK on X11; explicit application headerbars and menus remain application content. The
 window-button layout is empty in the portal, GSettings and GTK settings, so headerbars,
-libadwaita, Firefox and Chromium/Electron caption buttons draw no window controls
+libadwaita and Chromium/Electron caption buttons draw no window controls
 (display.md).
 
 ## 5. Agents

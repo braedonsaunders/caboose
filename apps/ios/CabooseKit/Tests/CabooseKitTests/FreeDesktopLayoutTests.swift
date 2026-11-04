@@ -366,15 +366,15 @@ struct LaptopFillTests {
     @Test func aWindowMaximizedByAnotherRouteIsNotFilledAgainOnceRestored() {
         // Laptop's first fit maximizes the front window itself, not through `windowsToFill`.
         var layout = FreeDesktopLayout(), filled: Set<Int> = []
-        let window = FreeDesktopLayout.FillCandidate(id: 4, app: "firefox")
-        layout.setPreferred(4, frame: CGRect(x: 40, y: 40, width: 500, height: 300), in: screen, app: "firefox")
-        layout.setSnap(4, .maximized, current: .zero, in: screen, app: "firefox")
+        let window = FreeDesktopLayout.FillCandidate(id: 4, app: "chromium")
+        layout.setPreferred(4, frame: CGRect(x: 40, y: 40, width: 500, height: 300), in: screen, app: "chromium")
+        layout.setSnap(4, .maximized, current: .zero, in: screen, app: "chromium")
         #expect(layout.windowsToFill([window], in: screen, filled: &filled).isEmpty)
         #expect(filled == [4])
         // The green button, or its title bar dragged away: it keeps its own frame.
-        layout.setSnap(4, nil, current: .zero, in: screen, app: "firefox")
+        layout.setSnap(4, nil, current: .zero, in: screen, app: "chromium")
         #expect(layout.windowsToFill([window], in: screen, filled: &filled).isEmpty)
-        #expect(layout.frame(for: 4, app: "firefox", in: screen) == CGRect(x: 40, y: 40, width: 500, height: 300))
+        #expect(layout.frame(for: 4, app: "chromium", in: screen) == CGRect(x: 40, y: 40, width: 500, height: 300))
         // So does one snapped to a half and then dragged out.
         let other = FreeDesktopLayout.FillCandidate(id: 5, app: "gedit")
         layout.setSnap(5, .left, current: CGRect(x: 0, y: 0, width: 300, height: 200), in: screen, app: "gedit")
@@ -387,7 +387,7 @@ struct LaptopFillTests {
         var layout = FreeDesktopLayout()
         var window = FreeDesktopLayout.FillCandidate(id: 9, app: nil)
         #expect(layout.windowsToFill([window], in: screen).isEmpty)
-        window.app = "Firefox"
+        window.app = "Chromium"
         #expect(layout.windowsToFill([window], in: screen) == [9])
         // Another app's maximized place under the same id does not count as this window's.
         layout.setSnap(9, .maximized, current: .zero, in: screen, app: "thunderbird")

@@ -135,7 +135,7 @@ no longer open any (`xdg-desktop-portal-gtk` stopped showing file dialogs).
 
 | Category | Lineup |
 | --- | --- |
-| Browsers and writing | Chromium, Firefox ESR, Obsidian, LibreOffice (with its GTK 3 backend, so it is a Wayland application), Mousepad |
+| Browsers and writing | Chromium, Obsidian, LibreOffice (with its GTK 3 backend, so it is a Wayland application), Mousepad |
 | Desktop tools | Xfce Terminal, Thunar, Evince, KeePassXC, File Roller, mpv, Tesseract OCR (English; desktop MCP reads text from windows without an accessibility tree) |
 | Runtimes | Wine (64-bit Windows programs), the Java runtime with its ATK accessibility wrapper |
 | Development | VS Code, Neovim, Git, GitHub CLI, delta, Docker and Compose, Lazygit, Lazydocker, btop, tmux, mise, Node 22, uv |
@@ -144,6 +144,11 @@ no longer open any (`xdg-desktop-portal-gtk` stopped showing file dialogs).
 | Agent CLIs | Claude Code CLI, Codex CLI, OpenCode, Gemini CLI |
 | Rendering | Mesa Vulkan and OpenGL software drivers |
 | Fonts | Inter, JetBrains Mono, Noto (core, CJK, colour emoji) |
+
+Chromium is the one browser. `apps.sh` makes it the system default for web pages and links
+(`x-scheme-handler/http`, `x-scheme-handler/https`, `text/html` and `application/xhtml+xml`
+in `/etc/xdg/mimeapps.list`, which `xdg-open` and GIO read) and Xfce's web-browser helper
+(`WebBrowser=chromium` in `/etc/xdg/xfce4/helpers.rc`).
 
 The official [Claude Desktop](https://code.claude.com/docs/en/desktop-linux) and
 [ChatGPT Linux preview](https://learn.chatgpt.com/docs/linux/linux-app) Debian packages

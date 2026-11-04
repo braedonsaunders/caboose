@@ -305,7 +305,7 @@ id passed on the agent seat is "element not found".
 
 Apps build an accessibility tree only when asked. The computer asks them through:
 
-- `ACCESSIBILITY_ENABLED=1` (Chromium, Electron), `GNOME_ACCESSIBILITY=1` (Firefox) and
+- `ACCESSIBILITY_ENABLED=1` (Chromium, Electron), `GNOME_ACCESSIBILITY=1` (Gecko applications) and
   `QT_LINUX_ACCESSIBILITY_ALWAYS_ON=1` (Qt) in both display units and the container image's
   environment, and in what the `launch` tool starts (which also drops any inherited
   `NO_AT_BRIDGE` and `GTK_A11Y=none`);

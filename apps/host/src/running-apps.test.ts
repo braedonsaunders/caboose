@@ -27,8 +27,8 @@ function guest(answer: unknown): AgentGuest & { calls: string[][] } {
 
 describe('the running-apps listing', () => {
   it('keeps valid apps, windowless ones and the session', () => {
-    const parsed = parseRunningApps(listing([app, session, { ...app, id: 'app-firefox\\x2desr-4.scope', windows: [7, 7, 9], gpu: { streams: 2, surfaces: 1, toPhoneBytesPerSecond: 10, fromPhoneBytesPerSecond: 0 } }]))
-    expect(parsed.apps.map(a => a.id)).toEqual([STEAM, 'session.scope', 'app-firefox\\x2desr-4.scope'])
+    const parsed = parseRunningApps(listing([app, session, { ...app, id: 'app-xfce4\\x2dterminal-4.scope', windows: [7, 7, 9], gpu: { streams: 2, surfaces: 1, toPhoneBytesPerSecond: 10, fromPhoneBytesPerSecond: 0 } }]))
+    expect(parsed.apps.map(a => a.id)).toEqual([STEAM, 'session.scope', 'app-xfce4\\x2dterminal-4.scope'])
     expect(parsed.apps[0]!.windows).toEqual([])
     expect(parsed.apps[2]!.windows).toEqual([7, 9])
     expect(parsed.apps[2]!.gpu).toEqual({ streams: 2, surfaces: 1, toPhoneBytesPerSecond: 10, fromPhoneBytesPerSecond: 0 })
@@ -81,8 +81,8 @@ describe('ending an app', () => {
   it('force quits and kills, reporting whether it ended', async () => {
     expect(await endRunningApp(guest({ ok: true, result: { ended: true, killed: false } }), STEAM, 'force-quit')).toEqual({ ended: true, killed: false })
     const computer = guest({ ok: true, result: { ended: true, killed: true } })
-    expect(await endRunningApp(computer, 'app-firefox\\x2desr-4.scope', 'kill')).toEqual({ ended: true, killed: true })
-    expect(computer.calls).toEqual([[SCOPES, 'kill', 'app-firefox\\x2desr-4.scope']])
+    expect(await endRunningApp(computer, 'app-xfce4\\x2dterminal-4.scope', 'kill')).toEqual({ ended: true, killed: true })
+    expect(computer.calls).toEqual([[SCOPES, 'kill', 'app-xfce4\\x2dterminal-4.scope']])
   })
 
   it('maps the guest errors to statuses', async () => {
