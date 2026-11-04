@@ -14,6 +14,7 @@
 #include <sys/stat.h>
 #include <thread>
 #include <cstring>
+#include <pthread.h>
 #include <map>
 #include <memory>
 #include <string>
@@ -30,6 +31,48 @@
 // submitted to that queue before the watch has completed. Fence and timeline state is
 // then known in the guest: status queries and waits never make a round trip.
 namespace caboose::completion {
+
+// The waits in progress (WaitTimer, below): who waits, for what and since when, so a stalled
+// poll or wait can say which other threads have been waiting long (a thread that never
+// returns from a wait reports nothing itself). Its own mutex, a leaf: taken under any lock.
+class WaitsInProgress {
+public:
+    uint64_t begin(uint32_t what) {
+        char name[16] = "?";
+        pthread_getname_np(pthread_self(), name, sizeof name);
+        std::lock_guard<std::mutex> lock(mutex_);
+        const uint64_t id = ++next_;
+        if (waits_.size() < 256) waits_[id] = {name, what, std::chrono::steady_clock::now()};
+        return id;
+    }
+    void end(uint64_t id) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        waits_.erase(id);
+    }
+    // " waiting=thread:what:seconds,..." for the waits at least `atLeast` old; empty if none.
+    std::string older(std::chrono::steady_clock::duration atLeast) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        const auto now = std::chrono::steady_clock::now();
+        std::string out;
+        for (const auto& [id, wait] : waits_) {
+            if (now - wait.since < atLeast) continue;
+            out += out.empty() ? " waiting=" : ",";
+            out += wait.thread + ":" + std::to_string(wait.what) + ":" +
+                   std::to_string(std::chrono::duration_cast<std::chrono::seconds>(now - wait.since).count()) + "s";
+        }
+        return out;
+    }
+
+private:
+    struct Wait { std::string thread; uint32_t what; std::chrono::steady_clock::time_point since; };
+    std::mutex mutex_;
+    uint64_t next_ = 0;
+    std::map<uint64_t, Wait> waits_;
+};
+inline WaitsInProgress& waitsInProgress() {
+    static WaitsInProgress* instance = new WaitsInProgress;  // never destroyed, as the tracker
+    return *instance;
+}
 
 // Wire, little-endian. Both commands use the ordinary 8-byte gfxstream packet header
 // (opcode, total packet size); neither has a reply on its own stream.
@@ -806,7 +849,14 @@ public:
             barriersPending_.store(false, std::memory_order_release);
             return serials;
         }
-        changed_.wait(lock, [&] { return closed_ || !speculatedOutstanding_.load(std::memory_order_relaxed); });
+        const Clock::time_point began = Clock::now();
+        Clock::time_point report = began + stallFirst_;
+        while (!changed_.wait_until(lock, report, [&] {
+            return closed_ || !speculatedOutstanding_.load(std::memory_order_relaxed);
+        })) {
+            reportStallLocked("speculation-hold", began, "");
+            report = Clock::now() + stallRepeat_;
+        }
         return serials;
     }
     // Waits reported complete before their records arrived.
@@ -819,6 +869,7 @@ private:
     struct Watch;
     void finishWatchLocked(uint64_t serial, int32_t status, Watch watch,
                            const std::vector<payloads::Capture>& captures, bool idle) {
+        lastProgress_ = Clock::now();
         auto queue = queues_.find(watch.queue);
         if (watch.speculated) {
             speculatedOutstanding_.fetch_sub(1, std::memory_order_acq_rel);
@@ -929,18 +980,57 @@ public:
         std::lock_guard<decltype(mutex_)> lock(mutex_);
         return fencesLocked(fences, count, all);
     }
+    // A wait unsatisfied this long writes CABOOSE_GPU_WAIT_STALLED with what it waits for and
+    // what the tracker knows of it, then again every stallRepeat: an application that waits for
+    // the GPU forever says what for.
+    void stallReports(Clock::duration first, Clock::duration repeat) {
+        std::lock_guard<decltype(mutex_)> lock(mutex_);
+        stallFirst_ = first;
+        stallRepeat_ = repeat;
+    }
+    // A wait of at least this long is the application's guard against a hung GPU, as DXVK's
+    // five seconds per submission: it ends only after that long without the phone completing
+    // any of this process's work, not while work it waits for is still being completed
+    // (progressTimeout). Shorter waits end at their deadline.
+    void progressTimeouts(Clock::duration atLeast) {
+        std::lock_guard<decltype(mutex_)> lock(mutex_);
+        progressAtLeast_ = atLeast;
+    }
     // Waits until the fences are signaled (all, or any) or `deadline` passes.
     Answer waitFences(const uint64_t* fences, uint32_t count, bool all, Clock::time_point deadline) {
         std::unique_lock<decltype(mutex_)> lock(mutex_);
         bool tried = false;
+        const Clock::time_point began = Clock::now();
+        const Clock::duration requested = deadline - began;
+        Clock::time_point report = began + stallFirst_;
         for (;;) {
             Answer answer = fencesLocked(fences, count, all);
             if (answer != Answer::NotYet) return answer;
             if (!tried && deadline > Clock::now() && speculateFencesLocked(fences, count, all)) continue;
             tried = true;
             if (closed_) return Answer::AskDevice;
-            if (changed_.wait_until(lock, deadline) == std::cv_status::timeout) {
+            if (changed_.wait_until(lock, std::min(deadline, report)) == std::cv_status::timeout) {
                 answer = fencesLocked(fences, count, all);
+                if (answer == Answer::NotYet && progressingLocked(requested, [&] {
+                        for (uint32_t i = 0; i < count; ++i)
+                            if (fenceWatchLocked(fences[i])) return true;
+                        return false;
+                    }, &deadline))
+                    continue;
+                if (answer == Answer::NotYet && !closed_ && Clock::now() < deadline) {
+                    std::string what;
+                    for (uint32_t i = 0; i < count; ++i) {
+                        auto it = fences_.find(fences[i]);
+                        static const char* const names[] = {"unsignaled", "signaled", "pending", "untracked"};
+                        what += " fence" + std::to_string(i) + "=" + (it == fences_.end() ? "unknown" : names[int(it->second.state)]);
+                        if (it != fences_.end() && it->second.serial)
+                            what += "/serial" + std::to_string(it->second.serial) +
+                                    (watches_.count(it->second.serial) ? "/outstanding" : "/answered");
+                    }
+                    reportStallLocked("vkWaitForFences", began, what);
+                    report = Clock::now() + stallRepeat_;
+                    continue;
+                }
                 return answer == Answer::NotYet && closed_ ? Answer::AskDevice : answer;
             }
         }
@@ -950,14 +1040,40 @@ public:
                          Clock::time_point deadline) {
         std::unique_lock<decltype(mutex_)> lock(mutex_);
         bool tried = false;
+        const Clock::time_point began = Clock::now();
+        const Clock::duration requested = deadline - began;
+        Clock::time_point report = began + stallFirst_;
         for (;;) {
             Answer answer = timelinesLocked(semaphores, values, count, all);
             if (answer != Answer::NotYet) return answer;
             if (!tried && deadline > Clock::now() && speculateTimelinesLocked(semaphores, values, count, all)) continue;
             tried = true;
             if (closed_) return Answer::AskDevice;
-            if (changed_.wait_until(lock, deadline) == std::cv_status::timeout) {
+            if (changed_.wait_until(lock, std::min(deadline, report)) == std::cv_status::timeout) {
                 answer = timelinesLocked(semaphores, values, count, all);
+                if (answer == Answer::NotYet && progressingLocked(requested, [&] {
+                        for (uint32_t i = 0; i < count; ++i)
+                            if (providerLocked(semaphores[i], values[i])) return true;
+                        return false;
+                    }, &deadline))
+                    continue;
+                if (answer == Answer::NotYet && !closed_ && Clock::now() < deadline) {
+                    std::string what;
+                    for (uint32_t i = 0; i < count; ++i) {
+                        auto it = semaphores_.find(semaphores[i]);
+                        what += " semaphore" + std::to_string(i) + "=0x";
+                        char key[24];
+                        std::snprintf(key, sizeof key, "%llx", (unsigned long long)semaphores[i]);
+                        what += key;
+                        what += " wanted=" + std::to_string(values[i]);
+                        if (it == semaphores_.end()) what += " unknown";
+                        else what += std::string(it->second.tracked ? " tracked" : " untracked") + " value=" +
+                                     std::to_string(it->second.value) + " pending=" + std::to_string(it->second.pending);
+                    }
+                    reportStallLocked("vkWaitSemaphores", began, what);
+                    report = Clock::now() + stallRepeat_;
+                    continue;
+                }
                 return answer == Answer::NotYet && closed_ ? Answer::AskDevice : answer;
             }
         }
@@ -974,6 +1090,24 @@ private:
         for (const auto& entry : watches_) oldest = std::min(oldest, entry.first);
         return oldest;
     }
+    // At a long wait's deadline: whether it goes on because what it waits for is watched and the
+    // phone completed some of the process's work within the last `requested`; then `deadline`
+    // moves to `requested` after that last completion.
+    template <class Watched>
+    bool progressingLocked(Clock::duration requested, Watched&& watched, Clock::time_point* deadline) {
+        const Clock::time_point now = Clock::now();
+        if (now < *deadline || closed_ || lost_ || requested < progressAtLeast_ || !watched()) return false;
+        if (lastProgress_ + requested <= now) return false;
+        *deadline = lastProgress_ + requested;
+        ++extendedWaits_;
+        return true;
+    }
+    void reportStallLocked(const char* call, Clock::time_point began, const std::string& what) const {
+        const long long seconds = (long long)std::chrono::duration_cast<std::chrono::seconds>(Clock::now() - began).count();
+        std::fprintf(stderr, "CABOOSE_GPU_WAIT_STALLED call=%s seconds=%lld%s%s\n", call, seconds, what.c_str(),
+                     describeLocked().c_str());
+        std::fflush(stderr);
+    }
     std::string describeLocked() const {
         std::string out = " last_serial=" + std::to_string(lastSerial_) + " watches=" + std::to_string(watches_.size());
         if (!watches_.empty()) {
@@ -983,6 +1117,27 @@ private:
         }
         if (closed_) out += " feed=closed";
         if (lost_) out += " lost";
+        if (extendedWaits_) out += " extended_waits=" + std::to_string(extendedWaits_);
+        if (const uint64_t held = speculatedOutstanding_.load(std::memory_order_relaxed))
+            out += " speculated_outstanding=" + std::to_string(held);
+        if (barriersPending_.load(std::memory_order_relaxed))
+            out += " barriers=" + std::to_string(barriers_.size()) + " barrier_stream=" + std::to_string(barrierStream_);
+        // Tracked timelines a submitted signal is still ahead of: with no watch outstanding,
+        // their value is behind what the device reached.
+        size_t behind = 0;
+        std::string listed;
+        for (const auto& [semaphore, state] : semaphores_) {
+            if (!state.tracked || state.pending <= state.value) continue;
+            if (++behind > 4) continue;
+            char item[96];
+            std::snprintf(item, sizeof item, "%s0x%llx:%llu/%llu", listed.empty() ? "" : ",",
+                          (unsigned long long)semaphore, (unsigned long long)state.value,
+                          (unsigned long long)state.pending);
+            listed += item;
+        }
+        if (behind) out += " timelines_behind=" + std::to_string(behind) + " [" + listed + "]";
+        // Other threads' waits of five seconds or more (WaitTimer): what may hold this one.
+        out += waitsInProgress().older(std::chrono::seconds(5));
         return out;
     }
     struct FenceState { Fence state = Fence::Unsignaled; uint64_t serial = 0; uint64_t device = 0; };
@@ -1211,6 +1366,10 @@ private:
     uint64_t barrierStream_ = 0;
     std::atomic<bool> barriersPending_{false};
     std::atomic<uint64_t> speculatedOutstanding_{0};
+    Clock::duration stallFirst_ = std::chrono::seconds(10), stallRepeat_ = std::chrono::seconds(60);
+    Clock::duration progressAtLeast_ = std::chrono::seconds(1);
+    Clock::time_point lastProgress_{};
+    uint64_t extendedWaits_ = 0;
     uint64_t speculatedWaits_ = 0;
 
     // Whether a wait for `value` of `semaphore` (a binary semaphore when it is no followed
@@ -1451,7 +1610,9 @@ namespace caboose::completion {
 struct WaitTimer {
     uint32_t what;
     std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+    uint64_t id = waitsInProgress().begin(what);
     ~WaitTimer() {
+        waitsInProgress().end(id);
         caboose_read_profile_wait(uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(
                                       std::chrono::steady_clock::now() - start).count()), what);
     }

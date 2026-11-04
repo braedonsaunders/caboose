@@ -492,6 +492,16 @@ stream carries all its work. Before the next command it sends on that stream, it
 process waits for the records instead. A record that reports device loss is device loss,
 and a value reported reached stays reached. `CABOOSE_GPU_SPECULATE=0` turns speculation off.
 
+A wait the guest answers from the feed with a timeout of a second or more ends only once that
+long has passed without the phone completing any of the process's work, while what it waits for
+has been sent and is watched; shorter waits end at their timeout. Applications use such a
+timeout to detect a hung GPU (DXVK gives every submission five seconds, then reports the device
+lost), and a submission behind a phone's pipeline compiles can take longer while the phone is
+not hung: after a speculated wait, the next wait also covers the work before it. A wait still
+unsatisfied after ten seconds writes `CABOOSE_GPU_WAIT_STALLED` with what it waits for and what
+the guest knows of it, and the other threads' waits of five seconds or more, then again every
+minute; so does an encoder held behind speculated records.
+
 With `0x800000` a process may send `REPLY_MODE(1)` once on a device stream, which needs the
 process's completion feed (without one the stream ends). From then on the commands listed in
 `apps/ios/GPUStream/gfxstream/silent-success-opcodes.inc` (the commands whose replies the
