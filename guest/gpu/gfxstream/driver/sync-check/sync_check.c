@@ -1675,9 +1675,16 @@ static int oneWayChild(int mispredict) {
     VkDeviceCreateInfo deviceInfo = {VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
     deviceInfo.queueCreateInfoCount = 1;
     deviceInfo.pQueueCreateInfos = &queueInfo;
+    // A process that lost its device still destroys what it made; the driver must keep those
+    // destroys to itself (the phone never made the objects a refused prediction named).
+    PFN_vkDestroyInstance destroyInstance =
+        icd ? (PFN_vkDestroyInstance)icd(childInstance, "vkDestroyInstance") : vkDestroyInstance;
     VkDevice childDevice;
     result = createDevice(childPhysical, &deviceInfo, NULL, &childDevice);
-    if (result == VK_ERROR_DEVICE_LOST || result == VK_ERROR_INITIALIZATION_FAILED) return 5;
+    if (result == VK_ERROR_DEVICE_LOST || result == VK_ERROR_INITIALIZATION_FAILED) {
+        destroyInstance(childInstance, NULL);
+        return 5;
+    }
     if (result != VK_SUCCESS) return 3;
 #define DEVICE_CALL(name) PFN_##name call_##name = icd ? (PFN_##name)call_vkGetDeviceProcAddr(childDevice, #name) : name
     DEVICE_CALL(vkGetDeviceQueue);
@@ -1685,23 +1692,25 @@ static int oneWayChild(int mispredict) {
     DEVICE_CALL(vkQueueSubmit);
     DEVICE_CALL(vkWaitForFences);
     DEVICE_CALL(vkQueueWaitIdle);
-#undef DEVICE_CALL
     VkQueue childQueue;
     call_vkGetDeviceQueue(childDevice, 0, 0, &childQueue);
     VkFenceCreateInfo fenceInfo = {VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
-    VkFence fence;
+    VkFence fence = VK_NULL_HANDLE;
     result = call_vkCreateFence(childDevice, &fenceInfo, NULL, &fence);
     if (result == VK_SUCCESS) result = call_vkQueueSubmit(childQueue, 0, NULL, fence);
     if (result == VK_SUCCESS) result = call_vkWaitForFences(childDevice, 1, &fence, VK_TRUE, 20000000000ull);
     if (result == VK_SUCCESS) result = call_vkQueueWaitIdle(childQueue);
+    DEVICE_CALL(vkDestroyFence);
+    DEVICE_CALL(vkDestroyDevice);
+    if (result == VK_SUCCESS || result == VK_ERROR_DEVICE_LOST) {
+        call_vkDestroyFence(childDevice, fence, NULL);
+        call_vkDestroyDevice(childDevice, NULL);
+        destroyInstance(childInstance, NULL);
+    }
     if (result == VK_ERROR_DEVICE_LOST) return 5;
     if (result != VK_SUCCESS) return 3;
-    if (!icd) {
-        vkDestroyFence(childDevice, fence, NULL);
-        vkDestroyDevice(childDevice, NULL);
-        vkDestroyInstance(childInstance, NULL);
-    }
     return 0;
+#undef DEVICE_CALL
 }
 
 // Runs oneWayChild in a new process with the driver's diagnostics, and returns its exit status
@@ -1775,9 +1784,22 @@ static void oneWayCases(const char* only) {
         int sent = 0;
         const int status = runOneWayChild(1, &sent, &granted);
         // Without one-way start the instance is asked, and refused.
-        const int ok = granted ? status == 5 : status == 6;
-        report("one_way_misprediction", ok, "granted=%d status=%d sent_one_way=%d (5: device lost; 6: refused; -1: hung)",
-               granted, status, sent);
+        // The executor and every other process carry on: this probe's own device still runs a
+        // batch, and a new process starts and completes one.
+        VkFenceCreateInfo fenceInfo = {VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+        VkFence fence;
+        VkResult parent = vkCreateFence(device, &fenceInfo, NULL, &fence);
+        if (parent == VK_SUCCESS) {
+            parent = vkQueueSubmit(queue, 0, NULL, fence);
+            if (parent == VK_SUCCESS) parent = vkWaitForFences(device, 1, &fence, VK_TRUE, 20000000000ull);
+            vkDestroyFence(device, fence, NULL);
+        }
+        int afterSent = 0, afterGranted = 0;
+        const int after = runOneWayChild(0, &afterSent, &afterGranted);
+        const int ok = (granted ? status == 5 : status == 6) && parent == VK_SUCCESS && after == 0;
+        report("one_way_misprediction", ok,
+               "granted=%d status=%d sent_one_way=%d (5: device lost; 6: refused; -1: hung) probe=%d next_process=%d",
+               granted, status, sent, parent, after);
     }
 }
 
