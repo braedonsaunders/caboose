@@ -53,7 +53,7 @@ const tools = [
     name: 'act',
     description: 'Run steps in order, stopping at the first failure; then reply with what changed (+ added, ~ changed, - removed '
       + 'controls; windows opened or closed). Put every step you already know in one call. A step is one of: {"press":id} '
-      + '{"set":id,"text":t} replaces a field\'s text, {"key":"ctrl+s"}, {"type":t}, {"click":[x,y],"button":1-3,"count":1-3}, '
+      + '{"set":id,"text":t} replaces a field\'s text (plain: type keeps bold and other formatting), {"key":"ctrl+s"}, {"type":t}, {"click":[x,y],"button":1-3,"count":1-3}, '
       + '{"scroll":[x,y],"dy":n}, {"drag":[x1,y1,x2,y2]}, {"focus":window}, {"launch":"command"}, '
       + '{"tool":name,"args":{...}} calls a page tool, {"run":routine,"texts":[...]} replays a saved routine. Every step waits '
       + 'for the application to react, so wait steps ({"wait":ms}) are rarely needed. save:name, once a task is done, keeps '
