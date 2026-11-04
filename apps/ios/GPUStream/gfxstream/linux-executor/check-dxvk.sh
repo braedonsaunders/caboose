@@ -9,15 +9,18 @@
 # DXVK's d3d11 triangle test. A broker from this checkout (broker_host.py, every bind granted)
 # runs in the computer on a port of its own, so the computer's own executor and displays are
 # untouched; the real Linux executor (WORK/build) joins the computer's network namespace and
-# serves it under each feature list (the phone's, with batched descriptor sets; the same
-# without them; an older phone's), and the triangle runs through Proton with DRIVER (the guest
-# driver under test, loaded for that process only) for SECONDS (default 20). Each case requires
-# DXVK to report the device without skipping it, a D3D11 device, a swapchain and presented
-# frames, and the executor to end without a fault. PORT (default 14660) and DISPLAY_ENV (default
+# serves it under each feature list (the phone's, with batched descriptor sets and guest-chosen
+# set ids; the same without the set ids; without batched sets; an older phone's), and the
+# triangle runs through Proton with DRIVER (the guest driver under test, loaded for that process
+# only, with CABOOSE_READ_PROFILE=1) for SECONDS (default 20). Each case requires DXVK to report
+# the device without skipping it, a D3D11 device, a swapchain and presented frames, and the
+# executor to end without a fault. The phone's case also requires the hello to grant guest-chosen
+# set ids (0x100000) and descriptor set allocation never to wait for replies (no drain20077);
+# every case prints the allocation drains it saw. PORT (default 14660) and DISPLAY_ENV (default
 # /run/caboose/display.env) pick the broker port and the display; only the Wine processes in
 # BENCH_DIR's own prefix are ended, so checks with separate BENCH_DIRs can share a computer.
 set -eu
-[ $# -ge 4 ] && [ $# -le 5 ] || { sed -n '4,19p' "$0" >&2; exit 2; }
+[ $# -ge 4 ] && [ $# -le 5 ] || { sed -n '4,21p' "$0" >&2; exit 2; }
 computer=$1
 work=$(cd "$2" && pwd)
 driver=$(realpath "$3")
@@ -49,16 +52,17 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 fail() { echo "FAIL: $*" >&2; exit 1; }
-phone=guest-handles,guest-handle-arrays,completion-feed,ordered-present,guest-images,guest-query-pools,shader-cache,executor-resume,zstd-stream,upload-cache,guest-buffer-views,batched-descriptor-sets-inline
-unbatched=${phone%,batched-descriptor-sets-inline}
+phone=guest-handles,guest-handle-arrays,completion-feed,ordered-present,guest-images,guest-query-pools,shader-cache,executor-resume,zstd-stream,upload-cache,guest-buffer-views,batched-descriptor-sets-inline,guest-set-ids
+poolids=${phone%,guest-set-ids}
+unbatched=${poolids%,batched-descriptor-sets-inline}
 older=guest-handles,guest-handle-arrays,completion-feed,ordered-present,guest-images,guest-query-pools,executor-resume
 docker exec "$computer" sh -c "mkdir -p $dir/repo/apps/ios/GPUStream/gfxstream $dir/repo/guest"
 docker cp -q "$repo/guest/gpu" "$computer:$dir/repo/guest/"
 docker cp -q "$here" "$computer:$dir/repo/apps/ios/GPUStream/gfxstream/"
 docker cp -q "$driver" "$computer:$dir/libvulkan_gfxstream.so"
 docker exec "$computer" sh -c "chown -R caboose $dir && printf '%s' '{\"file_format_version\":\"1.0.0\",\"ICD\":{\"library_path\":\"$dir/libvulkan_gfxstream.so\",\"api_version\":\"1.3.0\"}}' > $dir/icd.json"
-for case in phone unbatched older; do
-  case $case in phone) features=$phone ;; unbatched) features=$unbatched ;; older) features=$older ;; esac
+for case in phone poolids unbatched older; do
+  case $case in phone) features=$phone ;; poolids) features=$poolids ;; unbatched) features=$unbatched ;; older) features=$older ;; esac
   docker exec "$computer" pkill -TERM -f "$dir/repo/" > /dev/null 2>&1 || true
   docker rm -f "$name" > /dev/null 2>&1 || true
   docker exec -d -u caboose "$computer" sh -c "env HOME=/tmp python3 -u $dir/repo/apps/ios/GPUStream/gfxstream/linux-executor/broker_host.py \
@@ -73,7 +77,7 @@ for case in phone unbatched older; do
   i=0; until docker logs "$name" 2>&1 | grep -q 'session ready'; do i=$((i + 1)); [ $i -le 150 ] || fail "$case: executor readiness"; sleep 0.2; done
   docker exec -u caboose "$computer" sh -c "set -a; . $display; set +a
     CABOOSE_GFXSTREAM_SOCKET=$dir/gpu-$case/gpu.sock CABOOSE_GFXSTREAM_SURFACE_SOCKET=$dir/gpu-$case/surface.sock \
-    DXVK_LOG_LEVEL=info DXVK_LOG_PATH=none timeout $((seconds + 60)) flatpak run --env=VK_DRIVER_FILES=$dir/icd.json \
+    CABOOSE_READ_PROFILE=1 DXVK_LOG_LEVEL=info DXVK_LOG_PATH=none timeout $((seconds + 60)) flatpak run --env=VK_DRIVER_FILES=$dir/icd.json \
     --env=VK_ICD_FILENAMES=$dir/icd.json '--env=VK_LOADER_LAYERS_DISABLE=*' --command=sh com.valvesoftware.Steam -c '
     export STEAM_COMPAT_DATA_PATH=$bench/compat/0 STEAM_COMPAT_CLIENT_INSTALL_PATH=$steam
     mkdir -p $bench/compat/0
@@ -96,6 +100,15 @@ for case in phone unbatched older; do
   ! grep -a -q -E 'GUEST_FAULT|Segmentation fault' "$out/executor-$case.log" || fail "$case: the executor faulted ($out/executor-$case.log)"
   frames=$(grep -a -o 'presented=[0-9]*' "$out/broker-$case.log" | awk -F= '{n+=$2} END {print n+0}')
   [ "$frames" -gt 0 ] || fail "$case: the triangle never presented ($log)"
-  echo "PASS DXVK $case: adapter, D3D11 device, swapchain, $frames frames presented"
+  # Descriptor set allocations that waited for earlier replies (the pool's set ids), summed
+  # over the read profile's reports, which count since the previous report.
+  drains=$(grep -a 'CABOOSE_READ_PROFILE' "$log" | grep -a -o ' drain20077=[0-9]*ms/[0-9]*' | tr '=/' '  ' | \
+    awk '{ms+=$2; n+=$3} END {printf "%dms/%d", ms, n}')
+  if [ "$case" = phone ]; then
+    granted=$(grep -a -m1 -o 'CABOOSE_GPU_HELLO features=0x[0-9a-f]*' "$log" | cut -d= -f2)
+    [ -n "$granted" ] && [ $((granted & 0x100000)) -ne 0 ] || fail "$case: guest-chosen set ids not granted (${granted:-no hello})"
+    [ "$drains" = 0ms/0 ] || fail "$case: descriptor set allocation waited for replies ($drains)"
+  fi
+  echo "PASS DXVK $case: adapter, D3D11 device, swapchain, $frames frames presented, allocation drains $drains"
 done
 echo 'PASS DXVK found an adapter and presented under every negotiation'

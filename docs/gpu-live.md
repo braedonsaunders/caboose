@@ -218,8 +218,9 @@ only known names, lowercased and sorted: `guest-handles`, `guest-handle-arrays`,
 `completion-feed`, `ordered-present`, `guest-images`, `guest-query-pools`,
 `shader-cache`, `executor-resume`, `zstd-stream` ([Compressed commands](#compressed-commands)),
 `upload-cache` ([Upload cache](#upload-cache)), `guest-buffer-views`,
-`batched-descriptor-sets` and `batched-descriptor-sets-inline`
-([Batched descriptor sets](#batched-descriptor-sets)).
+`batched-descriptor-sets`, `batched-descriptor-sets-inline`
+([Batched descriptor sets](#batched-descriptor-sets)) and `guest-set-ids`
+([Guest-chosen set ids](#guest-chosen-set-ids)).
 The broker reads them from the authenticated upgrade request.
 
 A local process on the indexed v4 path may offer optional features in its 48-byte
@@ -228,13 +229,13 @@ hello by setting bits above the required mask `0x70`: `0x80` (guest-assigned han
 `0x200` (completion feed), `0x400` (ordered presents), `0x800` (guest-owned swapchain
 images), `0x1000` (guest-assigned query pools; requires `0x80`) and `0x2000` (shader
 cache), `0x8000` (upload cache), `0x10000` (guest-assigned buffer views; requires `0x80`),
-`0x40000` (batched descriptor sets without inline uniform blocks) and `0x80000` (batched
-descriptor sets with inline uniform blocks).
+`0x40000` (batched descriptor sets without inline uniform blocks), `0x80000` (batched
+descriptor sets with inline uniform blocks) and `0x100000` (guest-chosen set ids; requires `0x80`).
 The broker replies with the required mask plus the offered bits whose capability
 the phone declared (`guest-handles`, `guest-handle-arrays`, `completion-feed`,
 `ordered-present`, `guest-images`, `guest-query-pools`, `shader-cache`, `upload-cache`,
-`guest-buffer-views`, `batched-descriptor-sets`, `batched-descriptor-sets-inline`
-respectively); it drops `0x100`, `0x1000` and `0x10000` when it does not
+`guest-buffer-views`, `batched-descriptor-sets`, `batched-descriptor-sets-inline`, `guest-set-ids`
+respectively); it drops `0x100`, `0x1000`, `0x10000` and `0x100000` when it does not
 grant `0x80`. An offer with unknown bits, one of those without `0x80`, or any other difference from the v4
 hello closes the local connection. A process falls back to offering fewer features.
 
@@ -242,7 +243,8 @@ hello closes the local connection. A process falls back to offering fewer featur
 
 With `0x80000` the process allocates and writes descriptor sets itself, inline uniform blocks
 included. A descriptor pool asks the phone once, at creation and without waiting, for the ids
-of its sets (`vkCollectDescriptorPoolIdsGOOGLE`); allocations, frees and writes then stay in
+of its sets (`vkCollectDescriptorPoolIdsGOOGLE`), unless it chose them itself
+([Guest-chosen set ids](#guest-chosen-set-ids)); allocations, frees and writes then stay in
 the process. Just before a submit, on the same stream, one
 `vkQueueCommitDescriptorSetUpdatesGOOGLE` carries every set the submit's command buffers bind
 that was allocated or written since: the pending allocations (pool, layout and set id) and the
@@ -257,6 +259,21 @@ declares `batched-descriptor-sets` now, so such a driver allocates and writes se
 Each executor connection decides whether the process batches: a process that outlives its
 executor (the compositor) follows the next one, batched or not, and the objects it made under
 the last are lost with it.
+
+### Guest-chosen set ids
+
+With `0x100000` (granted with `0x80`) and batched descriptor sets, a process chooses its pools'
+set ids and never asks for them. Creating a pool of `maxSets` sets takes `1 + maxSets`
+consecutive guest-assigned handles in one block of the 32-bit counter: the pool is the first,
+`P`, and its set ids are `P+1` through `P+maxSets`. Its `VkDescriptorPoolCreateInfo.flags`
+carries `0x40000000`, outside every flag Vulkan defines, which says so; the decoder takes the
+flag off before the create reaches the driver and registers those ids for the pool instead of
+minting them. A flagged pool without batched descriptor sets, under a handle the guest did not
+assign, or whose ids would run past the counter is an invalid command, as is an id already in
+use. The flag is per pool because the decoder does not see a process's hello: an executor that
+does not grant the feature leaves new pools unflagged, asking for their ids, and pools that
+were made either way coexist. A pool whose handle and ids do not fit one block (`maxSets` of
+`0xFFFFFFFF`) asks for its ids.
 
 ### Guest-assigned handles
 

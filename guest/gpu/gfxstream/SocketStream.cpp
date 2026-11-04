@@ -56,15 +56,18 @@ static constexpr unsigned char kHello[48] = {
 // flushed memory the phone keeps by hash (caboose-bounded-memory/upload_cache.h); 0x10000 it
 // assigns buffer view handles too (requires 0x80); 0x80000 it allocates and writes descriptor
 // sets itself, inline uniform blocks included, and sends them with its next submit, in one
-// vkQueueCommitDescriptorSetUpdatesGOOGLE (docs/gpu-live.md, "Batched descriptor sets"). It
-// never offers 0x40000, the same without inline uniform blocks. The broker replies with the features both
+// vkQueueCommitDescriptorSetUpdatesGOOGLE (docs/gpu-live.md, "Batched descriptor sets"); 0x100000
+// it chooses the set ids of those descriptor pools itself (requires 0x80; docs/gpu-live.md,
+// "Guest-chosen set ids"). It never offers 0x40000, the same without inline uniform blocks. The broker replies with the features both
 // the process and the connected phone support. A broker that predates a feature closes
 // the connection instead, so the offer falls back to fewer features.
 static constexpr uint32_t kGuestHandles = 0x80, kGuestHandleArrays = 0x100, kCompletionFeed = 0x200,
                           kOrderedPresent = 0x400, kGuestImages = 0x800, kGuestQueryPools = 0x1000,
                           kShaderCache = 0x2000, kExecutorResume = 0x4000, kUploadCache = 0x8000,
-                          kGuestBufferViews = 0x10000, kBatchedDescriptorSets = 0x80000;
-static const uint32_t kOffers[] = {0x3ff80 | kBatchedDescriptorSets, 0x3ff80, kGuestHandles | kGuestHandleArrays | kCompletionFeed | kOrderedPresent | kGuestImages |
+                          kGuestBufferViews = 0x10000, kBatchedDescriptorSets = 0x80000,
+                          kGuestSetIds = 0x100000;
+static const uint32_t kOffers[] = {0x3ff80 | kBatchedDescriptorSets | kGuestSetIds,
+                                   0x3ff80 | kBatchedDescriptorSets, 0x3ff80, kGuestHandles | kGuestHandleArrays | kCompletionFeed | kOrderedPresent | kGuestImages |
                                        kGuestQueryPools | kShaderCache | kExecutorResume | kUploadCache |
                                        kGuestBufferViews,
                                    kGuestHandles | kGuestHandleArrays | kCompletionFeed | kOrderedPresent | kGuestImages |
@@ -127,6 +130,11 @@ int caboose_gfxstream_upload_cache = 0;
 // next one, batched or not, and the objects it made under the last are lost with it.
 extern "C" int caboose_gfxstream_batched_descriptor_sets;
 int caboose_gfxstream_batched_descriptor_sets = -1;
+// 1 while this process chooses the set ids of its batched descriptor pools (hello feature
+// 0x100000, granted with 0x80). Each executor connection decides it, as for batched sets; each
+// pool records how its ids were made.
+extern "C" int caboose_gfxstream_guest_set_ids;
+int caboose_gfxstream_guest_set_ids = 0;
 
 namespace {
 // The reply is the required hello with a subset of the offered features; returns them.
@@ -347,6 +355,8 @@ int CabooseSocketStream::connectWith(const char* path, const unsigned char* offe
     caboose_gfxstream_upload_cache = (features & kUploadCache) ? 1 : 0;
     __atomic_store_n(&caboose_gfxstream_batched_descriptor_sets, (features & kBatchedDescriptorSets) ? 1 : 0,
                      __ATOMIC_RELEASE);
+    __atomic_store_n(&caboose_gfxstream_guest_set_ids,
+                     (features & kGuestHandles) && (features & kGuestSetIds) ? 1 : 0, __ATOMIC_RELEASE);
 #else
     caboose_gfxstream_guest_handles = 0;
 #endif

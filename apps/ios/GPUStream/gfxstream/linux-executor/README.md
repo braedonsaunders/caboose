@@ -193,10 +193,13 @@ sh apps/ios/GPUStream/gfxstream/linux-executor/check-dxvk.sh COMPUTER WORK DRIVE
 
 Runs DXVK's d3d11 triangle (`BENCH_DIR/triangle.exe`, in the Steam Flatpak's data) through Proton
 in a running computer, with `DRIVER` loaded for that process only, on the real Linux executor
-under the phone's feature list with and without batched descriptor sets and an older phone's.
-The broker is this checkout's (`broker_host.py`, every bind granted) on a port of its own, so the
-computer's own executor and displays are untouched. Each case requires DXVK to report the device
-without skipping it, a D3D11 device, a swapchain and presented frames, and no executor fault.
+under the phone's feature list, the same without guest-chosen set ids, without batched descriptor
+sets, and an older phone's. The broker is this checkout's (`broker_host.py`, every bind granted)
+on a port of its own, so the computer's own executor and displays are untouched. Each case
+requires DXVK to report the device without skipping it, a D3D11 device, a swapchain and presented
+frames, and no executor fault. The triangle runs with `CABOOSE_READ_PROFILE=1`; each case prints
+the time descriptor set allocations spent waiting for earlier replies (`drain20077`), and the
+phone's case requires guest-chosen set ids granted and no such wait.
 The release seal runs it.
 
 ## Bind of an unmapped popup
