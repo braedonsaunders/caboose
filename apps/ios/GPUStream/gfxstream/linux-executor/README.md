@@ -130,6 +130,21 @@ The probe's `surface_enumeration` case reports the range of format counts it saw
 whose enumeration does not survive that change fails it. vkcube's frames are deterministic:
 the same build and settings give the same chain.
 
+## The device name
+
+Lavapipe names its device "llvmpipe (LLVM ...)", which reaches every application's GL renderer
+string through Zink, and Chromium's software rendering list disables GPU acceleration for any
+renderer naming llvmpipe: CEF (Steam's webhelper) and Chromium would retry their GPU process,
+then fall back to software, which they never do on the phone. `executor.py` therefore loads
+`libcaboose_device_name_layer.so` (built beside the executor's library) as an implicit layer of
+its Vulkan loader, which reports the device's name as `Caboose Linux executor` (`--device-name`
+changes it; an empty name, or `CABOOSE_EXECUTOR_KEEP_DEVICE_NAME=1`, keeps lavapipe's).
+`check-device-name.sh WORK` checks it:
+
+```
+PASS device name: reported ['Caboose Linux executor'], without the layer ['llvmpipe (LLVM 19.1.7, 256 bits)']
+```
+
 ## Limits
 
 - The phone's application lifecycle is absent: the executor never suspends

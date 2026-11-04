@@ -18,6 +18,7 @@ import base64
 import errno
 import faulthandler
 import hashlib
+import json
 import os
 from pathlib import Path
 import queue
@@ -639,12 +640,42 @@ def resident_bytes():
     return 0
 
 
+# Lavapipe calls itself "llvmpipe (LLVM ...)", and Chromium's software rendering list disables
+# GPU acceleration for any GL renderer naming llvmpipe: the executor reports this name instead,
+# so the computer's applications render as they do on the phone (README.md, "The device name").
+DEVICE_NAME = 'Caboose Linux executor'
+DEVICE_NAME_LAYER = 'libcaboose_device_name_layer.so'
+
+
+def name_device(library, name):
+    """Loads the device-name layer beside `library` as an implicit layer of this process's
+    Vulkan loader, reporting `name`; an empty name, or no layer built, reports the driver's."""
+    layer = Path(library).resolve().parent / DEVICE_NAME_LAYER
+    if not name or not layer.is_file():
+        return False
+    directory = Path(os.environ.get('XDG_RUNTIME_DIR') or '/tmp') / f'caboose-executor-layer-{os.getpid()}'
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    manifest = {'file_format_version': '1.2.0', 'layer': {
+        'name': 'VK_LAYER_CABOOSE_executor_device_name', 'type': 'GLOBAL', 'library_path': str(layer),
+        'api_version': '1.4.0', 'implementation_version': '1', 'description': 'Reports the executor device name',
+        'functions': {'vkGetInstanceProcAddr': 'caboose_device_name_GetInstanceProcAddr',
+                      'vkNegotiateLoaderLayerInterfaceVersion': 'caboose_device_name_NegotiateLoaderLayerInterfaceVersion'},
+        'disable_environment': {'CABOOSE_EXECUTOR_KEEP_DEVICE_NAME': '1'}}}
+    (directory / 'device_name_layer.json').write_text(json.dumps(manifest))
+    os.environ['CABOOSE_EXECUTOR_DEVICE_NAME'] = name
+    previous = os.environ.get('VK_ADD_IMPLICIT_LAYER_PATH')
+    os.environ['VK_ADD_IMPLICIT_LAYER_PATH'] = str(directory) + (':' + previous if previous else '')
+    return True
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
     parser.add_argument('--connect', required=True, metavar='HOST:PORT', help="the broker's WebSocket endpoint")
     parser.add_argument('--token-file', type=Path, required=True, help="the computer's per-wake GPU token")
     parser.add_argument('--library', type=Path, required=True, help='libcaboose_gpu_executor.so')
     parser.add_argument('--loader', default='libvulkan.so.1', help='the Vulkan loader the decoder runs on')
+    parser.add_argument('--device-name', default=DEVICE_NAME,
+                        help="the device name the executor reports (README.md, 'The device name'); empty keeps the driver's")
     parser.add_argument('--features', default=FEATURES, help="capability names (default: the phone's)")
     parser.add_argument('--computer', default='linux-executor', help='the X-Caboose-GPU-Computer identity')
     parser.add_argument('--cache-root', help='directory for the shader and upload caches')
@@ -677,6 +708,7 @@ def main():
         if len(kept) != len(options.features.split(',')):
             log('no --cache-root: shader-cache and upload-cache not offered')
         options.features = ','.join(kept)
+    name_device(options.library, options.device_name)
     runtime = native.Runtime(str(options.library))
     current = []
     draining = []

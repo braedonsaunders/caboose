@@ -35,5 +35,5 @@ run() {
 }
 run cmake -S /adapter/linux-executor -B /work/build -G Ninja -DCMAKE_BUILD_TYPE=Release \
   -DDEPENDENCY_RESOLUTION=SYSTEM -DCABOOSE_GFXSTREAM_SOURCE=/gfxstream > /dev/null
-run cmake --build /work/build --target caboose_gpu_executor -- -j"${CPUS:-4}"
+run cmake --build /work/build --target caboose_gpu_executor caboose_device_name_layer -- -j"${CPUS:-4}"
 echo "gfxstream $GFXSTREAM_COMMIT: $WORK/build/libcaboose_gpu_executor.so"

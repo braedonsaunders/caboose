@@ -36,3 +36,9 @@ target_link_libraries(caboose_gpu_executor PRIVATE
     "$<LINK_LIBRARY:WHOLE_ARCHIVE,caboose_gpu_native_runtime>"
     caboose_gfxstream_framebuffer caboose_gfxstream_connection gfxstream_backend_static ${CMAKE_DL_LIBS})
 target_link_options(caboose_gpu_executor PRIVATE "LINKER:--no-undefined")
+
+# libcaboose_device_name_layer.so: an implicit Vulkan layer executor.py loads to report the
+# device's name as CABOOSE_EXECUTOR_DEVICE_NAME (device_name_layer.cpp, README.md).
+add_library(caboose_device_name_layer SHARED device_name_layer.cpp)
+target_compile_features(caboose_device_name_layer PRIVATE cxx_std_17)
+target_link_options(caboose_device_name_layer PRIVATE "LINKER:--no-undefined")
