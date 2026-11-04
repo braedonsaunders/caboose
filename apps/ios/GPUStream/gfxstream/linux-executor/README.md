@@ -198,7 +198,11 @@ payloads, ordering barriers and silent success), the same with only the set ids,
 ids, without batched descriptor sets, and an older phone's. The broker is this checkout's
 (`broker_host.py`, every bind granted) on a port of its own, so the computer's own executor and
 displays are untouched. Each case requires DXVK to report the device without skipping it, a D3D11
-device, a swapchain and presented frames, and no executor fault. The triangle runs with
+device, a swapchain and presented frames, and no executor fault. Each case runs `SECONDS_RUNNING`
+(default 45, at least 30) from its first frames and requires the frame rate of its last 15 s to
+be at least half that of its first 15 s, from the broker's surface reports: a driver whose
+descriptor pools never report themselves full makes DXVK allocate sets without end, and the
+executor stalls once its memory is spent, after about 40 frames. The triangle runs with
 `CABOOSE_READ_PROFILE=1`; each case prints the time descriptor set allocations spent waiting for
 earlier replies (`drain20077`) and the waits the driver speculated (`speculated`), and the phone's
 case requires guest-chosen set ids, completion payloads, ordering barriers and silent success

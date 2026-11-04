@@ -422,6 +422,60 @@ static void surfaceCase(void) {
            fewestFormats == UINT32_MAX ? 0 : fewestFormats, mostFormats, bad ? " first: " : "", first);
 }
 
+// A descriptor pool reports VK_ERROR_OUT_OF_POOL_MEMORY when an allocation exceeds its sets or
+// its descriptors, also when the sets' handles are assigned without waiting for the phone: an
+// application (DXVK) moves to a new pool, and recycles the full one, only on that result.
+static void poolCapacityCase(void) {
+    VkDescriptorSetLayoutBinding bindings[2] = {
+        {0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_ALL, NULL},
+        {1, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 2, VK_SHADER_STAGE_ALL, NULL},
+    };
+    VkDescriptorSetLayoutCreateInfo layoutInfo = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+    layoutInfo.bindingCount = 2;
+    layoutInfo.pBindings = bindings;
+    VkDescriptorSetLayout layout;
+    CHECK(vkCreateDescriptorSetLayout(device, &layoutInfo, NULL, &layout));
+    // Pool A holds 4 sets and descriptors for 8: its sets run out first. Pool B holds 8 sets
+    // but sampled images for 3: its images run out at the second set.
+    VkDescriptorPoolSize sizesA[2] = {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 8}, {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 16}};
+    VkDescriptorPoolSize sizesB[2] = {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 8}, {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 3}};
+    struct { const char* name; uint32_t maxSets; VkDescriptorPoolSize* sizes; uint32_t fits; } pools[2] = {
+        {"sets", 4, sizesA, 4}, {"descriptors", 8, sizesB, 1}};
+    int ok = 1;
+    char details[256] = "";
+    size_t used = 0;
+    for (int p = 0; p < 2; ++p) {
+        VkDescriptorPoolCreateInfo poolInfo = {VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+        poolInfo.maxSets = pools[p].maxSets;
+        poolInfo.poolSizeCount = 2;
+        poolInfo.pPoolSizes = pools[p].sizes;
+        VkDescriptorPool pool;
+        CHECK(vkCreateDescriptorPool(device, &poolInfo, NULL, &pool));
+        for (int round = 0; round < 2; ++round) {  // again after a reset
+            uint32_t made = 0;
+            VkResult last = VK_SUCCESS;
+            for (uint32_t i = 0; i <= pools[p].fits; ++i) {
+                VkDescriptorSetAllocateInfo setInfo = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+                setInfo.descriptorPool = pool;
+                setInfo.descriptorSetCount = 1;
+                setInfo.pSetLayouts = &layout;
+                VkDescriptorSet set;
+                last = vkAllocateDescriptorSets(device, &setInfo, &set);
+                if (last != VK_SUCCESS) break;
+                ++made;
+            }
+            const int good = made == pools[p].fits && last == VK_ERROR_OUT_OF_POOL_MEMORY;
+            ok &= good;
+            used += (size_t)snprintf(details + used, sizeof(details) - used, "%s%s/%d made=%u of %u result=%d",
+                                     used ? " " : "", pools[p].name, round, made, pools[p].fits, last);
+            CHECK(vkResetDescriptorPool(device, pool, 0));
+        }
+        vkDestroyDescriptorPool(device, pool, NULL);
+    }
+    vkDestroyDescriptorSetLayout(device, layout, NULL);
+    report("pool_capacity", ok, "%s", details);
+}
+
 // Calls that must not wait for the phone: each is timed; a round trip takes milliseconds.
 static void callsCase(void) {
     const int n = 40;
@@ -1289,6 +1343,7 @@ int main(int argc, char** argv) {
     RUN("surface_enumeration", surfaceCase());
     RUN("free_after_wait", freeCase());
     RUN("completion_after_gpu", completionCase());
+    RUN("pool_capacity", poolCapacityCase());
     RUN("calls", callsCase());
     RUN("pipeline_cache", pipelineCacheCase(&props));
     RUN("child_windows", childWindowsCase());
