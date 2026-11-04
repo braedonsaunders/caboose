@@ -74,7 +74,7 @@ remote retirement retains only bounded numeric identities and owned destroy pack
 Toolkits create a surface, query it and create a swapchain before its window exists: GTK
 for a `wl_surface` without an `xdg_toplevel` yet, X11 toolkits for windows not yet
 mapped. The compositor grants a bind only for an existing window; it holds the bind of
-an override-redirect window not mapped yet and answers it when the window maps, within
+a window the binding process made that is not mapped yet and answers it when the window maps, within
 4 s ([gpu-live.md](../../../../docs/gpu-live.md#window-identity-boundary)). The broker closes
 the connection of a bind it refused; that close is not executor loss (only a bound
 connection's end is reported to `peerGone`). The surface binds lazily: a query tries
