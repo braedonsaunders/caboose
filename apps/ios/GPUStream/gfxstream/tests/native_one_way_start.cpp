@@ -7,8 +7,10 @@
 // A process's device stream sends REPLY_MODE(3) and then, without reading anything:
 //   1. vkCreateInstance with an extension no driver has, under a guest-assigned handle: it fails,
 //      and the process's completion feed carries a FAULT record (opcode 20000, its VkResult);
-//   2. vkCreateInstance, vkEnumeratePhysicalDevices, vkCreateDevice and vkGetDeviceQueue2, every
-//      handle the guest's own: they succeed and write nothing;
+//   2. vkCreateInstance, vkEnumeratePhysicalDevices, then a vkCreateDevice asking family 0 for
+//      one queue more than it has, which fails without reaching the driver (a FAULT, opcode
+//      20011, VK_ERROR_INITIALIZATION_FAILED), then vkCreateDevice and vkGetDeviceQueue2, every
+//      handle the guest's own: the rest succeed and write nothing;
 //   3. vkQueueWaitIdle on the guest's queue and vkEnumerateInstanceVersion, whose replies are the
 //      only bytes the stream reads back, then vkDestroyDevice and vkDestroyInstance by the guest's
 //      handles. A handle the decoder did not take would end the stream as invalid guest input.
@@ -105,7 +107,7 @@ std::vector<unsigned char> enumeratePhysicalDevices(uint64_t instance, const std
     for (uint64_t h : handles) p.u64(h);
     return p.finish(20002);
 }
-std::vector<unsigned char> createDevice(uint64_t physicalDevice, uint64_t handle) {
+std::vector<unsigned char> createDevice(uint64_t physicalDevice, uint64_t handle, uint32_t queues = 1) {
     Packet p;
     p.u64(physicalDevice);
     p.u32(3);  // VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO
@@ -114,8 +116,8 @@ std::vector<unsigned char> createDevice(uint64_t physicalDevice, uint64_t handle
     p.u32(1);  // one queue create info
     p.u32(2);  // VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO
     p.be32(0);
-    p.u32(0); p.u32(0); p.u32(1);  // flags, family 0, one queue
-    p.f32(1.0f);
+    p.u32(0); p.u32(0); p.u32(queues);  // flags, family 0, its queues
+    for (uint32_t q = 0; q < queues; ++q) p.f32(1.0f);
     p.strings({});
     p.strings({});
     p.be64(0);  // no pEnabledFeatures
@@ -166,7 +168,8 @@ int main(int argc, char** argv) {
     });
     const uint64_t failed = 0xCA0000AB00000001ull, instance = 0xCA0000AB00000002ull,
                    physical = 0xCA0000AB00000003ull, other = 0xCA0000AB00000004ull,
-                   logical = 0xCA0000AB00000005ull, queue = 0xCA0000AB00000006ull;
+                   logical = 0xCA0000AB00000005ull, queue = 0xCA0000AB00000006ull,
+                   wrong = 0xCA0000AB00000007ull;
     const uint32_t mode[4] = {sr::kReplyModeOpcode, sr::kReplyModePacketSize, sr::kSilentSuccess | sr::kSilentStart, 0};
     std::vector<unsigned char> stream;
     auto add = [&](const std::vector<unsigned char>& packet) { stream.insert(stream.end(), packet.begin(), packet.end()); };
@@ -175,6 +178,8 @@ int main(int argc, char** argv) {
     add(createInstance(failed, {"VK_CABOOSE_no_such_extension"}));
     add(createInstance(instance, {}));
     add(enumeratePhysicalDevices(instance, {physical, other}));
+    // Family 0 of lavapipe's one physical device has one queue: two is a wrong prediction.
+    add(createDevice(physical, wrong, 2));
     add(createDevice(physical, logical));
     add(getDeviceQueue2(logical, queue));
     add(queueWaitIdle(queue));
@@ -192,28 +197,37 @@ int main(int argc, char** argv) {
     const bool nothingElse = recv(device[0], &extra, 1, 0) == 0;
     deviceThread.join();
 
-    // The failed create's FAULT: serial 0, the fault status, its opcode and result.
-    unsigned char record[CompletionFeed::kRecordSize] = {};
-    uint64_t serial = 1;
-    int32_t status = 0, faultResult = 0;
-    uint32_t payload = 0, faultOpcode = 0;
-    unsigned char faultPayload[8] = {};
-    ok = ok && readAll(feed[0], record, sizeof(record));
-    std::memcpy(&serial, record, 8); std::memcpy(&status, record + 8, 4); std::memcpy(&payload, record + 12, 4);
-    ok = ok && payload == 8 && readAll(feed[0], faultPayload, sizeof(faultPayload));
-    std::memcpy(&faultOpcode, faultPayload, 4); std::memcpy(&faultResult, faultPayload + 4, 4);
+    // The failed creates' FAULTs, in order: serial 0, the fault status, the opcode and result.
+    struct Fault { uint64_t serial = 1; int32_t status = 0; uint32_t opcode = 0; int32_t result = 0; };
+    Fault faults[2];
+    for (Fault& fault : faults) {
+        unsigned char record[CompletionFeed::kRecordSize] = {};
+        uint32_t payload = 0;
+        unsigned char faultPayload[8] = {};
+        ok = ok && readAll(feed[0], record, sizeof(record));
+        std::memcpy(&fault.serial, record, 8); std::memcpy(&fault.status, record + 8, 4);
+        std::memcpy(&payload, record + 12, 4);
+        ok = ok && payload == 8 && readAll(feed[0], faultPayload, sizeof(faultPayload));
+        std::memcpy(&fault.opcode, faultPayload, 4); std::memcpy(&fault.result, faultPayload + 4, 4);
+    }
     shutdown(feed[0], SHUT_RDWR);
     feedThread.join();
     close(feed[0]); close(feed[1]); close(device[0]); close(device[1]);
     const int stop = caboose_gpu_runtime_stop(token);
     const int finish = stop ? stop : caboose_gpu_runtime_finish(token);
 
+    auto faulted = [](const Fault& f, uint32_t opcode, int32_t result) {
+        return f.serial == 0 && f.status == CompletionFeed::kFault && f.opcode == opcode && f.result == result;
+    };
     const bool pass = ok && nothingElse && deviceResult == 0 && idle == 0 && versionReply[0] >= (1u << 22) &&
-                      versionReply[1] == 0 && serial == 0 && status == CompletionFeed::kFault &&
-                      faultOpcode == sr::kCreateInstance && faultResult == -7 && !finish;
+                      versionReply[1] == 0 && faulted(faults[0], sr::kCreateInstance, -7) &&
+                      faulted(faults[1], sr::kCreateDevice, -3) && !finish;
     std::printf("%s one-way start: device stream %d, idle %d, version 0x%x result %d, nothing else %d; "
-                "feed record serial %llu status 0x%x opcode %u result %d; cleanup %d\n",
+                "feed records serial %llu status 0x%x opcode %u result %d, serial %llu status 0x%x opcode %u "
+                "result %d; cleanup %d\n",
                 pass ? "PASS" : "FAIL", deviceResult, idle, versionReply[0], (int)versionReply[1], nothingElse,
-                (unsigned long long)serial, (unsigned)status, faultOpcode, faultResult, finish);
+                (unsigned long long)faults[0].serial, (unsigned)faults[0].status, faults[0].opcode, faults[0].result,
+                (unsigned long long)faults[1].serial, (unsigned)faults[1].status, faults[1].opcode, faults[1].result,
+                finish);
     return pass ? 0 : 1;
 }

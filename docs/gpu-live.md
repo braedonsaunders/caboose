@@ -899,7 +899,7 @@ commands that start a process's Vulkan, whose handles the process chooses itself
 | --- | --- | --- |
 | `vkCreateInstance` | 20000 | its result |
 | `vkEnumeratePhysicalDevices` | 20002 | its result, `VK_INCOMPLETE` included |
-| `vkCreateDevice` | 20011 | its result |
+| `vkCreateDevice` | 20011 | its result; `VK_ERROR_INITIALIZATION_FAILED`, without reaching the driver, for queues the physical device does not have |
 | `vkGetDeviceQueue` | 20017 | `VK_ERROR_INITIALIZATION_FAILED` when no queue matches |
 | `vkGetDeviceQueue2` | 20155 | `VK_ERROR_INITIALIZATION_FAILED` when no queue matches |
 
