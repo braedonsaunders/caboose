@@ -1774,6 +1774,90 @@ static int oneWayChild(int mispredict) {
 #undef DEVICE_CALL
 }
 
+// lost_reply_stand_ins child: a thread keeps asking layout support for layouts the session has
+// not seen (each a round trip) and creating them, while the process loses its executor through
+// a one-way prediction the phone does not bear out. With CABOOSE_GPU_ON_LOSS=quiet, every
+// answer, including one whose reply was lost during the call, must be supported and every
+// layout a distinct, non-null handle.
+#define LOST_REPLY_MAX 20000
+static VkDevice lostReplyDevice;
+static atomic_int lostReplyStop;
+static uint64_t lostReplyHandles[LOST_REPLY_MAX];
+static int lostReplyCount, lostReplyNull, lostReplyUnsupported;
+static void* lostReplyAsker(void* unused) {
+    (void)unused;
+    for (uint32_t i = 0; !atomic_load(&lostReplyStop) && lostReplyCount < LOST_REPLY_MAX; ++i) {
+        VkDescriptorSetLayoutBinding bindings[16];
+        const uint32_t n = 1 + i % 16;
+        for (uint32_t b = 0; b < n; ++b) {
+            bindings[b] = (VkDescriptorSetLayoutBinding){b, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1 + (i / 16) % 32,
+                                                         VK_SHADER_STAGE_ALL, NULL};
+        }
+        VkDescriptorSetLayoutCreateInfo info = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+        info.bindingCount = n;
+        info.pBindings = bindings;
+        VkDescriptorSetLayoutSupport support = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_SUPPORT};
+        support.supported = VK_FALSE;
+        vkGetDescriptorSetLayoutSupport(lostReplyDevice, &info, &support);
+        if (!support.supported) ++lostReplyUnsupported;
+        VkDescriptorSetLayout layout = VK_NULL_HANDLE;
+        if (vkCreateDescriptorSetLayout(lostReplyDevice, &info, NULL, &layout) != VK_SUCCESS || !layout) ++lostReplyNull;
+        lostReplyHandles[lostReplyCount++] = (uint64_t)layout;
+    }
+    return NULL;
+}
+static int cmpU64(const void* a, const void* b) {
+    const uint64_t x = *(const uint64_t*)a, y = *(const uint64_t*)b;
+    return x < y ? -1 : x > y;
+}
+static int lostReplyChild(void) {
+    VkApplicationInfo app = {VK_STRUCTURE_TYPE_APPLICATION_INFO};
+    app.pApplicationName = "caboose-sync-check-lost-reply";
+    app.apiVersion = VK_API_VERSION_1_3;
+    VkInstanceCreateInfo instanceInfo = {VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
+    instanceInfo.pApplicationInfo = &app;
+    VkInstance childInstance;
+    if (vkCreateInstance(&instanceInfo, NULL, &childInstance) != VK_SUCCESS) return 3;
+    uint32_t count = 1;
+    VkPhysicalDevice childPhysical;
+    VkResult result = vkEnumeratePhysicalDevices(childInstance, &count, &childPhysical);
+    if ((result != VK_SUCCESS && result != VK_INCOMPLETE) || !count) return 3;
+    const float priority = 1.0f;
+    VkDeviceQueueCreateInfo queueInfo = {VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};
+    queueInfo.queueCount = 1;
+    queueInfo.pQueuePriorities = &priority;
+    VkDeviceCreateInfo deviceInfo = {VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
+    deviceInfo.queueCreateInfoCount = 1;
+    deviceInfo.pQueueCreateInfos = &queueInfo;
+    if (vkCreateDevice(childPhysical, &deviceInfo, NULL, &lostReplyDevice) != VK_SUCCESS) return 3;
+    pthread_t asker;
+    if (pthread_create(&asker, NULL, lostReplyAsker, NULL) != 0) return 3;
+    struct timespec pause = {0, 300000000};
+    nanosleep(&pause, NULL);
+    // The loss: an instance predicted one-way that the phone refuses.
+    PFN_icdGetInstanceProcAddr icd = directDriver();
+    if (!icd) { atomic_store(&lostReplyStop, 1); pthread_join(asker, NULL); return 3; }
+    PFN_vkCreateInstance createInstance = (PFN_vkCreateInstance)icd(NULL, "vkCreateInstance");
+    const char* absent = "VK_LAYER_CABOOSE_absent";
+    VkInstanceCreateInfo refused = instanceInfo;
+    refused.enabledLayerCount = 1;
+    refused.ppEnabledLayerNames = &absent;
+    VkInstance lostInstance;
+    (void)createInstance(&refused, NULL, &lostInstance);
+    struct timespec after = {3, 0};
+    nanosleep(&after, NULL);
+    atomic_store(&lostReplyStop, 1);
+    pthread_join(asker, NULL);
+    qsort(lostReplyHandles, (size_t)lostReplyCount, sizeof(uint64_t), cmpU64);
+    int duplicates = 0;
+    for (int i = 1; i < lostReplyCount; ++i)
+        if (lostReplyHandles[i] && lostReplyHandles[i] == lostReplyHandles[i - 1]) ++duplicates;
+    fprintf(stderr, "CABOOSE_SYNC_CHECK_LOST_REPLY asked=%d null=%d unsupported=%d duplicates=%d\n", lostReplyCount,
+            lostReplyNull, lostReplyUnsupported, duplicates);
+    // The process ends here: its lost device is not torn down.
+    return lostReplyNull ? 7 : lostReplyUnsupported ? 8 : duplicates ? 9 : 0;
+}
+
 // Runs oneWayChild in a new process with the driver's diagnostics, and returns its exit status
 // (-1 when it did not exit within 40 s, and was killed), how many commands it sent one-way, and
 // whether its executor granted one-way start.
@@ -1789,7 +1873,10 @@ static int runOneWayChild(int mispredict, int* oneWay, int* granted) {
         close(pipefd[1]);
         setenv("CABOOSE_CAPABILITY_CACHE_DIAGNOSTICS", "1", 1);
         if (mispredict) setenv("CABOOSE_ONE_WAY_START", "predict", 1);
-        execl("/proc/self/exe", "sync_check", "--one-way-child", mispredict ? "1" : "0", (char*)NULL);
+        if (mispredict == 2) setenv("CABOOSE_GPU_ON_LOSS", "quiet", 1);
+        char mode[4];
+        snprintf(mode, sizeof(mode), "%d", mispredict);
+        execl("/proc/self/exe", "sync_check", "--one-way-child", mode, (char*)NULL);
         _exit(4);
     }
     close(pipefd[1]);
@@ -1862,6 +1949,13 @@ static void oneWayCases(const char* only) {
                "granted=%d status=%d sent_one_way=%d (5: device lost; 6: refused; -1: hung) probe=%d next_process=%d",
                granted, status, sent, parent, after);
     }
+    if (!only || strstr("lost_reply_stand_ins", only)) {
+        int sent = 0;
+        const int status = runOneWayChild(2, &sent, &granted);
+        // Without one-way start nothing loses the executor: the answers are the device's.
+        report("lost_reply_stand_ins", status == 0, "granted=%d status=%d (7: null layout; 8: unsupported; 9: duplicate "
+               "handles; -1: hung)", granted, status);
+    }
 }
 
 int main(int argc, char** argv) {
@@ -1879,7 +1973,8 @@ int main(int argc, char** argv) {
     }
     if (argc > 3 && !strcmp(argv[1], "--exit-child")) return exitChild(atoi(argv[2]), atoi(argv[3]));
     if (argc > 3 && !strcmp(argv[1], "--map-window")) return mapWindowChild((xcb_window_t)strtoul(argv[2], NULL, 10), atoi(argv[3]));
-    if (argc > 2 && !strcmp(argv[1], "--one-way-child")) return oneWayChild(atoi(argv[2]));
+    if (argc > 2 && !strcmp(argv[1], "--one-way-child"))
+        return atoi(argv[2]) == 2 ? lostReplyChild() : oneWayChild(atoi(argv[2]));
     const int abandon = argc > 1 && !strcmp(argv[1], "--abandon");
     const char* only = argc > 1 && !abandon ? argv[1] : NULL;
     VkApplicationInfo app = {VK_STRUCTURE_TYPE_APPLICATION_INFO};
@@ -1989,7 +2084,9 @@ int main(int argc, char** argv) {
     RUN("coherent_rewrite", coherentRewriteCase());
     RUN("exit_latency", exitLatencyCase());
     RUN("abandoned_work", abandonedWorkCase());
-    if (!only || strstr("one_way_start", only) || strstr("one_way_misprediction", only)) oneWayCases(only);
+    if (!only || strstr("one_way_start", only) || strstr("one_way_misprediction", only) ||
+        strstr("lost_reply_stand_ins", only))
+        oneWayCases(only);
     // Needs a compositor that maps windows (a running computer), so only when named.
     if (only && !strcmp(only, "unmapped_popup")) unmappedPopupCase();
 
