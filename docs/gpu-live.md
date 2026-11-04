@@ -757,6 +757,18 @@ X11 `_NET_WM_PID` is not authority.
   X11 has no client isolation: any client of the seat's Xwayland can create a child
   window inside another's toplevel, so an X11 grant proves only that the bound
   process made the window it presents to on the owner's own display.
+- An X11 bind of an override-redirect window (or a window in one) that is not bindable
+  yet, because it is not mapped or the compositor has not taken in its map, is held
+  rather than refused when the X server records the bound process as the window's maker
+  and the broker's pidfd identifies it. Toolkits bind a menu's surface as soon as they
+  make the window, before it is shown. The compositor answers a held bind, by the rules
+  above, as soon as the window maps, looking again every 100 ms. It refuses it when the
+  window is destroyed, the process ends, a newer bind of the same window by the same
+  process arrives, or it has been held 4 s, inside the broker's 5 s wait for the answer;
+  at most 16 are held, and one more is refused at once. A broker that ends takes its held
+  binds with it, unanswered. A managed top-level's bind is never held: its map goes
+  through the compositor, and an application that presents before mapping it is answered
+  at once.
 - An inset surface, an X11 descendant of such a toplevel that does not cover it (a
   browser view CEF draws in its own child window) or a subsurface of a Wayland toplevel,
   bound by the process that made it (the same X-Resource and pidfd checks), becomes a

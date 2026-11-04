@@ -20,6 +20,13 @@ use smithay::xwayland::{X11Surface, X11Wm, XwmHandler};
 use std::os::unix::io::OwnedFd;
 
 impl State {
+    /// An X11 window became a bindable surface: GPU binds held for windows that were not
+    /// bindable yet are answered once this turn's window changes are done (gpu_pending.rs).
+    fn x11_window_bindable(&mut self) {
+        if self.gpu_pending_binds.is_empty() { return; }
+        self.handle.insert_idle(|state| state.answer_pending_gpu_binds());
+    }
+
     /// The window an X11 window belongs to: the one it is transient for, else the
     /// focused X11 window, else the X11 toplevel under its origin.
     fn x11_owner(&self, window: &X11Surface) -> Option<u64> {
@@ -157,12 +164,14 @@ impl XwmHandler for State {
             w.held_min = held;
         }
         self.focus_window(id);
+        self.x11_window_bindable();
     }
 
     fn mapped_override_redirect_window(&mut self, _xwm: XwmId, window: X11Surface) {
         let parent = self.x11_owner(&window);
         let kind = if parent.is_some() { WindowKind::Popup } else { WindowKind::Toplevel };
         self.add_window(Surface::X11(window), kind, parent);
+        self.x11_window_bindable();
     }
 
     fn unmapped_window(&mut self, _xwm: XwmId, window: X11Surface) {
@@ -178,6 +187,7 @@ impl XwmHandler for State {
         if let Some(id) = self.windows.by_x11(&window) {
             self.remove_window(id);
         }
+        self.refuse_pending_gpu_binds_of(window.window_id());
     }
 
     fn configure_request(
