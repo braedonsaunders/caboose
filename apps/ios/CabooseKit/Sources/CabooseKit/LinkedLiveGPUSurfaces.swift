@@ -286,7 +286,10 @@ private final class LinkedLiveGPUSurface: LiveGPUIndexedSurfaceResource, @unchec
             if disposition == .rejected { callbacks.removeValue(forKey: request.serial) }
             else { callbacks = callbacks.filter { $0.key == request.serial } }
         }
-        if disposition != .rejected { lease.notePresented(request.serial) }
+        if disposition != .rejected {
+            lease.notePresented(request.serial)
+            PresentedFrameRate.shared.note(window: Int(bind.identity.window_id))
+        }
         return .init(status: Self.status(result), disposition: disposition)
     }
     private static func status(_ result: caboose_gpu_submit_result) -> LiveGPUSurfaceStatus {
@@ -392,7 +395,10 @@ private final class LinkedLiveGPUIndexedSwapchain: LiveGPUIndexedSwapchain, @unc
         }
         let disposition = LiveGPUSurfaceMessage.Disposition(rawValue: result.disposition.rawValue) ?? .uncertain
         if disposition == .rejected { _ = lock.withLock { callbacks.removeValue(forKey: request.serial) } }
-        else { parent.lease.notePresented(request.serial) }
+        else {
+            parent.lease.notePresented(request.serial)
+            PresentedFrameRate.shared.note(window: Int(identity.window_id))
+        }
         return .init(status: .init(nativeErrno: result.native_error,
             vkResult: result.has_vulkan_result == 1 ? result.vulkan_result : nil), disposition: disposition)
     }

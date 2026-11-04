@@ -43,6 +43,7 @@ struct NativeBridgeSettingsSection: View {
                 Label { Text("Share Location with This Computer") } icon: { Image(systemName: "location") }
             }
             .disabled(bridge.computerID == nil)
+            FrameRateOverlayToggle()
             if bridge.sharesLocation, let problem = bridge.locationProblem {
                 Text(problem).font(.footnote).foregroundStyle(.secondary)
             }
