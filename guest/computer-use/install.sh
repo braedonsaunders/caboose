@@ -8,13 +8,18 @@ export DEBIAN_FRONTEND=noninteractive
 out=$(mktemp -d /tmp/caboose-computer-use.XXXXXXXX)
 log=$out/apt.log
 trap 'rm -rf "$out"' EXIT
+# The Wine reader is cross-built only by the image builds. A computer that has the one Caboose
+# installed by hand before this package keeps it, as the Wine package.
+if [ ! -f "$here/wine/caboose-msaa.exe" ] && [ -f /opt/caboose/caboose-msaa.exe ]; then
+  export CABOOSE_MSAA=/opt/caboose/caboose-msaa.exe
+fi
 python3 "$here/package.py" "$out" >/dev/null
 
 # Files Caboose installed by hand before it shipped this package: the package owns their
 # successors, and the configuration it now owns would otherwise be seen as the owner's.
 rm -f /opt/caboose/desktop-mcp.mjs /opt/caboose/worker.mjs /opt/caboose/observation.mjs \
   /opt/caboose/ensure-agent-seat.mjs /opt/caboose/seat.py /opt/caboose/launcher.py \
-  /opt/caboose/direct.py /opt/caboose/annotate.py /opt/caboose/caboose-msaa.exe \
+  /opt/caboose/direct.py /opt/caboose/annotate.py \
   /opt/caboose/specialist.mjs /opt/caboose/choices.mjs /usr/local/libexec/caboose-agent-seat
 rm -rf /opt/caboose/desktop-mcp /opt/caboose/webmcp /usr/local/libexec/caboose-agent-seat-bin
 for file in /opt/caboose/a11y.py /opt/caboose/agent-profile.py /opt/caboose/caboose-targets.py \
@@ -35,3 +40,4 @@ if ! apt_install; then
     exit 1
   fi
 fi
+rm -f /opt/caboose/caboose-msaa.exe

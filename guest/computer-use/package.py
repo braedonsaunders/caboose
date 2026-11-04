@@ -6,7 +6,8 @@ usage: package.py OUTPUT-DIRECTORY
 Builds caboose-computer-use_<version>_all.deb and, on amd64, caboose-computer-use-wine_<version>_amd64.deb
 when wine/caboose-msaa.exe has been cross-built beside its source (the image builds do; a
 computer updating from the host's component bundle has no cross compiler, and keeps the Wine
-package it has). Set CABOOSE_PACKAGE_ARCH to build for another architecture than this one's. Each package's files and links are those debian/layout gives it.
+package it has). CABOOSE_MSAA names a built reader to package instead; CABOOSE_PACKAGE_ARCH
+builds for another architecture than this one's. Each package's files and links are those debian/layout gives it.
 
 The version is debian/changelog's, then `+` and the first 12 hex digits of a SHA-256 over the
 package's paths, modes, links and contents, so changed contents always make a new version and
@@ -24,6 +25,13 @@ import tempfile
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+MSAA = 'wine/caboose-msaa.exe'
+
+
+def source_path(source):
+    if source == MSAA and os.environ.get('CABOOSE_MSAA'):
+        return Path(os.environ['CABOOSE_MSAA'])
+    return HERE / source
 DEBIAN = HERE / 'debian'
 ARCHITECTURES = {'caboose-computer-use': 'all', 'caboose-computer-use-wine': 'amd64'}
 
@@ -56,7 +64,7 @@ def digest(entries):
     hash_ = hashlib.sha256()
     for kind, source, destination in sorted(entries, key=lambda e: e[2]):
         hash_.update(f'{destination}\0{kind}\0'.encode())
-        hash_.update(source.encode() if kind == 'link' else (HERE / source).read_bytes())
+        hash_.update(source.encode() if kind == 'link' else source_path(source).read_bytes())
         hash_.update(b'\0')
     return hash_.hexdigest()[:12]
 
@@ -72,7 +80,7 @@ def build(package, entries, version, stamp, output):
             if kind == 'link':
                 target.symlink_to(source)
                 continue
-            data = (HERE / source).read_bytes()
+            data = source_path(source).read_bytes()
             target.write_bytes(data)
             target.chmod(int(kind, 8))
             size += len(data)
@@ -114,7 +122,7 @@ def main(argv):
     stamp = int(os.environ.get('SOURCE_DATE_EPOCH', dated))
     for package, entries in layout().items():
         files = [source for kind, source, _ in entries if kind != 'link']
-        missing = [source for source in files if not (HERE / source).is_file()]
+        missing = [source for source in files if not source_path(source).is_file()]
         if package == 'caboose-computer-use-wine' and (missing or architecture() != 'amd64'):
             continue  # not cross-built here, or no x86-64 Wine to run it
         if missing:
