@@ -351,11 +351,11 @@
       "verify": "grep -qx 'berth nine is free' $HOME/Documents/berths.txt"
     },
     {
-      "id": "flathub-calculator-mode",
+      "id": "flathub-calculator-product",
       "app": "org.gnome.Calculator",
-      "setup": "rm -rf $HOME/.var/app/org.gnome.Calculator; start flatpak run org.gnome.Calculator",
-      "prompt": "Switch the open Calculator to its Advanced mode.",
-      "verify": "grep -q \"button-mode='advanced'\" $HOME/.var/app/org.gnome.Calculator/config/glib-2.0/settings/keyfile"
+      "setup": "start flatpak run org.gnome.Calculator",
+      "prompt": "In the open Calculator, work out 1234 × 5678 and leave the result showing.",
+      "verify": "python3 $TOOLS/a11y.py text --display $DISPLAY | grep -q '7[,.  ]*006[,.  ]*652'"
     },
     {
       "id": "flathub-gnumeric-total",
@@ -394,7 +394,7 @@
     },
     {
       "id": "flathub-codium-file",
-      "app": "codium",
+      "app": "com.vscodium.codium",
       "setup": "mkdir -p $HOME/Documents/quay; start flatpak run com.vscodium.codium --user-data-dir=$HOME/codium --disable-workspace-trust --new-window $HOME/Documents/quay",
       "prompt": "In the open VSCodium window with the quay folder, create a file notes.md in that folder containing the line \"# Quay\" and save it.",
       "verify": "grep -qx '# Quay' $HOME/Documents/quay/notes.md"
