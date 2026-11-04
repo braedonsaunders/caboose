@@ -224,6 +224,23 @@ program's output through. A line starting `FAIL ` from the program, output witho
 (`APP_ENV=CABOOSE_LOCK_ORDER=1`) fails the case.
 The release seal runs it.
 
+## Readback cost at a phone's round-trip time
+
+```sh
+python3 apps/ios/GPUStream/gfxstream/linux-executor/readback_profile.py COMPUTER WORK RELEASE OUT \
+    --steam-home DIR --exe PATH [--args '60 4 50'] [--rtt-ms 30] [--seconds 75] [--env NAME=VALUE]
+```
+
+`readback_profile.py` runs a Windows program through Proton on a private seat of
+`check_chaos.py`'s (its own compositor, broker and guest driver from RELEASE, served by the
+executor in WORK/build through a proxy that holds each direction's bytes for half of
+`--rtt-ms`), with `--steam-home` a home of its own. PATH is inside that home's Steam Flatpak
+data, for example `d3d11_stress.exe` built from `d3d11-stress.cpp`, which reads back a staging
+copy every frame; `--env CABOOSE_LAZY_READBACK=0` reads every invalidated range at once. The
+report gives the program's frame rates and FAIL lines, the bytes it sent and received and how
+coherent memory was read back (invalidated, delivered, made lazy, filled), and its synchronous
+round trips per command.
+
 ## Bind of an unmapped popup
 
 ```sh

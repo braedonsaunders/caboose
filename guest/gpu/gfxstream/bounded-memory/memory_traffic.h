@@ -63,6 +63,13 @@ public:
     void piece(Piece kind) { pieces_[kind].fetch_add(1, std::memory_order_relaxed); }
     void marked(Mark mark, uint64_t bytes) { markedBytes_[mark].fetch_add(bytes, std::memory_order_relaxed); }
     void sent(uint64_t bytes) { sentBytes_.fetch_add(bytes, std::memory_order_relaxed); }
+    // Lazy readback (write_watch.h): bytes an invalidate left to be filled on first use, and
+    // the bytes and round trips the fills of first uses read.
+    void lazy(uint64_t made, uint64_t filled, uint64_t fills) {
+        lazyBytes_.fetch_add(made, std::memory_order_relaxed);
+        lazyFilledBytes_.fetch_add(filled, std::memory_order_relaxed);
+        lazyFills_.fetch_add(fills, std::memory_order_relaxed);
+    }
     void received(uint64_t bytes) { receivedBytes_.fetch_add(bytes, std::memory_order_relaxed); }
 
     // The line for the window that ended by `nowMs`, once, and empty otherwise: before the
@@ -90,6 +97,10 @@ public:
         const uint64_t deliveredBytes = deliveredBytes_.exchange(0, std::memory_order_relaxed);
         const uint64_t deliveries = deliveries_.exchange(0, std::memory_order_relaxed);
         moved += deliveredBytes;
+        const uint64_t lazyBytes = lazyBytes_.exchange(0, std::memory_order_relaxed);
+        const uint64_t lazyFilled = lazyFilledBytes_.exchange(0, std::memory_order_relaxed);
+        const uint64_t lazyFills = lazyFills_.exchange(0, std::memory_order_relaxed);
+        moved += lazyBytes + lazyFilled;
         const uint64_t sent = sentBytes_.exchange(0, std::memory_order_relaxed);
         const uint64_t received = receivedBytes_.exchange(0, std::memory_order_relaxed);
         const uint64_t watched = watchedBytes_.exchange(0, std::memory_order_relaxed);
@@ -118,14 +129,16 @@ public:
             " coherent_watched_bytes=%" PRIu64 " coherent_whole_bytes=%" PRIu64 " staging_flushed_bytes=%" PRIu64
             " pieces_unchanged=%" PRIu64 " pieces_named=%" PRIu64 " pieces_stored=%" PRIu64
             " copied_considered_bytes=%" PRIu64 " copied_sent_bytes=%" PRIu64
-            " hashed_considered_bytes=%" PRIu64 " hashed_sent_bytes=%" PRIu64 " unshadowed_bytes=%" PRIu64,
+            " hashed_considered_bytes=%" PRIu64 " hashed_sent_bytes=%" PRIu64 " unshadowed_bytes=%" PRIu64
+            " lazy_bytes=%" PRIu64 " lazy_filled_bytes=%" PRIu64 " lazy_fills=%" PRIu64,
             nowMs - start, sent, received,
             flushedBytes[application], flushes[application], flushedBytes[coherent], flushes[coherent],
             invalidatedBytes[application], invalidates[application],
             invalidatedBytes[coherent], invalidates[coherent], deliveredBytes, deliveries, largest,
             marked[copyImageToBuffer], marked[copyBuffer], marked[copyQueryResults],
             watched, whole, staged, pieces[unchangedPiece], pieces[namedPiece], pieces[storedPiece],
-            considered[copied], shadowSent[copied], considered[hashed], shadowSent[hashed], considered[unshadowed]);
+            considered[copied], shadowSent[copied], considered[hashed], shadowSent[hashed], considered[unshadowed],
+            lazyBytes, lazyFilled, lazyFills);
         return line;
     }
 
@@ -143,6 +156,7 @@ private:
     std::atomic<uint64_t> invalidatedBytes_[kOrigins]{}, invalidates_[kOrigins]{};
     std::atomic<uint64_t> largestInvalidate_{0};
     std::atomic<uint64_t> deliveredBytes_{0}, deliveries_{0};
+    std::atomic<uint64_t> lazyBytes_{0}, lazyFilledBytes_{0}, lazyFills_{0};
     std::atomic<uint64_t> markedBytes_[kMarks]{};
     std::atomic<uint64_t> sentBytes_{0}, receivedBytes_{0};
     std::atomic<uint64_t> watchedBytes_{0}, wholeBytes_{0}, stagedBytes_{0};

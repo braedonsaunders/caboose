@@ -11,7 +11,7 @@ transfer and reply handling, so it can be tested without Mesa.
 | `flush_packet.h` | One multi-range flush packet: up to 64 fragments under 15 × 64 KiB; an upload cache piece takes a fragment of its own |
 | `flush_shadow.h` | The bytes the host last received per allocation; a flush sends only the 256-byte blocks that differ among the blocks the host holds whole, and every block the device wrote is sent again |
 | `poll_stall.h` | Status polls that never change: an object polled for 10 seconds without change is named in `CABOOSE_GPU_POLL_STALLED`, again every minute |
-| `write_watch.h` | The blocks an application wrote to coherent memory since they were last sent, recorded with userfaultfd write protection (`/dev/userfaultfd`), so the flush before a submit sends only those; without the device, whole mappings |
+| `write_watch.h` | The blocks an application wrote to coherent memory since they were last sent, recorded with userfaultfd write protection (`/dev/userfaultfd`), so the flush before a submit sends only those; without the device, whole mappings. Lazy readback (below) uses the same descriptor |
 | `upload_cache.h` | The phone's upload cache (docs/gpu-live.md, "Upload cache"): the inventory and allowance per executor, the pieces each device stream stored, what a whole 4096-byte piece of a range of at least 16 KiB is sent as, and its wire form; BLAKE3 and the bytes are checked against `../upload-cache/vectors.json` by `../upload-cache/test_upload_cache_vectors.cpp` |
 | `cb_staging.h` | A command buffer's local, budgeted recording stream, sent with its queue submit |
 | `deferred_replies.h` | Replies the caller does not wait for, read as they arrive and drained in order once 64 KiB of replies or 24 MiB of their commands are owed; prefetched fence waits; guest-assigned handle checks |
@@ -51,6 +51,38 @@ eight disjoint spans per allocation, and a copy from an image marks the bytes of
 aspect's texel blocks. The invalidate after a wait reads the spans of the submissions that
 completed, less what their completion records delivered (below), in one call: each span as
 its own range, unless reading neighbours as one range takes no more 64 KiB round trips.
+Every copy into a coherent buffer is marked, including copies into buffers the GPU also
+reads (vertex, index, uniform, storage, indirect or transfer-source usage); the completion
+record of a submission carries only the bytes of copies into buffers the GPU does not read.
+
+## Lazy readback
+
+What the invalidate would read back is filled on its first use instead (`write_watch.h`):
+an application that reads part of a readback, or none of it, does not pay for the rest. Each
+16 KiB block of watched coherent memory the invalidate would read is made lazy: its pages are
+dropped, and the first access to one, a read or a write by the application or the kernel, is
+a missing-page fault on the write watch's userfaultfd. The watch's thread hands it to a
+filler thread, which reads the block and the lazy blocks after it, three to a round trip (the
+64 KiB invalidate chunk), and installs them write-protected, so a write after the fill is
+recorded as any write is. A block is read at once, as before, when it holds writes not yet
+sent, when it is not wholly inside the mapping, when a completion record is being stored into
+its memory, or when the process has no userfaultfd; `CABOOSE_LAZY_READBACK=0` reads every
+block at once. A block made lazy again while a fill reads it is read again.
+
+Driver code never reads or writes a lazy block while it holds a lock, since the filler takes
+the encoder: an invalidate decides what is lazy with the encoder held and stores only the
+rest, a flush fills the lazy blocks of what it sends first (on its own thread, with the
+encoder it holds), an unmap fills the memory's lazy blocks while it is still mapped, and a
+completion record stores only the parts of its capture that are not lazy (the fill reads
+the phone's copy, which holds them). Missing-page faults are taken only in allocations that
+have had a lazy block; a page of one never used before is installed zero and
+write-protected. The watch's lock is below every lock in `lock_order.h`. A pointer into
+mapped coherent memory passed as a command's own data (a pipeline cache's initial data, a
+query's results) is read or written with the encoder held: one into a lazy block waits for a
+fill that waits for that encoder. No driver or translation layer passes one; an application
+that does runs with `CABOOSE_LAZY_READBACK=0`. The memory traffic
+line counts the bytes made lazy (`lazy_bytes`) and what fills read (`lazy_filled_bytes`,
+`lazy_fills`).
 
 ## Command buffers and replies
 
@@ -285,8 +317,11 @@ parsing (padding, unknown kinds, truncation), query results written from capture
 and the tracker fed records through a socket, fault reports, idle waits, held pool destroys
 and memory stored in a shadow included; delivered memory (`test_delivered_memory.cpp`): which
 stored ranges count as delivered, notes before completion, idle waits during a store, and
-what the invalidate still reads; and GPU writes (`test_gpu_writes.cpp`): bounded spans,
-subtraction, invalidate ranges and image copy sizes. They exercise
+what the invalidate still reads; GPU writes (`test_gpu_writes.cpp`): bounded spans,
+subtraction, invalidate ranges and image copy sizes; and lazy readback
+(`test_lazy_readback.cpp`): lazy-block bookkeeping, and where userfaultfd is available, fills
+on a read, a write and a kernel access, blocks holding unsent writes or outside the mapping,
+deliveries, settles, newer writes during a fill and the allocation's end. They exercise
 the headers, not the generated encoder or a device. `test_requirements_cache.cpp` and
 `test_device_answers.cpp` need Vulkan's headers on the include path (`test.sh` uses Mesa's, or
 `CABOOSE_VULKAN_INCLUDE`).

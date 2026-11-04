@@ -508,7 +508,10 @@ write it, before the watch's submission is reported complete; a capture of memor
 batch also writes, or whose submission an idle wait already reported complete, is not stored.
 The driver's invalidate after a wait does not read stored ranges from the phone again; it
 reads only the GPU-written ranges no record stored (left out of a record for size, captured
-for an older batch, failed, or written without completion payloads).
+for an older batch, failed, or written without completion payloads). Copies into buffers the
+GPU also reads are not captured. What the invalidate reads, it reads on first use where it
+can: the blocks are filled from the phone when the application or the kernel first touches
+them, and never when nothing does (`bounded-memory/README.md`, Lazy readback).
 
 ### Ordered presents
 
@@ -864,7 +867,8 @@ sees.
 
 The guest driver's locks form one hierarchy; a thread holding a lock takes only locks below it:
 the encoder's stream lock, then the flush shadow, the tracker (`ResourceTracker::mLock`), the
-deferred replies and the completion tracker. The silent-success switch table
+deferred replies, the completion tracker and the write watch, whose lazy-readback filler takes
+the encoder and so is never waited for by a thread holding a lock. The silent-success switch table
 (`bounded-memory/silent_success.h`) is taken under the encoder's lock and takes no other lock. Taking the same lock again (the tracker's is
 recursive) or another encoder's is allowed. `bounded-memory/lock_order.h` holds the hierarchy and
 a checker: with `CABOOSE_LOCK_ORDER=1` every acquisition of those locks is checked and a lock

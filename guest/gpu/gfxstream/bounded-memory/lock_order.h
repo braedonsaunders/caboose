@@ -9,6 +9,7 @@
 //         deferred replies (caboose::memory::deferredReplies)
 //           completion tracker (caboose::completion::tracker())
 //             registration (dmabuf registrations)
+//               write watch (caboose::memory::writeWatch(), its own std::mutex: unchecked)
 //
 // Taking the same lock again (the tracker's is recursive) or another instance of the same
 // lock (two encoders) is allowed. With CABOOSE_LOCK_ORDER=1 every acquisition is checked

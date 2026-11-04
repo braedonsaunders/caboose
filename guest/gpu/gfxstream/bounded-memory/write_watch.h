@@ -10,9 +10,25 @@
 // proceed; the flush takes the written blocks and protects them again before reading them.
 // No signal is involved, so it coexists with Wine's handlers. Where userfaultfd is not
 // available the flush sends every mapping as before.
+//
+// Lazy readback: the same descriptor fills GPU-written memory on first use. An invalidate
+// after a wait makes the blocks it would read back lazy instead (`makeLazy`): their pages
+// are dropped, and the first access of any kind to one, by the application or the kernel,
+// is a missing-page fault this watch hands to a filler thread of its own. The filler asks
+// the phone for the block and the lazy blocks after it, as many as one round trip carries,
+// and installs them write-protected, so a write after the fill is recorded as before. A
+// block nothing touches never crosses the link. Blocks holding writes not yet sent, of
+// memory a completion record is being stored into (`beginDelivery`), or outside the
+// mapping are read as before. Driver code never touches a lazy block while it holds a
+// lock: the invalidate leaves them out of what it stores, a flush fills the lazy blocks of
+// what it sends first (`settle`), and a completion record skips them (the phone's copy, which
+// the fill reads, already holds its bytes). The watch's own lock is below every other.
 
 #include <algorithm>
+#include "memory_traffic.h"
 #include <atomic>
+#include <condition_variable>
+#include <cstdlib>
 #include <cerrno>
 #include <cstddef>
 #include <cstdint>
@@ -46,6 +62,11 @@ public:
         any_ = true;
     }
     bool any() const { return any_; }
+    bool marked(uint64_t offset) const {
+        if (offset >= bytes_) return false;
+        const uint64_t block = offset / watchBlockBytes;
+        return bits_[size_t(block / 64)] & (uint64_t(1) << (block % 64));
+    }
     // Calls take(begin, end) for each run of written blocks inside [from, to), clearing them;
     // runs are clipped to [from, to) and to the allocation.
     template <class Take>
@@ -79,8 +100,73 @@ private:
     bool any_ = false;
 };
 
+// The lazy blocks of one allocation, as a bitmap, and which of them a filler has taken.
+// Pure bookkeeping, tested anywhere.
+class LazyBlocks {
+public:
+    explicit LazyBlocks(uint64_t bytes) : bytes_(bytes), bits_((blocks(bytes) + 63) / 64, 0) {}
+    bool lazy(uint64_t block) const { return block < blocks(bytes_) && (bits_[size_t(block / 64)] >> (block % 64)) & 1; }
+    void set(uint64_t block, bool on) {
+        if (block >= blocks(bytes_)) return;
+        uint64_t& word = bits_[size_t(block / 64)];
+        const uint64_t bit = uint64_t(1) << (block % 64);
+        if (on && !(word & bit)) { word |= bit; ++count_; }
+        if (!on && (word & bit)) { word &= ~bit; --count_; }
+    }
+    uint64_t count() const { return count_; }
+    uint64_t blockCount() const { return blocks(bytes_); }
+    // A lazy block made lazy again (newer writes): a fill that read it before must read again.
+    void renew(uint64_t block) {
+        if (block >= blocks(bytes_)) return;
+        if (generations_.empty()) generations_.assign(size_t(blocks(bytes_)), 0);
+        ++generations_[size_t(block)];
+    }
+    uint32_t generation(uint64_t block) const {
+        return block < generations_.size() ? generations_[size_t(block)] : 0;
+    }
+    // The lazy run that starts at `block`: at most `limit` blocks, all lazy, from `block` on.
+    uint64_t runFrom(uint64_t block, uint64_t limit) const {
+        uint64_t n = 0;
+        while (n < limit && lazy(block + n)) ++n;
+        return n;
+    }
+    // Calls take(begin, end) for each run of lazy blocks inside [from, to), in bytes, clipped.
+    template <class Take>
+    void runs(uint64_t from, uint64_t to, Take&& take) const {
+        to = std::min(to, bytes_);
+        if (!count_ || from >= to) return;
+        uint64_t block = from / watchBlockBytes;
+        const uint64_t last = (to - 1) / watchBlockBytes;
+        while (block <= last) {
+            if (!lazy(block)) { ++block; continue; }
+            const uint64_t start = block;
+            while (block <= last && lazy(block)) ++block;
+            take(std::max(from, start * watchBlockBytes), std::min(to, block * watchBlockBytes));
+        }
+    }
+
+private:
+    static uint64_t blocks(uint64_t bytes) { return (bytes + watchBlockBytes - 1) / watchBlockBytes; }
+    uint64_t bytes_;
+    std::vector<uint64_t> bits_;
+    std::vector<uint32_t> generations_;
+    uint64_t count_ = 0;
+};
+
+// Lazy blocks one fill asks for: as many whole blocks as one invalidate round trip carries
+// (ranges.h, payloadBytes), three of 16 KiB.
+inline constexpr uint64_t lazyFillBlocks = 3;
+
 class WriteWatch {
 public:
+    // Reads `size` bytes at `offset` of allocation `memory` of `device` from the phone into
+    // `out`; false when they cannot be read (the fill then stores zeros, as a lost device's
+    // memory reads). Set by the driver; called on the filler thread with no lock held, or by
+    // `settle` with the encoder held (`locked`).
+    using Fetch = bool (*)(uint64_t device, uint64_t memory, uint64_t offset, uint64_t size, uint8_t* out,
+                           bool locked);
+    void setFetch(Fetch fetch) { fetch_.store(fetch, std::memory_order_release); }
+
     // Whether writes to watched memory are recorded in this process.
     bool available() {
         std::call_once(opened_, [this] { open(); });
@@ -101,9 +187,117 @@ public:
             ioctl(fd_, UFFDIO_UNREGISTER, &range);
             return false;
         }
-        regions_.insert_or_assign(reinterpret_cast<uintptr_t>(base), Region{bytes, WrittenBlocks(bytes)});
+        regions_.insert_or_assign(reinterpret_cast<uintptr_t>(base),
+                                  Region{bytes, WrittenBlocks(bytes), LazyBlocks(bytes), ++serials_});
         return true;
     }
+
+    // Makes the blocks of [begin, end) of the watched memory at `base` lazy where it can, and
+    // calls lazy(begin, end) for every lazy run in [begin, end), new or earlier, so the caller
+    // reads only the rest. A block can be lazy when all of it is inside [mapBegin, mapEnd)
+    // (or ends the allocation there), it holds no write not yet sent, and no completion record
+    // is being stored into the memory. Called with the encoder held, so nothing the encoder
+    // does meanwhile reads or writes a block it makes lazy.
+    template <class Lazy>
+    void makeLazy(uint8_t* base, uint64_t device, uint64_t memory, uint64_t allocation, uint64_t mapBegin,
+                  uint64_t mapEnd, uint64_t begin, uint64_t end, Lazy&& lazy) {
+        std::vector<std::pair<uint64_t, uint64_t>> runs;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            auto found = regions_.find(reinterpret_cast<uintptr_t>(base));
+            if (found == regions_.end()) return;
+            Region& region = found->second;
+            end = std::min({end, allocation, region.bytes});
+            const bool can = fetch_.load(std::memory_order_acquire) && !region.delivering && allocation &&
+                             !lazyDisabled() && (region.missing || registerMissing(found->first, region));
+            if (can) {
+                region.device = device, region.memory = memory, region.allocation = allocation;
+                for (uint64_t block = begin / watchBlockBytes; block * watchBlockBytes < end; ++block) {
+                    const uint64_t first = block * watchBlockBytes;
+                    const uint64_t stop = std::min(first + watchBlockBytes, allocation);
+                    if (first < mapBegin || stop > mapEnd || region.blocks.marked(first)) continue;
+                    if (region.lazy.lazy(block)) {
+                        // A fill in flight read the block before these writes: it reads again.
+                        region.lazy.renew(block);
+                        continue;
+                    }
+                    const uint64_t pages = std::min(first + watchBlockBytes, region.bytes);
+                    if (madvise(base + first, size_t(pages - first), MADV_DONTNEED) != 0) continue;
+                    region.lazy.set(block, true);
+                    made_.fetch_add(stop - first, std::memory_order_relaxed);
+                    traffic::counters().lazy(stop - first, 0, 0);
+                }
+            }
+            region.lazy.runs(begin, end, [&](uint64_t b, uint64_t e) { runs.emplace_back(b, e); });
+        }
+        for (const auto& [b, e] : runs) lazy(b, e);
+    }
+    // Calls lazy(begin, end) for each lazy run in [begin, end) of the memory at `base`.
+    template <class Lazy>
+    void lazyRuns(const uint8_t* base, uint64_t begin, uint64_t end, Lazy&& lazy) {
+        std::vector<std::pair<uint64_t, uint64_t>> runs;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            auto found = regions_.find(reinterpret_cast<uintptr_t>(base));
+            if (found == regions_.end()) return;
+            found->second.lazy.runs(begin, end, [&](uint64_t b, uint64_t e) { runs.emplace_back(b, e); });
+        }
+        for (const auto& [b, e] : runs) lazy(b, e);
+    }
+    // Fills the lazy blocks of [begin, end) of the memory at `base` now: before a caller holding
+    // the encoder (`locked`) reads them, or before the memory is unmapped.
+    void settle(uint8_t* base, uint64_t begin, uint64_t end, bool locked) {
+        const Fetch fetch = fetch_.load(std::memory_order_acquire);
+        for (;;) {
+            Fill fill;
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                auto found = regions_.find(reinterpret_cast<uintptr_t>(base));
+                if (found == regions_.end() || !found->second.lazy.count()) return;
+                bool any = false;
+                found->second.lazy.runs(begin, end, [&](uint64_t b, uint64_t) {
+                    if (!any) { any = true; fill = planLocked(found->first, found->second, b / watchBlockBytes); }
+                });
+                if (!any) return;
+            }
+            completeFill(fill, fetch, locked);
+        }
+    }
+    // A completion record is about to store [offset, offset + size) of the memory at `base`:
+    // no block of it becomes lazy until `endDelivery`, and take(begin, end) is called for each
+    // part not already lazy, which is all it may write (a lazy block's fill reads the phone's
+    // copy, which holds the record's bytes). Unwatched memory is written whole.
+    template <class Take>
+    void beginDelivery(const uint8_t* base, uint64_t offset, uint64_t size, Take&& take) {
+        std::vector<std::pair<uint64_t, uint64_t>> parts;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            auto found = regions_.find(reinterpret_cast<uintptr_t>(base));
+            if (found == regions_.end()) {
+                parts.emplace_back(offset, offset + size);
+            } else {
+                ++found->second.delivering;
+                uint64_t from = offset;
+                found->second.lazy.runs(offset, offset + size, [&](uint64_t b, uint64_t e) {
+                    if (b > from) parts.emplace_back(from, b);
+                    from = e;
+                });
+                if (from < offset + size) parts.emplace_back(from, offset + size);
+            }
+        }
+        for (const auto& [b, e] : parts) take(b, e);
+    }
+    void endDelivery(const uint8_t* base) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto found = regions_.find(reinterpret_cast<uintptr_t>(base));
+        if (found != regions_.end() && found->second.delivering) --found->second.delivering;
+    }
+    struct LazyStats { uint64_t made = 0, filled = 0, fills = 0; };
+    LazyStats lazyStats() const {
+        return {made_.load(std::memory_order_relaxed), filled_.load(std::memory_order_relaxed),
+                fills_.load(std::memory_order_relaxed)};
+    }
+
     // Stops recording writes to the watched memory at `base`, before it is unmapped.
     void unwatch(uint8_t* base) {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -150,7 +344,157 @@ private:
     struct Region {
         uint64_t bytes;
         WrittenBlocks blocks;
+        LazyBlocks lazy;
+        uint64_t serial = 0;       // this watch of the memory, not a later one at the same address
+        bool missing = false;      // registered for missing-page faults (the first lazy block)
+        uint32_t delivering = 0;   // completion records being stored into it
+        uint64_t device = 0, memory = 0, allocation = 0;
     };
+    // One fill: whole blocks [first, first + count) of the region at `base`.
+    struct Fill {
+        uintptr_t base = 0;
+        uint64_t serial = 0, first = 0, count = 0, device = 0, memory = 0, allocation = 0, bytes = 0;
+        uint32_t generations[lazyFillBlocks] = {};
+    };
+
+    // CABOOSE_LAZY_READBACK=0 reads every invalidated range eagerly.
+    static bool lazyDisabled() {
+        static const bool disabled = [] {
+            const char* value = std::getenv("CABOOSE_LAZY_READBACK");
+            return value && value[0] == '0' && !value[1];
+        }();
+        return disabled;
+    }
+    // Missing-page faults are taken only in memory that has had lazy blocks: elsewhere a
+    // page's first use costs nothing more than it did.
+    bool registerMissing(uintptr_t start, Region& region) {
+        if (!fillerStarted_) {
+            try {
+                std::thread([this] { fillLoop(); }).detach();
+            } catch (...) {
+                return false;
+            }
+            fillerStarted_ = true;
+        }
+        uffdio_register reg{};
+        reg.range = {start, region.bytes};
+        reg.mode = UFFDIO_REGISTER_MODE_MISSING | UFFDIO_REGISTER_MODE_WP;
+        if (ioctl(fd_, UFFDIO_REGISTER, &reg) != 0) return false;
+        region.missing = true;
+        return true;
+    }
+    Fill planLocked(uintptr_t start, const Region& region, uint64_t block) const {
+        Fill fill;
+        fill.base = start; fill.serial = region.serial; fill.first = block;
+        fill.count = region.lazy.runFrom(block, lazyFillBlocks);
+        for (uint64_t i = 0; i < fill.count; ++i) fill.generations[i] = region.lazy.generation(block + i);
+        fill.device = region.device; fill.memory = region.memory; fill.allocation = region.allocation;
+        fill.bytes = region.bytes;
+        return fill;
+    }
+    // Installs each missing page of [start, start + bytes) from `data`, write-protected.
+    bool installLocked(uintptr_t start, const uint8_t* data, uint64_t bytes) {
+        for (uint64_t at = 0; at < bytes; at += pageBytes()) {
+            uffdio_copy copy{};
+            copy.dst = start + at;
+            copy.src = reinterpret_cast<uintptr_t>(data + at);
+            copy.len = pageBytes();
+            copy.mode = UFFDIO_COPY_MODE_WP;
+            while (ioctl(fd_, UFFDIO_COPY, &copy) != 0) {
+                if (errno == EEXIST) break;  // present already: nothing to install
+                if (errno == EAGAIN) { copy.copy = 0; continue; }
+                return false;
+            }
+        }
+        return true;
+    }
+    // Reads a fill's blocks and installs them, unless one was made lazy again meanwhile (newer
+    // GPU writes: it reads again) or the memory went.
+    void completeFill(Fill fill, Fetch fetch, bool locked) {
+        for (;;) {
+            const uint64_t begin = fill.first * watchBlockBytes;
+            const uint64_t span = std::min(fill.count * watchBlockBytes, fill.bytes - begin);
+            std::vector<uint8_t> data(size_t(span), 0);
+            const uint64_t readable = fill.allocation > begin ? std::min(span, fill.allocation - begin) : 0;
+            const bool read = fetch && readable && fetch(fill.device, fill.memory, begin, readable, data.data(), locked);
+            if (!read) std::fill(data.begin(), data.end(), 0);
+            std::lock_guard<std::mutex> lock(mutex_);
+            auto found = regions_.find(fill.base);
+            if (found == regions_.end() || found->second.serial != fill.serial) return;
+            Region& region = found->second;
+            bool renewed = false;
+            for (uint64_t i = 0; i < fill.count; ++i)
+                renewed = renewed || (region.lazy.lazy(fill.first + i) &&
+                                      region.lazy.generation(fill.first + i) != fill.generations[i]);
+            if (renewed) {
+                fill = planLocked(found->first, region, fill.first);
+                if (!fill.count) return;
+                continue;
+            }
+            for (uint64_t i = 0; i < fill.count; ++i) {
+                const uint64_t block = fill.first + i;
+                if (!region.lazy.lazy(block)) continue;
+                const uint64_t at = block * watchBlockBytes;
+                const uint64_t bytes = std::min(watchBlockBytes, region.bytes - at);
+                installLocked(found->first + at, data.data() + (at - begin), bytes);
+                region.lazy.set(block, false);
+            }
+            filled_.fetch_add(readable, std::memory_order_relaxed);
+            fills_.fetch_add(1, std::memory_order_relaxed);
+            traffic::counters().lazy(0, readable, 1);
+            return;
+        }
+    }
+    // The filler: one fill at a time, each for the block a fault found and the lazy blocks
+    // after it. The serving thread never waits for the phone.
+    void fillLoop() {
+        for (;;) {
+            Fill fill;
+            {
+                std::unique_lock<std::mutex> lock(mutex_);
+                queued_.wait(lock, [&] { return !requests_.empty(); });
+                const auto [start, block] = requests_.front();
+                requests_.erase(requests_.begin());
+                auto found = regions_.find(start);
+                if (found == regions_.end()) continue;
+                if (!found->second.lazy.lazy(block)) {
+                    // Filled since it was asked for: wake the faulting thread.
+                    uffdio_range range{start + block * watchBlockBytes,
+                                       std::min(watchBlockBytes, found->second.bytes - block * watchBlockBytes)};
+                    ioctl(fd_, UFFDIO_WAKE, &range);
+                    continue;
+                }
+                fill = planLocked(start, found->second, block);
+            }
+            completeFill(fill, fetch_.load(std::memory_order_acquire), false);
+        }
+    }
+    // A missing page: of a lazy block, a fill (the filler wakes the thread); of any other block
+    // of the memory, a page never used before, installed zero and write-protected.
+    void missingLocked(uintptr_t address) {
+        auto found = regions_.upper_bound(address);
+        if (found != regions_.begin()) {
+            --found;
+            Region& region = found->second;
+            if (address < found->first + region.bytes) {
+                const uint64_t block = (address - found->first) / watchBlockBytes;
+                if (region.lazy.lazy(block)) {
+                    const std::pair<uintptr_t, uint64_t> request{found->first, block};
+                    if (std::find(requests_.begin(), requests_.end(), request) == requests_.end()) {
+                        requests_.push_back(request);
+                        queued_.notify_one();
+                    }
+                    return;
+                }
+                static const std::vector<uint8_t> zeros(size_t(watchBlockBytes), 0);
+                const uint64_t at = block * watchBlockBytes;
+                if (installLocked(found->first + at, zeros.data(), std::min(watchBlockBytes, region.bytes - at))) return;
+            }
+        }
+        uffdio_zeropage zero{};
+        zero.range = {address / pageBytes() * pageBytes(), pageBytes()};
+        ioctl(fd_, UFFDIO_ZEROPAGE, &zero);
+    }
 
     static uint64_t pageBytes() {
         static const uint64_t bytes = uint64_t(sysconf(_SC_PAGESIZE));
@@ -201,10 +545,14 @@ private:
             uffd_msg message;
             const ssize_t got = read(fd, &message, sizeof(message));
             if (got != ssize_t(sizeof(message))) continue;
-            if (message.event != UFFD_EVENT_PAGEFAULT || !(message.arg.pagefault.flags & UFFD_PAGEFAULT_FLAG_WP)) continue;
+            if (message.event != UFFD_EVENT_PAGEFAULT) continue;
             const uintptr_t address = uintptr_t(message.arg.pagefault.address);
-            faults_.fetch_add(1, std::memory_order_relaxed);
             std::lock_guard<std::mutex> lock(mutex_);
+            if (!(message.arg.pagefault.flags & UFFD_PAGEFAULT_FLAG_WP)) {
+                missingLocked(address);
+                continue;
+            }
+            faults_.fetch_add(1, std::memory_order_relaxed);
             auto found = regions_.upper_bound(address);
             if (found != regions_.begin()) {
                 --found;
@@ -228,6 +576,12 @@ private:
     std::mutex mutex_;
     std::map<uintptr_t, Region> regions_;
     std::atomic<uint64_t> faults_{0};
+    std::atomic<Fetch> fetch_{nullptr};
+    bool fillerStarted_ = false;
+    std::condition_variable queued_;
+    std::vector<std::pair<uintptr_t, uint64_t>> requests_;
+    std::atomic<uint64_t> made_{0}, filled_{0}, fills_{0};
+    uint64_t serials_ = 0;
 };
 
 inline WriteWatch& writeWatch() {

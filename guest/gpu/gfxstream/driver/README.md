@@ -163,6 +163,7 @@ Each patch is one feature. Several change Mesa's generated encoder
 | 0090 guest-counted-pool-capacity | With guest-assigned set handles, an allocation a descriptor pool cannot hold returns `VK_ERROR_OUT_OF_POOL_MEMORY` instead of succeeding into the decoder's overflow pools |
 | 0091 locked-descriptor-set-free | Freeing a batched descriptor set the device holds takes the encoder lock, so it never races another thread's commands on the device stream and goes behind `WAIT_SERIAL` for speculated waits (the phone never frees a set a waited-for batch may still use); a submit commits a newly allocated set even when nothing was written to it |
 | 0092 capability-answers | Descriptor set layout support is answered from the session's capability cache, keyed by the device's fingerprint (its creation, every pNext structure's contents included) and the layout's own parameters; the instance version is shared by every process of the session; the virtual WSI's swapchain images take their memory requirements from the requirements cache (`../bounded-memory/device_answers.h`) |
+| 0093 lazy-readback | The invalidate after a wait, and an application's invalidate of coherent memory, leave the blocks of watched memory that can wait lazy, filled from the phone on their first use; a flush fills the lazy blocks it sends first and an unmap fills the memory's; copies into buffers the GPU also reads are read back too, lazily, without their bytes in completion records (`../bounded-memory/write_watch.h`, Lazy readback) |
 
 The patch messages describe each change. To change the driver, prepare a tree, commit
 the prepared state, edit, and regenerate the affected patch with `git format-patch`
@@ -213,6 +214,7 @@ hello for the completion feed. The rest of the series requires the `0x70` contra
 | `CABOOSE_GFXSTREAM_SOCKET` | Socket path of the broker; selects the Caboose transport |
 | `CABOOSE_GFXSTREAM_SURFACE_SOCKET` | Socket path of the broker's surface service |
 | `CABOOSE_GFXSTREAM_GUEST_HANDLES=0` | Do not offer guest-assigned handles |
+| `CABOOSE_LAZY_READBACK=0` | Read back every invalidated block at once, never on its first use (patch 0093) |
 | `CABOOSE_GPU_SPECULATE=0` | Never report a wait complete before its record arrives, with `WAIT_SERIAL` granted or not (patch 0089) |
 | `CABOOSE_READ_PROFILE=1` | Every two seconds and at exit, the eight opcodes with the most blocking read time (`opN` waiting for its own reply, `drainN` for earlier deferred replies, `waitN` for local waits), on stderr; calls above opcode 21009 are named (`wait_WaitSemaphores`); `speculated=N` counts the waits reported complete before their records since the process started |
 | `CABOOSE_COMMAND_PROFILE=1` | Every two seconds and at exit, the twelve commands that took the most device-stream bytes (`opN=KiB/count/mean bytes`), and the total bytes and commands, on stderr |

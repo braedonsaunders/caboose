@@ -3,6 +3,7 @@
 #include "completion_payloads.h"
 #include "gpu_writes.h"
 #include "lock_order.h"
+#include "write_watch.h"
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -613,6 +614,12 @@ public:
         // The memory captures worth storing, and where they go: resolved without the lock.
         struct Store { uint64_t memory; MemoryTarget target; uint64_t offset, size; const uint8_t* data; };
         std::vector<Store> stores;
+        // Shadows this record stores into, released (endDelivery) however this returns.
+        struct Delivering {
+            std::vector<MemoryTarget> targets;
+            void push_back(const MemoryTarget& target) { targets.push_back(target); }
+            ~Delivering() { for (const auto& target : targets) caboose::memory::writeWatch().endDelivery(target.base); }
+        } delivering;
         const ResolveMemory resolve = resolve_.load(std::memory_order_acquire);
         if (resolve && !captures.empty()) {
             std::vector<std::pair<uint64_t, const payloads::Capture*>> wanted;
@@ -630,9 +637,17 @@ public:
             }
             for (const auto& [memory, capture] : wanted) {
                 Store store{memory, {}, capture->entry.a, capture->entry.b, capture->data};
-                if (resolve(memory, &store.target) && store.target.base && store.offset >= store.target.begin &&
-                    store.offset <= store.target.end && store.size <= store.target.end - store.offset)
-                    stores.push_back(std::move(store));
+                if (!resolve(memory, &store.target) || !store.target.base || store.offset < store.target.begin ||
+                    store.offset > store.target.end || store.size > store.target.end - store.offset)
+                    continue;
+                // Lazy blocks of the shadow (write_watch.h) are left as they are: their fill
+                // reads the phone's copy, which holds these bytes. None becomes lazy meanwhile.
+                caboose::memory::writeWatch().beginDelivery(store.target.base, store.offset, store.size,
+                    [&](uint64_t begin, uint64_t end) {
+                        stores.push_back(Store{memory, store.target, begin, end - begin,
+                                               store.data + (begin - store.offset)});
+                    });
+                delivering.push_back(store.target);
             }
         }
         std::vector<Store> stored;
