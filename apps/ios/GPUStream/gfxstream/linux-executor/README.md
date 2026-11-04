@@ -217,8 +217,11 @@ environment to it: `d3d11-stress.cpp` beside the script (built with MinGW-w64, a
 shows) is a multi-threaded load, deferred contexts on worker threads recording hundreds of draws
 each with their own textures, samplers and dynamic constant buffers, per-frame texture churn, a
 compute pass copied to staging buffers read back on the CPU and occlusion queries
-(`APP=d3d11_stress.exe APP_ARGS="SECONDS THREADS DRAWS"`). A line starting `FAIL ` from the program
-or a `CABOOSE_LOCK_ORDER` report (`APP_ENV=CABOOSE_LOCK_ORDER=1`) fails the case.
+(`APP=d3d11_stress.exe APP_ARGS="SECONDS THREADS DRAWS" APP_EXPECT=frames=`). The program runs from a
+batch file that sends its output to the case's log, since Proton's launcher does not pass a
+program's output through. A line starting `FAIL ` from the program, output without a match for
+`APP_EXPECT` (an extended regular expression), or a `CABOOSE_LOCK_ORDER` report
+(`APP_ENV=CABOOSE_LOCK_ORDER=1`) fails the case.
 The release seal runs it.
 
 ## Bind of an unmapped popup

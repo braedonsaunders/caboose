@@ -27,7 +27,10 @@
 # SOCKETS puts the GPU sockets elsewhere when BENCH_DIR's path is too long for one. APP (default
 # triangle.exe) runs another program from BENCH_DIR instead, such as d3d11_stress.exe built from
 # d3d11-stress.cpp beside this script, with APP_ARGS; APP_ENV adds environment to its process
-# (for example CABOOSE_LOCK_ORDER=1, whose reports fail the case).
+# (for example CABOOSE_LOCK_ORDER=1, whose reports fail the case). The program runs from a
+# batch file that sends its output to the case's log (Proton's launcher does not pass a
+# program's own output through): a line starting "FAIL " fails the case, and so does output
+# without a match for APP_EXPECT, an extended regular expression (d3d11_stress: 'frames=').
 set -eu
 [ $# -ge 4 ] && [ $# -le 5 ] || { sed -n '4,29p' "$0" >&2; exit 2; }
 computer=$1
@@ -51,6 +54,7 @@ sockets=${SOCKETS:-$dir}
 port=${PORT:-14660}
 app=${APP:-triangle.exe}
 app_args=${APP_ARGS:-}
+app_expect=${APP_EXPECT:-}
 app_env=""
 for e in ${APP_ENV:-}; do app_env="$app_env --env=$e"; done
 # The display the triangle presents on (DISPLAY_ENV, the owner seat's by default).
@@ -94,13 +98,18 @@ for case in ${CASES:-phone setids poolids unbatched older}; do
     /repo/apps/ios/GPUStream/gfxstream/linux-executor/executor.py --connect 127.0.0.1:$port --token-file /tmp/token \
     --library /build/libcaboose_gpu_executor.so --features $features --no-checksums" > /dev/null
   i=0; until docker logs "$name" 2>&1 | grep -q 'session ready'; do i=$((i + 1)); [ $i -le 150 ] || { docker logs "$name" > "$out/executor-$case.log" 2>&1; fail "$case: executor readiness ($out/executor-$case.log)"; }; sleep 0.2; done
+  # The program's output, which Proton's launcher does not pass through, goes to a file: Wine's
+  # cmd runs it from a batch file with its output redirected (Z: is the computer's root).
+  winpath() { printf 'Z:%s' "$1" | tr '/' '\\'; }
+  printf '@echo off\r\n"%s" %%*> "%s" 2>&1\r\n' "$(winpath "$bench/$app")" "$(winpath "$dir/output-$case.txt")" | \
+    docker exec -i -u caboose "$computer" sh -c "cat > $dir/run-$case.bat"
   docker exec -u caboose "$computer" sh -c "set -a; . $display; set +a
     CABOOSE_GFXSTREAM_SOCKET=$sockets/gpu-$case/gpu.sock CABOOSE_GFXSTREAM_SURFACE_SOCKET=$sockets/gpu-$case/surface.sock \
     CABOOSE_READ_PROFILE=1 DXVK_LOG_LEVEL=info DXVK_LOG_PATH=none timeout $((seconds + 300)) flatpak run --filesystem=$sockets --filesystem=${proton%/*}:ro --env=VK_DRIVER_FILES=$dir/icd.json \
     --env=VK_ICD_FILENAMES=$dir/icd.json '--env=VK_LOADER_LAYERS_DISABLE=*'$app_env --command=sh com.valvesoftware.Steam -c '
     export STEAM_COMPAT_DATA_PATH=$bench/compat/0 STEAM_COMPAT_CLIENT_INSTALL_PATH=$steam
     mkdir -p $bench/compat/0
-    exec $proton waitforexitandrun $bench/$app $app_args'" > "$out/$case.log" 2>&1 &
+    exec $proton waitforexitandrun $dir/run-$case.bat $app_args'" > "$out/$case.log" 2>&1 &
   # The run is timed from the first frames the broker reports (Wine's start varies), at most
   # 4 minutes after the triangle starts.
   i=0; until docker exec "$computer" grep -a -q 'CABOOSE_GPU_SURFACE_STATS' "$dir/broker-$case.log" 2>/dev/null; do
@@ -115,6 +124,7 @@ for case in ${CASES:-phone setids poolids unbatched older}; do
   docker exec "$computer" cat "$dir/broker-$case.log" > "$out/broker-$case.log" 2>/dev/null || true
   docker logs "$name" > "$out/executor-$case.log" 2>&1 || true
   log=$out/$case.log
+  docker exec "$computer" cat "$dir/output-$case.txt" >> "$log" 2>/dev/null || true
   grep -a -q 'Found device: ' "$log" || fail "$case: DXVK found no Vulkan device ($log)"
   ! grep -a -q 'Skipping: ' "$log" || fail "$case: DXVK skipped the device: $(grep -a -m1 'Skipping: ' "$log")"
   ! grep -a -q -E 'No adapters found|D3D11CreateDevice: Failed' "$log" || fail "$case: DXVK found no adapter ($log)"
@@ -122,6 +132,7 @@ for case in ${CASES:-phone setids poolids unbatched older}; do
   grep -a -q 'Presenter: Actual swapchain properties' "$log" || fail "$case: no swapchain ($log)"
   ! grep -a -q -E 'CABOOSE_GUEST_HANDLE_FAILED|CABOOSE_GPU_EXECUTOR_LOST' "$log" || fail "$case: $(grep -a -m1 -E 'CABOOSE_GUEST_HANDLE_FAILED|CABOOSE_GPU_EXECUTOR_LOST' "$log")"
   ! grep -a -q -E '^FAIL ' "$log" || fail "$case: $app: $(grep -a -m1 -E '^FAIL ' "$log")"
+  [ -z "$app_expect" ] || grep -a -q -E "$app_expect" "$log" || fail "$case: $app printed nothing matching '$app_expect' ($log)"
   ! grep -a -q 'CABOOSE_LOCK_ORDER took=' "$log" || fail "$case: lock order: $(grep -a 'CABOOSE_LOCK_ORDER took=' "$log" | sort -u | tr '\n' ';')"
   ! grep -a -q -E 'GUEST_FAULT|Segmentation fault' "$out/executor-$case.log" || fail "$case: the executor faulted ($out/executor-$case.log)"
   frames=$(grep -a -o 'presented=[0-9]*' "$out/broker-$case.log" | awk -F= '{n+=$2} END {print n+0}')
