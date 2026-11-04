@@ -444,6 +444,8 @@ static void lazyQueryResultsCase(void) {
     report("lazy_query_results", !wrong && !wrongCache, "rounds=%d wrong_gpu_bytes=%d wrong_cache_data=%d "
            "zero_timestamps=%d mean_wait_ms=%.1f mean_calls_ms=%.1f mean_first_touch_ms=%.2f", rounds, wrong,
            wrongCache, zeroTimestamps, waitUs / 1000.0 / rounds, callUs / 1000.0 / rounds, touchUs / 1000.0 / rounds);
+}
+
 // Memory nothing was sent since its allocation could have written is invalidated without
 // reading (device_work.h): what the process wrote stays. Once a fill was sent, the invalidate
 // after vkQueueWaitIdle (which must wait for that fill) reads the device's bytes, at once or,
