@@ -830,6 +830,7 @@ static VkResult VKAPI_CALL present(VkQueue handle, const VkPresentInfoKHR* info)
     overall=executorResult(overall);
     if (overall!=VK_ERROR_INITIALIZATION_FAILED && overall!=VK_ERROR_DEVICE_LOST)
         if (auto swap=lookupSwapchain(info->pSwapchains[0])) commitWayland(swap->surfaceHandle);
+    if (overall==VK_SUCCESS || overall==VK_SUBOPTIMAL_KHR) caboose::launch::presented();
     if (info && info->swapchainCount==1 && info->pResults) info->pResults[0]=overall;
     return overall;
 }

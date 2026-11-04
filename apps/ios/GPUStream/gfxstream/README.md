@@ -139,6 +139,16 @@ c++ -std=c++17 -Wall -Wextra -Werror -pthread -I apps/ios/GPUStream/gfxstream \
 /tmp/caboose-completion-feed-test
 ```
 
+`pipeline_report.h` is the phone's `CABOOSE_GPU_PIPELINES` line (docs/gpu-live.md, "Launch
+timeline"), which the registry's watchdog writes from the compile lane's timing and the Metal
+binary archive's counts:
+
+```sh
+c++ -std=c++17 -Wall -Wextra -Werror -UNDEBUG -I apps/ios/GPUStream/gfxstream \
+  apps/ios/GPUStream/gfxstream/tests/pipeline_report_test.cpp -o /tmp/caboose-pipeline-report-test
+/tmp/caboose-pipeline-report-test
+```
+
 The fixture also covers per-queue lanes, `WAIT_SERIAL`, `COMPLETION_WATCH2` captures and their
 bounds, FAULT records and `REPLY_MODE` (`silent_replies.h`). The phone's records against the
 guest's own encoder and parser (`guest/gpu/gfxstream/bounded-memory/completion_payloads.h`):

@@ -17,6 +17,7 @@
 #include <unistd.h>
 #include "caboose-bounded-memory/completion_feed.h"
 #include "caboose-bounded-memory/deferred_replies.h"
+#include "caboose-bounded-memory/launch_timeline.h"
 #include "caboose-bounded-memory/memory_traffic.h"
 #include "caboose-bounded-memory/silent_success.h"
 #include "caboose-bounded-memory/upload_cache.h"
@@ -538,6 +539,7 @@ int CabooseSocketStream::writeFully(const void* data, size_t len) {
         p += n; len -= static_cast<size_t>(n);
     }
     caboose::memory::traffic::counters().report();
+    caboose::launch::report();
     return 0;
 }
 const unsigned char* CabooseSocketStream::readFully(void* data, size_t len) {

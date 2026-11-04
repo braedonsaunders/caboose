@@ -1,5 +1,5 @@
 From: Caboose <caboose@local>
-Subject: [PATCH 97/97] Give the flush shadow each range's buffer usage for the traffic counters
+Subject: [PATCH 97/98] Give the flush shadow each range's buffer usage for the traffic counters
 
 The flush shadow reports, every five seconds, the window's busiest allocations by bytes sent
 (caboose-bounded-memory/memory_traffic.h, CABOOSE_GPU_MEMORY_ALLOCATION) with the usage flags

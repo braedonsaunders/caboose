@@ -168,6 +168,7 @@ Each patch is one feature. Several change Mesa's generated encoder
 | 0095 one-way-start | With one-way start granted, instances, physical devices, devices and queues get guest-assigned handles, and a vkCreateInstance, vkEnumeratePhysicalDevices, vkCreateDevice or vkGetDeviceQueue2 identical to one that succeeded earlier in the session goes between REPLY_MODE(3) and REPLY_MODE(1) without its reply; the first of each is asked and kept in the session's instance scope (`../bounded-memory/one_way_start.h`) |
 | 0096 zink-vertex-divisor | The device offers `VK_EXT_vertex_attribute_divisor` with the KHR name when the host has it: zink takes vertex attribute divisors from the EXT name only, and without them it offers OpenGL 3.2 and OpenGL ES 2.0, which Chromium's GPU process (ES 3.0, no fallback) cannot start on |
 | 0097 shadow-detail | A flush gives the flush shadow its range's buffer usage, which the memory traffic counters report with the window's busiest allocations (`../bounded-memory/memory_traffic.h`) |
+| 0098 launch-timeline | Every encoded command counts for the process's launch timeline: its first instance, device, shader module, pipeline and present, and what each ten seconds of its first fifteen minutes made (`../bounded-memory/launch_timeline.h`) |
 
 The patch messages describe each change. To change the driver, prepare a tree, commit
 the prepared state, edit, and regenerate the affected patch with `git format-patch`

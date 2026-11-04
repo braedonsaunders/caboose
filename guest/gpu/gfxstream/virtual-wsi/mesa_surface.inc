@@ -23,6 +23,7 @@
 #include <deque>
 #include "caboose-bounded-memory/presentation_retirement.h"
 #include "caboose-bounded-memory/async_allocation.h"
+#include "caboose-bounded-memory/launch_timeline.h"
 #include <system_error>
 #include "goldfish_vk_private_defs.h"
 #include "Resources.h"

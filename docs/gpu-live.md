@@ -929,6 +929,27 @@ A process's first start command may come before its feed runs: it waits up to 10
 feed, then asks the command instead (`guest/gpu/gfxstream/bounded-memory/one_way_start.h`).
 `CABOOSE_ONE_WAY_START=0` asks every start command.
 
+## Launch timeline
+
+The guest driver writes where a process's start went, always, to standard error
+(`guest/gpu/gfxstream/bounded-memory/launch_timeline.h`). Once each, in milliseconds since the
+process started: its first instance, device, shader module and pipeline, and its first present
+(`CABOOSE_GPU_LAUNCH pid=… process=… event=first_device ms=…`; the process name is the
+executable's under Wine). For its first fifteen minutes, every ten seconds in which it made
+anything, one line with what those seconds made: shader modules and their bytes, pipelines (a
+`vkCreate*Pipelines` call each), presents, and commands and their bytes, with the running
+totals of modules, pipelines and presents. Shaders a pipeline carries inline
+(`VK_KHR_maintenance5`, as DXVK passes them) count in its command's bytes, not as modules.
+
+The decoder writes the phone's side every ten seconds in which it compiled a pipeline, waited
+for one or looked one up in the Metal binary archive
+(`apps/ios/GPUStream/gfxstream/pipeline_report.h`): `CABOOSE_GPU_PIPELINES` with the pipelines
+its compile lane made and the time the lane's jobs ran, those made in place on a decode thread
+and their time, the longest job, how often and for how long a decode thread waited for a
+compile it needed (time it decoded nothing else), and the archive's hits and misses. Where the process waited
+for the phone in the same time is the read profile's (`CABOOSE_READ_PROFILE=1`), and what it
+sent the memory traffic line's.
+
 ## Lock order
 
 The guest driver's locks form one hierarchy; a thread holding a lock takes only locks below it:
