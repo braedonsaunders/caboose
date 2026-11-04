@@ -190,9 +190,10 @@ pub fn configure_process(icd: Option<&std::path::Path>, stream: Option<&std::pat
         std::env::set_var("VK_ADD_DRIVER_FILES", icd);
         std::env::set_var("CABOOSE_GFXSTREAM_SOCKET", stream);
         std::env::set_var("CABOOSE_GFXSTREAM_SURFACE_SOCKET", surface);
-        // The phone's departure is device loss here, never a pause: the compositor makes
-        // its renderer again and draws every window from the buffers it holds.
-        std::env::set_var("CABOOSE_GPU_ON_LOSS", "restart");
+        // The compositor learns of the phone's departure from its broker and makes its
+        // renderer again: its lost device stays quiet (completes everything, reports no
+        // loss), so Zink never takes its device-loss paths, whose teardown does not end.
+        std::env::set_var("CABOOSE_GPU_ON_LOSS", "quiet");
     }
 }
 

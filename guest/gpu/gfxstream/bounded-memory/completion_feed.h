@@ -726,6 +726,20 @@ inline void executorConnected() {
 // environment's `auto` included, reports loss at once (restart): every process is treated
 // alike, and one that recovers from device loss keeps running on the computer meanwhile.
 inline bool lossPolicyPauses(const char* mode) { return mode && std::strcmp(mode, "pause") == 0; }
+// CABOOSE_GPU_ON_LOSS=quiet: a process that learns of an executor's loss another way (the
+// compositor, from its broker) gets a lost device that keeps answering as a working one: its
+// submissions are dropped and complete at once, its waits are satisfied, and nothing reports
+// VK_ERROR_DEVICE_LOST, so its GL implementation never takes its device-loss paths (Zink's
+// teardown of a lost device does not end). It makes its renderer again when told.
+inline bool quietOnLoss() {
+    static const bool quiet = [] {
+        const char* mode = std::getenv("CABOOSE_GPU_ON_LOSS");
+        return mode && std::strcmp(mode, "quiet") == 0;
+    }();
+    return quiet;
+}
+// The result a call on a lost device gives where it would report the loss.
+inline int32_t lostResult() { return quietOnLoss() ? 0 : -4; }
 inline bool pauseOnLoss() {
     static const bool pause = lossPolicyPauses(std::getenv("CABOOSE_GPU_ON_LOSS"));
     return pause;

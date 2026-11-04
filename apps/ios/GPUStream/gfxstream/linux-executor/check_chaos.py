@@ -50,8 +50,9 @@ PICTURE = re.compile(r'^(\S+) CABOOSE_LINUX_EXECUTOR picture window=(\S+) serial
                      r'content=([0-9.]+) colours=(\d+)')
 PORT, XDISPLAY = 14695, 181
 FRESH_CHROMIUM = (608, 378)
-# DXVK's d3d11 triangle's window.
-TRIANGLE = (1016, 573)
+# DXVK's d3d11 triangle's window: its own size inside a Wine desktop, or a top-level window the
+# compositor sizes to the seat's 1280x800 display (Wine without a desktop).
+TRIANGLE = ((1016, 573), (1280, 785))
 PAGE = ('data:text/html,<body style="margin:0;background:%23e8f0ff;font:40px sans-serif">'
         '<h1 style="background:%23204080;color:%23ffd040;margin:0">Caboose</h1>'
         '<div style="width:120px;height:120px;background:%23c03020;animation:s 1s linear infinite"></div>'
@@ -161,7 +162,11 @@ class Seat:
                                   '-ex', 'continue', '-ex', 'thread apply all bt 25'],
                                  stdout=trace, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
         try:
-            self.wait(lambda: 'session ready' in run('docker', 'logs', name, check=False), 30, 'the executor')
+            started = time.monotonic()
+            self.wait(lambda: 'session ready' in run('docker', 'logs', name, check=False),
+                      int(os.environ.get('CHAOS_READY_SECONDS', '30')), 'the executor')
+            if time.monotonic() - started > 10:
+                print(f'executor {self.generation} took {time.monotonic() - started:.0f} s to connect', flush=True)
         except RuntimeError:
             # Where the broker waits, in the display log, before the seat goes.
             self.sh(f"pkill -USR1 -f '{self.dir}/libexec/caboose-gpu-broker'", check=False)
@@ -357,7 +362,7 @@ def main():
             # Proton makes its prefix on its first run, which takes longer than a cycle allows.
             mark = now()
             seat.app('dxvk-prefix', dxvk_command(240))
-            missing, _ = judge(mark, {'dxvk': lambda w, h: (w, h) == TRIANGLE}, 240)
+            missing, _ = judge(mark, {'dxvk': lambda w, h: (w, h) in TRIANGLE}, 240)
             stop_wine()
             if missing:
                 raise RuntimeError('DXVK presented no real picture before the first cycle')
@@ -401,7 +406,7 @@ def main():
             # (the display's size) show.
             wanted['fresh gl'] = lambda w, h: (w, h) in ((320, 240), (1280, 800))
             if 'fresh dxvk' in fresh:
-                wanted['fresh dxvk'] = lambda w, h: (w, h) == TRIANGLE
+                wanted['fresh dxvk'] = lambda w, h: (w, h) in TRIANGLE
             missing, pictures = judge(mark, wanted, 60)
             stop_fresh()
             seconds = time.monotonic() - started
