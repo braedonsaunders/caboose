@@ -84,6 +84,8 @@ COPY game /tmp/bundle/game
 COPY gpu /tmp/bundle/gpu
 COPY apps/install.sh apps/caboose-app apps/appcore.py apps/net.py apps/remote.py apps/page.js apps/world.js apps/guide.md apps/apps-mcp.mjs /tmp/bundle/apps/
 COPY memory/install.sh memory/caboose-memory.py memory/caboose-memory.service /tmp/bundle/memory/
+COPY ai /tmp/bundle/ai
+COPY wine /tmp/bundle/wine
 RUN bash /tmp/bundle/components/install.sh image-container && rm -rf /tmp/bundle
 RUN export USER=root HOME=/root TERM=xterm && mkdir -p /tmp/themes && \
     for spec in 'WhiteSur-gtk-theme d5782652d412137e26fb8ff55b55a5572e4c6995' 'WhiteSur-icon-theme 73d8040da51a9ed74e47c7366e7e9ff437601a5c' 'WhiteSur-cursors e190baf618ed95ee217d2fd45589bd309b37672b'; do \

@@ -44,6 +44,8 @@ COPY bridge /builder/bridge
 COPY flatpak /builder/flatpak
 COPY game /builder/game
 COPY gpu /builder/gpu
+COPY ai /builder/ai
+COPY wine /builder/wine
 COPY apps/install.sh apps/caboose-app apps/appcore.py apps/net.py apps/remote.py apps/page.js apps/world.js apps/guide.md apps/apps-mcp.mjs /builder/apps/
 COPY --from=display /src/target/release/caboose-display /src/target/release/caboose-display-probe /out/vaapi/caboose_drv_video.so /builder/display/
 COPY display/caboose-display-ready display/systemd/caboose-display.service display/systemd/caboose-display-agent.service /builder/display/
