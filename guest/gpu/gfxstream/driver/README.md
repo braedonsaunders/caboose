@@ -156,6 +156,7 @@ Each patch is one feature. Several change Mesa's generated encoder
 | 0083 atomic-layout-references | Descriptor set layout references are counted atomically (DXVK raises and lowers them from two threads) |
 | 0084 event-status-recheck | A reset event the tracker keeps answering locally is asked about on the device every 250 ms while it is polled |
 | 0085 guest-chosen-set-ids | With hello `0x100000`, a batched descriptor pool takes 1 + maxSets consecutive guest handles, its own and its sets' ids, and never asks the phone for them (`../bounded-memory/guest_set_ids.h`) |
+| 0087 silent-success | With hello `0x800000`, each device stream switches with REPLY_MODE once its feed runs, and the commands the guest does not wait for queue no reply; their failures arrive as FAULT records on the feed, as device loss (`../bounded-memory/silent_success.h`, docs/gpu-live.md "Silent success") |
 
 The patch messages describe each change. To change the driver, prepare a tree, commit
 the prepared state, edit, and regenerate the affected patch with `git format-patch`
@@ -165,11 +166,11 @@ against the commit before it; then rebuild and run the tests below.
 
 Before Mesa's first command, `SocketStream.cpp` sends a 48-byte hello: `CBGLREF1`, a
 little-endian version (4) and feature mask, and the source fingerprint documented in
-[docs/gpu-live.md](../../../../docs/gpu-live.md). The driver offers mask `0x1BFFF0`; the
+[docs/gpu-live.md](../../../../docs/gpu-live.md). The driver offers mask `0x9BFFF0`; the
 broker answers with the required `0x70` plus the offered bits the connected phone
 supports, and the driver prints `CABOOSE_GPU_HELLO features=0x…` with what it was granted. A
 broker that predates a bit closes the connection, and the driver reconnects offering fewer:
-`0xBFFF0`, `0x3FFF0`, `0x1FFF0`, `0xFFF0`, `0x7FF0`, `0x3FF0`, `0x1FF0`, `0xFF0`, `0x7F0`, `0xF0`, then `0x70`. An answer with bits the driver did not offer, or
+`0x1BFFF0`, `0xBFFF0`, `0x3FFF0`, `0x1FFF0`, `0xFFF0`, `0x7FF0`, `0x3FF0`, `0x1FF0`, `0xFF0`, `0x7F0`, `0xF0`, then `0x70`. An answer with bits the driver did not offer, or
 any other difference, fails the connection, and with it Vulkan instance creation.
 `CABOOSE_GFXSTREAM_GUEST_HANDLES=0` offers `0x70` only. Patches 0013 and 0014, the
 creates and allocations of 0016 and the fence, semaphore and pipeline handles of 0018
@@ -195,6 +196,7 @@ hello for the completion feed. The rest of the series requires the `0x70` contra
 | 18 (`0x40000`) | Batched descriptor sets without inline uniform blocks; this driver never offers it |
 | 19 (`0x80000`) | Descriptor sets, inline uniform blocks included, allocated and written in the guest and committed with the next submit (patches 0067, 0072) |
 | 20 (`0x100000`) | Batched descriptor pools' set ids are the guest handles after the pool's, chosen in the guest (requires bit 7; patch 0085) |
+| 23 (`0x800000`) | Silent success: no replies for the commands the guest does not wait for, failures on the feed (requires bits 7 and 9; used with bits 8, 12 and 16 too; patch 0087) |
 
 ## Runtime switches
 
@@ -213,7 +215,10 @@ hello for the completion feed. The rest of the series requires the `0x70` contra
 
 `python3 -m unittest discover -s guest/gpu/gfxstream -p 'test_*.py'` checks the series
 (contiguous numbering, upstream-only changes, descriptions, pinned revision) along with
-the broker. The owned headers' C++ tests are described in their READMEs.
+the broker, and that silent success's commands are the decoder's. `compile.sh` runs
+`check_silent_success.py` on the prepared tree before every build: it fails when the encoder
+defers the reply of a command silent success does not list, or reads the reply of one it
+does. The owned headers' C++ tests are described in their READMEs.
 
 [`sync-check/`](sync-check/README.md) runs the event, query, free and reply-wait paths
 against a real phone executor and times them, for a driver build before it is installed.

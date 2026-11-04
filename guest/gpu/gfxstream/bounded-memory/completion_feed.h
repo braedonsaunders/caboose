@@ -37,7 +37,8 @@ inline constexpr uint32_t kFeedVersion = 1;
 inline constexpr uint32_t kFeedPacketSize = 16;
 inline constexpr uint32_t kWatchPacketSize = 24;
 inline constexpr uint32_t kOrderPacketSize = 16;
-// A feed record: serial u64, status i32, reserved u32 = 0.
+// A feed record's header: serial u64, status i32, payload bytes u32 (0 for a watch's record),
+// then the payload (silent_success.h readRecord).
 inline constexpr size_t kRecordSize = 16;
 // Record status: the work completed; the device was lost; or the phone cannot watch
 // that queue (a deferred or shared queue), so its fences must be asked about directly.

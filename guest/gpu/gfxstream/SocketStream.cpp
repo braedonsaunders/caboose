@@ -16,6 +16,7 @@
 #include "caboose-bounded-memory/completion_feed.h"
 #include "caboose-bounded-memory/deferred_replies.h"
 #include "caboose-bounded-memory/memory_traffic.h"
+#include "caboose-bounded-memory/silent_success.h"
 #include "caboose-bounded-memory/upload_cache.h"
 #include "caboose-bounded-memory/static_query_cache.h"
 #include "caboose-shader-cache/shader_cache.h"
@@ -58,15 +59,19 @@ static constexpr unsigned char kHello[48] = {
 // sets itself, inline uniform blocks included, and sends them with its next submit, in one
 // vkQueueCommitDescriptorSetUpdatesGOOGLE (docs/gpu-live.md, "Batched descriptor sets"); 0x100000
 // it chooses the set ids of those descriptor pools itself (requires 0x80; docs/gpu-live.md,
-// "Guest-chosen set ids"). It never offers 0x40000, the same without inline uniform blocks. The broker replies with the features both
+// "Guest-chosen set ids"); 0x800000 its device streams switch to silent success, where the
+// phone writes no reply for the commands the process does not wait for and reports their
+// failure on the feed (requires 0x80 and 0x200; docs/gpu-live.md, "Silent success").
+// It never offers 0x40000, the same without inline uniform blocks. The broker replies with the features both
 // the process and the connected phone support. A broker that predates a feature closes
 // the connection instead, so the offer falls back to fewer features.
 static constexpr uint32_t kGuestHandles = 0x80, kGuestHandleArrays = 0x100, kCompletionFeed = 0x200,
                           kOrderedPresent = 0x400, kGuestImages = 0x800, kGuestQueryPools = 0x1000,
                           kShaderCache = 0x2000, kExecutorResume = 0x4000, kUploadCache = 0x8000,
                           kGuestBufferViews = 0x10000, kBatchedDescriptorSets = 0x80000,
-                          kGuestSetIds = 0x100000;
-static const uint32_t kOffers[] = {0x3ff80 | kBatchedDescriptorSets | kGuestSetIds,
+                          kGuestSetIds = 0x100000, kSilentSuccess = caboose::silent::kHelloBit;
+static const uint32_t kOffers[] = {0x3ff80 | kBatchedDescriptorSets | kGuestSetIds | kSilentSuccess,
+                                   0x3ff80 | kBatchedDescriptorSets | kGuestSetIds,
                                    0x3ff80 | kBatchedDescriptorSets, 0x3ff80, kGuestHandles | kGuestHandleArrays | kCompletionFeed | kOrderedPresent | kGuestImages |
                                        kGuestQueryPools | kShaderCache | kExecutorResume | kUploadCache |
                                        kGuestBufferViews,
@@ -236,20 +241,29 @@ void startCompletionFeed(const char* path, const unsigned char* granted) {
         }
         if (feedGeneration.load(std::memory_order_acquire) == generation)
             caboose::completion::feedActive.store(true, std::memory_order_release);
-        unsigned char record[caboose::completion::kRecordSize];
-        while (recvAll(fd, record, sizeof(record))) {
+        // A record is a 16-byte header and its payload; a payload this process does not read is
+        // skipped. A FAULT (silent success) is the loss of the process's device.
+        caboose::silent::Record record;
+        auto read = [fd](void* data, size_t size) { return recvAll(fd, data, size); };
+        while (caboose::silent::readRecord(read, record)) {
             if (feedGeneration.load(std::memory_order_acquire) != generation) break;
-            uint64_t serial;
-            int32_t status;
-            std::memcpy(&serial, record, sizeof(serial));
-            std::memcpy(&status, record + 8, sizeof(status));
-            caboose::completion::tracker().complete(serial, status);
+            if (record.kind == caboose::silent::Record::Kind::Fault) {
+                caboose::silent::fault(record.opcode, record.result);
+            } else if (record.kind == caboose::silent::Record::Kind::Completion) {
+                caboose::completion::tracker().complete(record.serial, record.status);
+            }
         }
         // A feed ends with its executor, or alone (its waits then ask the device). An
         // older generation's feed that finishes after a reconnect must not touch the
         // new generation's state.
         if (feedGeneration.load(std::memory_order_acquire) == generation) {
             caboose::completion::executorEndedIfGone();
+            // A silent stream's failures are told only on the feed: without it they would go
+            // unseen, so the device is lost with it.
+            if (caboose::silent::replyMode().anySilent()) {
+                std::fprintf(stderr, "CABOOSE_GPU_SILENT_FEED_ENDED\n");
+                caboose::completion::markExecutorLost();
+            }
             caboose::completion::feedActive.store(false, std::memory_order_release);
             caboose::completion::tracker().feedClosed();
         }
@@ -357,6 +371,11 @@ int CabooseSocketStream::connectWith(const char* path, const unsigned char* offe
                      __ATOMIC_RELEASE);
     __atomic_store_n(&caboose_gfxstream_guest_set_ids,
                      (features & kGuestHandles) && (features & kGuestSetIds) ? 1 : 0, __ATOMIC_RELEASE);
+    // Silent success needs every create and allocation it covers to use guest handles, and the
+    // feed for failures; a stream switches once its feed runs (VkEncoder::lock).
+    const uint32_t silentNeeds = kSilentSuccess | kGuestHandles | kGuestHandleArrays | kCompletionFeed |
+                                 kGuestQueryPools | kGuestBufferViews;
+    caboose::silent::replyMode().granted((features & silentNeeds) == silentNeeds);
 #else
     caboose_gfxstream_guest_handles = 0;
 #endif

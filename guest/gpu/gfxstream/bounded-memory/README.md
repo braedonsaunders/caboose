@@ -24,6 +24,7 @@ transfer and reply handling, so it can be tested without Mesa.
 | `query_results.h` | Query results without a round trip: a no-wait vkGetQueryPoolResults returns what its earlier identical request found, and resets drop stale results |
 | `completion_feed.h` | The completion feed's wire format and the tracker of every fence, timeline semaphore, event and query the process follows; the pause-on-loss waits: a paused process holds a loss until a new executor's socket appears, including a loss the phone replies with and a device stream that ends before the broker removes the old socket (`test_pause_on_loss.cpp`) |
 | `guest_set_ids.h` | Set ids a batched descriptor pool chooses with hello `0x100000`: the guest handles after the pool's own, in one block of the handle counter, and the create flag that tells the decoder so (docs/gpu-live.md, "Guest-chosen set ids") |
+| `silent_success.h` | Silent success with hello `0x800000` (docs/gpu-live.md, "Silent success"): its commands, the REPLY_MODE packet, which device streams have switched, feed records with payloads and the FAULT record, which is device loss |
 | `handles.h` | Vulkan handles as 64-bit keys and back, without the cast through `uintptr_t` that drops the upper half of a non-dispatchable handle in 32-bit builds |
 | `flush_timing.h`, `rpc_timing.h` | Bounded opt-in timing records (`CABOOSE_PRIVATE_GPU_FLUSH_TIMING=1`, `CABOOSE_PRIVATE_GPU_RPC_TIMING=1`) |
 
@@ -61,7 +62,11 @@ device refused or renamed, invalidates the stream: the application can no longer
 that failure, so the device is lost. Only the first encoder of a process may defer; a
 second encoder turns deferral off for the process. Before the WSI surface socket names
 objects or work from the stream, `drainObjects` reads replies through the last pending
-create or submit and leaves later fence waits and plain results pending.
+create or submit and leaves later fence waits and plain results pending. On a stream switched
+to silent success (`silent_success.h`) the creates, allocations, binds, submits and event
+operations it lists queue no reply, and a staged submit queues only its command buffers'
+begin and end results; the encoder then follows `drainObjects` with one round trip when such
+a command went out since the last.
 
 Without the completion feed, a submit that signals a fence is followed by a bounded
 (250 ms) wait for that fence. When the wait's reply reports success, the fence is known
