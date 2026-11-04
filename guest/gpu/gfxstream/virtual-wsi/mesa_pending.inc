@@ -91,7 +91,9 @@ static void pumpRemoteSurface(Surface& surface) {
         if (swap->cancelled && swap->phase==RemotePhase::Dormant) releaseRemoteSwap(*swap);
     if (!surface.bound) {
         if (surface.destroyed && !client.bindPending()) return;
-        if (!tryBind(surface)) {
+        const bool framesWaiting=std::any_of(surface.remoteSwaps.begin(),surface.remoteSwaps.end(),
+            [](const std::shared_ptr<DeviceSwapchain>& swap) { return !swap->pending.empty(); });
+        if (!tryBind(surface,false,std::chrono::steady_clock::duration::zero(),framesWaiting)) {
             // A bind the compositor keeps refusing is terminal for the accepted swapchain
             // work, rather than filling its image ring while an infinite acquire waits for a
             // retry. A refusal is first taken for the window not being bindable yet (an X11

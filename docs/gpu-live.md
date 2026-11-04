@@ -978,7 +978,17 @@ the display association. A new epoch does not erase outstanding native work.
 A surface bind names a native Wayland surface or an X11 window on the display's
 Xwayland: the trailing 32-bit field of the CGLS bind request and of the CGB1 bind
 record is the object's namespace, 0 for a `wl_surface` protocol ID and 1 for an X11
-window ID; any other value is malformed. Only the compositor can bind an actual
+window ID; any other value is malformed. A bind either carries a frame or is a probe. A
+process that answers its surface queries itself (guest-owned images) binds with a frame
+when a present sends the bind or frames wait for it, and otherwise (a query, swapchain
+set-up) binds as a probe: its CGLS bind request has 32 bytes, adding flags (1) and a reserved
+word (0), and the broker sends it as a version-2 CGB1 bind record of 64 bytes with the same
+two words. A 24-byte request and a version-1 record carry a frame, as every bind from a
+process without local answers does. The compositor refuses every probe: a window keeps
+the picture the compositor presents of it until its application has a frame for it, and
+an application that makes a surface on its own window and never presents there (Steam's
+CEF browser process) does not take the window's picture away. A frame finding its probe
+refused binds again at once, without the retry delay of queries. Only the compositor can bind an actual
 client/surface to a current owner window; an application-provided window number or
 X11 `_NET_WM_PID` is not authority.
 
@@ -1004,18 +1014,18 @@ X11 `_NET_WM_PID` is not authority.
   X11 has no client isolation: any client of the seat's Xwayland can create a child
   window inside another's toplevel, so an X11 grant proves only that the bound
   process made the window it presents to on the owner's own display.
-- An X11 bind of an override-redirect window (or a window in one) that is not bindable
-  yet, because it is not mapped or the compositor has not taken in its map, is held
-  rather than refused when the X server records the bound process as the window's maker
-  and the broker's pidfd identifies it. Toolkits bind a menu's surface as soon as they
-  make the window, before it is shown. The compositor answers a held bind, by the rules
-  above, as soon as the window maps, looking again every 100 ms. It refuses it when the
-  window is destroyed, the process ends, a newer bind of the same window by the same
+- An X11 bind (with a frame) of a window that is not bindable yet, because it is not
+  mapped or the compositor has not taken in its map, is held rather than refused when the
+  X server records the bound process as the window's maker and the broker's pidfd
+  identifies it. Toolkits bind a surface as soon as they make its window (a menu, a
+  top-level or a child), before it is shown. The compositor answers a held bind, by the
+  rules above, as soon as the window maps, looking again every 100 ms. It refuses it when
+  the window is destroyed, the process ends, a newer bind of the same window by the same
   process arrives, or it has been held 4 s, inside the broker's 5 s wait for the answer;
-  at most 16 are held, and one more is refused at once. A broker that ends takes its held
-  binds with it, unanswered. A managed top-level's bind is never held: its map goes
-  through the compositor, and an application that presents before mapping it is answered
-  at once.
+  at most 16 are held, and one more is refused at once. A window whose bind waited out
+  the 4 s is not held again (of the last 64 such windows): its later binds are refused at
+  once until it is bindable, so a window that never maps costs its process one wait. A
+  broker that ends takes its held binds with it, unanswered.
 - An inset surface, an X11 descendant of such a toplevel that does not cover it (a
   browser view CEF draws in its own child window) or a subsurface of a Wayland toplevel,
   bound by the process that made it (the same X-Resource and pidfd checks), becomes a

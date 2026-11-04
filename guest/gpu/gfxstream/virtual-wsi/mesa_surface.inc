@@ -177,45 +177,56 @@ static bool staleGeneration(const Surface& surface) {
            surface.instanceGeneration!=caboose::completion::connectionGeneration.load(std::memory_order_acquire);
 }
 static bool tryBind(Surface& surface, bool present=false,
-                    std::chrono::steady_clock::duration wait=std::chrono::steady_clock::duration::zero()) {
+                    std::chrono::steady_clock::duration wait=std::chrono::steady_clock::duration::zero(),
+                    bool framesWaiting=false) {
     if (staleGeneration(surface)) return false;
     if (surface.bound) return true;
     const auto now=std::chrono::steady_clock::now();
-    try {
-        if (lazyBind() && !surface.instanceLease) {
-            surface.generation=caboose::completion::executorGeneration.load(std::memory_order_acquire);
-            syncRetirementGeneration(surface.generation);
-            surface.instanceLease=caboose::memory::presentationRetirement.reserve(surface.generation,
-                {{Retirement::Kind::Instance,surface.boxedInstance}});
-            if (!surface.instanceLease) throw std::bad_alloc();
+    // A bind with a frame to show (a present, or frames waiting for it) asks for the window;
+    // one without (a query, swapchain set-up) only probes it, when queries are answered locally.
+    const bool carriesFrame=present || framesWaiting;
+    const bool probe=Client::BindPolicy::probe(present,framesWaiting,lazyBind());
+    for (int round=0;round<2;++round) {
+        bool probeRefused=false;
+        try {
+            if (lazyBind() && !surface.instanceLease) {
+                surface.generation=caboose::completion::executorGeneration.load(std::memory_order_acquire);
+                syncRetirementGeneration(surface.generation);
+                surface.instanceLease=caboose::memory::presentationRetirement.reserve(surface.generation,
+                    {{Retirement::Kind::Instance,surface.boxedInstance}});
+                if (!surface.instanceLease) throw std::bad_alloc();
+            }
+            if (!surface.client.bindPending()) {
+                if (!Client::BindPolicy::mayBind(carriesFrame,now,surface.nextBind,surface.nextPhoneBind)) return false;
+                surface.attempted=true; ++surface.bindAttempts;
+                surface.client.connect(std::getenv("CABOOSE_GFXSTREAM_SURFACE_SOCKET"),deadline());
+                surface.client.beginBind(surface.boxedInstance,surface.object,0,0,deadline(),surface.space,probe);
+            }
+            Record reply;
+            if (!surface.client.awaitBind(now+wait,&reply)) return false;
+            const auto answer=status(reply.body,48);
+            if (apiStatus(answer)==VK_SUCCESS) {
+                surface.bound=true; surface.phoneRetrying=false;
+                if (surface.bindAttempts>1 || surface.phoneFailures) logBind(surface,"bound",0,0);
+                return true;
+            }
+            const auto delay=std::min<std::chrono::steady_clock::duration>(kPhoneBindRetryMax,
+                kBindRetry*(1u<<std::min(surface.phoneFailures,6u)));
+            ++surface.phoneFailures;
+            surface.phoneRetrying=surface.phoneFailures<kPhoneBindFailuresMax;
+            surface.nextPhoneBind=std::chrono::steady_clock::now()+delay;
+            logBind(surface,"failed",answer.nativeError,answer.hasVk ? answer.vk : 0);
+        } catch (const std::system_error& error) {
+            surface.phoneRetrying=false;
+            probeRefused=surface.client.lastBindProbe();
+            logBind(surface,probeRefused ? "refused-probe" : "refused",error.code().value(),0);
         }
-        if (!surface.client.bindPending()) {
-            if ((!present && now<surface.nextBind) || now<surface.nextPhoneBind) return false;
-            surface.attempted=true; ++surface.bindAttempts;
-            surface.client.connect(std::getenv("CABOOSE_GFXSTREAM_SURFACE_SOCKET"),deadline());
-            surface.client.beginBind(surface.boxedInstance,surface.object,0,0,deadline(),surface.space);
-        }
-        Record reply;
-        if (!surface.client.awaitBind(now+wait,&reply)) return false;
-        const auto answer=status(reply.body,48);
-        if (apiStatus(answer)==VK_SUCCESS) {
-            surface.bound=true; surface.phoneRetrying=false;
-            if (surface.bindAttempts>1 || surface.phoneFailures) logBind(surface,"bound",0,0);
-            return true;
-        }
-        const auto delay=std::min<std::chrono::steady_clock::duration>(kPhoneBindRetryMax,
-            kBindRetry*(1u<<std::min(surface.phoneFailures,6u)));
-        ++surface.phoneFailures;
-        surface.phoneRetrying=surface.phoneFailures<kPhoneBindFailuresMax;
-        surface.nextPhoneBind=std::chrono::steady_clock::now()+delay;
-        logBind(surface,"failed",answer.nativeError,answer.hasVk ? answer.vk : 0);
-    } catch (const std::system_error& error) {
-        surface.phoneRetrying=false;
-        logBind(surface,"refused",error.code().value(),0);
+        surface.client.reset();
+        surface.attempted=false;
+        surface.nextBind=now+kBindRetry;
+        // A frame that found a probe in flight, refused, asks for the window itself at once.
+        if (!(carriesFrame && probeRefused)) return false;
     }
-    surface.client.reset();
-    surface.attempted=false;
-    surface.nextBind=now+kBindRetry;
     return false;
 }
 // Capabilities of a surface not bound yet, in the provider's reply format: the formats
