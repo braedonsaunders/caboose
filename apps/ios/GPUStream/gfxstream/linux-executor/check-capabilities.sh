@@ -132,8 +132,10 @@ for name in ('disabled','cold','warm','fresh'):
     count,size,micros=map(int,writes.groups())
     if name=='cold' and not count:
         raise SystemExit('FAIL the cold process kept no answers: '+writes.group(0))
-    # Each new answer is one appended record: never a rewrite of earlier records.
-    if count>misses or size>count*(2*4096+4096+16):
+    # Each new answer is one appended record: never a rewrite of earlier records. A record is
+    # at most a key of 2*4096+16 bytes and a 64 KiB value (static_query_cache.h kMaxKeyBytes,
+    # kMaxValueBytes); a process's device answers (properties chains) reach several KiB.
+    if count>misses or size>count*(2*4096+16+65536):
         raise SystemExit('FAIL capability cache rewrote records: '+name+' '+writes.group(0))
     seconds[name]=float(elapsed.group(1))
     print('%-8s process %.3f s, %d records appended, %d bytes, %.3f ms appending'%(name,seconds[name],count,size,micros/1000))
