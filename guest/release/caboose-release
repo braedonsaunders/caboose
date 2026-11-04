@@ -182,6 +182,19 @@ def run_check(directory, settings):
     summary += dxvk.stdout.decode(errors="replace")
     if dxvk.returncode:
         return dxvk.returncode, summary
+    # With dxvk_stress (the stress program's arguments: SECONDS THREADS DRAWS), the multi-threaded
+    # D3D11 load in the bench (d3d11_stress.exe) runs under the phone's negotiation too: every
+    # staging readback it checks must hold the GPU's bytes (no FAIL line) and it must report frames.
+    if settings.get("dxvk_stress"):
+        stress = subprocess.run([
+            "sh", str(Path(settings["repo"]) / "apps/ios/GPUStream/gfxstream/linux-executor/check-dxvk.sh"),
+            settings["dxvk_computer"], settings["work"], str(driver), settings["dxvk_bench"], str(out / "dxvk-stress")],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            env={**os.environ, "APP": "d3d11_stress.exe", "APP_ARGS": settings["dxvk_stress"],
+                 "APP_EXPECT": "frames=", "CASES": "phone"})
+        summary += stress.stdout.decode(errors="replace")
+        if stress.returncode:
+            return stress.returncode, summary
     # Chromium must draw real pictures (not noise, not blank) through a seat of the check's own
     # in the same computer, and a fresh Chromium again after the seat's executor was replaced.
     pixels = subprocess.run([

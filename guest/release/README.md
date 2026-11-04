@@ -41,7 +41,9 @@ Last, DXVK's d3d11 triangle runs with the release's driver on the executor, thro
 from the checkout in a running computer, under the phone's feature negotiation with and
 without batched descriptor sets and an older phone's
 ([`check-dxvk.sh`](../../apps/ios/GPUStream/gfxstream/linux-executor/check-dxvk.sh)): DXVK must
-find the device without skipping it and present. Then Chromium draws a page through a seat
+find the device without skipping it and present. With `dxvk_stress` set, the multi-threaded
+D3D11 load (`d3d11_stress.exe` in the bench) runs the same way under the phone's negotiation:
+every staging readback it checks must hold the GPU's bytes and it must report its frames. Then Chromium draws a page through a seat
 the check makes in the same computer, with the release's driver for its compositor and
 clients, and a fresh Chromium draws it again after the seat's executor was replaced
 ([`check-loss-pixels.sh`](../../apps/ios/GPUStream/gfxstream/linux-executor/check-loss-pixels.sh)):
@@ -65,6 +67,7 @@ in the release, and the manifest covers them. The settings are `key=value` lines
 | `sync_check` | The synchronization probe ([sync-check](../gpu/gfxstream/driver/sync-check/README.md)), built |
 | `dxvk_computer` | The running computer DXVK's and the loss pixels check run in (its Steam Flatpak and Proton, and Chromium); its own executor and displays are untouched |
 | `dxvk_bench` | The directory in that computer's Steam Flatpak data holding DXVK's `triangle.exe` |
+| `dxvk_stress` | Optional: `SECONDS THREADS DRAWS` for `d3d11_stress.exe` (built from [`d3d11-stress.cpp`](../../apps/ios/GPUStream/gfxstream/linux-executor/d3d11-stress.cpp)) in `dxvk_bench`, run after the triangle |
 | `chaos_home` | A home in that computer of the check's own (never its owner's) with a Steam Flatpak profile, and DXVK's `triangle.exe` in its Flatpak data's `caboose-bench` |
 
 ## Signatures and the SBOM

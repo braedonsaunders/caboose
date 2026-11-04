@@ -150,6 +150,25 @@ class Releases(unittest.TestCase):
         self.assertIn(f"args k w {release.ROOT / 'r1' / 'files' / release.DRIVER} b", summary)
         self.assertIn("DXVK skipped the device", summary)
 
+    def test_a_stale_readback_under_the_dxvk_stress_fails_the_seal_check(self):
+        release.main(["new", "r1"])
+        release.main(["add", "r1", str(self.source), "/" + release.DRIVER, "755"])
+        repo = Path(self.tmp.name) / "repo"
+        for name, body in ((release.CHECK_SCRIPT, 'echo "PASS executor"'),
+                           ("guest/release/check-packaged.sh", 'echo "PASS packaged"'),
+                           ("apps/ios/GPUStream/gfxstream/linux-executor/check-capabilities.sh", 'echo "PASS cache"'),
+                           ("apps/ios/GPUStream/gfxstream/linux-executor/check-dxvk.sh",
+                            '[ -z "${APP:-}" ] && { echo "PASS DXVK"; exit 0; }\n'
+                            'echo "app $APP $APP_ARGS $APP_EXPECT $CASES $5"; echo "FAIL: phone: FAIL readback frame 3"; exit 1')):
+            script = repo / name; script.parent.mkdir(parents=True, exist_ok=True); script.write_text(body)
+        status, summary = RUN_CHECK(release.ROOT / "r1", {"repo": str(repo), "image": "i", "work": "w", "sync_check": "s",
+                                                          "capability_probe": "c", "dxvk_computer": "k", "dxvk_bench": "b",
+                                                          "dxvk_stress": "40 4 50"})
+        self.assertEqual(status, 1)
+        self.assertIn("PASS DXVK", summary)
+        self.assertIn(f"app d3d11_stress.exe 40 4 50 frames= phone {release.ROOT / 'r1' / 'check' / 'dxvk-stress'}", summary)
+        self.assertIn("FAIL readback frame 3", summary)
+
     def test_a_driver_that_presents_noise_after_a_loss_fails_the_seal_check(self):
         release.main(["new", "r1"])
         release.main(["add", "r1", str(self.source), "/" + release.DRIVER, "755"])
