@@ -271,6 +271,18 @@ log to show the bind held and then attached to a window when the popup mapped, t
 retire that window's swapchain with frames presented, and the window's newest picture to have
 at least half its pixels lit (the client's colours keep green half on; black fails).
 
+## OpenGL versions through the driver
+
+```sh
+python3 apps/ios/GPUStream/gfxstream/linux-executor/check_zink_versions.py COMPUTER WORK RELEASE OUT
+```
+
+On a private seat (check_chaos.py's), runs `eglinfo` without the seat's version overrides through
+the driver from `RELEASE` and on the computer's own lavapipe. Zink computes its OpenGL versions
+from the Vulkan extensions and features it is given, so a device extension the driver does not
+pass lowers them: the core, compatibility and ES versions must be the same on both.
+`OUT/report.txt` also lists the extensions only the computer's device offers.
+
 ## Pictures after an executor loss
 
 ```sh
