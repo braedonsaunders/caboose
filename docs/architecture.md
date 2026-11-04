@@ -787,6 +787,19 @@ installed version with its latest release and each game's with the version its p
 (`latestVersion`), and runs an ordinary `update` operation for each.
 `updateAvailable` reports what the last check found and `update` installs it at once.
 
+**The Library record.** The host keeps each computer's Library applications whose files live
+in its root file system: Debian applications, Craft releases and games (a game's directory is
+in the home, its desktop entry and icon are not). Flathub apps are not listed; the computer's
+Flatpak volume keeps them. The record is `library-apps.json` in the computer's state
+(`src/library-record.ts`): each app's catalog id, and for a Debian application found through
+AppStream its package, AppStream identity, desktop id, name, summary and licence, so it can be
+installed again without the guest's own operation record. A finished `install` or `update` adds
+the app and a finished `remove` takes it off; an app the guest reports installed by an earlier
+Library operation joins it at the next listing. At every wake, once the guest components are
+current, the host runs an ordinary `install` for each recorded app the computer lacks, so a
+container created again from its image gets back everything the owner chose. An app the owner
+removes outside the Library stays recorded and is installed again at the next wake.
+
 The host runs the installer (`guest-catalog.py`) as root through the guest channel on both
 runtimes. A Craft release downloads directly from the guest and is size- and SHA-256-checked
 before APT installs it with `mesa-vulkan-drivers` and `libgl1-mesa-dri`; the `.deb` is deleted
@@ -994,7 +1007,8 @@ Host state lives in `CABOOSE_IMAGE_ROOT`, each file replaced atomically with mod
   `phones.json` (phone sign-ins, by SHA-256 of their tokens), `agent-registry.json` and
   `host.json` (the host's name and default computer, below).
 - Each computer's own `caboose.json` (settings), `push-devices.json`, `activities.json`,
-  `agent-profiles.json`, `mcp-library.json`, `keyring-secret` and `commands/` (one
+  `agent-profiles.json`, `mcp-library.json`, `library-apps.json` (the Library record, under
+  Catalog), `keyring-secret` and `commands/` (one
   `<id>.json` per command, directory mode 0700) in `computers/<id>/`; a container computer's
   `container.json` (its container settings, under Computers) beside its `caboose.json`.
 - For microVMs, `overlays/<id>.raw` (the disk), `overlays/<id>.snapshot` (parked memory)
