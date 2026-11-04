@@ -11,7 +11,7 @@ the runtime's own files beside its executable (resources.pak, v8_context_snapsho
 following wrapper scripts (the programs and directories they name), or for `flatpak run` by
 an Electron base application. LibreOffice (recognised by soffice.bin beside its program)
 opens the seat's UNO pipe, through which desktop MCP's direct tools work on its documents.
-Java programs get the ATK wrapper, where it is installed. A program that quits at once saying
+Java programs of this system (not a Flatpak's) get the ATK wrapper, where it is installed. A program that quits at once saying
 it needs X11 (Xfce's keyboard and display settings) is started again on the seat's X server.
 Every other program starts as asked."""
 import os
@@ -158,8 +158,11 @@ def run(argv):
 if __name__ == '__main__':
     if len(sys.argv) != 2:
         sys.exit(__doc__)
-    os.environ.update(java_accessibility(dict(os.environ)))
     argv = plan(sys.argv[1])
+    # A Flatpak sandbox sees neither the host's ATK wrapper nor its JNI library: a JRE there
+    # told to load it fails to start, so the switch is only for programs of this system.
+    if not (argv and os.path.basename(argv[0]) == 'flatpak'):
+        os.environ.update(java_accessibility(dict(os.environ)))
     if argv is None:
         argv = ['/bin/sh', '-c', sys.argv[1]]
     try:

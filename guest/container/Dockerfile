@@ -94,6 +94,9 @@ RUN export USER=root HOME=/root TERM=xterm && mkdir -p /tmp/themes && \
     /tmp/themes/WhiteSur-gtk-theme/install.sh -d /usr/share/themes -c light -c dark && \
     /tmp/themes/WhiteSur-icon-theme/install.sh -d /usr/share/icons && \
     (cd /tmp/themes/WhiteSur-cursors && ./install.sh) && \
+    # The theme's installer also leaves a theme-switcher app that needs GTK 4 Python bindings the
+    # image does not have, so it cannot open: only the themes are kept.
+    rm -f /usr/bin/gnome-theme-switcher /usr/share/applications/org.gnome.GTK4ThemeSwitcher.desktop && \
     mkdir -p /etc/xdg/gtk-3.0 && \
     printf '[Settings]\ngtk-theme-name=WhiteSur-Dark\ngtk-icon-theme-name=WhiteSur-dark\ngtk-cursor-theme-name=WhiteSur-cursors\ngtk-font-name=Inter 10\ngtk-decoration-layout=:\ngtk-application-prefer-dark-theme=1\n' > /etc/xdg/gtk-3.0/settings.ini && \
     rm -rf /tmp/themes /tmp/desktop-mcp /var/lib/apt/lists/*
