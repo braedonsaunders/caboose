@@ -61,8 +61,10 @@ done
 [ "$lower" = yes ] || fail 'EROFS lower not mounted'
 case ",$lower_options," in *,ro,*) ;; *) fail 'EROFS lower is not read-only' ;; esac
 [ "$usr_overlay" = yes ] && [ "$opt_overlay" = yes ] || fail 'System overlays not mounted'
-grep -q '/dev/pmem0' /scripts/local-bottom/caboose-system || fail 'caboose-system lacks /dev/pmem0 discovery'
-grep -q 'ro,dax' /scripts/local-bottom/caboose-system || fail 'caboose-system lacks ro,dax mount support'
+# The initramfs may have no grep (klibc without busybox): read the hook with the shell.
+contains() { while IFS= read -r line; do case "$line" in *"$1"*) return 0 ;; esac; done < /scripts/local-bottom/caboose-system; return 1; }
+contains '/dev/pmem0' || fail 'caboose-system lacks /dev/pmem0 discovery'
+contains 'ro,dax' || fail 'caboose-system lacks ro,dax mount support'
 # Executing the real guest Python reads the EROFS /usr lower. Exercise
 # copy-up, new-file writes, whiteouts and an immutable lower in this snapshot.
 chroot "$rootmnt" /usr/bin/python3 - <<'PY' || fail 'Guest compressed I/O checks failed'

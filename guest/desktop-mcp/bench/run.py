@@ -44,8 +44,13 @@ BENCH = '/tmp/caboose-bench'
 
 def computer(script, timeout=120):
     body = f"export BENCH={BENCH} TOOLS={shlex.quote(a.tools)}\nset -a; . /run/caboose/agent-display.env; set +a\n{prelude}\n{script}\n"
-    r = subprocess.run(shlex.split(a.exec_), input=body, text=True, capture_output=True, timeout=timeout)
-    return r.returncode, (r.stdout + r.stderr).strip()
+    for attempt in (1, 2):
+        try:
+            r = subprocess.run(shlex.split(a.exec_), input=body, text=True, capture_output=True, timeout=timeout)
+            return r.returncode, (r.stdout + r.stderr).strip()
+        except subprocess.TimeoutExpired:
+            if attempt == 2:
+                raise  # the connection to the computer, not the task: a second stall ends the run
 
 
 PROMPT = ('You are operating a Linux desktop, the agent seat, through the caboose-desktop tools. '
@@ -123,6 +128,11 @@ for task in tasks:
         except subprocess.TimeoutExpired:
             result = {'subtype': 'timeout'}
         seconds = time.monotonic() - started
+        if result.get('is_error') and not calls:
+            # The agent never ran (no usable account, a provider outage): a run without it
+            # measures nothing, so stop rather than record a failure.
+            computer('end_apps; rm -rf "$BENCH"')
+            sys.exit(f"the agent did not run on {task['id']}: {str(result.get('result') or result.get('subtype'))[:300]}")
         code, text = computer(task['verify'])
         if a.trace:
             _, lines = computer(f'cat {shlex.quote(a.trace)} 2>/dev/null; rm -f {shlex.quote(a.trace)}')

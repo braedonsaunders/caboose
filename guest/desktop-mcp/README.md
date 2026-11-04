@@ -71,6 +71,11 @@ and acts only in the agent seat's session (its bus, its profile's home and setti
 | `doc.info`, `text`, `cells`, `set_cells`, `append`, `replace`, `slide`, `save` | its document through LibreOffice's UNO (the launcher opens the seat's UNO pipe); `save` with a path picks the format by extension | the window is LibreOffice's, started by the launcher |
 | `browser.tabs`, `activate`, `open`, `evaluate` | Chromium's tabs, and the DevTools protocol for `evaluate`, through the Caboose WebMCP extension | the window is Chromium's on the agent seat |
 
+Every `look` also names the files and folders the window works on, as `Its files: …`, so an
+agent need not guess paths: its LibreOffice document, the existing paths on its process's command
+line (an Electron process's retitled one too), files of those folders its title names, and its
+working folder inside the home, those its title names first.
+
 The listing names each tool's arguments and their types; D-Bus actions are grouped by their
 name up to the last dot. `CABOOSE_DESKTOP_DIRECT_TOOLS=0` leaves direct tools out.
 
