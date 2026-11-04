@@ -1438,6 +1438,59 @@ class TransportNegotiationTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(instance.lease.idle)
             self.assertIsNone(instance.session)
 
+    async def test_a_new_executor_supersedes_one_that_lingers(self):
+        # The phone made a new executor while the host still held the previous one's
+        # transport: the new one is admitted, the old one is ended as a loss, not refused.
+        import uuid
+        aborted=asyncio.Event()
+        class LingeringWriter(Writer):
+            def abort(self): aborted.set()
+        ready=[asyncio.Event(),asyncio.Event()]
+        class TestSession(broker.Session):
+            async def read_loop(self):
+                await self.message(Envelope(Kind.SESSION_READY,self.executor,self.generation,0,0,1,self.hello))
+                if self.generation == 1:
+                    # The old connection looks alive until the broker ends it.
+                    await aborted.wait()
+                    raise ConnectionError('executor disconnected')
+                await asyncio.Event().wait()
+        class Server:
+            def close(self): pass
+            async def wait_closed(self): pass
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory); root.chmod(0o700); token=root/'token'; token.write_text('test')
+            async def start_server(_callback, path):
+                Path(path).touch(); return Server()
+            instance=object.__new__(broker.Broker)
+            instance.token_file=token; instance.indexed=False; instance.lease=broker.ExecutorLease()
+            instance.session=None; instance.holder=None; instance.socket_path=root/'gpu.sock'; instance.surface_path=None
+            instance.closing=asyncio.Event(); instance.warmup=None
+            reported=[]
+            async def report(session, kind):
+                reported.append((session.generation, kind))
+                if kind == 4: session.ready_reported = True; ready[session.generation-1].set()
+                if kind == 5: session.lost_reported = True
+                if kind == 6: session.retired_reported = True
+            instance.report_lifecycle=report
+            def connection(_sock=None, **_kw):
+                reader=asyncio.StreamReader(); reader.feed_data(b'GET / HTTP/1.1\r\n\r\n')
+                return reader, LingeringWriter()
+            identities=iter([uuid.UUID(bytes=b'a'*16), uuid.UUID(bytes=b'b'*16)])
+            def admit(*_args): return None, next(identities), b'upgrade'
+            with mock.patch.object(broker,'Session',TestSession), mock.patch.object(broker,'admit',side_effect=admit), mock.patch.object(asyncio,'open_connection',side_effect=connection), mock.patch.object(asyncio,'start_unix_server',side_effect=start_server):
+                first=asyncio.create_task(instance.remote(None))
+                await asyncio.wait_for(ready[0].wait(),5)
+                second=asyncio.create_task(instance.remote(None))
+                await asyncio.wait_for(ready[1].wait(),5)
+                await asyncio.wait_for(first,5)
+                self.assertTrue(aborted.is_set())
+                self.assertEqual(reported[:4],[(1,4),(1,5),(1,6),(2,4)])
+                self.assertTrue(instance.lease.held(b'b'*16,2))
+                self.assertIs(instance.holder.generation,2)
+                instance.closing.set()
+                second.cancel()
+                with contextlib.suppress(asyncio.CancelledError): await second
+
     async def test_orderly_retirement_is_not_reported_twice(self):
         session=object.__new__(broker.Session)
         session.executor=b'a'*16; session.generation=1

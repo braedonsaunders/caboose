@@ -639,6 +639,9 @@ async def start_warmup(program, socket_path):
 # reply, all that time. Keepalive probes find an idle dead peer in about 25 s; data left
 # unacknowledged for 30 s (the host's own hold for a phone that left) ends the connection.
 # A phone that is away is unseen here: its host holds the transport and acknowledges.
+# How long a new executor connection waits for the one it supersedes to end its session: its
+# local clients and lifecycle reports are each bounded at 2 s, its sockets at 1 s.
+SUPERSEDE_SECONDS = 10
 DEAD_PEER_IDLE_S, DEAD_PEER_INTERVAL_S, DEAD_PEER_PROBES, DEAD_PEER_UNACKED_MS = 10, 5, 3, 30_000
 
 
@@ -663,6 +666,8 @@ class Session:
     def __init__(self, broker, executor, generation, reader, writer, indexed=False, features=frozenset()):
         self.broker, self.executor, self.generation = broker, executor, generation
         self.reader, self.writer = reader, writer
+        # A newer executor connection ended this one (Broker.supersede).
+        self.superseded = False
         # Broker-to-phone DATA of an indexed (v4) session is compressed (live_compression.py)
         # unless CABOOSE_PRIVATE_GPU_DEFLATE=0; asking for it explicitly without v4 is refused.
         setting = os.environ.get("CABOOSE_PRIVATE_GPU_DEFLATE")
@@ -1775,6 +1780,8 @@ class Broker:
         self.lease = ExecutorLease()
         self.tasks = set(); self.closing = asyncio.Event()
         self.session = None
+        # The executor connection that holds the lease, from its admission until its end.
+        self.holder = None
         self.next_bind = 0
         self.pending_binds = {}
         self.bind_send_lock = asyncio.Lock()
@@ -2218,6 +2225,22 @@ class Broker:
                 except OSError as error:
                     print(f'CABOOSE_GPU_BROKER usage file: {error}', file=sys.stderr, flush=True)
 
+    async def supersede(self, timeout=SUPERSEDE_SECONDS):
+        """Ends the executor connection holding the lease, if any, and waits until its session
+        has ended and released the lease, at most `timeout` seconds."""
+        if self.lease.idle:
+            return
+        holder = self.holder
+        if holder is not None and not holder.superseded:
+            holder.superseded = True
+            print(f'CABOOSE_GPU_BROKER executor generation {holder.generation} superseded by a new executor',
+                  file=sys.stderr, flush=True)
+            with contextlib.suppress(OSError, AttributeError):
+                holder.writer.transport.abort()
+        deadline = asyncio.get_running_loop().time() + timeout
+        while not self.lease.idle and asyncio.get_running_loop().time() < deadline:
+            await asyncio.sleep(0.05)
+
     async def remote(self, stream):
         writer = server = None
         surface_listener = surface_accept = None
@@ -2236,13 +2259,15 @@ class Broker:
             _computer, executor, response = admit(raw, token.strip())
             phone_features = admission_features(raw)
             print(session_features_line(admission_declared(raw), admission_forwarded(raw), phone_features), file=sys.stderr, flush=True)
-            # A reconnect can arrive while the lost session is still ending its local clients.
-            for _ in range(50):
-                if self.lease.idle: break
-                await asyncio.sleep(0.1)
+            # The newest executor is the phone's: a phone that made a new executor has given up
+            # the previous one, whose connection may still look alive (the host holds a phone's
+            # transport for a resume that will never come). The previous connection is ended,
+            # as a loss, and the new one waits for its teardown, which is bounded.
+            await self.supersede()
             generation = self.lease.admit(executor.bytes)
             session = Session(self, executor.bytes, generation, reader, writer, indexed=self.indexed,
                               features=phone_features)
+            self.holder = session
             writer.write(response); await writer.drain()
             sender = asyncio.create_task(session.send_loop())
             receiver = asyncio.create_task(session.read_loop())
@@ -2348,6 +2373,8 @@ class Broker:
                     if self.surface_path.lstat().st_ino == surface_inode: self.surface_path.unlink()
             if self.session is session:
                 self.session = None
+            if self.holder is session:
+                self.holder = None
             if server:
                 server.close()
             if owned_socket is not None:
