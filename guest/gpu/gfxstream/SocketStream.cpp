@@ -58,15 +58,18 @@ static constexpr unsigned char kHello[48] = {
 // sets itself, inline uniform blocks included, and sends them with its next submit, in one
 // vkQueueCommitDescriptorSetUpdatesGOOGLE (docs/gpu-live.md, "Batched descriptor sets"); 0x100000
 // it chooses the set ids of those descriptor pools itself (requires 0x80; docs/gpu-live.md,
-// "Guest-chosen set ids"). It never offers 0x40000, the same without inline uniform blocks. The broker replies with the features both
+// "Guest-chosen set ids"); 0x200000 its completion watches name the queries and coherent
+// memory their batches end and write, and the feed's records bring them back (requires 0x200;
+// caboose-bounded-memory/completion_payloads.h). It never offers 0x40000, the same without inline uniform blocks. The broker replies with the features both
 // the process and the connected phone support. A broker that predates a feature closes
 // the connection instead, so the offer falls back to fewer features.
 static constexpr uint32_t kGuestHandles = 0x80, kGuestHandleArrays = 0x100, kCompletionFeed = 0x200,
                           kOrderedPresent = 0x400, kGuestImages = 0x800, kGuestQueryPools = 0x1000,
                           kShaderCache = 0x2000, kExecutorResume = 0x4000, kUploadCache = 0x8000,
                           kGuestBufferViews = 0x10000, kBatchedDescriptorSets = 0x80000,
-                          kGuestSetIds = 0x100000;
-static const uint32_t kOffers[] = {0x3ff80 | kBatchedDescriptorSets | kGuestSetIds,
+                          kGuestSetIds = 0x100000, kCompletionPayloads = 0x200000;
+static const uint32_t kOffers[] = {0x3ff80 | kBatchedDescriptorSets | kGuestSetIds | kCompletionPayloads,
+                                   0x3ff80 | kBatchedDescriptorSets | kGuestSetIds,
                                    0x3ff80 | kBatchedDescriptorSets, 0x3ff80, kGuestHandles | kGuestHandleArrays | kCompletionFeed | kOrderedPresent | kGuestImages |
                                        kGuestQueryPools | kShaderCache | kExecutorResume | kUploadCache |
                                        kGuestBufferViews,
@@ -135,6 +138,11 @@ int caboose_gfxstream_batched_descriptor_sets = -1;
 // pool records how its ids were made.
 extern "C" int caboose_gfxstream_guest_set_ids;
 int caboose_gfxstream_guest_set_ids = 0;
+// 1 while this process's completion watches name what the phone captures for their records
+// (hello feature 0x200000, granted with the completion feed 0x200). Each executor connection
+// decides it; records are read the same way either way.
+extern "C" int caboose_gfxstream_completion_payloads;
+int caboose_gfxstream_completion_payloads = 0;
 
 namespace {
 // The reply is the required hello with a subset of the offered features; returns them.
@@ -236,14 +244,11 @@ void startCompletionFeed(const char* path, const unsigned char* granted) {
         }
         if (feedGeneration.load(std::memory_order_acquire) == generation)
             caboose::completion::feedActive.store(true, std::memory_order_release);
-        unsigned char record[caboose::completion::kRecordSize];
-        while (recvAll(fd, record, sizeof(record))) {
-            if (feedGeneration.load(std::memory_order_acquire) != generation) break;
-            uint64_t serial;
-            int32_t status;
-            std::memcpy(&serial, record, sizeof(serial));
-            std::memcpy(&status, record + 8, sizeof(status));
-            caboose::completion::tracker().complete(serial, status);
+        // Records carry their payloads (caboose-bounded-memory/completion_payloads.h); one
+        // that arrives after a later generation took over is not applied.
+        while (caboose::completion::readRecord([&](void* data, size_t size) {
+                   return recvAll(fd, data, size) && feedGeneration.load(std::memory_order_acquire) == generation;
+               }, caboose::completion::tracker())) {
         }
         // A feed ends with its executor, or alone (its waits then ask the device). An
         // older generation's feed that finishes after a reconnect must not touch the
@@ -357,6 +362,8 @@ int CabooseSocketStream::connectWith(const char* path, const unsigned char* offe
                      __ATOMIC_RELEASE);
     __atomic_store_n(&caboose_gfxstream_guest_set_ids,
                      (features & kGuestHandles) && (features & kGuestSetIds) ? 1 : 0, __ATOMIC_RELEASE);
+    __atomic_store_n(&caboose_gfxstream_completion_payloads,
+                     (features & kCompletionFeed) && (features & kCompletionPayloads) ? 1 : 0, __ATOMIC_RELEASE);
 #else
     caboose_gfxstream_guest_handles = 0;
 #endif

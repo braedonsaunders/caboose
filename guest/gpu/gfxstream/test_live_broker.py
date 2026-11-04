@@ -466,6 +466,12 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(negotiate(hello(0x1000F0), everything - {'guest-set-ids'}), hello(0xF0))
         self.assertIsNone(negotiate(hello(0x100070), everything))
         self.assertEqual(negotiate(hello(0x1000F0), everything - {'guest-handles'}), hello(0x70))
+        # Completion payloads (0x200000) are granted when the phone declared them, and only with
+        # the completion feed; an older phone leaves the process asking for query results.
+        self.assertEqual(negotiate(hello(0x200270), everything), hello(0x200270))
+        self.assertEqual(negotiate(hello(0x200270), everything - {'completion-payloads'}), hello(0x270))
+        self.assertEqual(negotiate(hello(0x200270), everything - {'completion-feed'}), hello(0x70))
+        self.assertIsNone(negotiate(hello(0x200070), everything))
         # Buffer view handles need guest handles too.
         self.assertEqual(negotiate(hello(0x100F0), everything), hello(0x100F0))
         self.assertEqual(negotiate(hello(0x100F0), everything - {'guest-buffer-views'}), hello(0xF0))
