@@ -338,7 +338,7 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
             await session.message(Envelope(Kind.SESSION_READY, b'a' * 16, 1, 0, 0, 2, broker.HELLO))
         session.bindings.finish(session.binding_generation)
 
-    async def test_local_stream_waits_for_real_receipts_and_relays_both_directions(self):
+    async def test_local_stream_answers_the_hello_before_receipts_and_relays_both_directions(self):
         session = broker.Session(None, b'a' * 16, 1, None, Writer())
         session.session_ready.set()
         class Peer:
@@ -357,15 +357,19 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
             return got[0]
         with mock.patch.object(broker.PeerIdentity, 'from_socket', return_value=Peer()):
             task = asyncio.create_task(session.local(reader, writer))
+            # The openings, the hello's answer and the guest's data go out at once, in order: the
+            # phone takes them in that order and answers the openings first.
             opened = await next_frame(Kind.PROCESS_OPEN)
-            self.assertEqual(writer.data, b'')
-            await session.message(Envelope(Kind.PROCESS_READY, b'a' * 16, 1, opened.process, 0, 1))
             stream = await next_frame(Kind.STREAM_OPEN)
-            self.assertEqual(writer.data, b'')
-            await session.message(Envelope(Kind.STREAM_READY, b'a' * 16, 1, opened.process, stream.stream, 2))
             data = await next_frame(Kind.DATA)
             self.assertEqual(data.payload, b'guest request')
+            self.assertEqual(writer.data, broker.HELLO)
             await next_frame(Kind.FIN)
+            # Replies are taken only after the phone's real receipts.
+            with self.assertRaises(ValueError):
+                await session.message(Envelope(Kind.DATA, b'a' * 16, 1, opened.process, stream.stream, 1, b'early'))
+            await session.message(Envelope(Kind.PROCESS_READY, b'a' * 16, 1, opened.process, 0, 1))
+            await session.message(Envelope(Kind.STREAM_READY, b'a' * 16, 1, opened.process, stream.stream, 2))
             await session.message(Envelope(Kind.DATA, b'a' * 16, 1, opened.process, stream.stream, 3, b'reply'))
             await session.message(Envelope(Kind.FIN, b'a' * 16, 1, opened.process, stream.stream, 4))
             stopped = await next_frame(Kind.PROCESS_STOP)
@@ -377,6 +381,17 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(writer.eof)
         self.assertFalse(session.processes)
         session.bindings.finish(session.binding_generation)
+
+    async def test_an_opening_the_phone_never_answers_fails_the_session(self):
+        session = broker.Session(None, b'a' * 16, 1, None, Writer())
+        session.session_ready.set()
+        process = {'ready': asyncio.Event()}
+        stream = {'ready': asyncio.Event()}
+        async def unanswered(event, timeout): raise asyncio.TimeoutError()
+        with mock.patch.object(session, 'phone_answer', unanswered), mock.patch.object(session, 'fail') as fail:
+            await session.opened(process, stream, 4, 9)
+        fail.assert_called_once()
+        self.assertIn('local stream 9 of process 4: no answer to its opening', fail.call_args[0][0])
 
     async def test_guest_handle_hello_is_echoed_only_when_the_phone_supports_it(self):
         everything = frozenset(broker.HELLO_FEATURES)
