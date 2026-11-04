@@ -64,23 +64,30 @@ dropped, and the first access to one, a read or a write by the application or th
 a missing-page fault on the write watch's userfaultfd. The watch's thread hands it to a
 filler thread, which reads the block and the lazy blocks after it, three to a round trip (the
 64 KiB invalidate chunk), and installs them write-protected, so a write after the fill is
-recorded as any write is. A block is read at once, as before, when it holds writes not yet
-sent, when it is not wholly inside the mapping, when a completion record is being stored into
-its memory, or when the process has no userfaultfd; `CABOOSE_LAZY_READBACK=0` reads every
-block at once. A block made lazy again while a fill reads it is read again.
+recorded as any write is. A block made lazy again while a fill reads it is read again.
 
-Driver code never reads or writes a lazy block while it holds a lock, since the filler takes
-the encoder: an invalidate decides what is lazy with the encoder held and stores only the
-rest, a flush fills the lazy blocks of what it sends first (on its own thread, with the
-encoder it holds), an unmap fills the memory's lazy blocks while it is still mapped, and a
-completion record stores only the parts of its capture that are not lazy (the fill reads
-the phone's copy, which holds them). Missing-page faults are taken only in allocations that
-have had a lazy block; a page of one never used before is installed zero and
-write-protected. The watch's lock is below every lock in `lock_order.h`. A pointer into
-mapped coherent memory passed as a command's own data (a pipeline cache's initial data, a
-query's results) is read or written with the encoder held: one into a lazy block waits for a
-fill that waits for that encoder. No driver or translation layer passes one; an application
-that does runs with `CABOOSE_LAZY_READBACK=0`. The memory traffic
+A fill reads on a connection of the process's own beside the device stream, an auxiliary
+stream (`../SocketStream.cpp`), with an encoder of its own: it takes no lock of the driver's,
+so a fault is served whatever the faulting thread holds, the device stream's encoder
+included (the driver writing a query's results into a lazy block, `sync-check`'s
+`lazy_query_results`). The auxiliary stream's hello sets nothing of the process's, it is no
+device stream, and its end is no executor loss; a new executor gets a new one. Since it is not
+ordered with the device stream, a block is lazy only when everything the phone must have done
+to it is done: the GPU writes the invalidate covers have completed (the coherent upkeep's are
+those of completed submissions; any other invalidate's only when every submission has
+completed, as a wait may have returned before its submission did), and the last bytes the
+device stream sent for the block went before a submission that has completed (each flush
+notes the next submission's number for its blocks). A block is read at once, as before, when
+it holds writes not yet sent or sent and not yet confirmed, when it is not wholly inside the
+mapping, when a completion record is being stored into its memory, or when the process has
+no completion feed or no userfaultfd; `CABOOSE_LAZY_READBACK=0` reads every block at once.
+
+An invalidate decides what is lazy with the encoder held and stores only the rest, a flush
+fills the lazy blocks of what it sends first, an unmap fills the memory's lazy blocks while
+it is still mapped, and a completion record stores only the parts of its capture that are
+not lazy (the fill reads the phone's copy, which holds them). Missing-page faults are taken
+only in allocations that have had a lazy block; a page of one never used before is installed
+zero and write-protected. The watch's lock is below every lock in `lock_order.h`. The memory traffic
 line counts the bytes made lazy (`lazy_bytes`) and what fills read (`lazy_filled_bytes`,
 `lazy_fills`).
 

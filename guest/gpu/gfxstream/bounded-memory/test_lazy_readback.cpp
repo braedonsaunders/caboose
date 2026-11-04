@@ -19,7 +19,7 @@ static constexpr uint64_t B = caboose::memory::watchBlockBytes;
 static std::atomic<int> fetches{0};
 static std::atomic<uint64_t> fetchedBytes{0};
 static std::atomic<int> generation{1};
-static bool fetch(uint64_t device, uint64_t memory, uint64_t offset, uint64_t size, uint8_t* out, bool) {
+static bool fetch(uint64_t device, uint64_t memory, uint64_t offset, uint64_t size, uint8_t* out) {
     assert(device == 3 && memory == 7);
     ++fetches;
     fetchedBytes += size;
@@ -59,15 +59,24 @@ int main() {
     assert(memory != MAP_FAILED);
     assert(watch.watch(memory, bytes));
     std::memset(memory, 0x55, 4 * B);  // the application's writes, sent by the next flush
+    // Every submission below `confirmed` has completed.
+    uint64_t confirmed = 100;
     auto lazyOf = [&](uint64_t begin, uint64_t end, uint64_t mapBegin = 0, uint64_t mapEnd = 16 * B - 1000) {
         Runs runs;
-        watch.makeLazy(memory, 3, 7, allocation, mapBegin, mapEnd, begin, end,
+        watch.makeLazy(memory, 3, 7, allocation, mapBegin, mapEnd, begin, end, confirmed,
                        [&](uint64_t b, uint64_t e) { runs.emplace_back(b, e); });
         return runs;
     };
     // Blocks holding writes not yet sent are read at once: none of [0, 4B) is lazy.
     assert(lazyOf(0, 4 * B).empty());
-    watch.written(memory, 0, bytes, [](uint64_t, uint64_t) {});  // the flush sent them
+    watch.written(memory, 0, bytes, [](uint64_t, uint64_t) {});  // the flush sent them,
+    watch.noteSent(memory, 0, 4 * B, 120);                          // before submission 120
+    // Sent but not yet confirmed: the fill's connection could read the phone's copy before
+    // the device stream's bytes arrive. Read at once until submission 120 completes.
+    assert(lazyOf(0, 4 * B).empty());
+    confirmed = 121;
+    assert((lazyOf(0, B) == Runs{{0, B}}));
+    assert(memory[0] == uint8_t(0 / 4096 + 1));  // filled from the phone's copy
     // Whole blocks are lazy, rounded out from the range; the runs are clipped to it.
     assert((lazyOf(B + 100, 3 * B) == Runs{{B + 100, 3 * B}}));
     // Outside the mapping nothing is lazy.
@@ -75,12 +84,10 @@ int main() {
     const auto before = watch.lazyStats();
     assert(before.made >= 2 * B);
     // Nothing touched: nothing read.
-    assert(fetches == 0);
+    const int earlier = fetches;
     // The first read of a lazy block fills it and the lazy block after it, in one fetch.
-    assert(memory[B + 10] == uint8_t(B / 4096 + 1) && fetches == 1);
-    assert(memory[2 * B + 4096] == uint8_t((2 * B + 4096) / 4096 + 1) && fetches == 1);
-    // A block that was not lazy keeps its bytes.
-    assert(memory[0] == 0x55);
+    assert(memory[B + 10] == uint8_t(B / 4096 + 1) && fetches == earlier + 1);
+    assert(memory[2 * B + 4096] == uint8_t((2 * B + 4096) / 4096 + 1) && fetches == earlier + 1);
     // A write after the fill is recorded, as any write is.
     memory[B + 1] = 9;
     Runs written;
@@ -113,7 +120,7 @@ int main() {
     watch.endDelivery(memory);
     // A settle fills the lazy blocks of a range on the calling thread.
     const int fetchesBefore = fetches;
-    watch.settle(memory, 10 * B, 11 * B, true);
+    watch.settle(memory, 10 * B, 11 * B);
     assert(fetches == fetchesBefore + 1);
     Runs left;
     watch.lazyRuns(memory, 0, bytes, [&](uint64_t b, uint64_t e) { left.emplace_back(b, e); });

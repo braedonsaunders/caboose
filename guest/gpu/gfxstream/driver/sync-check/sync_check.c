@@ -12,6 +12,7 @@
 #include <time.h>
 #include <poll.h>
 #include <pthread.h>
+#include <signal.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #include <xcb/xcb.h>
@@ -330,6 +331,119 @@ static void completionCase(void) {
     vkFreeMemory(device, bigMemory, NULL);
     report("completion_after_gpu", early == 0, "rounds=%d early=%d mean_batch_ms=%.1f", rounds, early,
            batchUs / 1000.0 / rounds);
+}
+
+// Lazy readback (bounded-memory/README.md): GPU-written coherent memory is filled from the
+// phone on its first use. A query's results and a pipeline cache's data are written straight
+// into such memory while it is still lazy, by calls the driver answers holding its own locks,
+// encoder included: the fill must need none of them. A call that never returns is a deadlock,
+// reported by the watchdog. The GPU's bytes around them must arrive too.
+static void lazyWatchdog(int signal) {
+    (void)signal;
+    static const char line[] = "CABOOSE_SYNC_CHECK case=lazy_query_results FAIL deadlock: a call writing into lazy memory did not return in 30 s\n";
+    (void)!write(1, line, sizeof(line) - 1);
+    _exit(1);
+}
+static void lazyQueryResultsCase(void) {
+    const VkDeviceSize size = 1u << 20;
+    VkBufferCreateInfo bufferInfo = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    bufferInfo.size = size;
+    bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    VkBuffer source, target;
+    CHECK(vkCreateBuffer(device, &bufferInfo, NULL, &source));
+    // A buffer the GPU may also read: its copies are read back, never carried in completion
+    // records, so the invalidate after the wait reads it, lazily.
+    bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+    CHECK(vkCreateBuffer(device, &bufferInfo, NULL, &target));
+    VkMemoryRequirements req;
+    VkMemoryAllocateInfo alloc = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    VkDeviceMemory sourceMemory, targetMemory;
+    vkGetBufferMemoryRequirements(device, source, &req);
+    alloc.allocationSize = req.size;
+    alloc.memoryTypeIndex = memoryType(req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    CHECK(vkAllocateMemory(device, &alloc, NULL, &sourceMemory));
+    CHECK(vkBindBufferMemory(device, source, sourceMemory, 0));
+    vkGetBufferMemoryRequirements(device, target, &req);
+    alloc.allocationSize = req.size;
+    alloc.memoryTypeIndex = memoryType(req.memoryTypeBits,
+                                       VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    CHECK(vkAllocateMemory(device, &alloc, NULL, &targetMemory));
+    CHECK(vkBindBufferMemory(device, target, targetMemory, 0));
+    uint8_t* mapped = NULL;
+    CHECK(vkMapMemory(device, targetMemory, 0, VK_WHOLE_SIZE, 0, (void**)&mapped));
+    VkQueryPoolCreateInfo poolInfo = {VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+    poolInfo.queryType = VK_QUERY_TYPE_TIMESTAMP;
+    poolInfo.queryCount = 1;
+    VkQueryPool pool;
+    CHECK(vkCreateQueryPool(device, &poolInfo, NULL, &pool));
+    VkPipelineCacheCreateInfo cacheInfo = {VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO};
+    VkPipelineCache cache;
+    CHECK(vkCreatePipelineCache(device, &cacheInfo, NULL, &cache));
+    size_t cacheSize = 0;
+    CHECK(vkGetPipelineCacheData(device, cache, &cacheSize, NULL));
+    uint8_t* expected = calloc(1, cacheSize ? cacheSize : 1);
+    if (!expected) fail("calloc", VK_ERROR_OUT_OF_HOST_MEMORY);
+    size_t expectedSize = cacheSize;
+    CHECK(vkGetPipelineCacheData(device, cache, &expectedSize, expected));
+    signal(SIGALRM, lazyWatchdog);
+    alarm(30);
+    const int rounds = 4;
+    int wrong = 0, wrongCache = 0, zeroTimestamps = 0;
+    uint64_t callUs = 0, touchUs = 0, waitUs = 0;
+    for (int i = 0; i < rounds; ++i) {
+        const uint32_t pattern = 0xA5000000u + (uint32_t)i;
+        vkResetQueryPool(device, pool, 0, 1);
+        begin();
+        vkCmdFillBuffer(cb, source, 0, VK_WHOLE_SIZE, pattern);
+        VkMemoryBarrier2 barrier = {VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
+        barrier.srcStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
+        barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        barrier.dstStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
+        barrier.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
+        VkDependencyInfo dependency = {VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+        dependency.memoryBarrierCount = 1;
+        dependency.pMemoryBarriers = &barrier;
+        vkCmdPipelineBarrier2(cb, &dependency);
+        const VkBufferCopy copy = {0, 0, size};
+        vkCmdCopyBuffer(cb, source, target, 1, &copy);
+        vkCmdWriteTimestamp2(cb, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, pool, 0);
+        const uint64_t waitStart = nowUs();
+        waitTimeline(submit2(1));
+        waitUs += nowUs() - waitStart;
+        // Written into the lazy memory, before anything else touches it.
+        uint64_t* results = (uint64_t*)(mapped + (256u << 10) + 8);
+        uint8_t* cacheData = mapped + (512u << 10);
+        const uint64_t start = nowUs();
+        CHECK(vkGetQueryPoolResults(device, pool, 0, 1, sizeof(uint64_t), results, sizeof(uint64_t),
+                                    VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT));
+        size_t got = cacheSize;
+        CHECK(vkGetPipelineCacheData(device, cache, &got, cacheData));
+        callUs += nowUs() - start;
+        if (!*(volatile uint64_t*)results) ++zeroTimestamps;
+        if (got != expectedSize || memcmp(cacheData, expected, got)) ++wrongCache;
+        // The GPU's bytes before, between and after them; the first read of a part nothing
+        // touched yet takes a fill when the memory is lazy.
+        const uint32_t* words = (const uint32_t*)mapped;
+        const uint64_t touchStart = nowUs();
+        if (((const volatile uint32_t*)words)[(768u << 10) / 4] != pattern) ++wrong;
+        touchUs += nowUs() - touchStart;
+        if (words[0] != pattern || words[(256u << 10) / 4] != pattern || words[(size - 4) / 4] != pattern ||
+            words[(512u << 10) / 4 + (uint32_t)(got + 4) / 4 + 1] != pattern)
+            ++wrong;
+    }
+    alarm(0);
+    signal(SIGALRM, SIG_DFL);
+    free(expected);
+    vkDestroyPipelineCache(device, cache, NULL);
+    vkDestroyQueryPool(device, pool, NULL);
+    vkUnmapMemory(device, targetMemory);
+    vkDestroyBuffer(device, source, NULL);
+    vkDestroyBuffer(device, target, NULL);
+    vkFreeMemory(device, sourceMemory, NULL);
+    vkFreeMemory(device, targetMemory, NULL);
+    report("lazy_query_results", !wrong && !wrongCache, "rounds=%d wrong_gpu_bytes=%d wrong_cache_data=%d "
+           "zero_timestamps=%d mean_wait_ms=%.1f mean_calls_ms=%.1f mean_first_touch_ms=%.2f", rounds, wrong,
+           wrongCache, zeroTimestamps, waitUs / 1000.0 / rounds, callUs / 1000.0 / rounds, touchUs / 1000.0 / rounds);
 }
 
 // Surface formats and present modes enumerated the usual way, a count and then an array of
@@ -1543,6 +1657,7 @@ int main(int argc, char** argv) {
     RUN("surface_enumeration", surfaceCase());
     RUN("free_after_wait", freeCase());
     RUN("completion_after_gpu", completionCase());
+    RUN("lazy_query_results", lazyQueryResultsCase());
     RUN("pool_capacity", poolCapacityCase());
     RUN("unwritten_sets", unwrittenSetsCase());
     RUN("threaded_set_frees", threadedSetFreesCase());

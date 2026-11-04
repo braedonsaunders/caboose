@@ -7,7 +7,7 @@ broker that relays its command streams to the phone. The protocol is in
 | Path | What |
 | --- | --- |
 | [`driver/`](driver/README.md) | Builds `libvulkan_gfxstream.so` from pinned Mesa, the patch series and the sources below |
-| `SocketStream.{h,cpp}` | The driver's transport: a Unix stream socket to the broker and the 48-byte hello that negotiates its features |
+| `SocketStream.{h,cpp}` | The driver's transport: a Unix stream socket to the broker and the 48-byte hello that negotiates its features; an auxiliary stream (lazy readback's fills) whose hello sets nothing of the process's |
 | [`virtual-wsi/`](virtual-wsi/README.md) | The driver's surfaces and swapchains, presented on the phone through the broker |
 | [`bounded-memory/`](bounded-memory/README.md) | The driver's mapped-memory transfer, command buffer staging and deferred replies |
 | `caboose-gpu-broker` and its modules | The broker (below) |

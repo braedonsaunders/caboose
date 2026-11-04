@@ -10,6 +10,8 @@
 #include <pthread.h>
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <mutex>
+#include <set>
 #include <string>
 #include <thread>
 #include <unistd.h>
@@ -302,6 +304,19 @@ void startCompletionFeed(const char* path, const unsigned char* granted) {
 
 // Set on the thread running a connection's hello.
 static thread_local bool handshaking = false;
+// An auxiliary stream: a second connection of the process, made by lazy readback's fills
+// (caboose_gfxstream_connect_auxiliary, write_watch.h), which reads memory beside the device
+// stream. Its hello sets nothing of the process's (features, caches, the completion feed), it
+// is no device stream, and its end is no executor loss.
+static thread_local bool connectingAuxiliary = false;
+static std::mutex& auxiliaryMutex = *new std::mutex;
+static std::set<const void*>& auxiliaryStreams = *new std::set<const void*>;
+static bool auxiliary(const void* stream) {
+    std::lock_guard<std::mutex> lock(auxiliaryMutex);
+    return auxiliaryStreams.count(stream) != 0;
+}
+extern "C" void caboose_gfxstream_connect_auxiliary(int on);
+extern "C" void caboose_gfxstream_connect_auxiliary(int on) { connectingAuxiliary = on != 0; }
 // The process's first connected stream: the shared encoder writes to it.
 static std::atomic<CabooseSocketStream*> firstStream{nullptr};
 // Never destroyed: a reconnect can run while the process exits.
@@ -326,6 +341,10 @@ CabooseSocketStream::CabooseSocketStream(size_t size) : IOStream(size) {
 }
 CabooseSocketStream::~CabooseSocketStream() {
     caboose::silent::replyMode().deviceStream(static_cast<gfxstream::guest::IOStream*>(this), false);
+    {
+        std::lock_guard<std::mutex> lock(auxiliaryMutex);
+        auxiliaryStreams.erase(this);
+    }
     // Do not flush during teardown: an interrupted session must not send stale work.
     CabooseSocketStream* self = this;
     firstStream.compare_exchange_strong(self, nullptr);
@@ -336,7 +355,7 @@ void CabooseSocketStream::invalidate() {
     indexedReady_.store(false, std::memory_order_release);
     if (fd_ >= 0) shutdown(fd_, SHUT_RDWR);
     // A connected device stream ends only when its executor does.
-    if (fd_ >= 0 && !handshaking) caboose::completion::markExecutorLost();
+    if (fd_ >= 0 && !handshaking && !auxiliary(this)) caboose::completion::markExecutorLost();
 }
 int CabooseSocketStream::connect(const char* path) {
     int result = -1;
@@ -384,6 +403,24 @@ int CabooseSocketStream::connectWith(const char* path, const unsigned char* offe
         fd_ = -1;
         errno = EPROTO;
         return -1;
+    }
+    if (connectingAuxiliary) {
+#if defined(CABOOSE_GFXSTREAM_PRIVATE_INDEXED_WSI)
+        // Its commands name the device stream's objects: the same handles, or none of it.
+        if (((features & kGuestHandles) != 0) != (caboose_gfxstream_guest_handles == 1)) {
+            invalidate();
+            close(fd_);
+            fd_ = -1;
+            errno = EPROTO;
+            return -1;
+        }
+#endif
+        {
+            std::lock_guard<std::mutex> lock(auxiliaryMutex);
+            auxiliaryStreams.insert(this);
+        }
+        caboose::silent::replyMode().deviceStream(static_cast<gfxstream::guest::IOStream*>(this), false);
+        return 0;
     }
 #if defined(CABOOSE_GFXSTREAM_PRIVATE_INDEXED_WSI)
     caboose_gfxstream_guest_handles = (features & kGuestHandles) ? 1 : 0;
