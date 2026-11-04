@@ -25,6 +25,13 @@ public protocol LiveGPUByteConsumer: AnyObject, Sendable {
     func finish() throws
 }
 
+/// A consumer that queues input past `consume`: `release` runs exactly once, when all of
+/// `bytes` has left the consumer (also on failure), and the session's ingress budget keeps
+/// the charge until then.
+protocol LiveGPUDeferredIngress: AnyObject {
+    func consume(_ bytes: Data, release: @escaping @Sendable () -> Void) throws
+}
+
 /// Internal owner-view command; no application-supplied process ID is accepted.
 protocol LiveGPUSurfaceRevoking: AnyObject {
     func requestSurfaceRevocation(_ identity: LiveGPUSurfaceIdentity) throws
@@ -197,7 +204,7 @@ public final class LiveGPUSession: @unchecked Sendable {
                 (transport as? LiveGPUReceiveFlow)?.setReceivingPaused(true)
             }
             worker.async { [self] in
-                defer {
+                let release: @Sendable () -> Void = { [self] in
                     ingress.release(charge)
                     let resume = lock.withLock { () -> Bool in
                         guard receivePaused, ingress.drained else { return false }
@@ -206,7 +213,13 @@ public final class LiveGPUSession: @unchecked Sendable {
                     }
                     if resume { (transport as? LiveGPUReceiveFlow)?.setReceivingPaused(false) }
                 }
-                guard ingress.active else { return }
+                guard ingress.active else { return release() }
+                // A consumer that queues input keeps the charge until the input has left it.
+                if let deferred = consumer as? LiveGPUDeferredIngress {
+                    do { try deferred.consume(data, release: release) } catch { stop(error) }
+                    return
+                }
+                defer { release() }
                 do { try consumer.consume(data) } catch { stop(error) }
             }
             lock.unlock()

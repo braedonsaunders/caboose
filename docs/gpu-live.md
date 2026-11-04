@@ -471,8 +471,13 @@ store. The byte-exact forms are in `guest/gpu/gfxstream/upload-cache/vectors.jso
 The broker sends SESSION after the WebSocket upgrade. SESSION_READY requires
 actual native initialization and exact feature agreement. PROCESS_READY requires
 successful native process creation. STREAM_READY reserves the bounded socketpair
-and run/read workers for that process; it does not mean decoder TLS admission,
-command execution or GPU completion. A subsequent run failure revokes the lease.
+and the stream's run, reply-read and input-write workers for that process; it does not
+mean decoder TLS admission, command execution or GPU completion. Each stream's DATA waits
+in that stream's own input queue for its writer, so a decoder that is busy (a pipeline
+compile, a wait in the driver) holds back only its own stream; the serial worker never
+writes to a decoder. Queued input keeps its ingress charge until it is in the stream's
+socket, so the ingress limit still bounds it. The socketpair holds up to 1 MiB of commands
+and 256 KiB of replies where the kernel allows it. A subsequent run failure revokes the lease.
 The private hello is consumed at session negotiation; DATA begins with the real
 upstream client-flags word and ordered command bytes.
 
