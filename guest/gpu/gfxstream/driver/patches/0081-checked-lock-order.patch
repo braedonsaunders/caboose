@@ -1,5 +1,5 @@
 From: Caboose <caboose@local>
-Subject: [PATCH 81/86] Check the tracker and encoder locks against the driver's lock hierarchy
+Subject: [PATCH 81/88] Check the tracker and encoder locks against the driver's lock hierarchy
 
 The tracker's lock and each encoder's stream lock report every acquisition to the lock-order
 checker (caboose-bounded-memory/lock_order.h), which with CABOOSE_LOCK_ORDER set reports a lock
