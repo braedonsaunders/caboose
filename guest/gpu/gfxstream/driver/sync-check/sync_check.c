@@ -1432,19 +1432,9 @@ static int exitChild(int mode, int fd) {
     deviceInfo.ppEnabledExtensionNames = &swapchainExtension;
     VkDevice childDevice;
     if (vkCreateDevice(childPhysical, &deviceInfo, allocator, &childDevice) != VK_SUCCESS) { fprintf(stderr, "CABOOSE_SYNC_CHECK exit_child step=%d failed\n", __LINE__); return 3; }
-    // The check's X server (Xvfb) now and then resets a new client during its setup
-    // (ECONNRESET); that is the display, not the process under test, so connect again.
-    xcb_connection_t* connection = NULL;
-    int xError = 0, xErrno = 0;
-    for (int attempt = 0; attempt < 20; ++attempt) {
-        connection = xcb_connect(NULL, NULL);
-        xError = xcb_connection_has_error(connection);
-        if (!xError) break;
-        xErrno = errno;
-        xcb_disconnect(connection);
-        fprintf(stderr, "CABOOSE_SYNC_CHECK exit_child x11_connect retry xcb_error=%d errno=%d\n", xError, xErrno);
-        nanosleep(&(struct timespec){0, 50000000}, NULL);
-    }
+    xcb_connection_t* connection = xcb_connect(NULL, NULL);
+    const int xError = xcb_connection_has_error(connection);
+    const int xErrno = errno;
     if (xError) { fprintf(stderr, "CABOOSE_SYNC_CHECK exit_child step=x11_connect failed xcb_error=%d errno=%d\n", xError, xErrno); return 3; }
     xcb_screen_t* screen = xcb_setup_roots_iterator(xcb_get_setup(connection)).data;
     xcb_window_t window = xcb_generate_id(connection);
