@@ -564,6 +564,9 @@ const handlers = {
       parts.push(await view(true))
       const tools = await pageTools()
       if (tools) parts.push(tools)
+      // The files and folders the window works on, so paths need no guessing.
+      const where = DIRECT_TOOLS ? await focusedWindow().then(window => window && workerRequest(directWorker, { op: 'where', window })).catch(() => null) : null
+      if (where?.paths?.length) parts.push(`Its files: ${where.paths.join(', ')}`)
       const direct = await directLines().catch(() => '')
       if (direct) parts.push(direct)
       if (lastState?.unread?.length) {

@@ -915,6 +915,69 @@ def call(window, name, args):
     raise Failure(f'no direct tool {name}')
 
 
+# --- Where the window works ------------------------------------------------------------------
+
+def where(window):
+    """The files and folders the focused window's application works on, so an agent need not
+    guess paths: its document (LibreOffice through UNO), the existing paths on its command line,
+    a file of those folders that its title names, and its working folder. Paths, most specific
+    first, without duplicates."""
+    pid = window.get('pid')
+    found = []
+
+    def add(path):
+        if path and os.path.exists(path):
+            real = os.path.realpath(path)
+            if real not in found and real != '/':
+                found.append(real)
+    if pid and is_office(pid):
+        try:
+            import uno
+            url = document(window).getURL()
+            if url:
+                add(uno.fileUrlToSystemPath(url))
+        except Exception:
+            pass
+    try:
+        cwd = os.readlink(f'/proc/{pid}/cwd')
+    except (OSError, TypeError):
+        cwd = None
+    try:
+        with open(f'/proc/{pid}/cmdline', 'rb') as f:
+            raw = f.read().rstrip(b'\0')
+        # A process that retitles itself (Electron) leaves its arguments as one string.
+        parts = raw.split(b'\0') if b'\0' in raw else raw.split(b' ')
+        args = [a.decode('utf-8', 'replace') for a in parts[1:] if a]
+    except (OSError, TypeError):
+        args = []
+    for arg in args:
+        value = arg.split('=', 1)[1] if arg.startswith('--') and '=' in arg else arg
+        if value.startswith('file://'):
+            value = value[len('file://'):]
+        if value.startswith('-') or not value or len(value) > 4096:
+            continue
+        if value.startswith('/') or (cwd and os.path.exists(os.path.join(cwd, value))):
+            candidate = value if value.startswith('/') else os.path.join(cwd, value)
+            # Options' own directories (profiles, extensions, sockets) are not the work.
+            if arg.startswith('--') or not os.path.exists(candidate):
+                continue
+            add(candidate)
+    title = window.get('title') or ''
+    for folder in [p for p in found if os.path.isdir(p)][:3]:
+        try:
+            names = os.listdir(folder)[:2000]
+        except OSError:
+            continue
+        for name in names:
+            if len(name) > 3 and name in title:
+                add(os.path.join(folder, name))
+    if cwd and cwd.startswith(home() + os.sep):
+        add(cwd)
+    # What the title names first (a document, a project folder), then the rest in order.
+    named = [p for p in found if os.path.basename(p) and os.path.basename(p) in title]
+    return (named + [p for p in found if p not in named])[:4]
+
+
 def listing(window):
     return [{'name': name, 'params': params, 'description': description} for name, (params, description, _) in tools_for(window).items()]
 
@@ -931,6 +994,8 @@ def serve():
                 if not isinstance(args, dict):
                     raise Failure('args must be an object')
                 reply = {'result': call(window, str(request.get('name')), args)}
+            elif request.get('op') == 'where':
+                reply = {'paths': where(window)}
             elif request.get('op') == 'files':
                 reply = {'tools': [{'name': n, 'params': p, 'description': d} for n, (p, d, _) in FILES.items()]}
             else:
