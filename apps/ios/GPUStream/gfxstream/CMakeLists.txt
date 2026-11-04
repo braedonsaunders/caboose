@@ -301,6 +301,12 @@ if(CABOOSE_GFXSTREAM_FRAMING_TESTS)
     target_include_directories(caboose_gpu_completion_feed_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
     find_package(Threads REQUIRED)
     target_link_libraries(caboose_gpu_completion_feed_test PRIVATE Threads::Threads)
+    # The phone's completion payloads against the guest's encoder and parser.
+    add_executable(caboose_gpu_completion_payloads_cross_test tests/completion_payloads_cross_test.cpp completion_feed.cpp)
+    target_compile_features(caboose_gpu_completion_payloads_cross_test PRIVATE cxx_std_17)
+    target_include_directories(caboose_gpu_completion_payloads_cross_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../../../../guest/gpu/gfxstream/bounded-memory")
+    target_link_libraries(caboose_gpu_completion_payloads_cross_test PRIVATE Threads::Threads)
     # Run with guest/gpu/gfxstream/shader-cache/vectors.json as its argument.
     add_executable(caboose_gpu_shader_store_test tests/shader_store_test.cpp)
     target_compile_features(caboose_gpu_shader_store_test PRIVATE cxx_std_17)
