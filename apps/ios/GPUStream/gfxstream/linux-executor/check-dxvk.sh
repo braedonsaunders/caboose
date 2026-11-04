@@ -63,8 +63,10 @@ display=${DISPLAY_ENV:-/run/caboose/display.env}
 # the Flatpak sandbox until the prefix's wineserver has gone, so once the triangle ends, waiting
 # for the sandbox waits for the rest of this check's Wine; nothing else on the computer (other
 # checks, the owner's games) is waited for or ended.
+# The batch file starts the program by its Windows path (Z:\home\...), so either separator matches.
+app_pattern=$(printf '%s/%s' "$bench" "$app" | sed -e 's/[.]/[.]/g' -e 's#/#[/\\\\]#g')
 ours() {
-  docker exec "$computer" pgrep -u caboose -f "$bench/$app" 2>/dev/null || true
+  docker exec "$computer" pgrep -u caboose -f "$app_pattern" 2>/dev/null || true
 }
 cleanup() {
   docker rm -f "$name" > /dev/null 2>&1 || true
