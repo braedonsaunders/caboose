@@ -1174,12 +1174,7 @@ class Session:
                 surface['owner'](frame.kind, frame.payload)
             if surface.get('replies') is not None:
                 body = (struct.pack('<Q', surface['window']) if frame.kind == Kind.SURFACE_BOUND else b'') + frame.payload
-                data = surface_wire.encode_reply(frame.kind, body)
-                if len(data) > MAX_QUEUED_BYTES - surface['reply_bytes']:
-                    raise ValueError('surface reply byte limit')
-                surface['reply_bytes'] += len(data)
-                try: surface['replies'].put_nowait(data)
-                except asyncio.QueueFull: raise ValueError('surface reply queue full') from None
+                self.queue_surface_reply(surface, surface_wire.encode_reply(frame.kind, body))
             return
         if frame.kind == Kind.SURFACE_RETIRED:
             key = (frame.payload[:16], frame.payload[16:32], struct.unpack_from('<Q', frame.payload, 32)[0])
@@ -1206,12 +1201,7 @@ class Session:
                         raise
             await self.broker.send_control(control_protocol.encode_grant_retired(control_protocol.GrantRetired(*key)))
             if surface.get('replies') is not None:
-                data = surface_wire.encode_reply(frame.kind, frame.payload)
-                if len(data) > MAX_QUEUED_BYTES - surface['reply_bytes']:
-                    raise ValueError('surface reply byte limit')
-                surface['reply_bytes'] += len(data)
-                try: surface['replies'].put_nowait(data)
-                except asyncio.QueueFull: raise ValueError('surface reply queue full') from None
+                self.queue_surface_reply(surface, surface_wire.encode_reply(frame.kind, frame.payload))
             surface['retired'].set()
             process['surfaces'].discard(key)
             process.get('forced_surfaces', set()).discard(key)
@@ -1291,6 +1281,17 @@ class Session:
         stream['discard_reply'] = True
         transport.abort()
         if stream.get('reader') is not None: stream['reader'].shutdown()
+
+    @staticmethod
+    def queue_surface_reply(surface, data):
+        """Queues a reply for a surface socket's own sender, never waiting for its process. A
+        process that leaves MAX_QUEUED_MESSAGES replies or MAX_QUEUED_BYTES unread loses that
+        surface socket, not the session."""
+        if len(data) > MAX_QUEUED_BYTES - surface['reply_bytes'] or surface['replies'].full():
+            surface['abort_client']('surface replies not read')
+            return
+        surface['reply_bytes'] += len(data)
+        surface['replies'].put_nowait(data)
 
     @staticmethod
     def unfinished_presents(surface):

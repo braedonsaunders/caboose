@@ -131,6 +131,22 @@ class GuestWriterTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.session.streams[2]['remote_fin'].is_set())
         self.assertFalse(self.session.failed)
 
+    async def test_unread_surface_replies_end_only_that_surface(self):
+        aborted = []
+        surface = {'replies': asyncio.Queue(maxsize=2), 'reply_bytes': 0,
+                   'abort_client': lambda reason: aborted.append(reason)}
+        broker.Session.queue_surface_reply(surface, b'one')
+        broker.Session.queue_surface_reply(surface, b'two')
+        self.assertFalse(aborted)
+        broker.Session.queue_surface_reply(surface, b'three')
+        self.assertEqual(aborted, ['surface replies not read'])
+        self.assertEqual((surface['replies'].qsize(), surface['reply_bytes']), (2, 6))
+        bytes_bound = {'replies': asyncio.Queue(maxsize=8), 'reply_bytes': broker.MAX_QUEUED_BYTES - 2,
+                       'abort_client': lambda reason: aborted.append(reason)}
+        broker.Session.queue_surface_reply(bytes_bound, b'abc')
+        self.assertEqual(len(aborted), 2)
+        self.assertTrue(bytes_bound['replies'].empty())
+
 
 if __name__ == '__main__':
     unittest.main()

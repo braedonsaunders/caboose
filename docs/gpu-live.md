@@ -142,7 +142,8 @@ deferred replies unread while it works ([Completion feed](#completion-feed) reco
 another stream meanwhile), and a broker that waited on that stream would stop reading the
 phone, so the feed records the process is waiting for would never arrive. A stream's FIN is
 written after every byte queued before it. Surface sockets have their own queues too, at most
-64 replies and 8 MiB.
+64 replies and 8 MiB; a surface socket past either, or with a reply unread for 5 s, is ended
+alone.
 
 The protocol has no per-stream credit toward the guest, so the broker cannot hold back the
 phone for one stream, and holding back the whole connection for one stream would stall every
