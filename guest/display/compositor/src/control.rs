@@ -17,7 +17,7 @@
 //!                              surface's id in that connection), rect (the window),
 //!                              surface (its root surface's x, y, w, h, shadows included),
 //!                              display, scale, focused
-//! focus ID                     give a window the keyboard
+//! focus ID                     give a window the keyboard (entering it again if it has it)
 //! close ID                     ask a window to close, as its close button would (quitting
 //!                              an app, guest/scopes)
 //! click X Y [BUTTON [COUNT]]   BUTTON is left, middle, right, back or forward
@@ -298,7 +298,7 @@ impl State {
                 .and_then(|a| a.parse::<u64>().ok())
                 .filter(|id| self.windows.get(*id).is_some())
                 .map(|id| {
-                    self.focus_window(id);
+                    self.refocus_window(id);
                     b"{\"ok\":true}\n".to_vec()
                 })
                 .ok_or_else(|| "no such window".to_owned()),

@@ -1342,6 +1342,22 @@ impl State {
         }
     }
 
+    /// Gives a window the keyboard on request (the control socket's `focus`), entering it again
+    /// when it already has it: a client that missed or dropped its first `wl_keyboard.enter`
+    /// (one sent while its window was being made) gets the keyboard now.
+    pub fn refocus_window(&mut self, id: u64) {
+        if self.windows.get(id).is_none() {
+            return;
+        }
+        if let Some(keyboard) = self.seat.get_keyboard() {
+            if keyboard.current_focus().is_some() && self.keyboard_focus_surface().and_then(|s| self.window_of_surface(&s)) == Some(id) {
+                let serial = self.next_serial();
+                keyboard.set_focus(self, None, serial);
+            }
+        }
+        self.focus_window(id);
+    }
+
     pub fn focus_window(&mut self, id: u64) {
         let Some(w) = self.windows.get(id) else { return };
         self.focus_history.retain(|f| *f != id);
