@@ -7,10 +7,12 @@ set -eu
 [ $# -eq 1 ] || { echo "usage: $0 WORK" >&2; exit 2; }
 work=$(cd "$1" && pwd)
 here=$(cd "$(dirname "$0")" && pwd)
-docker run --rm --network none --cpus 2 -v "$work/build:/build:ro" -v "$here:/executor:ro" --entrypoint python3 \
+repo=$(cd "$here/../../../../.." && pwd)
+docker run --rm -i --network none --cpus 2 -v "$work/build:/build:ro" -v "$repo/guest/gpu:/repo/guest/gpu:ro" \
+  -v "$here:/repo/apps/ios/GPUStream/gfxstream/linux-executor:ro" --entrypoint python3 \
   caboose-linux-executor - <<'PY'
 import os, subprocess, sys
-sys.path.insert(0, '/executor')
+sys.path.insert(0, '/repo/apps/ios/GPUStream/gfxstream/linux-executor')
 sys.argv = ['executor.py']
 import executor
 def name():
