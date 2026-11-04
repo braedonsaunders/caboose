@@ -36,10 +36,14 @@ inline constexpr uint32_t kWatchOpcode = 0x4342FE02;  // payload: boxed queue u6
 // With hello feature 0x400: everything sent on this device stream before the mark must be
 // decoded before the ordered present naming the mark's serial runs.
 inline constexpr uint32_t kOrderOpcode = 0x4342FE03;  // payload: serial u64
+// With hello feature 0x400000: the decoder decodes nothing more from this device stream until
+// the watch `serial` has its record (Speculation, below).
+inline constexpr uint32_t kWaitSerialOpcode = 0x4342FE04;  // payload: watch serial u64
 inline constexpr uint32_t kFeedVersion = 1;
 inline constexpr uint32_t kFeedPacketSize = 16;
 inline constexpr uint32_t kWatchPacketSize = 24;
 inline constexpr uint32_t kOrderPacketSize = 16;
+inline constexpr uint32_t kWaitSerialPacketSize = 16;
 // A feed record: serial u64, status i32, reserved u32 = 0.
 inline constexpr size_t kRecordSize = 16;
 // Record status: the work completed; the device was lost; or the phone cannot watch
@@ -57,6 +61,12 @@ inline void encodeWatch(uint8_t out[kWatchPacketSize], uint64_t boxedQueue, uint
 }
 inline void encodeOrder(uint8_t out[kOrderPacketSize], uint64_t serial) {
     const uint32_t opcode = kOrderOpcode, size = kOrderPacketSize;
+    std::memcpy(out, &opcode, 4);
+    std::memcpy(out + 4, &size, 4);
+    std::memcpy(out + 8, &serial, 8);
+}
+inline void encodeWaitSerial(uint8_t out[kWaitSerialPacketSize], uint64_t serial) {
+    const uint32_t opcode = kWaitSerialOpcode, size = kWaitSerialPacketSize;
     std::memcpy(out, &opcode, 4);
     std::memcpy(out + 4, &size, 4);
     std::memcpy(out + 8, &serial, 8);
@@ -91,6 +101,17 @@ public:
         std::vector<MemoryWrite> memory;
         std::vector<payloads::Entry> entries;
     };
+    // What a submission waits for and signals, for speculation (Speculation, below): its
+    // batches' semaphore waits (with the timeline value, 0 for a binary semaphore), every
+    // semaphore they signal, whether they write host-visible memory the guest refreshes, and
+    // the device stream (an encoder's key) its watch goes out on; 0 when that is not the
+    // process's only device stream.
+    struct Batch {
+        std::vector<std::pair<uint64_t, uint64_t>> waits;
+        std::vector<uint64_t> signaled;
+        bool hostWrites = false;
+        uint64_t stream = 0;
+    };
     // Where captured bytes of an allocation go: its guest shadow, kept alive while written,
     // the offsets [begin, end) of it that may be written, and the allocation's size.
     struct MemoryTarget {
@@ -117,6 +138,7 @@ public:
     void fenceDestroyed(uint64_t fence) {
         std::lock_guard<decltype(mutex_)> lock(mutex_);
         fences_.erase(fence);
+        externalFences_.erase(fence);
     }
     void fenceReset(uint64_t fence) {
         std::lock_guard<decltype(mutex_)> lock(mutex_);
@@ -142,17 +164,23 @@ public:
     // to watch.
     // With `captures`, the watch is COMPLETION_WATCH2: its entries name the batch's ended
     // queries of captured pools and its memory writes, within one record's payload.
+    // With `batch`, a wait for the watch may be speculated (Speculation, below); without, never.
     uint64_t submitted(uint64_t fence, const std::vector<std::pair<uint64_t, uint64_t>>& timelineSignals,
                        uint64_t queue = 0, uint64_t device = 0, const std::vector<uint64_t>& commandBuffers = {},
-                       Captures* captures = nullptr) {
+                       Captures* captures = nullptr, const Batch* batch = nullptr) {
         std::lock_guard<decltype(mutex_)> lock(mutex_);
         const uint64_t serial = ++lastSerial_;
         Watch watch;
         watch.queue = queue;
         watch.device = device;
+        // Whether its command buffers set, reset or wait for an event, or end or reset a query,
+        // followed or not.
+        bool touched = false;
         for (uint64_t cb : commandBuffers) {
+            if (commandWaits_.count(cb)) watch.waitsEvents = true;
             auto found = commandEvents_.find(cb);
             if (found == commandEvents_.end()) continue;
+            touched = true;
             for (const auto& op : found->second) {
                 auto event = events_.find(op.first);
                 if (event == events_.end() || event->second.state == EventState::Untracked) continue;
@@ -163,6 +191,7 @@ public:
         for (uint64_t cb : commandBuffers) {
             auto found = commandQueries_.find(cb);
             if (found == commandQueries_.end()) continue;
+            touched = true;
             for (const auto& op : found->second) {
                 auto& pool = queryPools_[op.pool];
                 if (op.kind == QueryOp::Untrack) {
@@ -183,8 +212,10 @@ public:
                 }
             }
         }
+        bool fenceFollowed = true;
         if (fence) {
             auto& state = fences_[fence];
+            fenceFollowed = state.state != Fence::Untracked && !externalFences_.count(fence);
             state.state = Fence::Pending;
             state.serial = serial;
             state.device = device;
@@ -200,6 +231,7 @@ public:
             requestLocked(serial, watch, *captures);
             captures->entries = watch.entries;
         }
+        if (batch) classifyLocked(watch, *batch, fenceFollowed && !touched);
         watches_.emplace(serial, std::move(watch));
         return serial;
     }
@@ -260,6 +292,7 @@ public:
     void semaphoreDestroyed(uint64_t semaphore) {
         std::lock_guard<decltype(mutex_)> lock(mutex_);
         semaphores_.erase(semaphore);
+        external_.erase(semaphore);
     }
     void semaphoreUntracked(uint64_t semaphore) {
         std::lock_guard<decltype(mutex_)> lock(mutex_);
@@ -300,6 +333,7 @@ public:
         std::lock_guard<decltype(mutex_)> lock(mutex_);
         commandEvents_.erase(commandBuffer);
         commandQueries_.erase(commandBuffer);
+        commandWaits_.erase(commandBuffer);
     }
     void commandBufferEvent(uint64_t commandBuffer, uint64_t event, bool set) {
         std::lock_guard<decltype(mutex_)> lock(mutex_);
@@ -309,6 +343,8 @@ public:
     }
     void commandBufferExecutes(uint64_t primary, const uint64_t* secondaries, uint32_t count) {
         std::lock_guard<decltype(mutex_)> lock(mutex_);
+        for (uint32_t i = 0; i < count; ++i)
+            if (commandWaits_.count(secondaries[i])) commandWaits_.insert(primary);
         for (uint32_t i = 0; i < count; ++i) {
             auto found = commandEvents_.find(secondaries[i]);
             if (found == commandEvents_.end()) continue;
@@ -330,6 +366,7 @@ public:
         std::lock_guard<decltype(mutex_)> lock(mutex_);
         commandEvents_.erase(commandBuffer);
         commandQueries_.erase(commandBuffer);
+        commandWaits_.erase(commandBuffer);
     }
     // Whether any of these command buffers sets or resets an event: its batch needs a watch.
     bool setsEvents(const std::vector<uint64_t>& commandBuffers) {
@@ -624,10 +661,111 @@ public:
         return valueWatches_.size();
     }
 
+    // --- Speculation (hello 0x400000) -----------------------------------------------------
+    // A wait the guest would block in may return at once for submissions whose completion the
+    // process cannot observe except through the state this tracker reports: batches that write
+    // no host-visible memory the guest refreshes, set, reset or wait for no event, end or reset
+    // no query, and signal no fence or semaphore with an imported or exportable payload. Their
+    // fences are reported signaled and their timelines reached as though their records had
+    // arrived. Before the process's next command on its device stream, WAIT_SERIAL holds that
+    // stream's decoding until each speculated watch has its record, so everything sent after
+    // the wait reaches the GPU after the work it reported complete (docs/gpu-live.md,
+    // "Completion feed"). Every watch on a queue completes behind the earlier ones there, so
+    // a speculated watch takes every earlier watch of its queue with it, and the watches that
+    // signal the timeline values its batches wait for; each of them must qualify, and none may
+    // wait for anything the process has not yet sent (a timeline value no watch signals, an
+    // event, a semaphore whose payload is imported): the stream it holds is how that would be
+    // sent. A queue is speculated on once one of its watches had a record (so it is watched),
+    // with at most `limit` speculated watches whose records are still to come. A record that
+    // reports device loss is device loss, as for any watch; a value reported reached stays
+    // reached. Waits that do not block (a zero timeout) are never speculated.
+    // At most `limit` speculated watches per queue whose records are still to come; 0 turns
+    // speculation off.
+    void speculation(uint32_t limit) {
+        std::lock_guard<decltype(mutex_)> lock(mutex_);
+        limit_ = limit;
+    }
+    // A semaphore whose payload is imported or may be exported: what waits for it or signals
+    // it is never speculated.
+    void semaphoreExternal(uint64_t semaphore) {
+        if (!semaphore) return;
+        std::lock_guard<decltype(mutex_)> lock(mutex_);
+        external_.insert(semaphore);
+    }
+    // A fence whose payload is imported or may be exported, until it is destroyed.
+    void fenceExternal(uint64_t fence) {
+        if (!fence) return;
+        std::lock_guard<decltype(mutex_)> lock(mutex_);
+        externalFences_.insert(fence);
+    }
+    // A command buffer that waits for events: its batch may wait for a host vkSetEvent.
+    void commandBufferWaitsEvents(uint64_t commandBuffer) {
+        std::lock_guard<decltype(mutex_)> lock(mutex_);
+        commandWaits_.insert(commandBuffer);
+    }
+    // A submission (or sparse bind) no watch follows: the next watch of its queue completes
+    // behind it, and is not speculated when this one waits for something not yet sent or
+    // signals an external semaphore. Null `batch`: nothing is known of it.
+    void unwatchedSubmission(uint64_t queue, const Batch* batch, const std::vector<uint64_t>& commandBuffers = {}) {
+        std::lock_guard<decltype(mutex_)> lock(mutex_);
+        QueueState& state = queues_[queue];
+        if (!batch) {
+            state.open = state.tainted = true;
+            return;
+        }
+        for (uint64_t cb : commandBuffers)
+            if (commandWaits_.count(cb)) state.open = true;
+        for (const auto& [semaphore, value] : batch->waits)
+            if (!waitSentLocked(semaphore, value)) state.open = true;
+        for (uint64_t semaphore : batch->signaled)
+            if (external_.count(semaphore)) state.tainted = true;
+    }
+    // Whether a command on a device stream must first look at the speculated watches.
+    bool speculating() const {
+        return barriersPending_.load(std::memory_order_acquire) ||
+               speculatedOutstanding_.load(std::memory_order_acquire) != 0;
+    }
+    // Before a command on device stream `stream`: the serials it sends WAIT_SERIAL for first,
+    // when it is the stream the speculated watches went out on. Any other device stream first
+    // waits until every speculated watch has its record (or the feed ended): the phone knows a
+    // watch only once the stream that carries it has been decoded that far.
+    std::vector<uint64_t> beforeCommand(uint64_t stream) {
+        std::unique_lock<decltype(mutex_)> lock(mutex_);
+        std::vector<uint64_t> serials;
+        if (stream && stream == barrierStream_) {
+            for (const auto& entry : barriers_) serials.push_back(entry.second);
+            std::sort(serials.begin(), serials.end());
+            barriers_.clear();
+            barriersPending_.store(false, std::memory_order_release);
+            return serials;
+        }
+        changed_.wait(lock, [&] { return closed_ || !speculatedOutstanding_.load(std::memory_order_relaxed); });
+        return serials;
+    }
+    // Waits reported complete before their records arrived.
+    uint64_t speculatedWaits() {
+        std::lock_guard<decltype(mutex_)> lock(mutex_);
+        return speculatedWaits_;
+    }
+
 private:
     struct Watch;
     void finishWatchLocked(uint64_t serial, int32_t status, Watch watch,
                            const std::vector<payloads::Capture>& captures, bool idle) {
+        auto queue = queues_.find(watch.queue);
+        if (watch.speculated) {
+            speculatedOutstanding_.fetch_sub(1, std::memory_order_acq_rel);
+            if (queue != queues_.end() && queue->second.speculated) --queue->second.speculated;
+            // Its record is in: a stream need not hold behind it any more.
+            auto barrier = barriers_.find(watch.queue);
+            if (barrier != barriers_.end() && barrier->second == serial) barriers_.erase(barrier);
+            if (barriers_.empty()) barriersPending_.store(false, std::memory_order_release);
+        }
+        // A record says whether the phone watches the queue; an idle wait says nothing of it.
+        if (!idle && queue != queues_.end()) {
+            if (status == kCompleted) queue->second.watchable = true;
+            else if (status == kUnwatched) queue->second.watchable = false;
+        }
         for (const auto& [event, set] : watch.events) {
             auto found = events_.find(event);
             if (found == events_.end()) continue;
@@ -675,6 +813,9 @@ public:
         std::lock_guard<decltype(mutex_)> lock(mutex_);
         lost_ = true;
         closed_ = true;
+        // Its streams ended: nothing is held behind the speculated watches any more.
+        barriers_.clear();
+        barriersPending_.store(false, std::memory_order_release);
         changed_.notify_all();
     }
     // A new executor connection after a loss: objects of the lost devices are asked about
@@ -692,6 +833,11 @@ public:
         memoryWriters_.clear();
         commandQueries_.clear();
         watches_.clear();
+        queues_.clear();
+        barriers_.clear();
+        barrierStream_ = 0;
+        barriersPending_.store(false, std::memory_order_release);
+        speculatedOutstanding_.store(0, std::memory_order_release);
         lost_ = false;
         lostDevices_.clear();
         closed_ = false;
@@ -718,9 +864,12 @@ public:
     // Waits until the fences are signaled (all, or any) or `deadline` passes.
     Answer waitFences(const uint64_t* fences, uint32_t count, bool all, Clock::time_point deadline) {
         std::unique_lock<decltype(mutex_)> lock(mutex_);
+        bool tried = false;
         for (;;) {
             Answer answer = fencesLocked(fences, count, all);
             if (answer != Answer::NotYet) return answer;
+            if (!tried && deadline > Clock::now() && speculateFencesLocked(fences, count, all)) continue;
+            tried = true;
             if (closed_) return Answer::AskDevice;
             if (changed_.wait_until(lock, deadline) == std::cv_status::timeout) {
                 answer = fencesLocked(fences, count, all);
@@ -732,9 +881,12 @@ public:
     Answer waitTimelines(const uint64_t* semaphores, const uint64_t* values, uint32_t count, bool all,
                          Clock::time_point deadline) {
         std::unique_lock<decltype(mutex_)> lock(mutex_);
+        bool tried = false;
         for (;;) {
             Answer answer = timelinesLocked(semaphores, values, count, all);
             if (answer != Answer::NotYet) return answer;
+            if (!tried && deadline > Clock::now() && speculateTimelinesLocked(semaphores, values, count, all)) continue;
+            tried = true;
             if (closed_) return Answer::AskDevice;
             if (changed_.wait_until(lock, deadline) == std::cv_status::timeout) {
                 answer = timelinesLocked(semaphores, values, count, all);
@@ -769,6 +921,14 @@ private:
     struct SemaphoreState { bool tracked = false; uint64_t value = 0; uint64_t pending = 0; uint64_t device = 0; };
     struct Watch {
         uint64_t fence = 0, queue = 0, device = 0;
+        // Speculation: whether its batch waits for nothing the process has not sent (closed)
+        // and has no effect beyond its fence and timelines (speculable); whether a wait was
+        // reported complete before its record; the stream its watch went out on; the timeline
+        // values its batches wait for that were not reached when it was sent; whether its
+        // command buffers wait for events.
+        bool closed = false, speculable = false, speculated = false, waitsEvents = false;
+        uint64_t stream = 0;
+        std::vector<std::pair<uint64_t, uint64_t>> waits;
         std::vector<std::pair<uint64_t, uint64_t>> signals;
         std::vector<std::pair<uint64_t, bool>> events;  // set (true) or reset, in order
         std::vector<std::pair<uint64_t, uint32_t>> queries;  // (pool, index) ended in the batch
@@ -953,6 +1113,184 @@ private:
             if (it->second.value >= values[i]) ++reached;
         }
         return (all ? reached == count : reached > 0) ? Answer::Satisfied : Answer::NotYet;
+    }
+
+    // --- Speculation state ---------------------------------------------------------------
+    struct QueueState {
+        bool watchable = false;   // a record of one of its watches arrived
+        bool open = false;        // an unwatched submission since its last watch waits for something unsent
+        bool tainted = false;     // ... or signals an external semaphore
+        uint32_t speculated = 0;  // speculated watches whose records are still to come
+    };
+    std::unordered_map<uint64_t, QueueState> queues_;
+    std::unordered_set<uint64_t> external_, externalFences_;
+    std::unordered_set<uint64_t> commandWaits_;
+    uint32_t limit_ = 0;
+    // The latest speculated serial of each queue not yet held behind on the barrier stream.
+    std::unordered_map<uint64_t, uint64_t> barriers_;
+    uint64_t barrierStream_ = 0;
+    std::atomic<bool> barriersPending_{false};
+    std::atomic<uint64_t> speculatedOutstanding_{0};
+    uint64_t speculatedWaits_ = 0;
+
+    // Whether a wait for `value` of `semaphore` (a binary semaphore when it is no followed
+    // timeline) depends only on what was sent: a followed timeline already there or signaled
+    // by an outstanding watch, or a binary semaphore whose payload is the process's own, whose
+    // signal Vulkan requires to have been submitted before the wait.
+    bool waitSentLocked(uint64_t semaphore, uint64_t value) const {
+        if (external_.count(semaphore)) return false;
+        auto it = semaphores_.find(semaphore);
+        if (it == semaphores_.end()) return true;
+        if (!it->second.tracked) return false;
+        return it->second.value >= value || providerLocked(semaphore, value) != 0;
+    }
+    // The first outstanding watch that signals `semaphore` to at least `value`; 0 when none.
+    uint64_t providerLocked(uint64_t semaphore, uint64_t value) const {
+        uint64_t best = 0;
+        for (const auto& [serial, watch] : watches_)
+            for (const auto& [signaled, to] : watch.signals)
+                if (signaled == semaphore && to >= value && (!best || serial < best)) best = serial;
+        return best;
+    }
+    void classifyLocked(Watch& watch, const Batch& batch, bool effectsFollowed) {
+        QueueState& queue = queues_[watch.queue];
+        bool closed = !queue.open && !watch.waitsEvents, followed = effectsFollowed && !queue.tainted;
+        queue.open = queue.tainted = false;  // this watch completes behind them: it carries them
+        for (const auto& [semaphore, value] : batch.waits) {
+            if (external_.count(semaphore)) {
+                closed = false;
+                continue;
+            }
+            auto it = semaphores_.find(semaphore);
+            if (it == semaphores_.end()) continue;
+            if (!it->second.tracked) closed = false;
+            else if (it->second.value < value) watch.waits.push_back({semaphore, value});
+        }
+        for (uint64_t semaphore : batch.signaled) {
+            auto it = semaphores_.find(semaphore);
+            if (external_.count(semaphore) || (it != semaphores_.end() && !it->second.tracked)) followed = false;
+        }
+        watch.closed = closed;
+        watch.stream = batch.stream;
+        watch.speculable = closed && followed && batch.stream && watch.queue && !batch.hostWrites &&
+                           watch.events.empty() && watch.queries.empty() && watch.entries.empty() &&
+                           watch.memory.empty();
+    }
+    // Adds to `out` the watches that complete no later than `serial` and are not yet
+    // speculated: it, every earlier outstanding watch of its queue, and (in turn) the watches
+    // that signal the timeline values those wait for. False when one of them may not be
+    // speculated, or would hold another stream than `stream` (0: none yet).
+    bool closureLocked(uint64_t serial, std::vector<uint64_t>* out, uint64_t* stream) const {
+        std::vector<uint64_t> todo{serial};
+        while (!todo.empty()) {
+            const uint64_t next = todo.back();
+            todo.pop_back();
+            if (std::find(out->begin(), out->end(), next) != out->end()) continue;
+            auto it = watches_.find(next);
+            if (it == watches_.end() || it->second.speculated) continue;  // its record arrived, or held already
+            const Watch& watch = it->second;
+            if (!watch.speculable || (*stream && watch.stream != *stream)) return false;
+            *stream = watch.stream;
+            out->push_back(next);
+            for (const auto& [other, earlier] : watches_)
+                if (other < next && earlier.queue == watch.queue && !earlier.speculated) todo.push_back(other);
+            for (const auto& [semaphore, value] : watch.waits) {
+                auto state = semaphores_.find(semaphore);
+                if (state == semaphores_.end() || !state->second.tracked) return false;
+                if (state->second.value >= value) continue;
+                const uint64_t provider = providerLocked(semaphore, value);
+                if (!provider) return false;
+                todo.push_back(provider);
+            }
+        }
+        return true;
+    }
+    // Reports complete the watches `serials` need, when every one may be speculated within the
+    // limit; whether it did.
+    bool speculateLocked(const std::vector<uint64_t>& serials) {
+        if (!limit_ || lost_ || closed_ || serials.empty()) return false;
+        // While earlier speculation is held on a stream, more is held on the same one.
+        uint64_t stream = barriersPending_.load(std::memory_order_relaxed) ||
+                                  speculatedOutstanding_.load(std::memory_order_relaxed)
+                              ? barrierStream_
+                              : 0;
+        std::vector<uint64_t> closure;
+        for (uint64_t serial : serials)
+            if (!closureLocked(serial, &closure, &stream)) return false;
+        if (closure.empty() || !stream) return false;
+        std::unordered_map<uint64_t, uint32_t> perQueue;
+        for (uint64_t serial : closure) {
+            const Watch& watch = watches_.at(serial);
+            if (watch.device && lostDevices_.count(watch.device)) return false;
+            auto queue = queues_.find(watch.queue);
+            if (queue == queues_.end() || !queue->second.watchable ||
+                queue->second.speculated + ++perQueue[watch.queue] > limit_)
+                return false;
+        }
+        for (uint64_t serial : closure) {
+            Watch& watch = watches_.at(serial);
+            watch.speculated = true;
+            ++queues_[watch.queue].speculated;
+            speculatedOutstanding_.fetch_add(1, std::memory_order_acq_rel);
+            uint64_t& barrier = barriers_[watch.queue];
+            barrier = std::max(barrier, serial);
+            if (watch.fence) {
+                auto fence = fences_.find(watch.fence);
+                if (fence != fences_.end() && fence->second.state == Fence::Pending && fence->second.serial == serial) {
+                    fence->second.state = Fence::Signaled;
+                    fence->second.serial = 0;
+                }
+            }
+            for (const auto& [semaphore, value] : watch.signals) {
+                auto state = semaphores_.find(semaphore);
+                if (state != semaphores_.end() && state->second.tracked)
+                    state->second.value = std::max(state->second.value, value);
+            }
+        }
+        barrierStream_ = stream;
+        barriersPending_.store(true, std::memory_order_release);
+        ++speculatedWaits_;
+        changed_.notify_all();
+        return true;
+    }
+    // The outstanding watch a pending fence waits for; 0 when there is none.
+    uint64_t fenceWatchLocked(uint64_t fence) const {
+        auto it = fences_.find(fence);
+        if (it == fences_.end() || it->second.state != Fence::Pending || !watches_.count(it->second.serial)) return 0;
+        return it->second.serial;
+    }
+    bool speculateFencesLocked(const uint64_t* fences, uint32_t count, bool all) {
+        if (!limit_) return false;
+        std::vector<uint64_t> serials;
+        for (uint32_t i = 0; i < count; ++i) {
+            auto it = fences_.find(fences[i]);
+            if (it != fences_.end() && it->second.state == Fence::Signaled) continue;
+            const uint64_t serial = fenceWatchLocked(fences[i]);
+            if (!all) {
+                if (serial && speculateLocked({serial})) return true;
+                continue;
+            }
+            if (!serial) return false;
+            serials.push_back(serial);
+        }
+        return all && speculateLocked(serials);
+    }
+    bool speculateTimelinesLocked(const uint64_t* semaphores, const uint64_t* values, uint32_t count, bool all) {
+        if (!limit_) return false;
+        std::vector<uint64_t> serials;
+        for (uint32_t i = 0; i < count; ++i) {
+            auto it = semaphores_.find(semaphores[i]);
+            if (it == semaphores_.end() || !it->second.tracked) return false;
+            if (it->second.value >= values[i]) continue;
+            const uint64_t serial = providerLocked(semaphores[i], values[i]);
+            if (!all) {
+                if (serial && speculateLocked({serial})) return true;
+                continue;
+            }
+            if (!serial) return false;
+            serials.push_back(serial);
+        }
+        return all && speculateLocked(serials);
     }
 
     caboose::lock_order::Mutex<std::mutex, caboose::lock_order::kCompletion> mutex_;
