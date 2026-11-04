@@ -69,7 +69,7 @@ code, text = computer('windows')
 if json.loads(text)['windows']:
     sys.exit('the agent seat has windows open; run on an empty seat')
 for task in tasks:
-    computer(f'end_apps; fresh_office; rm -rf "$BENCH"; mkdir -m 700 -p "$BENCH"')
+    computer(f'end_apps; fresh_office; forget_documents; rm -rf "$BENCH"; mkdir -m 700 -p "$BENCH"; use_run_home')
     code, text = computer(f"{task['setup']}\nwait_window {shlex.quote(task['app'])}", timeout=180)
     record = {'task': task['id'], 'mode': a.label or a.mode, 'model': a.model}
     if code != 0:
@@ -131,7 +131,7 @@ for task in tasks:
         if result.get('is_error') and not calls:
             # The agent never ran (no usable account, a provider outage): a run without it
             # measures nothing, so stop rather than record a failure.
-            computer('end_apps; rm -rf "$BENCH"')
+            computer('end_apps; forget_documents; rm -rf "$BENCH"; restore_home')
             sys.exit(f"the agent did not run on {task['id']}: {str(result.get('result') or result.get('subtype'))[:300]}")
         code, text = computer(task['verify'])
         if a.trace:
@@ -148,5 +148,5 @@ for task in tasks:
     computer('end_apps')
     print(json.dumps(record), flush=True)
     with open(a.output, 'a') as f: f.write(json.dumps(record) + '\n')
-computer('end_apps; rm -rf "$BENCH"')
+computer('end_apps; forget_documents; rm -rf "$BENCH"; restore_home')
 pathlib.Path(config.name).unlink()

@@ -9,6 +9,7 @@ import array
 import json
 import os
 import socket
+import stat
 import sys
 
 SOCKET = '/run/caboose/fuse.sock'
@@ -63,7 +64,16 @@ def ask(request):
         return fds[0] if fds else None
 
 
+ORIGINAL = '/usr/bin/fusermount3.caboose-off'
+
+
 def main(argv):
+    # A computer created with /dev/fuse mounts by itself: the original fusermount3 does it.
+    try:
+        if stat.S_ISCHR(os.stat('/dev/fuse').st_mode) and os.path.exists(ORIGINAL):
+            os.execv(ORIGINAL, ['fusermount3', *argv])
+    except FileNotFoundError:
+        pass
     options, mountpoint, unmount, lazy, _quiet = parse(argv)
     if unmount:
         ask({'op': 'unmount', 'mountpoint': mountpoint, 'lazy': lazy})

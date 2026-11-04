@@ -704,20 +704,23 @@ each wake the host bind-remounts an older container's read-only `/sys/fs/cgroup`
 that container's mount namespace with a one-shot privileged helper. A microVM computer has
 no app scopes. See [guest/scopes](../guest/scopes/README.md).
 
-**FUSE.** A container computer has no `/dev/fuse` and may not mount, so its FUSE mounts (the
-Flatpak document portal's) are made from outside it: at each wake the host starts
-`<computer>-fuse`, a privileged sidecar in the computer's process namespace that runs
-`caboose-fuse-broker` from the computer's own files and ends with it. The computer's
-`fusermount3` is `caboose-fusermount`, which asks the broker over `/run/caboose/fuse.sock`;
-the broker mounts a FUSE file system only on a directory the caller owns under
-`/run/user/<uid>`, owned by the caller, `nosuid` and `nodev`, with the options `fusermount3`
-gives a user, and hands back the open `/dev/fuse`; it unmounts only the caller's own FUSE
-mounts. The tradeoff: a privileged process sits beside every container computer, so the
-broker's checks, not the container's confinement, stand between the computer's users and
-the kernel's FUSE mount path; the computer itself gains no device or capability, and an
-existing computer gets FUSE without being created again. Libfuse opens `/dev/fuse` itself
-before it falls back to `fusermount3`, so the broker leaves an empty regular file there for
-that open; the mount then fails for want of privilege and goes to the broker.
+**FUSE.** A container computer is created with the host's `/dev/fuse` and `CAP_SYS_ADMIN`, so
+its setuid `fusermount3` can mount the Flatpak document portal's file system; its seccomp
+profile allows the mount calls only with that capability. The tradeoff: `CAP_SYS_ADMIN` lets
+the container's root mount and administer inside its own namespaces, a wider surface than
+FUSE alone, in exchange for Flatpak apps receiving the files chosen for them. On a host whose
+Docker applies AppArmor's default profile (which denies `mount`), the computer's spec adds
+`apparmor=unconfined`. A container created before this has neither until it is created
+again; meanwhile the host runs `<computer>-fuse` beside it, a privileged sidecar in its process
+namespace running `caboose-fuse-broker`, which mounts FUSE only on a directory the caller owns
+under `/run/user/<uid>` (`nosuid`, `nodev`, the options `fusermount3` gives a user) for the
+computer's `fusermount3`, `caboose-fusermount`; libfuse opens `/dev/fuse` itself first, so the
+broker leaves an empty placeholder there. Where `/dev/fuse` is a real device,
+`caboose-fusermount` runs the original `fusermount3`.
+
+**System Flatpak.** A container computer's `/var/lib/flatpak` is a volume of its own
+(`<computer>-flatpak`), filled from the image on first use, so system-wide Flatpak apps
+(Steam) survive the container being created again; removing the computer removes it.
 
 One document portal serves the computer's user, on the owner's bus, at the
 `/run/user/<uid>/doc` every Flatpak sandbox and `xdg-desktop-portal` expect; the agent
