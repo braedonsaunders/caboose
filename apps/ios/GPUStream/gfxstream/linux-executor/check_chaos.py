@@ -271,6 +271,8 @@ def main():
     parser.add_argument('out')
     parser.add_argument('--cycles', type=int, default=50)
     parser.add_argument('--seed', type=int, default=None)
+    parser.add_argument('--events', help="comma-separated events to run in order, repeated (kill, drop, stall, viewer, "
+                        "startup), instead of random ones; the seed still picks their delays")
     parser.add_argument('--steam-home', help="a home of the check's own holding a Steam Flatpak profile (never the owner's)")
     parser.add_argument('--triangle', help="DXVK's d3d11 triangle.exe, inside --steam-home's Flatpak data")
     parser.add_argument('--proton', default='/opt/caboose-games/GE-Proton11-11/proton')
@@ -397,8 +399,11 @@ def main():
                 raise RuntimeError('DXVK presented no real picture before the first cycle')
             print('DXVK presenting', flush=True)
         events = ['kill', 'drop', 'stall', 'viewer', 'startup']
+        forced = [e.strip() for e in o.events.split(',')] if o.events else []
+        if any(e not in events for e in forced):
+            raise SystemExit(f'unknown event in --events: {o.events}')
         for cycle in range(1, o.cycles + 1):
-            event = rng.choice(events)
+            event = forced[(cycle - 1) % len(forced)] if forced else rng.choice(events)
             delay = rng.uniform(0, 3)
             started = time.monotonic()
             time.sleep(delay)
@@ -459,6 +464,11 @@ def main():
                     f.write(seat.sh(f'for p in $(pgrep -u caboose); do tr "\\0" "\\n" < /proc/$p/environ 2>/dev/null | '
                                     f'grep -qx CABOOSE_CHAOS_SEAT={os.getpid()} && ps -o pid,lstart,args -p $p | tail -1; done',
                                     user='caboose', check=False))
+                    # Every process of the user, as root sees it (a Flatpak sandbox's environment is
+                    # not readable from outside it): where each waits, for an app that never started.
+                    f.write('\n== processes\n')
+                    f.write(seat.sh('ps -u caboose -o pid,ppid,lstart,stat,wchan:24,args --sort=start_time | cut -c1-240',
+                                    check=False))
                 print(f'FAIL cycle {cycle}/{o.cycles} {event} after {delay:.1f} s: no real picture from {", ".join(missing)} '
                       f'({len(pictures)} pictures since the cycle, executor generation {seat.generation})', flush=True)
                 return 1
