@@ -822,7 +822,17 @@ the display association. A new epoch does not erase outstanding native work.
 A surface bind names a native Wayland surface or an X11 window on the display's
 Xwayland: the trailing 32-bit field of the CGLS bind request and of the CGB1 bind
 record is the object's namespace, 0 for a `wl_surface` protocol ID and 1 for an X11
-window ID; any other value is malformed. Only the compositor can bind an actual
+window ID; any other value is malformed. A bind either carries a frame or is a probe. A
+process that answers its surface queries itself (guest-owned images) binds with a frame
+when a present sends the bind or frames wait for it, and otherwise (a query, swapchain
+set-up) binds as a probe: its CGLS bind request has 32 bytes, adding flags (1) and a reserved
+word (0), and the broker sends it as a version-2 CGB1 bind record of 64 bytes with the same
+two words. A 24-byte request and a version-1 record carry a frame, as every bind from a
+process without local answers does. The compositor refuses every probe: a window keeps
+the picture the compositor presents of it until its application has a frame for it, and
+an application that makes a surface on its own window and never presents there (Steam's
+CEF browser process) does not take the window's picture away. A frame finding its probe
+refused binds again at once, without the retry delay of queries. Only the compositor can bind an actual
 client/surface to a current owner window; an application-provided window number or
 X11 `_NET_WM_PID` is not authority.
 

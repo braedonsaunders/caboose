@@ -79,7 +79,11 @@ an override-redirect window not mapped yet and answers it when the window maps, 
 the connection of a bind it refused; that close is not executor loss (only a bound
 connection's end is reported to `peerGone`). The surface binds lazily: a query tries
 again at most every 100 ms on a new connection (`Client::reset`), and a present always
-tries. The bind is sent at once and its reply is collected by a later call when it has
+tries. With guest-owned images a bind sent without a frame (by a query or swapchain
+set-up) is a probe, which the compositor refuses so that the window keeps its picture until
+the application has a frame for it; a present, or the pump with frames waiting, binds with a
+frame, at once and again in the same call when it finds its probe refused
+(`Client::BindPolicy`, [gpu-live.md](../../../../docs/gpu-live.md#window-identity-boundary)). The bind is sent at once and its reply is collected by a later call when it has
 not arrived. With guest-owned images, queries and the first present do not wait for the
 bind. A bounded per-surface pump retains accepted frames and consumes bind, creation,
 mapping and presentation replies independently, including when an application presents

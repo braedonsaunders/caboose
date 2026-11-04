@@ -18,11 +18,15 @@ def decode_request(data):
         raise ValueError('invalid CGLS header')
     body = data[HEADER.size:]
     if kind == 16:
-        if len(body) != 24:
+        # 24 bytes: a bind with a frame to show. 32 bytes add flags (bit 0: a probe, with no
+        # frame) and a reserved word.
+        if len(body) not in (24, 32):
             raise ValueError('invalid bind size')
-        instance, obj, width, height, space = struct.unpack('<QIIII', body)
+        instance, obj, width, height, space = struct.unpack_from('<QIIII', body)
         if not instance or not obj or space not in (0, 1) or bool(width) != bool(height):
             raise ValueError('invalid bind fields')
+        if len(body) == 32 and struct.unpack_from('<II', body, 24) != (1, 0):
+            raise ValueError('invalid bind flags')
     elif kind == 18:
         if len(body) != 16 or not all(struct.unpack('<QQ', body)):
             raise ValueError('invalid query')

@@ -1570,7 +1570,7 @@ class Broker:
         self.bind_send_lock = asyncio.Lock()
 
     async def request_bind(self, session, process_id, object_id, expected_epoch=None,
-                           space=control_protocol.WAYLAND_SURFACE):
+                           space=control_protocol.WAYLAND_SURFACE, probe=False):
         """Ask the compositor to bind a live process and its native Wayland surface or X11 window."""
         if (self.session is not session or session.draining or process_id not in session.processes or
             not session.processes[process_id]['ready'].is_set()):
@@ -1585,7 +1585,7 @@ class Broker:
         future = asyncio.get_running_loop().create_future()
         self.pending_binds[request] = future
         try:
-            data = control_protocol.encode_bind(control_protocol.Bind(request, process_id, uid, pid, start, object_id, space))
+            data = control_protocol.encode_bind(control_protocol.Bind(request, process_id, uid, pid, start, object_id, space, probe))
             await self.send_control(data, pidfd)
             result = await asyncio.wait_for(future, 5)
             if result.status:
@@ -1744,8 +1744,10 @@ class Broker:
                 await self.buffer_client(session, sock, process_id, verify_peer, receive, received_fds, kind, body)
                 return
             if kind != 16: raise ValueError('surface bind required')
-            instance, obj, width, height, space = struct.unpack('<QIIII', body)
-            result = await self.request_bind(session, process_id, obj, space=space)
+            instance, obj, width, height, space = struct.unpack_from('<QIIII', body)
+            # A 32-byte bind is a probe (surface_local_protocol): the compositor refuses it
+            # for a window whose own picture it presents.
+            result = await self.request_bind(session, process_id, obj, space=space, probe=len(body) == 32)
             key = (result.epoch, result.grant, result.generation)
             surface = session.surfaces[key]
             identity = result.epoch + result.grant + struct.pack('<Q', result.generation)

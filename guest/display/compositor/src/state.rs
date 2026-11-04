@@ -665,6 +665,14 @@ impl State {
                 self.refuse_gpu_bind(old.request);
             }
         }
+        // A probe (a bind with no frame to show) never takes a window: the compositor keeps
+        // presenting the window's own picture, and the process answers its queries itself.
+        // Its first frame binds again at once, and that bind is answered as any other.
+        if bind.probe {
+            tracing::info!("GPU bind of {:#x} by process {} refused: a probe, with no frame to show", bind.object, bind.pid);
+            self.refuse_gpu_bind(bind.request);
+            return;
+        }
         self.gpu_bind_larger = false;
         self.gpu_bind_holdable = false;
         let mut matches = match bind.space {

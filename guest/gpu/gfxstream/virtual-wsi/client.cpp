@@ -226,11 +226,14 @@ Record Client::bind(uint64_t instance, uint32_t object, uint32_t width, uint32_t
     return r;
 }
 void Client::beginBind(uint64_t instance, uint32_t object, uint32_t width, uint32_t height, Deadline deadline,
-                       Space space) {
+                       Space space, bool probe) {
     require(!bound_ && !bindPending_ && instance && object && bool(width)==bool(height) &&
             (space==WaylandSurface || space==X11Window));
     Bytes p; put64(p,instance); put32(p,object); put32(p,width); put32(p,height); put32(p,space);
-    send(16,p,deadline); bindPending_=true;
+    // A bind with a frame keeps the original 24-byte form; a probe adds flags (1) and a
+    // reserved word, which a broker without probes refuses as it refuses any bind it cannot take.
+    if (probe) { put32(p,1); put32(p,0); }
+    send(16,p,deadline); bindPending_=true; lastBindProbe_=probe;
 }
 bool Client::awaitBind(Deadline deadline, Record* out) {
     require(fd_>=0 && bindPending_);
