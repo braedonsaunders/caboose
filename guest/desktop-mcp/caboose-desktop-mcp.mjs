@@ -52,11 +52,12 @@ const tools = [
   {
     name: 'act',
     description: 'Run steps in order, stopping at the first failure; then reply with what changed (+ added, ~ changed, - removed '
-      + 'controls; windows opened or closed). Put every step you already know in one call. A step is one of: {"press":id} '
-      + '{"set":id,"text":t} replaces a field\'s text, {"key":"ctrl+s"}, {"type":t}, {"click":[x,y],"button":1-3,"count":1-3}, '
+      + 'controls; windows opened or closed). Put every step you already know in one call; a control in a dialog that an earlier '
+      + 'step opens can be named instead of given by id ({"name":"Save","role":"button"}). A step is one of: {"press":id} '
+      + '{"set":id,"text":t} replaces a field\'s text (plain; type keeps formatting), {"key":"ctrl+s"}, {"type":t}, {"click":[x,y],"button":1-3,"count":1-3}, '
       + '{"scroll":[x,y],"dy":n}, {"drag":[x1,y1,x2,y2]}, {"focus":window}, {"launch":"command"}, '
-      + '{"tool":name,"args":{...}} calls a page tool, {"run":routine,"texts":[...]} replays a saved routine. Every step waits '
-      + 'for the application to react, so wait steps ({"wait":ms}) are rarely needed. save:name, once a task is done, keeps '
+      + '{"tool":name,"args":{...}} calls a page tool, {"run":routine,"texts":[...]} replays a saved routine. Steps wait for '
+      + 'the app to react; {"wait":ms} is rarely needed. save:name, once a task is done, keeps '
       + 'its steps as a routine of the application, replayable later with other texts.',
     inputSchema: { type: 'object', properties: { steps: { type: 'array', items: { type: 'object' } }, save: { type: 'string' } }, required: ['steps'] },
   },
@@ -315,7 +316,10 @@ async function stale(action) {
 async function step(s) {
   if (!s || typeof s !== 'object') throw new Error('a step is an object such as {"press":"e3"}')
   if ('press' in s || 'set' in s) {
-    const id = element('press' in s ? s.press : s.set)
+    const target = 'press' in s ? s.press : s.set
+    // A control named rather than given by id is found when the step runs, in whatever window
+    // has focus then, so one act can go through a dialog that the steps before it open.
+    const id = target && typeof target === 'object' ? await byName(target) : element(target)
     await inFocusedWindow(id)
     if ('press' in s) { await stale(() => a11y('act', { element: id, action: 'press' })); return }
     if (typeof s.text !== 'string' || s.text.length > 100_000) throw new Error('set needs text, a string of at most 100000 characters')
@@ -419,14 +423,25 @@ function asRoutine(steps) {
   })
 }
 // A saved step for the window as it is: its control found again by role and name.
+// The one control of the focused window with this name (and role, when given). A window that
+// is still opening is read again, for up to 1.5 s.
+async function byName({ name, role }) {
+  if (typeof name !== 'string' || !name) throw new Error('a named control needs a name, e.g. {"name":"Save","role":"button"}')
+  const deadline = performance.now() + 1500
+  for (;;) {
+    const { elements } = JSON.parse((await a11y('find', { query: name }))[0].text)
+    const match = (elements ?? []).filter(e => (e.name ?? '').replace(/[\s:]+$/, '').toLowerCase() === name.replace(/[\s:]+$/, '').toLowerCase()
+      && (!role || e.role === role || e.role.endsWith(` ${role}`)))
+    if (match.length === 1) return match[0].id
+    if (match.length > 1) throw new Error(`more than one ${role ?? 'control'} "${name}" in the window; use its id from look`)
+    if (performance.now() > deadline) throw new Error(`no ${role ?? 'control'} "${name}" in the focused window`)
+    await new Promise(resolve => setTimeout(resolve, 100))
+  }
+}
+
 async function replayStep(s, texts) {
   const out = { ...s }
-  for (const verb of ['press', 'set']) if (verb in s && typeof s[verb] === 'object') {
-    const { elements } = JSON.parse((await a11y('find', { query: s[verb].name || ' ' }))[0].text)
-    const match = (elements ?? []).filter(e => e.role === s[verb].role && (e.name ?? '') === s[verb].name)
-    if (match.length !== 1) throw new Error(`the routine's ${s[verb].role} "${s[verb].name}" is ${match.length ? 'ambiguous' : 'not'} in the window now`)
-    out[verb] = match[0].id
-  }
+  for (const verb of ['press', 'set']) if (verb in s && typeof s[verb] === 'object') out[verb] = await byName(s[verb])
   for (const key of ['text', 'type']) if (typeof out[key] === 'string' && /^\$\d+$/.test(out[key])) {
     const value = texts[Number(out[key].slice(1)) - 1]
     if (typeof value !== 'string') throw new Error(`the routine needs text ${out[key]}`)

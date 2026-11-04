@@ -37,7 +37,10 @@ button or slider goes in through its Value), `{"key": "ctrl+s"}`, `{"type": t}`,
 stop drawing, then at most 200 ms more, never longer than `ms`; every step already waits for
 the application's reaction) and
 `{"launch": "command"}` (an application on the agent seat, with the accessibility
-environment below). An element step whose id no longer names that control (the window lost
+environment below). A control can also be named instead of given by id, `{"press": {"name": "Save", "role":
+"button"}}`: it is found when the step runs, in whatever window has focus then (read again for
+up to 1.5 s while a window opens), so one `act` can go through a dialog that its earlier steps
+open. A name that matches no control, or more than one, stops the run. An element step whose id no longer names that control (the window lost
 focus, or the control changed or went) fails as a `stale id` and does nothing, so it is safe
 to retry with the ids of a new `look`. A pointer step at a control first checks that no other
 application's window covers it. `act` replies `Done.` (or how many steps ran and why it stopped), then the changes;
@@ -47,6 +50,13 @@ In a Chromium window on the agent seat, `look` also lists the page's tools (WebM
 page declares, and tools derived from its forms, links and buttons, marked `[derived]`) as
 `name(param: type, …) — description`, and the step `{"tool": name, "args": {...}}` calls one
 and returns its result; see [guest/webmcp](../webmcp/README.md).
+
+**Routines.** `act` with `save: name`, once a task is done, keeps the steps that worked since
+the last save as a routine of the focused application, each control by role and name and each
+text as a parameter, in `$XDG_STATE_HOME/caboose/routines.json` of the agent profile. `look`
+lists an application's routines first, with their step count, an estimate of their time and the
+texts they used; the step `{"run": name, "texts": [...]}` replays one against the window as it
+is, finding each control again by role and name.
 
 A failure comes back as a sentence the model can act on; an id that no longer resolves says
 to look again. The server's `initialize` reply carries one line of `instructions`.
