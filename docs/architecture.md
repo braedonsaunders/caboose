@@ -4013,3 +4013,8 @@ requires native retirement before rebinding; fitting unchanged pixels does not.
 
 Computer selection is available only on Home. Desktop, connection recovery and
 other tabs follow Home’s selected computer without separate switching controls.
+
+Persistent Metal pipeline binary archives are disabled by default: archive lookup
+can crash the iOS GPU driver during callback copying. Shader and Vulkan pipeline
+caches remain enabled. `CABOOSE_METAL_BINARY_ARCHIVE=1` enables the archive only
+for diagnostic launches.

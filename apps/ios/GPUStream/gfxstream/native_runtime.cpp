@@ -18,6 +18,8 @@
 #include <chrono>
 #include <cerrno>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <cstdint>
 #include <limits>
 #include <mutex>
@@ -142,7 +144,12 @@ extern "C" int caboose_gpu_runtime_set_cache_root(const char* root) {
     const int result = caboose::gpuv2::setShaderStoreRoot(root);
     if (mvkCabooseSetPipelineArchivePath) {
         const std::string selected = caboose::gpuv2::cacheRoot();
-        mvkCabooseSetPipelineArchivePath(selected.empty() ? nullptr
+        const char* archiveSetting = std::getenv("CABOOSE_METAL_BINARY_ARCHIVE");
+        // Metal archive lookups crash in the iOS driver callback-copy path.
+        // Keep this optional cache off unless explicitly enabled for diagnostics.
+        const bool disabled = !archiveSetting || std::strcmp(archiveSetting, "1");
+        std::fprintf(stderr, "CABOOSE_METAL_BINARY_ARCHIVE enabled=%d\n", !disabled);
+        mvkCabooseSetPipelineArchivePath(selected.empty() || disabled ? nullptr
                                          : (selected + "/pipeline/metal-binary-archive.bin").c_str());
     }
     return result;
