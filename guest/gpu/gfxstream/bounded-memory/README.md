@@ -212,7 +212,10 @@ lowered. Held frees still wait for the records. A new executor connection forget
 held. `CABOOSE_GPU_SPECULATE=0` turns speculation off.
 
 A blocking wait with a timeout of a second or more on watched work ends only after that long
-without a record (`progressTimeouts`): it goes on while the phone completes the process's work,
+without a record from the queues of the watches it needs, and at the latest at the smaller of
+four times its timeout and its timeout plus thirty seconds (`progressTimeouts`): a hung
+submission still times out behind a device busy elsewhere. It goes on while those queues
+complete work,
 since a speculated wait makes the next one cover the work before it as well, and an
 application that takes a five-second timeout as a hung GPU (DXVK) would otherwise lose the
 device during a load. A wait unsatisfied for ten seconds, and an encoder held as long behind

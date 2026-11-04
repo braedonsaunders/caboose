@@ -169,6 +169,45 @@ int main() {
         stop = true;
     }
     {
+        // Progress counts on the queues of the watches a wait needs only, and a long wait ends
+        // at its ceiling (here min(4 x 110 ms, 110 ms + 150 ms) = 260 ms) whatever completes.
+        using namespace std::chrono_literals;
+        Tracker t;
+        t.progressTimeouts(100ms, 150ms);
+        const uint64_t f = 0xFA, g = 0xFB, sem = 0x5A, wanted = 1;
+        const uint64_t mine = 0x9001, other = 0x9002;
+        t.fenceCreated(f, false);
+        t.fenceCreated(g, false);
+        t.timelineCreated(sem, 0);
+        t.submitted(f, {{sem, wanted}}, mine);  // never completes: a hung submission
+        std::atomic<bool> stop{false};
+        auto busyOn = [&](uint64_t queue) {
+            return std::thread([&, queue] {
+                while (!stop) {
+                    const uint64_t s = t.submitted(g, {}, queue);
+                    std::this_thread::sleep_for(20ms);
+                    t.complete(s, kCompleted);
+                }
+            });
+        };
+        // Another queue keeps completing: the wait still ends at its own timeout.
+        std::thread elsewhere = busyOn(other);
+        auto began = Tracker::Clock::now();
+        assert(t.waitTimelines(&sem, &wanted, 1, true, began + 120ms) == Answer::NotYet);
+        assert(Tracker::Clock::now() - began < 200ms);
+        stop = true;
+        elsewhere.join();
+        // Its own queue keeps completing other work: extended, but only up to the ceiling.
+        stop = false;
+        std::thread here = busyOn(mine);
+        began = Tracker::Clock::now();
+        assert(t.waitTimelines(&sem, &wanted, 1, true, began + 110ms) == Answer::NotYet);
+        const auto took = Tracker::Clock::now() - began;
+        assert(took >= 250ms && took < 350ms);
+        stop = true;
+        here.join();
+    }
+    {
         // A closed feed hands outstanding waits back to the device.
         Tracker t;
         const uint64_t f = 0xF4;
