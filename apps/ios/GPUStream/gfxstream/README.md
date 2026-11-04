@@ -95,6 +95,8 @@ c++ -std=c++17 -I apps/ios/GPUStream/gfxstream \
 /tmp/caboose-framing-test
 ```
 
+Every `*_test` target keeps its `assert()` checks in every build type, Release included.
+
 The runtime fixtures (`-DCABOOSE_GFXSTREAM_RUNTIME_TESTS=ON`) include
 `caboose_gpu_native_stream_eof LOADER`, which, among its end-of-stream cases, sends a command
 naming a device the decoder never created and requires the refusal (`kGuestFaultResult`,

@@ -199,7 +199,7 @@ if(TARGET gfxstream_backend_static)
         target_compile_features(caboose_gpu_pipeline_cache_test PRIVATE cxx_std_17)
         target_include_directories(caboose_gpu_pipeline_cache_test PRIVATE
             "${CMAKE_CURRENT_SOURCE_DIR}" "${GFXSTREAM_REPO_ROOT}/third_party/vulkan/include")
-        target_link_libraries(caboose_gpu_pipeline_cache_test PRIVATE ${CMAKE_DL_LIBS})
+        target_link_libraries(caboose_gpu_pipeline_cache_test PRIVATE caboose_shader_store ${CMAKE_DL_LIBS})
         if(APPLE)
             target_link_libraries(caboose_gpu_pipeline_cache_test PRIVATE "-lobjc")
         endif()
@@ -332,3 +332,12 @@ if(CABOOSE_GFXSTREAM_FRAMING_TESTS)
     target_compile_features(caboose_gpu_upload_store_test PRIVATE cxx_std_17)
     target_link_libraries(caboose_gpu_upload_store_test PRIVATE caboose_shader_store)
 endif()
+
+# The unit tests check with assert(), and some make the calls they check inside it: they keep
+# their assertions in every build type, Release (NDEBUG) included.
+get_property(caboose_targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
+foreach(target IN LISTS caboose_targets)
+    if(target MATCHES "_test$")
+        target_compile_options(${target} PRIVATE -UNDEBUG)
+    endif()
+endforeach()
