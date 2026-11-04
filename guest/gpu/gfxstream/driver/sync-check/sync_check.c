@@ -3,6 +3,8 @@
 // (README.md). Each case prints one CABOOSE_SYNC_CHECK line; the exit status is nonzero
 // when a case fails.
 #define _POSIX_C_SOURCE 200809L
+#include <errno.h>
+#include <fcntl.h>
 #include <stdarg.h>
 #include <stdatomic.h>
 #include <stdint.h>
@@ -13,6 +15,7 @@
 #include <poll.h>
 #include <pthread.h>
 #include <signal.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #include <xcb/xcb.h>
@@ -1387,6 +1390,11 @@ static void* VKAPI_PTR trackedReallocate(void* opaque, void* original, size_t si
 }
 
 static int exitChild(int mode, int fd) {
+    struct stat pipeStat;
+    if (fd>=0 && (fstat(fd, &pipeStat) != 0 || !S_ISFIFO(pipeStat.st_mode))) {
+        fprintf(stderr, "CABOOSE_SYNC_CHECK exit_child pipe fd=%d is not a pipe at start (errno %d)\n", fd, errno);
+        return 6;
+    }
     VkAllocationCallbacks callbacks={0};
     const VkAllocationCallbacks* allocator=NULL;
     if (mode==2) {
@@ -1406,7 +1414,7 @@ static int exitChild(int mode, int fd) {
     instanceInfo.enabledExtensionCount = 2;
     instanceInfo.ppEnabledExtensionNames = extensions;
     VkInstance childInstance;
-    if (vkCreateInstance(&instanceInfo, allocator, &childInstance) != VK_SUCCESS) return 3;
+    if (vkCreateInstance(&instanceInfo, allocator, &childInstance) != VK_SUCCESS) { fprintf(stderr, "CABOOSE_SYNC_CHECK exit_child step=create_instance failed\n"); return 3; }
     uint32_t count = 1;
     VkPhysicalDevice childPhysical;
     VkResult enumerated = vkEnumeratePhysicalDevices(childInstance, &count, &childPhysical);
@@ -1460,7 +1468,25 @@ static int exitChild(int mode, int fd) {
     // Shutdown: the window goes first, as a toolkit's does, and one more frame is presented
     // to it (Steam's update window does), with its bind refused or still in flight.
     const char done = 1;
-    if (fd>=0 && write(fd, &done, 1) != 1) return 3;
+    // The descriptor the parent gave must still be its pipe: a driver that closes a descriptor
+    // it does not own (and so frees the number for something else) would have this byte go
+    // elsewhere, and the parent see the pipe end without it.
+    if (fd>=0) {
+        struct stat st;
+        if (fstat(fd, &st) != 0 || !S_ISFIFO(st.st_mode)) {
+            char path[64], target[256] = "";
+            snprintf(path, sizeof(path), "/proc/self/fd/%d", fd);
+            const ssize_t n = readlink(path, target, sizeof(target) - 1);
+            if (n > 0) target[n] = 0;
+            fprintf(stderr, "CABOOSE_SYNC_CHECK exit_child pipe fd=%d replaced: %s (errno %d)\n", fd, target, errno);
+            return 6;
+        }
+        const ssize_t wrote = write(fd, &done, 1);
+        if (wrote != 1) {
+            fprintf(stderr, "CABOOSE_SYNC_CHECK exit_child write fd=%d returned %zd errno=%d\n", fd, wrote, errno);
+            return 3;
+        }
+    }
     xcb_destroy_window(connection, window);
     xcb_flush(connection);
     VkSemaphoreCreateInfo semaphoreInfo = {VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
@@ -1499,6 +1525,23 @@ static int exitChild(int mode, int fd) {
     return 0;
 }
 
+// A failed child's output: its CABOOSE_ lines and its last 20 lines.
+static void showChildOutput(const char* path) {
+    FILE* file = fopen(path, "r");
+    if (!file) { printf("CABOOSE_SYNC_CHECK exit_child_output none (%s)\n", path); return; }
+    char line[512], tail[20][512];
+    int lines = 0;
+    while (fgets(line, sizeof(line), file)) {
+        line[strcspn(line, "\n")] = 0;
+        if (strstr(line, "CABOOSE_")) printf("CABOOSE_SYNC_CHECK exit_child_output %s\n", line);
+        snprintf(tail[lines % 20], sizeof(tail[0]), "%s", line);
+        ++lines;
+    }
+    fclose(file);
+    const int first = lines > 20 ? lines - 20 : 0;
+    for (int i = first; i < lines; ++i) printf("CABOOSE_SYNC_CHECK exit_child_tail %s\n", tail[i % 20]);
+}
+
 // Exit latency: from a child's shutdown (exitChild above) to its end. A process's end never
 // waits for the phone, so a launcher that starts again at once never finds it still running.
 static void exitLatencyCase(void) {
@@ -1517,8 +1560,13 @@ static void exitLatencyCase(void) {
         const uint64_t started = nowUs();
         const pid_t child = fork();
         if (child < 0) fail("fork", VK_ERROR_INITIALIZATION_FAILED);
+        char childLog[64];
+        snprintf(childLog, sizeof(childLog), "/tmp/caboose-sync-exit-child-%d-%d.log", (int)getpid(), round);
         if (child == 0) {
             close(pipefd[0]);
+            // The child's output goes to a file, shown when it fails.
+            const int logFd = open(childLog, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+            if (logFd >= 0) { dup2(logFd, 1); dup2(logFd, 2); if (logFd > 2) close(logFd); }
             char modeArg[8], fdArg[16];
             snprintf(modeArg, sizeof(modeArg), "%d", mode);
             snprintf(fdArg, sizeof(fdArg), "%d", pipefd[1]);
@@ -1528,16 +1576,26 @@ static void exitLatencyCase(void) {
         close(pipefd[1]);
         struct pollfd ready = {pipefd[0], POLLIN, 0};
         char byte = 0;
-        const int signalled = poll(&ready, 1, 30000) == 1 && read(pipefd[0], &byte, 1) == 1;
+        const int polled = poll(&ready, 1, 30000);
+        const int pollErrno = polled < 0 ? errno : 0;
+        const ssize_t got = polled == 1 ? read(pipefd[0], &byte, 1) : -2;
+        const int readErrno = got < 0 ? errno : 0;
+        const int signalled = polled == 1 && got == 1;
         const uint64_t shutdown = nowUs();
         const double setupMs = (double)(shutdown - started) / 1000.0;
         int status = 0;
         waitpid(child, &status, 0);
         const double ms = (double)(nowUs() - shutdown) / 1000.0;
         close(pipefd[0]);
-        if (!WIFEXITED(status) || WEXITSTATUS(status))
-            printf("CABOOSE_SYNC_CHECK exit_child mode=%d wait_status=%d signal=%d\n",mode,status,WIFSIGNALED(status) ? WTERMSIG(status) : 0);
         const int clean = signalled && WIFEXITED(status) && WEXITSTATUS(status) == 0;
+        if (!clean) {
+            printf("CABOOSE_SYNC_CHECK exit_child round=%d mode=%d poll=%d poll_errno=%d revents=0x%x read=%zd read_errno=%d "
+                   "exited=%d code=%d signal=%d setup_ms=%.1f exit_ms=%.1f\n", round, mode, polled, pollErrno, ready.revents,
+                   got, readErrno, WIFEXITED(status), WIFEXITED(status) ? WEXITSTATUS(status) : -1,
+                   WIFSIGNALED(status) ? WTERMSIG(status) : 0, setupMs, ms);
+            showChildOutput(childLog);
+        }
+        unlink(childLog);
         if (!clean || ms >= 50.0) ok = 0;
         if (!clean) ++failedChildren;
         if (ms>worst[mode]) worst[mode]=ms;
