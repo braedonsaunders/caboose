@@ -872,7 +872,11 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
         session.streams[s2] = {'process': p2, 'writer': Writer(), 'ready': ready, 'remote_fin': asyncio.Event(), 'local_eof': False, 'discard_reply': False}
 
         sent_envelopes = []
-        session.send = mock.Mock(side_effect=lambda kind, process=0, stream=0, payload=b'', credit=None: sent_envelopes.append((kind, process, stream, payload)))
+        priorities = []
+        def send(kind, process=0, stream=0, payload=b'', credit=None, priority=False):
+            sent_envelopes.append((kind, process, stream, payload))
+            priorities.append(priority)
+        session.send = mock.Mock(side_effect=send)
         control_records = []
         async def send_control(data, fd=None):
             control_records.append(control_protocol.decode(data, 0))
@@ -944,6 +948,9 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
                     Kind.SWAPCHAIN_CANCEL_ACQUIRE,
                 ])
                 self.assertEqual(sent_envelopes[-1][3], identity + struct.pack('<QQ', 5, 11))
+                # The process's acquire goes ahead of queued DATA; the broker's own cancellation
+                # of it, after the process went, keeps its place.
+                self.assertEqual(priorities, [False, True, False])
                 self.assertEqual(control_records, [control_protocol.RevokeRequest(*key)])
 
                 # Compositor responds with RevokeGrant, but stream s1 for dead peer1 has not drained yet, so SURFACE_RETIRE waits.
@@ -1419,7 +1426,7 @@ class ProcessUsageTests(unittest.TestCase):
         session.stream_compressor = None
         session.frame_timing = broker.FrameTiming(False)
         session.progress_enabled = False
-        session.enqueue_frame = lambda *args, **kwargs: None
+        session.enqueue = lambda *args, **kwargs: None
         session.send(Kind.DATA, 3, 1, b'abcd')
         session.send(Kind.DATA, 7, 1, b'ignored')
         self.assertEqual(session.processes[3]['to_phone'], 4)
@@ -1638,4 +1645,155 @@ class ExecutorSuspendTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(ValueError):
                 await session.message(self.phone(Kind.QUIESCED, 1))
         finally:
+            session.bindings.finish(session.binding_generation)
+
+
+class PhonePriorityTests(unittest.IsolatedAsyncioTestCase):
+    """Presentation controls go to the phone ahead of queued DATA (docs/gpu-live.md, "Priority
+    toward the phone")."""
+    executor = b'a' * 16
+
+    @staticmethod
+    def surface(window):
+        return b's' * 16 + b't' * 16 + struct.pack('<Q', window)
+
+    def cancel(self, acquire):
+        """A SWAPCHAIN_CANCEL_ACQUIRE payload, a priority control."""
+        return self.surface(1) + struct.pack('<QQ', 7, acquire)
+
+    def session(self, **kwargs):
+        return broker.Session(None, self.executor, 1, None, Writer(), **kwargs)
+
+    @staticmethod
+    def taken(session):
+        frames = []
+        while not session.pending.empty():
+            frames.append(session.pending.get_nowait()[0])
+        return frames
+
+    def phone_receives(self, frames):
+        """The envelopes the phone's decoder accepts from these frames, in order."""
+        decoder, envelopes = Decoder(self.executor, 1), []
+        for frame in frames:
+            decoder.feed(frame[{126: 4, 127: 10}.get(frame[1] & 127, 2):], envelopes.append)
+        return [(e.kind, e.sequence, e.stream, e.payload) for e in envelopes]
+
+    async def test_controls_overtake_data_and_each_lane_keeps_its_order(self):
+        session = self.session()
+        try:
+            session.send(Kind.DATA, 1, 1, b'a1')
+            session.send(Kind.DATA, 1, 2, b'b1')
+            session.send(Kind.SWAPCHAIN_CANCEL_ACQUIRE, 1, payload=self.cancel(1), priority=True)
+            session.send(Kind.DATA, 1, 1, b'a2')
+            session.send(Kind.SWAPCHAIN_CANCEL_ACQUIRE, 1, payload=self.cancel(2), priority=True)
+            self.assertEqual(session.sequence, 1)  # sequences are given as frames leave
+            got = self.phone_receives(self.taken(session))
+            self.assertEqual(got, [(Kind.SWAPCHAIN_CANCEL_ACQUIRE, 1, 0, self.cancel(1)),
+                                   (Kind.SWAPCHAIN_CANCEL_ACQUIRE, 2, 0, self.cancel(2)),
+                                   (Kind.DATA, 3, 1, b'a1'), (Kind.DATA, 4, 2, b'b1'),
+                                   (Kind.DATA, 5, 1, b'a2')])
+            self.assertEqual((session.pending_count, session.sequence), (5, 6))
+        finally:
+            session.bindings.finish(session.binding_generation)
+
+    async def test_only_acquires_and_presents_take_the_control_lane(self):
+        session = self.session()
+        try:
+            with self.assertRaises(ValueError):
+                session.send(Kind.SURFACE_RETIRE, 1, payload=self.surface(1), priority=True)
+            session.send(Kind.DATA, 1, 1, b'a1')
+            # Surface controls the broker or a process sends without priority keep their place.
+            session.send(Kind.SURFACE_RETIRE, 1, payload=self.surface(1))
+            session.send(Kind.SWAPCHAIN_CANCEL_ACQUIRE, 1, payload=self.cancel(1))
+            session.send(Kind.SWAPCHAIN_CANCEL_ACQUIRE, 1, payload=self.cancel(2), priority=True)
+            got = [(kind, payload) for kind, _, _, payload in self.phone_receives(self.taken(session))]
+            self.assertEqual(got, [(Kind.DATA, b'a1'), (Kind.SURFACE_RETIRE, self.surface(1)),
+                                   (Kind.SWAPCHAIN_CANCEL_ACQUIRE, self.cancel(1)),
+                                   (Kind.SWAPCHAIN_CANCEL_ACQUIRE, self.cancel(2))])
+        finally:
+            session.bindings.finish(session.binding_generation)
+
+    async def test_a_control_never_overtakes_a_queued_frame_that_is_not_data(self):
+        session = self.session()
+        try:
+            session.send(Kind.DATA, 1, 1, b'a1')
+            session.send(Kind.FIN, 1, 1)
+            session.send(Kind.DATA, 1, 2, b'b1')
+            session.send(Kind.STREAM_OPEN, 1, 3)
+            session.send(Kind.SWAPCHAIN_CANCEL_ACQUIRE, 1, payload=self.cancel(1), priority=True)
+            session.send(Kind.DATA, 1, 3, b'c1')
+            session.send(Kind.PROCESS_STOP, 1)
+            session.send(Kind.SWAPCHAIN_CANCEL_ACQUIRE, 1, payload=self.cancel(2), priority=True)
+            got = [(kind, stream, payload) for kind, _, stream, payload in self.phone_receives(self.taken(session))]
+            self.assertEqual(got, [(Kind.DATA, 1, b'a1'), (Kind.FIN, 1, b''), (Kind.DATA, 2, b'b1'),
+                                   (Kind.STREAM_OPEN, 3, b''), (Kind.SWAPCHAIN_CANCEL_ACQUIRE, 0, self.cancel(1)),
+                                   (Kind.DATA, 3, b'c1'), (Kind.PROCESS_STOP, 0, b''),
+                                   (Kind.SWAPCHAIN_CANCEL_ACQUIRE, 0, self.cancel(2))])
+        finally:
+            session.bindings.finish(session.binding_generation)
+
+    async def test_a_pong_overtakes_data_and_a_close_follows_everything(self):
+        session = self.session()
+        try:
+            session.send(Kind.DATA, 1, 1, b'a1')
+            session.enqueue_frame(broker.server_frame(10, b'ping'), control=True)
+            session.enqueue_frame(broker.server_frame(8, struct.pack('!H', 1000)))
+            session.send(Kind.SWAPCHAIN_CANCEL_ACQUIRE, 1, payload=self.cancel(1), priority=True)
+            frames = self.taken(session)
+            self.assertEqual([frame[0] & 15 for frame in frames], [10, 2, 8, 2])
+            self.assertEqual(frames[0], broker.server_frame(10, b'ping'))
+        finally:
+            session.bindings.finish(session.binding_generation)
+
+    @unittest.skipUnless(live_zstd.available(), 'libzstd 1.5 is not installed')
+    async def test_zstd_records_continue_the_stream_in_the_order_they_leave(self):
+        session = self.session(indexed=True, features={'zstd-stream'})
+        try:
+            await session.message(Envelope(Kind.SESSION_READY, self.executor, 1, 0, 0, 1, broker.HELLO_V4))
+            config, _ = session.pending.get_nowait()
+            await session.message(Envelope(Kind.TRANSPORT_READY, self.executor, 1, 0, 0, 2, zstd_stream_config(26)))
+            payloads = [b'abc' * 5000, os.urandom(65536), b'abc' * 5000]
+            session.send(Kind.DATA, 1, 1, payloads[0])
+            session.send(Kind.DATA, 1, 2, payloads[1])
+            session.send(Kind.SWAPCHAIN_CANCEL_ACQUIRE, 1, payload=self.cancel(1), priority=True)
+            session.send(Kind.DATA, 1, 1, payloads[2])
+            inflater, parser, envelopes = StreamDecompressor(26), Decoder(self.executor, 1), []
+            parser.feed(config[2:], lambda _: None)
+            while not session.pending.empty():
+                wire, charge = session.pending.get_nowait()
+                self.assertGreaterEqual(charge, len(wire))
+                self.assertLessEqual(charge, broker.DATA_CREDIT_BYTES)
+                message = wire[{126: 4, 127: 10}.get(wire[1] & 127, 2):]
+                if message[:4] == b'CGLZ': message = inflater.decompress(message)
+                parser.feed(message, envelopes.append)
+            self.assertEqual([(e.kind, e.sequence, e.payload) for e in envelopes],
+                             [(Kind.SWAPCHAIN_CANCEL_ACQUIRE, 2, self.cancel(1)), (Kind.DATA, 3, payloads[0]),
+                              (Kind.DATA, 4, payloads[1]), (Kind.DATA, 5, payloads[2])])
+        finally:
+            session.bindings.finish(session.binding_generation)
+
+    async def test_a_control_queued_while_the_window_is_full_is_written_first(self):
+        session = self.session(indexed=True, features={'executor-resume', 'completion-feed'})
+        sender = asyncio.create_task(session.send_loop())
+        async def drained():
+            for _ in range(20): await asyncio.sleep(0)
+        try:
+            with mock.patch.object(broker, 'RESUME_WINDOW_MESSAGES', 1):
+                session.send(Kind.REVOKE)
+                await drained()
+                session.send(Kind.DATA, 1, 1, b'x')
+                session.send(Kind.SWAPCHAIN_CANCEL_ACQUIRE, 1, payload=self.cancel(1), priority=True)
+                await drained()
+                self.assertEqual([s for s, _ in session.retained], [1])
+                session.acknowledge(1)
+                await drained()
+                session.acknowledge(2)
+                await drained()
+            sent = written_envelopes(session.writer.data)
+            self.assertEqual([(k, s) for k, s, _ in sent], [(Kind.REVOKE, 1), (Kind.SWAPCHAIN_CANCEL_ACQUIRE, 2), (Kind.DATA, 3)])
+            self.assertEqual([s for s, _ in session.retained], [3])
+            self.assertEqual(session.retained[0][1], session.writer.data[-len(session.retained[0][1]):])
+        finally:
+            sender.cancel()
+            await asyncio.gather(sender, return_exceptions=True)
             session.bindings.finish(session.binding_generation)

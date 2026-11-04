@@ -11,10 +11,9 @@ describes.
 The host route is `/v1/gpu`, without query parameters, using the exact WebSocket
 subprotocol `caboose.gpu.live.v1`. It relays to the owner's display service `/gpu`
 on its existing port. There is no agent-seat GPU route. WebSocket messages are
-binary, uncompressed, at most 256 KiB. The broker queues at most 8 MiB, as much as its
-resume window holds, in 256 messages toward the phone; a local stream reads its next 64 KiB
-only once that much of the queue is free. Vulkan replies use this connection independently
-of media.
+binary, uncompressed, at most 256 KiB. The broker queues at most 8 MiB in 256 messages
+toward the phone ([Priority toward the phone](#priority-toward-the-phone)). Vulkan replies
+use this connection independently of media.
 
 The host sends the current per-wake display token as upstream `Authorization:
 Bearer …`, together with host-created `X-Caboose-GPU-Executor` UUID and
@@ -60,6 +59,36 @@ Unknown kinds, nonzero reserved bits, changed executor/generation, sequence gaps
 or duplicates, invalid scopes, oversized payloads and truncated EOF terminate the
 connection. There is no resynchronization scan. These checks do not validate
 arbitrary generated Vulkan fields, object handles or application synchronization.
+
+### Priority toward the phone
+
+The broker queues what it sends the phone in two lanes, together at most 8 MiB (as much as
+the resume window holds) in 256 messages; a local stream reads its next 64 KiB only once that
+much of the queue is free. The acquires, acquire cancellations and indexed presents
+(SWAPCHAIN_ACQUIRE, SWAPCHAIN_CANCEL_ACQUIRE, SWAPCHAIN_PRESENT, SWAPCHAIN_PRESENT_ORDERED) a
+process sends on its surface socket, and WebSocket pongs, take the control lane. Everything
+else takes the bulk lane: DATA, FIN, process and stream openings and stops, session messages,
+the close, the other surface controls, and the surface controls the broker sends itself
+(buffer presents, retirements, the cancellation of a departed process's acquire). The writer
+takes the control lane first, but never past a bulk message queued before it that is not DATA:
+a control overtakes only DATA. Each lane is first in, first out, so every stream's DATA and
+FIN reach the phone in the order the broker read them, every surface's controls keep their
+order across both lanes, and a control follows any opening, end, stop or other surface control
+queued before it. An envelope's sequence is written as it leaves the queue, so the phone
+receives consecutive sequences, and zstd records continue their stream in that order. A
+control queued while the resume window is full is the first message written once it opens.
+
+What the control lane overtakes is only DATA, and no order between a process's device stream
+and its surface socket is carried by the transport anyway: the broker reads each local socket
+on its own, so a surface message could already reach the phone before device-stream bytes the
+process wrote earlier. The process orders the two itself, and that is what the control lane
+relies on. Before an acquire or an unordered present names objects or work of its device
+stream, the process reads that stream's replies through its last create or submit
+(`drainObjects`), so the phone has decoded them. An ordered present names an ORDER mark, and
+the phone runs it only once the decoder has passed the mark ([Ordered
+presents](#ordered-presents)). An acquire made ahead of the application names a semaphore
+created before the swapchain was mapped, behind such a drain, and reuses it only after the
+hand-off that waited on it has completed.
 
 | Kind | Name | Scope | Payload |
 | --- | --- | --- | --- |

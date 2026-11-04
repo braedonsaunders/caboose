@@ -32,7 +32,7 @@ from process_binding import PeerIdentity, ProcessBindings, pidfd_alive, pidfd_pi
 from live_compression import (CONFIG as TRANSPORT_CONFIG, CONFIG_ZSTD_STREAM, StreamCompressor, compress_data,
                               zstd_stream_window)
 import live_zstd
-from live_protocol import Decoder as EnvelopeDecoder, Envelope, Kind, UNSEQUENCED, encode, is_surface
+from live_protocol import Decoder as EnvelopeDecoder, Envelope, HEADER as ENVELOPE_HEADER, Kind, UNSEQUENCED, encode, is_surface
 
 HELLO = (b'CBGLREF1' + bytes((3, 0, 0, 0, 48, 0, 0, 0)) + bytes.fromhex(
     '20d3bb2e30337cabf0febb006ed102ab25ccf6d9ddbfaf624c7e68f9040969c0'))
@@ -260,6 +260,98 @@ class DataCredit:
         self.owner.reserved_bytes -= DATA_CREDIT_BYTES
         self.owner.reserved_count -= 1
         self.owner.capacity_changed.set()
+
+
+def websocket_frame_size(payload):
+    """The size of a server WebSocket frame carrying `payload` bytes."""
+    return payload + (2 if payload < 126 else 4 if payload < 65536 else 10)
+
+
+# What a zstd-stream record may add to the envelope it carries: its CGLZ header and zstd's
+# bound on incompressible input (as in DATA_CREDIT_BYTES).
+ZSTD_RECORD_GROWTH = 16 + 287
+# An envelope's sequence, the last field of its header.
+SEQUENCE_OFFSET = ENVELOPE_HEADER.size - 8
+NO_COMPRESSION, DEFLATE_RECORD, ZSTD_RECORD = 0, 1, 2
+# The presentation controls a process sends on its surface socket that go to the phone ahead
+# of queued DATA: acquires, their cancellation and presents. The process orders each against
+# its device stream itself (docs/gpu-live.md, "Priority toward the phone").
+PRIORITY_KINDS = frozenset((Kind.SWAPCHAIN_ACQUIRE, Kind.SWAPCHAIN_CANCEL_ACQUIRE,
+                            Kind.SWAPCHAIN_PRESENT, Kind.SWAPCHAIN_PRESENT_ORDERED))
+
+
+class PhoneQueue:
+    """Frames queued toward the phone, in two lanes (docs/gpu-live.md, "Priority toward the
+    phone"). A process's acquires and presents (PRIORITY_KINDS) and WebSocket pongs take the
+    control lane, everything else the bulk lane. The control lane goes first, but never past a bulk
+    frame queued before it that is not DATA: a control overtakes only DATA. Each lane keeps
+    its own order, so every stream and every surface keeps its order. An entry is finished
+    (`finish`) as it leaves, so an envelope takes its sequence, and DATA is compressed, in
+    the order the phone receives them."""
+
+    def __init__(self, finish):
+        self._finish = finish
+        self._control, self._bulk = deque(), deque()
+        self._barriers = deque()  # ordinals of the bulk lane's frames other than DATA
+        self._ordinal = 0
+        self._unfinished = 0
+        self._idle = asyncio.Event()
+        self._idle.set()
+        self._added = asyncio.Event()
+
+    def put(self, entry, *, control=False, barrier=True):
+        self._ordinal += 1
+        if control:
+            self._control.append((self._ordinal, entry))
+        else:
+            self._bulk.append((self._ordinal, entry))
+            if barrier: self._barriers.append(self._ordinal)
+        self._unfinished += 1
+        self._idle.clear()
+        self._added.set()
+
+    def empty(self):
+        return not self._control and not self._bulk
+
+    def qsize(self):
+        return len(self._control) + len(self._bulk)
+
+    def _lane(self):
+        # A barrier ahead of the control lane's first frame is in the bulk lane, so that
+        # lane is not empty whenever it holds the control lane back.
+        if self._control and (not self._barriers or self._control[0][0] < self._barriers[0]):
+            return self._control
+        return self._bulk if self._bulk else self._control
+
+    def peek(self):
+        """The entry that leaves next."""
+        if self.empty(): raise asyncio.QueueEmpty
+        return self._lane()[0][1]
+
+    def pop(self):
+        """The next frame, finished: (frame, charge, sequence or None)."""
+        if self.empty(): raise asyncio.QueueEmpty
+        ordinal, entry = self._lane().popleft()
+        if self._barriers and self._barriers[0] == ordinal: self._barriers.popleft()
+        return self._finish(entry)
+
+    def get_nowait(self):
+        frame, charge, _sequence = self.pop()
+        return frame, charge
+
+    async def get(self):
+        while self.empty():
+            self._added.clear()
+            await self._added.wait()
+        return self.get_nowait()
+
+    def task_done(self):
+        if self._unfinished <= 0: raise ValueError('task_done() called too many times')
+        self._unfinished -= 1
+        if not self._unfinished: self._idle.set()
+
+    async def join(self):
+        await self._idle.wait()
 
 
 class FrameTiming:
@@ -558,7 +650,6 @@ class Session:
         self.retained_bytes = 0
         self.acknowledged = 0  # the highest sequence the phone acknowledged
         self.urgent = deque()  # frames written before the queue: ACK, RESUME, retransmits
-        self.pending_sequences = deque()  # each queued frame's sequence (None: not sequenced)
         self.wakeup = asyncio.Event()
         self.unacked_bytes = 0  # received since the last ACK sent
         self.ack_timer = None
@@ -573,8 +664,8 @@ class Session:
         self.ws = WebSocketDecoder()
         self.bindings = ProcessBindings()
         self.binding_generation = self.bindings.begin()
-        self.sequence = 1
-        self.pending = asyncio.Queue(maxsize=MAX_QUEUED_FRAMES)
+        self.sequence = 1  # the next envelope's, given as it leaves the queue
+        self.pending = PhoneQueue(self.finish_frame)
         self.pending_bytes = 0
         self.pending_count = 0
         self.reserved_bytes = 0
@@ -677,10 +768,7 @@ class Session:
             self.credit_waiters.remove(waiter)
             self.capacity_changed.set()
 
-    def enqueue_frame(self, frame, credit=None, *, charge=None, sequence=None):
-        charge = len(frame) if charge is None else charge
-        if charge < len(frame):
-            raise RuntimeError("invalid queue charge")
+    def enqueue(self, entry, charge, credit=None, *, control=False, barrier=True):
         if credit is not None:
             if credit.owner is not self or not credit.active or charge > DATA_CREDIT_BYTES:
                 raise RuntimeError('invalid data credit')
@@ -688,34 +776,65 @@ class Session:
             credit.release()
         if self.pending_count + self.reserved_count >= MAX_QUEUED_FRAMES or charge > MAX_QUEUED_BYTES - self.pending_bytes - self.reserved_bytes:
             raise BufferError('executor queue full')
-        self.pending.put_nowait((frame, charge))
-        self.pending_sequences.append(sequence)
+        self.pending.put(entry, control=control, barrier=barrier)
         self.pending_bytes += charge
         self.pending_count += 1
         self.wakeup.set()
 
-    def send(self, kind, process=0, stream=0, payload=b'', *, credit=None):
+    def enqueue_frame(self, frame, credit=None, *, charge=None, control=False):
+        """A WebSocket frame outside the envelope sequence: a close (bulk, after everything
+        queued) or a pong (`control`)."""
+        charge = len(frame) if charge is None else charge
+        if charge < len(frame):
+            raise RuntimeError("invalid queue charge")
+        self.enqueue((None, frame, charge, NO_COMPRESSION), charge, credit, control=control, barrier=not control)
+
+    def send(self, kind, process=0, stream=0, payload=b'', *, credit=None, priority=False):
+        """Queues an envelope for the phone; `priority` (PRIORITY_KINDS from a process's
+        surface socket only) takes the control lane."""
         if self.failed or self.closing_ws or self.sender_stopped: raise ConnectionError('session failed or closing')
-        data = encode(Envelope(kind, self.executor, self.generation, process, stream, self.sequence, payload))
-        frame = server_frame(2, data)
-        charge = len(frame)
+        if priority and kind not in PRIORITY_KINDS: raise ValueError('not a priority control')
+        # Encoded now, so an invalid envelope is refused here; its sequence is written as it
+        # leaves the queue (finish_frame).
+        data = encode(Envelope(kind, self.executor, self.generation, process, stream, 1, payload))
+        charge = websocket_frame_size(len(data))
+        compression = NO_COMPRESSION
         if self.stream_compressor is not None and kind == Kind.DATA:
-            # Every DATA continues the stream, so a refusal past this point ends the session
-            # (local streams fail it on any send error). An incompressible record is charged
-            # its own, larger size.
-            frame = server_frame(2, self.stream_compressor.compress_data(data))
-            charge = max(charge, len(frame))
+            # An incompressible record is charged its own, larger size.
+            compression = ZSTD_RECORD
+            charge = websocket_frame_size(len(data) + ZSTD_RECORD_GROWTH)
         elif self.deflate_enabled and kind == Kind.DATA:
-            frame = server_frame(2, compress_data(data))
-        self.enqueue_frame(frame, credit, charge=charge, sequence=self.sequence)
-        self.sequence += 1
+            compression = DEFLATE_RECORD
+        self.enqueue((kind, data, charge, compression), charge, credit,
+                     control=priority, barrier=kind != Kind.DATA)
         owner = self.processes.get(process) if kind == Kind.DATA else None
         if owner is not None:
             owner['to_phone'] = owner.get('to_phone', 0) + len(payload)
         if kind == Kind.DATA and self.frame_timing.enabled and self.frame_timing.started is not None and self.frame_timing.records < 128:
             self.frame_timing.data_bytes += len(payload)
-            self.frame_timing.wire_data_bytes += len(frame)
         self.surface_progress("queued_to_phone", kind)
+
+    def finish_frame(self, entry):
+        """A queued entry as it leaves: its frame, charge and sequence (None outside it)."""
+        kind, data, charge, compression = entry
+        if kind is None: return data, charge, None
+        sequence = self.sequence
+        self.sequence += 1
+        data = bytearray(data)
+        struct.pack_into('<Q', data, SEQUENCE_OFFSET, sequence)
+        data = bytes(data)
+        if compression == ZSTD_RECORD:
+            # Every DATA continues the stream, in sequence order: a refusal here ends the session.
+            data = self.stream_compressor.compress_data(data)
+        elif compression == DEFLATE_RECORD:
+            data = compress_data(data)
+        frame = server_frame(2, data)
+        if len(frame) > charge:
+            self.pending_bytes += len(frame) - charge
+            charge = len(frame)
+        if kind == Kind.DATA and self.frame_timing.enabled and self.frame_timing.started is not None and self.frame_timing.records < 128:
+            self.frame_timing.wire_data_bytes += len(frame)
+        return frame, charge, sequence
 
     async def close_after_retirement(self):
         if self.failed or self.closing_ws or not self.revoking or not self.revoked.is_set():
@@ -754,15 +873,15 @@ class Session:
                     if self.urgent or not self.pending.empty(): continue
                     await self.wakeup.wait()
                     continue
-                data, charge = self.pending.get_nowait()
-                sequence = self.pending_sequences.popleft()
-                if self.resumable and sequence is not None:
-                    # A full window waits for the phone's acknowledgement, still writing
-                    # what must go first (a RESUME and its retransmits).
-                    while self.window_full():
-                        self.wakeup.clear()
-                        await self.write_urgent()
-                        if self.window_full(): await self.wakeup.wait()
+                if self.resumable and self.pending.peek()[0] is not None and self.window_full():
+                    # A full window waits for the phone's acknowledgement, still writing what
+                    # must go first (a RESUME and its retransmits); a control queued meanwhile
+                    # is taken next.
+                    self.wakeup.clear()
+                    await self.write_urgent()
+                    if self.window_full(): await self.wakeup.wait()
+                    continue
+                data, charge, sequence = self.pending.pop()
                 # Retained before it is written: a RESUME handled while it drains must send it
                 # again, since the phone discards what reached it before the broker's RESUME.
                 if self.resumable and sequence is not None:
@@ -1392,7 +1511,7 @@ class Session:
                 if kind == 'close': raise ConnectionError('executor closed')
                 if kind == 'ping':
                     if not self.closing_ws:
-                        self.enqueue_frame(server_frame(10, payload))
+                        self.enqueue_frame(server_frame(10, payload), control=True)
                 if kind != 'binary': continue
                 messages = []
                 self.decoder.feed(payload, messages.append)
@@ -1803,7 +1922,7 @@ class Broker:
                     surface['indexed'].send(kind, body)
                     if kind in (34, 39):
                         session.frame_timing.begin(surface, surface['presents'][serial])
-                    session.send(Kind(kind), process_id, payload=identity + body)
+                    session.send(Kind(kind), process_id, payload=identity + body, priority=kind in PRIORITY_KINDS)
                 elif kind == 23:
                     if not surface['retiring'] and not surface.get('revoke_requested'):
                         surface['revoke_requested'] = True
