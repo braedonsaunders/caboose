@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 #include "completion_feed.h"
+#include <atomic>
 #include <cassert>
 #include <cstdlib>
 #include <cstring>
@@ -77,6 +78,95 @@ int main() {
         const uint64_t s2 = t.submitted(f, {});
         t.complete(s2, kDeviceLost);
         assert(t.deviceLost() && t.fencesSignaled(&f, 1, true) == Answer::DeviceLost);
+    }
+    {
+        // A wait that stays unsatisfied says what it waits for, first after stallFirst and then
+        // every stallRepeat, and still waits until its deadline.
+        Tracker t;
+        t.stallReports(std::chrono::milliseconds(30), std::chrono::milliseconds(40));
+        const uint64_t f = 0xF7, sem = 0x57, wanted = 4;
+        t.fenceCreated(f, false);
+        t.timelineCreated(sem, 2);
+        t.submitted(f, {{sem, 3}});
+        char path[] = "/tmp/caboose-wait-stall-XXXXXX";
+        const int out = mkstemp(path);
+        assert(out >= 0);
+        std::fflush(stderr);
+        const int saved = dup(2);
+        dup2(out, 2);
+        const auto began = Tracker::Clock::now();
+        const Answer timelines = t.waitTimelines(&sem, &wanted, 1, true, began + std::chrono::milliseconds(150));
+        const Answer fences = t.waitFences(&f, 1, true, Tracker::Clock::now() + std::chrono::milliseconds(50));
+        std::fflush(stderr);
+        dup2(saved, 2);
+        close(saved);
+        assert(timelines == Answer::NotYet && fences == Answer::NotYet);
+        assert(Tracker::Clock::now() - began >= std::chrono::milliseconds(200));
+        char text[4096] = {};
+        assert(pread(out, text, sizeof text - 1, 0) > 0);
+        close(out);
+        unlink(path);
+        const std::string log = text;
+        size_t lines = 0;
+        for (size_t at = log.find("CABOOSE_GPU_WAIT_STALLED call=vkWaitSemaphores"); at != std::string::npos;
+             at = log.find("CABOOSE_GPU_WAIT_STALLED call=vkWaitSemaphores", at + 1)) ++lines;
+        assert(lines >= 2 && lines <= 4);
+        assert(log.find(" semaphore0=0x57 wanted=4 tracked value=2 pending=3 last_serial=") != std::string::npos);
+        assert(log.find("CABOOSE_GPU_WAIT_STALLED call=vkWaitForFences seconds=0 fence0=pending/serial1/outstanding") !=
+               std::string::npos);
+    }
+    {
+        // A long wait (here 100 ms or more) on watched work goes on past its deadline while the
+        // phone completes the process's work, and ends after that long without progress; a
+        // short one ends at its deadline.
+        using namespace std::chrono_literals;
+        Tracker t;
+        t.progressTimeouts(100ms);
+        const uint64_t f = 0xF8, g = 0xF9, sem = 0x58, wanted = 9;
+        t.fenceCreated(f, false);
+        t.fenceCreated(g, false);
+        t.timelineCreated(sem, 0);
+        const uint64_t awaited = t.submitted(f, {{sem, wanted}});
+        std::atomic<bool> stop{false};
+        std::thread phone([&] {
+            // Other work completes every 40 ms for 400 ms, then what the wait waits for.
+            for (int i = 0; i < 10 && !stop; ++i) {
+                const uint64_t other = t.submitted(g, {});
+                std::this_thread::sleep_for(40ms);
+                t.complete(other, kCompleted);
+            }
+            t.complete(awaited, kCompleted);
+        });
+        auto began = Tracker::Clock::now();
+        assert(t.waitTimelines(&sem, &wanted, 1, true, began + 150ms) == Answer::Satisfied);
+        assert(Tracker::Clock::now() - began >= 350ms);
+        phone.join();
+        // No progress: the long wait ends a timeout after the last completion.
+        const uint64_t next = 10;
+        t.submitted(f, {{sem, next}});
+        began = Tracker::Clock::now();
+        assert(t.waitTimelines(&sem, &next, 1, true, began + 150ms) == Answer::NotYet);
+        assert(Tracker::Clock::now() - began < 400ms);
+        // Progress, but a short wait: it ends at its deadline.
+        std::thread busy([&] {
+            for (int i = 0; i < 6; ++i) {
+                const uint64_t other = t.submitted(g, {});
+                std::this_thread::sleep_for(10ms);
+                t.complete(other, kCompleted);
+            }
+        });
+        began = Tracker::Clock::now();
+        assert(t.waitTimelines(&sem, &next, 1, true, began + 50ms) == Answer::NotYet);
+        assert(Tracker::Clock::now() - began < 90ms);
+        busy.join();
+        // A value nothing submitted signals is not watched: no progress keeps it.
+        const uint64_t unsent = 99;
+        began = Tracker::Clock::now();
+        std::thread more([&] { const uint64_t other = t.submitted(g, {}); std::this_thread::sleep_for(60ms); t.complete(other, kCompleted); });
+        assert(t.waitTimelines(&sem, &unsent, 1, true, began + 120ms) == Answer::NotYet);
+        assert(Tracker::Clock::now() - began < 200ms);
+        more.join();
+        stop = true;
     }
     {
         // A closed feed hands outstanding waits back to the device.

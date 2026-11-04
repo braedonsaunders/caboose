@@ -211,6 +211,14 @@ and the timeline be asked on the device, as for any watch; values reported reach
 lowered. Held frees still wait for the records. A new executor connection forgets what was
 held. `CABOOSE_GPU_SPECULATE=0` turns speculation off.
 
+A blocking wait with a timeout of a second or more on watched work ends only after that long
+without a record (`progressTimeouts`): it goes on while the phone completes the process's work,
+since a speculated wait makes the next one cover the work before it as well, and an
+application that takes a five-second timeout as a hung GPU (DXVK) would otherwise lose the
+device during a load. A wait unsatisfied for ten seconds, and an encoder held as long behind
+speculated records, write `CABOOSE_GPU_WAIT_STALLED` (`stallReports`), naming what it waits for,
+the tracker's state and every other wait of five seconds or more (`WaitTimer`).
+
 The coherent upkeep's invalidate after a wait takes the writes of a speculated submission as it
 takes those of a completed one: what it makes lazy is filled once that submission's record has
 arrived (the fill waits for it), and what it reads at once goes on the device stream behind the
