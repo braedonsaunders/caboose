@@ -3,20 +3,25 @@ import XCTest
 
 @MainActor
 final class LaunchpadPageArrowTests: XCTestCase {
-    func testClickWhereTheLastPageArrowWasStaysInLaunchpad() {
+    func testRepeatedClicksAdvanceToThirdPageAndStayAtTheEnd() {
         let desktop = DesktopModel(pixelsPerPoint: 2)
         desktop.launchpadOpen = true
-        desktop.launcherPage = 1
-        // On the last page the forward arrow is the dimmed one, registered as direction 0.
+        desktop.launcherPageCount = 3
         desktop.launcherPageFrames[-1] = CGRect(x: 100, y: 500, width: 44, height: 44)
-        desktop.launcherPageFrames[0] = CGRect(x: 300, y: 500, width: 44, height: 44)
+        desktop.launcherPageFrames[1] = CGRect(x: 300, y: 500, width: 44, height: 44)
+        let point = CGPoint(x: 320, y: 520)
 
-        let hit = desktop.hitTest(CGPoint(x: 320, y: 520), windows: [:])
-        XCTAssertEqual(hit, .launcherPage(0))
-        desktop.turnLauncherPage(0)
-        XCTAssertTrue(desktop.launchpadOpen)
+        // Geometry stays unchanged: it must not need to be registered again after a click.
+        for expectedPage in [1, 2, 2] {
+            let hit = desktop.hitTest(point, windows: [:])
+            XCTAssertEqual(hit, .launcherPage(1))
+            if case .launcherPage(let direction) = hit { desktop.turnLauncherPage(direction) }
+            XCTAssertEqual(desktop.launcherPage, expectedPage)
+            XCTAssertTrue(desktop.launchpadOpen)
+        }
+        desktop.turnLauncherPage(-1)
         XCTAssertEqual(desktop.launcherPage, 1)
-
+        desktop.turnLauncherPage(-1)
         desktop.turnLauncherPage(-1)
         XCTAssertEqual(desktop.launcherPage, 0)
         XCTAssertTrue(desktop.launchpadOpen)

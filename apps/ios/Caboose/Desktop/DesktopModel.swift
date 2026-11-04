@@ -299,6 +299,7 @@ final class DesktopModel {
     var panelButtonFrame: CGRect = .null
     var launcherFrames: [String: CGRect] = [:]
     var launcherPage = 0
+    var launcherPageCount = 1
     var launcherPageFrames: [Int: CGRect] = [:]
     /// The floating dock's bar, in the desktop's space: Launchpad stays above it.
     var dockBarFrame: CGRect = .null
@@ -638,13 +639,11 @@ final class DesktopModel {
         menu.show(items, at: anchor, above: true)
     }
 
-    /// A click on a Launchpad page arrow. Direction 0 is the arrow at the end of the pages,
-    /// kept in place so its click is used up there instead of closing Launchpad.
+    /// Arrow frames stay registered across page changes; even an end arrow consumes its click.
     func turnLauncherPage(_ direction: Int) {
         guard direction != 0 else { return }
         launcherFrames = [:]
-        launcherPageFrames = [:]
-        launcherPage = max(0, launcherPage + direction)
+        launcherPage = min(max(0, launcherPageCount - 1), max(0, launcherPage + direction))
     }
 
     func click(button: Int = 1, session: (any DisplaySession)?, open: (String) -> Void) {

@@ -551,13 +551,16 @@ struct Launchpad: View {
                 guard next != desktop.launcherPage else { return }
                 movingForward = next > desktop.launcherPage
                 withAnimation(reduceMotion ? .easeOut(duration: 0.15) : .smooth(duration: 0.28)) {
-                    desktop.launcherFrames = [:]; desktop.launcherPageFrames = [:]
+                    desktop.launcherFrames = [:]
                     desktop.launcherPage = next
                 }
             })
         .animation(reduceMotion ? .easeOut(duration: 0.15) : .smooth(duration: 0.28), value: desktop.launcherPage)
         .onChange(of: model.launching?.id) { opening, now in
             if opening != nil, now == nil { desktop.launchpadOpen = false }
+        }
+        .onChange(of: layout.pageCount(apps.count), initial: true) { _, pages in
+            desktop.launcherPageCount = pages
         }
         .onChange(of: apps.map(\.id)) { _, _ in resetFrames(layout: layout, count: apps.count) }
         .onChange(of: desktop.size) { _, _ in resetFrames(layout: layout, count: apps.count) }
@@ -566,7 +569,6 @@ struct Launchpad: View {
 
     private func resetFrames(layout: LaunchpadLayout, count: Int) {
         desktop.launcherFrames = [:]
-        desktop.launcherPageFrames = [:]
         desktop.launcherPage = layout.clampedPage(desktop.launcherPage, count: count)
     }
 
@@ -581,14 +583,14 @@ struct Launchpad: View {
             .onTapGesture {
                 guard enabled else { return }
                 movingForward = direction > 0
-                desktop.launcherFrames = [:]; desktop.launcherPageFrames = [:]
-                desktop.launcherPage += direction
+                desktop.launcherFrames = [:]
+                desktop.turnLauncherPage(direction)
             }
             .accessibilityHidden(!enabled)
             .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("desktop")) } action: {
-                desktop.launcherPageFrames[enabled ? direction : 0] = $0
+                desktop.launcherPageFrames[direction] = $0
             }
-            .onDisappear { desktop.launcherPageFrames[enabled ? direction : 0] = nil }
+            .onDisappear { desktop.launcherPageFrames[direction] = nil }
     }
 }
 

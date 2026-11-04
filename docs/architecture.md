@@ -4018,3 +4018,7 @@ Persistent Metal pipeline binary archives are disabled by default: archive looku
 can crash the iOS GPU driver during callback copying. Shader and Vulkan pipeline
 caches remain enabled. `CABOOSE_METAL_BINARY_ARCHIVE=1` enables the archive only
 for diagnostic launches.
+
+Desktop Launchpad retains its page-arrow hit regions while changing pages. Repeated
+pointer clicks advance through the available pages; an arrow at either end consumes
+the click without dismissing Launchpad or moving beyond the page range.
