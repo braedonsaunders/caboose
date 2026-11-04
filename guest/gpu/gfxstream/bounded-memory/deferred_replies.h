@@ -46,11 +46,10 @@ bool drainDeferredReplies(uint32_t& pending, Stream* stream) {
 // either bound a send waits for the oldest replies, down to half of both.
 // - Reply bytes owed, 64 KiB, so at most 16384 replies (each at least a 4-byte result) and
 //   about 1.25 MiB of their `Reply` records (only one encoder defers). Replies that have
-//   arrived wait unread in the local socket back to the process, and the broker writes each
-//   reply before it reads the phone's next message, so a full socket stalls it, and with it
-//   the completion feed the process may be waiting for: a deadlock. The phone's replies come
-//   in many small messages, each costing the socket far more than its bytes; 128 KiB already
-//   deadlocks DXVK. Replies that have arrived are read without blocking once a little is owed.
+//   arrived wait unread in the local socket back to the process and the broker's queue for
+//   that stream, which holds back no other stream and ends the stream past 8 MiB unread
+//   (docs/gpu-live.md, "Toward guest streams"). Replies that have arrived are read without
+//   blocking once a little is owed.
 // - Command bytes the phone has not answered, 24 MiB: eight frames of a game that sends
 //   3 MiB a frame. The guest keeps none of these bytes: they wait in the broker's queue and
 //   resume window (8 MiB each), the phone's ingress and its decoder's socket, and a send past

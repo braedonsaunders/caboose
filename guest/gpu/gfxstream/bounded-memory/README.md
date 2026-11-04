@@ -56,10 +56,9 @@ first, in stream order. Replies that have fully arrived are read without blockin
 deferred commands are sent, once 256 KiB of commands or 4 KiB of replies are owed. Past
 64 KiB of owed replies (at most 16384) or 24 MiB of commands the phone has not answered (eight
 frames of a game that sends 3 MiB a frame), a send reads the oldest replies until half of each
-is owed. The guest keeps about 80 bytes per owed reply and none of the commands. The reply
-bound keeps unread replies within what the local socket holds: the broker writes each reply
-before it reads the phone's next message, so a full socket would also hold back the
-completion feed the process waits on, and with DXVK 128 KiB already does. The command bound
+is owed. The guest keeps about 80 bytes per owed reply and none of the commands. The broker
+queues each stream's replies on their own, so unread replies hold back no other stream, and
+ends a stream that leaves 8 MiB unread (docs/gpu-live.md, "Toward guest streams"). The command bound
 keeps a burst of uploads from queueing seconds of decoding ahead of the next present; frame
 pacing, not these bounds, limits the frames in flight. A failed
 reset or flush is reported on stderr. A failed bind, or a create whose handle the

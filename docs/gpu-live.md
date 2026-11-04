@@ -132,6 +132,31 @@ are monotonic and never reused within a generation. The initial admission limits
 are 16 active processes and 64 active streams; retirement releases capacity without
 resetting identity counters.
 
+### Toward guest streams
+
+The broker never waits for a guest process to read before it reads the phone's next message.
+Each local stream's socket has its own writer queue, written in order as the socket takes
+bytes, so the replies and the end of one stream never wait behind another's, nor behind
+another process's. That matters because a process reads its device stream lazily: it leaves
+deferred replies unread while it works ([Completion feed](#completion-feed) records arrive on
+another stream meanwhile), and a broker that waited on that stream would stop reading the
+phone, so the feed records the process is waiting for would never arrive. A stream's FIN is
+written after every byte queued before it. Surface sockets have their own queues too, at most
+64 replies and 8 MiB; a surface socket past either, or with a reply unread for 5 s, is ended
+alone.
+
+The protocol has no per-stream credit toward the guest, so the broker cannot hold back the
+phone for one stream, and holding back the whole connection for one stream would stall every
+stream behind it; it bounds what it holds instead. One stream holds at most 8 MiB its process has
+not read (as much as the resume window holds), all streams together at most 32 MiB. A message
+past either bound ends one stream: the one it is for, or, past the total, the stream holding
+the most. The broker drops what it holds for that stream and shuts its socket, so the process
+reads the end of its device stream and loses its device; the phone's further bytes for it are
+discarded until its FIN, as for a process that exited. Replies a process leaves unread for a
+second after its stream's FIN are dropped the same way. The session and every other stream
+go on. A process that reads its replies never comes near the bound: it keeps its owed replies
+within 64 KiB ([bounded memory](../guest/gpu/gfxstream/bounded-memory/README.md)).
+
 ### Compressed commands
 
 The indexed v4 broker compresses what it sends the phone when the phone declares
