@@ -13,6 +13,8 @@
 #include <poll.h>
 #include <pthread.h>
 #include <signal.h>
+#include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <dlfcn.h>
 #include <unistd.h>
@@ -1705,8 +1707,8 @@ static int oneWayChild(int mispredict) {
 }
 
 // lost_reply_stand_ins child: a thread keeps asking layout support for layouts the session has
-// not seen (each a round trip) and creating them, while the process loses its executor through
-// a one-way prediction the phone does not bear out. With CABOOSE_GPU_ON_LOSS=quiet, every
+// not seen (each a round trip) and creating them, while the process's executor streams end
+// under it. With CABOOSE_GPU_ON_LOSS=quiet, every
 // answer, including one whose reply was lost during the call, must be supported and every
 // layout a distinct, non-null handle.
 #define LOST_REPLY_MAX 20000
@@ -1716,13 +1718,14 @@ static uint64_t lostReplyHandles[LOST_REPLY_MAX];
 static int lostReplyCount, lostReplyNull, lostReplyUnsupported;
 static void* lostReplyAsker(void* unused) {
     (void)unused;
-    for (uint32_t i = 0; !atomic_load(&lostReplyStop) && lostReplyCount < LOST_REPLY_MAX; ++i) {
-        VkDescriptorSetLayoutBinding bindings[16];
-        const uint32_t n = 1 + i % 16;
-        for (uint32_t b = 0; b < n; ++b) {
-            bindings[b] = (VkDescriptorSetLayoutBinding){b, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1 + (i / 16) % 32,
+    // It keeps asking until the loss has passed: the newest LOST_REPLY_MAX layouts are kept.
+    for (uint32_t i = 0; !atomic_load(&lostReplyStop); ++i) {
+        // Binding numbers never asked before: every support question is a round trip.
+        VkDescriptorSetLayoutBinding bindings[4];
+        const uint32_t n = 1 + i % 4;
+        for (uint32_t b = 0; b < n; ++b)
+            bindings[b] = (VkDescriptorSetLayoutBinding){i * 4 + b, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1,
                                                          VK_SHADER_STAGE_ALL, NULL};
-        }
         VkDescriptorSetLayoutCreateInfo info = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
         info.bindingCount = n;
         info.pBindings = bindings;
@@ -1732,7 +1735,7 @@ static void* lostReplyAsker(void* unused) {
         if (!support.supported) ++lostReplyUnsupported;
         VkDescriptorSetLayout layout = VK_NULL_HANDLE;
         if (vkCreateDescriptorSetLayout(lostReplyDevice, &info, NULL, &layout) != VK_SUCCESS || !layout) ++lostReplyNull;
-        lostReplyHandles[lostReplyCount++] = (uint64_t)layout;
+        lostReplyHandles[lostReplyCount++ % LOST_REPLY_MAX] = (uint64_t)layout;
     }
     return NULL;
 }
@@ -1764,23 +1767,20 @@ static int lostReplyChild(void) {
     if (pthread_create(&asker, NULL, lostReplyAsker, NULL) != 0) return 3;
     struct timespec pause = {0, 300000000};
     nanosleep(&pause, NULL);
-    // The loss: an instance predicted one-way that the phone refuses.
-    PFN_icdGetInstanceProcAddr icd = directDriver();
-    if (!icd) { atomic_store(&lostReplyStop, 1); pthread_join(asker, NULL); return 3; }
-    PFN_vkCreateInstance createInstance = (PFN_vkCreateInstance)icd(NULL, "vkCreateInstance");
-    const char* absent = "VK_LAYER_CABOOSE_absent";
-    VkInstanceCreateInfo refused = instanceInfo;
-    refused.enabledLayerCount = 1;
-    refused.ppEnabledLayerNames = &absent;
-    VkInstance lostInstance;
-    (void)createInstance(&refused, NULL, &lostInstance);
-    struct timespec after = {3, 0};
+    // The loss: the process's executor streams end under it, as when the phone leaves,
+    // while the asking thread waits for a reply.
+    for (int fd = 3; fd < 1024; ++fd) {
+        struct stat info;
+        if (fstat(fd, &info) == 0 && S_ISSOCK(info.st_mode)) shutdown(fd, SHUT_RDWR);
+    }
+    struct timespec after = {1, 0};
     nanosleep(&after, NULL);
     atomic_store(&lostReplyStop, 1);
     pthread_join(asker, NULL);
-    qsort(lostReplyHandles, (size_t)lostReplyCount, sizeof(uint64_t), cmpU64);
+    const int kept = lostReplyCount < LOST_REPLY_MAX ? lostReplyCount : LOST_REPLY_MAX;
+    qsort(lostReplyHandles, (size_t)kept, sizeof(uint64_t), cmpU64);
     int duplicates = 0;
-    for (int i = 1; i < lostReplyCount; ++i)
+    for (int i = 1; i < kept; ++i)
         if (lostReplyHandles[i] && lostReplyHandles[i] == lostReplyHandles[i - 1]) ++duplicates;
     fprintf(stderr, "CABOOSE_SYNC_CHECK_LOST_REPLY asked=%d null=%d unsupported=%d duplicates=%d\n", lostReplyCount,
             lostReplyNull, lostReplyUnsupported, duplicates);
@@ -1788,6 +1788,8 @@ static int lostReplyChild(void) {
     return lostReplyNull ? 7 : lostReplyUnsupported ? 8 : duplicates ? 9 : 0;
 }
 
+static char oneWayChildLine[256];
+static int lostReplyLostCalls;
 // Runs oneWayChild in a new process with the driver's diagnostics, and returns its exit status
 // (-1 when it did not exit within 40 s, and was killed), how many commands it sent one-way, and
 // whether its executor granted one-way start.
@@ -1802,7 +1804,7 @@ static int runOneWayChild(int mispredict, int* oneWay, int* granted) {
         dup2(pipefd[1], 2);
         close(pipefd[1]);
         setenv("CABOOSE_CAPABILITY_CACHE_DIAGNOSTICS", "1", 1);
-        if (mispredict) setenv("CABOOSE_ONE_WAY_START", "predict", 1);
+        if (mispredict == 1) setenv("CABOOSE_ONE_WAY_START", "predict", 1);
         if (mispredict == 2) setenv("CABOOSE_GPU_ON_LOSS", "quiet", 1);
         char mode[4];
         snprintf(mode, sizeof(mode), "%d", mispredict);
@@ -1825,6 +1827,11 @@ static int runOneWayChild(int mispredict, int* oneWay, int* granted) {
     }
     output[used] = 0;
     close(pipefd[0]);
+    const char* line = strstr(output, "CABOOSE_SYNC_CHECK_LOST_REPLY ");
+    snprintf(oneWayChildLine, sizeof(oneWayChildLine), "%.*s", line ? (int)strcspn(line + 30, "\n") : 0,
+             line ? line + 30 : "");
+    lostReplyLostCalls = 0;
+    for (const char* p = strstr(output, "CABOOSE_GPU_LOST_CALL"); p; p = strstr(p + 1, "CABOOSE_GPU_LOST_CALL")) ++lostReplyLostCalls;
     int status = 0, exited = 0;
     while (nowUs() - start < 41000000u) {
         if (waitpid(child, &status, WNOHANG) == child) { exited = 1; break; }
@@ -1869,9 +1876,8 @@ static void oneWayCases(const char* only) {
     if (!only || strstr("lost_reply_stand_ins", only)) {
         int sent = 0;
         const int status = runOneWayChild(2, &sent, &granted);
-        // Without one-way start nothing loses the executor: the answers are the device's.
-        report("lost_reply_stand_ins", status == 0, "granted=%d status=%d (7: null layout; 8: unsupported; 9: duplicate "
-               "handles; -1: hung)", granted, status);
+        report("lost_reply_stand_ins", status == 0, "granted=%d status=%d %s lost_call_lines=%d (7: null layout; "
+               "8: unsupported; 9: duplicate handles; -1: hung)", granted, status, oneWayChildLine, lostReplyLostCalls);
     }
 }
 
