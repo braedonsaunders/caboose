@@ -210,7 +210,8 @@ function read(file, rect, width, height) {
       const lines = new Map()
       for (const row of out.split('\n').slice(1)) {
         const f = row.split('\t')
-        if (f.length < 12 || !f[11].trim() || Number(f[10]) < 50) continue
+        // Words only: textures and icons read as stray symbols at low confidence.
+        if (f.length < 12 || Number(f[10]) < 70 || !/[\p{L}]{3,}|\p{N}{2,}/u.test(f[11])) continue
         const key = `${f[2]}.${f[3]}.${f[4]}`
         const line = lines.get(key) ?? { words: [], left: Infinity, top: Infinity, right: 0, bottom: 0 }
         line.words.push(f[11].trim())
