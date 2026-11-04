@@ -77,6 +77,17 @@ describe('createContainerController', () => {
     expect(controller.terminalService?.()).toEqual({ url: 'http://127.0.0.1:14701', token: session.display.token })
   })
 
+  it('gives a new computer FUSE and its own system Flatpak volume, and removes the volume with the computer', async () => {
+    const fake = fakeDocker('missing')
+    const controller = createContainerController(settings, { fence: async () => {}, unfence: async () => {}, docker: fake.docker, exists: path => path === '/dev/fuse' })
+    await controller.wake('headless')
+    const run = computerRuns(fake.calls)[0]!
+    expect(run.join(' ')).toContain('--device /dev/fuse --cap-add SYS_ADMIN')
+    expect(run.join(' ')).toContain('-v caboose-owner-flatpak:/var/lib/flatpak')
+    await controller.destroy!()
+    expect(fake.calls).toContainEqual(['volume', 'rm', '-f', 'caboose-owner-flatpak'])
+  })
+
   it('starts the FUSE broker beside the computer, in its process namespace, from its own files', async () => {
     const fake = fakeDocker('missing')
     const controller = createContainerController(settings, { fence: async () => {}, docker: fake.docker, exists: () => false })

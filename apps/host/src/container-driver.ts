@@ -237,6 +237,17 @@ export function gpuArgs(kind: GpuKind, exists: (path: string) => boolean = exist
  * apps allocate the buffers they share (docs/gpu-buffers.md); with a `dri` GPU they arrive
  * with the rest of /dev/dri.
  */
+/**
+ * FUSE for the computer (the Flatpak document portal's mount): the host's /dev/fuse, and
+ * CAP_SYS_ADMIN, without which the computer's setuid fusermount3 cannot mount; the computer's
+ * seccomp profile allows the mount calls with that capability. On a host whose Docker confines
+ * containers with AppArmor's default profile, which denies mount, the computer's spec adds
+ * `apparmor=unconfined` (docs/architecture.md § FUSE).
+ */
+export function fuseArgs(exists: (path: string) => boolean = existsSync): string[] {
+  return exists('/dev/fuse') ? ['--device', '/dev/fuse', '--cap-add', 'SYS_ADMIN'] : []
+}
+
 export function phoneGpuArgs(kind: GpuKind, exists: (path: string) => boolean = existsSync, drm: () => DrmNode[] = drmNodes): string[] {
   const userfaultfd = exists('/dev/userfaultfd') ? ['--device', '/dev/userfaultfd'] : []
   const vgem = kind === 'dri' ? [] : drm().filter(node => node.driver === 'vgem').flatMap(node => ['--device', node.path])
@@ -315,6 +326,8 @@ export function createContainerController(config: Config, dependencies: { docker
     await (dependencies.fence ?? fenceBridge)(place.bridge)
   }
 
+  const flatpakVolume = `${name}-flatpak`
+
   function runArgs(size: ComputerResources, attempt?: string): string[] {
     return [
       'run', '-d', '--name', name, '--hostname', 'caboose', '--init',
@@ -338,10 +351,14 @@ export function createContainerController(config: Config, dependencies: { docker
     ]
   }
 
-  /** What every computer gets from the host: its home, the depot, and the GPU's devices and libraries. */
+  /** What every computer gets from the host: its home, its system Flatpak installation, the depot, FUSE, and the GPU's devices and libraries. */
   function providedArgs(): string[] {
     return [
       '-v', `${place.home}:/home/caboose`,
+      // Its system-wide Flatpak apps (Steam): a volume of its own, so they outlive the container
+      // when it is created again; Docker fills a new one from the image's /var/lib/flatpak.
+      '-v', `${flatpakVolume}:/var/lib/flatpak`,
+      ...fuseArgs(dependencies.exists),
       // Shared runtimes: written only by the host's builder, never by a computer.
       '-v', `${DEPOT_VOLUME}:/var/lib/caboose/depot:ro`,
       ...gpuArgs(gpu, dependencies.exists),
@@ -357,6 +374,9 @@ export function createContainerController(config: Config, dependencies: { docker
    */
   async function ensureFuseBroker(): Promise<void> {
     const broker = `${name}-fuse`
+    // A computer created with /dev/fuse (fuseArgs) mounts by itself.
+    const devices = await docker(['inspect', '-f', '{{json .HostConfig.Devices}}', name], 15_000).catch(() => '')
+    if (devices.includes('"/dev/fuse"')) return
     let status = ''
     try { status = (await docker(['inspect', '-f', '{{.State.Status}} {{index .Config.Labels "caboose.fuse-broker-for"}}', broker], 15_000)).trim() } catch {}
     if (status) {
@@ -607,6 +627,7 @@ export function createContainerController(config: Config, dependencies: { docker
       if ((await state()) !== 'missing') await docker(['rm', '-f', name], 120_000)
       if (place.home.startsWith('/')) await rm(place.home, { recursive: true, force: true }).catch(error => console.error(`Could not remove ${place.home}:`, error))
       else await docker(['volume', 'rm', '-f', place.home], 60_000)
+      await docker(['volume', 'rm', '-f', flatpakVolume], 60_000).catch(() => {})
       await networkTask(() => Promise.all([tailnet?.destroy(), lan?.destroy()]))
       await docker(['network', 'rm', place.network], 30_000).catch(() => {})
       await (dependencies.unfence ?? unfenceBridge)(place.bridge)
