@@ -522,13 +522,21 @@ int main() {
         auto* stream = new CabooseSocketStream(1024);
         assert(stream->connect(broker.path.c_str()) == 0);
         int32_t words[2] = {};
+        const uint64_t lostBefore = caboose::completion::lostReplies;
         assert(stream->readFully(words, sizeof(words)) && words[0] == -4 && words[1] == -4);
+        // Each lost reply is counted on the reading thread: an encoder call that read one
+        // gives its stand-in outputs instead of these words (driver patch 0099).
+        assert(caboose::completion::lostReplies == lostBefore + 1);
         unsigned char data[16];
         std::memset(data, 0x5a, sizeof(data));
         uint64_t size = 0;
         std::memcpy(&size, words, sizeof(size));
         assert(stream->readFully(data, static_cast<size_t>(size)) == data);
         for (unsigned char byte : data) assert(byte == 0x5a);
+        assert(caboose::completion::lostReplies == lostBefore + 2);
+        uint64_t otherThread = 0;
+        std::thread([&] { otherThread = caboose::completion::lostReplies; }).join();
+        assert(otherThread == 0);
         delete stream;
     }
     return 0;

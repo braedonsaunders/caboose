@@ -1745,6 +1745,13 @@ inline void executorEndedIfGone() {
     const uint64_t now = socketInode();
     if (!now || now != connectedSocketId.load()) markExecutorLost();
 }
+// Replies this thread read from a stream whose executor was gone (SocketStream's lost reply).
+// An encoder call notes the count at entry: a call whose reply was lost on the way gives the
+// stand-in outputs a call made after the loss gets (handles, support, sizes), not the lost
+// reply's words. With CABOOSE_GPU_ON_LOSS=quiet those words are zeros, which read as a null
+// handle or "unsupported": Zink, creating a descriptor set layout as its executor left, got
+// a null layout and crashed the compositor.
+inline thread_local uint64_t lostReplies = 0;
 // Encoder calls after the executor is gone: true when the call must not reach the
 // stream (it reports device loss without touching its outputs), after a paused
 // application's wait for a new executor.

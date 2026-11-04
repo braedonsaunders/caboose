@@ -1,5 +1,5 @@
 From: Caboose <caboose@local>
-Subject: [PATCH 96/98] Offer VK_EXT_vertex_attribute_divisor alongside the KHR name
+Subject: [PATCH 96/99] Offer VK_EXT_vertex_attribute_divisor alongside the KHR name
 
 The device extension list passed VK_KHR_vertex_attribute_divisor but not the EXT name it
 was promoted from. Zink takes vertex attribute divisors from the EXT name alone, so on the

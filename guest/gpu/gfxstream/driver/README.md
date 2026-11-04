@@ -169,6 +169,7 @@ Each patch is one feature. Several change Mesa's generated encoder
 | 0096 zink-vertex-divisor | The device offers `VK_EXT_vertex_attribute_divisor` with the KHR name when the host has it: zink takes vertex attribute divisors from the EXT name only, and without them it offers OpenGL 3.2 and OpenGL ES 2.0, which Chromium's GPU process (ES 3.0, no fallback) cannot start on |
 | 0097 shadow-detail | A flush gives the flush shadow its range's buffer usage, which the memory traffic counters report with the window's busiest allocations (`../bounded-memory/memory_traffic.h`) |
 | 0098 launch-timeline | Every encoded command counts for the process's launch timeline: its first instance, device, shader module, pipeline and present, and what each ten seconds of its first fifteen minutes made (`../bounded-memory/launch_timeline.h`) |
+| 0099 lost-reply-stand-ins | A call whose reply was lost because the executor left during it gives the stand-in outputs of a call made after the loss (local handles for what it creates, layout support, sizes), counted through `caboose::completion::lostReplies`, instead of the lost reply's words, which with `CABOOSE_GPU_ON_LOSS=quiet` read as null handles; an instance or device asked for while the executor is gone fails to initialize |
 
 The patch messages describe each change. To change the driver, prepare a tree, commit
 the prepared state, edit, and regenerate the affected patch with `git format-patch`

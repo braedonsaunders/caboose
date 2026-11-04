@@ -825,7 +825,10 @@ to an executor belongs to its generation:
   not ended by a protocol error. Its own process runs with `CABOOSE_GPU_ON_LOSS=quiet`: it
   learns of a loss from its broker, so its lost device answers as a working one (submissions
   are dropped and complete, waits are satisfied, no call reports `VK_ERROR_DEVICE_LOST`) and Zink
-  never takes its device-loss paths, whose teardown did not end; the renderer is made again
+  never takes its device-loss paths, whose teardown did not end. A call made after the loss, or
+  one whose reply was lost because the executor left during it, gets stand-in outputs: unique
+  local handles for what it creates or allocates, supported layouts, plausible sizes; never a
+  null handle. The renderer is made again
   on the broker's report, and once a second for up to ten tries when it could not be made.
 
 `apps/ios/GPUStream/gfxstream/linux-executor/check_chaos.py` holds the stack to this: a seat

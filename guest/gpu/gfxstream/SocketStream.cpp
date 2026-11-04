@@ -336,6 +336,7 @@ static std::string& firstPath = *new std::string;
 constexpr size_t kLostReadLimit = size_t(1) << 30;
 static const unsigned char* lostReply(unsigned char* data, size_t len, bool await = true) {
     if (await) caboose::completion::awaitExecutorReturn();  // CABOOSE_GPU_ON_LOSS=pause
+    ++caboose::completion::lostReplies;
     if (len >= kLostReadLimit) return data;
     const int32_t lost = caboose::completion::lostResult();
     for (size_t i = 0; i < len; ++i) data[i] = reinterpret_cast<const unsigned char*>(&lost)[i % sizeof(lost)];
