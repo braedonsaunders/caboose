@@ -3,6 +3,7 @@
 // records, what WAIT_SERIAL each device stream sends, and what the records do afterwards. The
 // feed is played by calling complete() as the phone's records would arrive.
 #include "completion_feed.h"
+#include <atomic>
 #include <cassert>
 #include <cstring>
 #include <thread>
@@ -62,7 +63,16 @@ int main() {
         assert(!t.serialCompleted(s));  // held frees still wait for the record
         assert(t.beforeCommand(kStream) == std::vector<uint64_t>{s});
         assert(t.beforeCommand(kStream).empty());
+        // Its writes are read back now (lazy readback waits for the record): it is speculated.
+        assert(t.speculated(s));
+        std::atomic<bool> filled{false};
+        std::thread fill([&] { t.waitCompleted(s); filled = true; });
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        assert(!filled);
         t.complete(s, kCompleted);
+        fill.join();
+        assert(filled && !t.speculated(s));
+        t.waitCompleted(s);  // completed: returns at once
         assert(!t.speculating() && t.timelineValue(sem, &value) && value == 1);
         // A wait that does not block is never speculated.
         const uint64_t s2 = signal(t, sem, 2);

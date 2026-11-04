@@ -165,9 +165,12 @@ inline constexpr uint64_t lazyFillBlocks = 3;
 class WriteWatch {
 public:
     // Reads `size` bytes at `offset` of allocation `memory` of `device` from the phone into
-    // `out`, on a connection that needs no lock of the driver's; false when they cannot be read
-    // (the fill then stores zeros, as a lost device's memory reads). Set by the driver.
-    using Fetch = bool (*)(uint64_t device, uint64_t memory, uint64_t offset, uint64_t size, uint8_t* out);
+    // `out`, on a connection that needs no lock of the driver's, once submission `after` (0:
+    // none) has completed; false when they cannot be read (the fill then stores zeros, as a
+    // lost device's memory reads). It returns, whatever becomes of the executor. Set by the
+    // driver.
+    using Fetch = bool (*)(uint64_t device, uint64_t memory, uint64_t offset, uint64_t size, uint8_t* out,
+                           uint64_t after);
     void setFetch(Fetch fetch) { fetch_.store(fetch, std::memory_order_release); }
 
     // Whether writes to watched memory are recorded in this process.
@@ -192,6 +195,7 @@ public:
         }
         regions_.insert_or_assign(reinterpret_cast<uintptr_t>(base),
                                   Region{bytes, WrittenBlocks(bytes), LazyBlocks(bytes), ++serials_,
+                                         std::vector<uint64_t>(size_t((bytes + watchBlockBytes - 1) / watchBlockBytes), 0),
                                          std::vector<uint64_t>(size_t((bytes + watchBlockBytes - 1) / watchBlockBytes), 0)});
         return true;
     }
@@ -211,11 +215,16 @@ public:
     // reads only the rest. A block can be lazy when all of it is inside [mapBegin, mapEnd)
     // (or ends the allocation there), it holds no write not yet sent, what was last sent for
     // it went before a completed submission (every submission below `confirmedBelow` has
-    // completed), and no completion record is being stored into the memory. Called with the
-    // encoder held, so nothing the encoder does meanwhile reads or writes a block it makes lazy.
+    // completed) or before submission `after`, and no completion record is being stored into
+    // the memory. With `after`, the writes are of submission `after`, which a wait reported
+    // complete before its record came (completion_feed.h, Speculation): the fill reads the
+    // block once that submission has completed. Called with the encoder held, so nothing the
+    // encoder does meanwhile reads or writes a block it makes lazy.
     template <class Lazy>
     void makeLazy(uint8_t* base, uint64_t device, uint64_t memory, uint64_t allocation, uint64_t mapBegin,
-                  uint64_t mapEnd, uint64_t begin, uint64_t end, uint64_t confirmedBelow, Lazy&& lazy) {
+                  uint64_t mapEnd, uint64_t begin, uint64_t end, uint64_t confirmedBelow, uint64_t after,
+                  Lazy&& lazy) {
+        if (after && confirmedBelow <= after) confirmedBelow = after + 1;
         std::vector<std::pair<uint64_t, uint64_t>> runs;
         {
             std::lock_guard<std::mutex> lock(mutex_);
@@ -237,11 +246,13 @@ public:
                     if (region.lazy.lazy(block)) {
                         // A fill in flight read the block before these writes: it reads again.
                         region.lazy.renew(block);
+                        region.after[size_t(block)] = std::max(region.after[size_t(block)], after);
                         continue;
                     }
                     const uint64_t pages = std::min(first + watchBlockBytes, region.bytes);
                     if (madvise(base + first, size_t(pages - first), MADV_DONTNEED) != 0) continue;
                     region.lazy.set(block, true);
+                    region.after[size_t(block)] = after;
                     made_.fetch_add(stop - first, std::memory_order_relaxed);
                     traffic::counters().lazy(stop - first, 0, 0);
                 }
@@ -365,6 +376,7 @@ private:
         LazyBlocks lazy;
         uint64_t serial = 0;       // this watch of the memory, not a later one at the same address
         std::vector<uint64_t> sent;  // per block: sent before this submission (noteSent), or 0
+        std::vector<uint64_t> after;  // per lazy block: read once this submission has completed
         bool missing = false;      // registered for missing-page faults (the first lazy block)
         uint32_t delivering = 0;   // completion records being stored into it
         uint64_t device = 0, memory = 0, allocation = 0;
@@ -372,7 +384,7 @@ private:
     // One fill: whole blocks [first, first + count) of the region at `base`.
     struct Fill {
         uintptr_t base = 0;
-        uint64_t serial = 0, first = 0, count = 0, device = 0, memory = 0, allocation = 0, bytes = 0;
+        uint64_t serial = 0, first = 0, count = 0, device = 0, memory = 0, allocation = 0, bytes = 0, after = 0;
         uint32_t generations[lazyFillBlocks] = {};
     };
 
@@ -406,7 +418,10 @@ private:
         Fill fill;
         fill.base = start; fill.serial = region.serial; fill.first = block;
         fill.count = region.lazy.runFrom(block, lazyFillBlocks);
-        for (uint64_t i = 0; i < fill.count; ++i) fill.generations[i] = region.lazy.generation(block + i);
+        for (uint64_t i = 0; i < fill.count; ++i) {
+            fill.generations[i] = region.lazy.generation(block + i);
+            fill.after = std::max(fill.after, region.after[size_t(block + i)]);
+        }
         fill.device = region.device; fill.memory = region.memory; fill.allocation = region.allocation;
         fill.bytes = region.bytes;
         return fill;
@@ -435,7 +450,7 @@ private:
             const uint64_t span = std::min(fill.count * watchBlockBytes, fill.bytes - begin);
             std::vector<uint8_t> data(size_t(span), 0);
             const uint64_t readable = fill.allocation > begin ? std::min(span, fill.allocation - begin) : 0;
-            const bool read = fetch && readable && fetch(fill.device, fill.memory, begin, readable, data.data());
+            const bool read = fetch && readable && fetch(fill.device, fill.memory, begin, readable, data.data(), fill.after);
             if (!read) std::fill(data.begin(), data.end(), 0);
             std::lock_guard<std::mutex> lock(mutex_);
             auto found = regions_.find(fill.base);
@@ -457,6 +472,7 @@ private:
                 const uint64_t bytes = std::min(watchBlockBytes, region.bytes - at);
                 installLocked(found->first + at, data.data() + (at - begin), bytes);
                 region.lazy.set(block, false);
+                region.after[size_t(block)] = 0;
             }
             filled_.fetch_add(readable, std::memory_order_relaxed);
             fills_.fetch_add(1, std::memory_order_relaxed);
@@ -608,6 +624,11 @@ private:
 // has completed (a wait may have returned before its submission did: completion_feed.h,
 // Speculation).
 inline thread_local bool completedWritesOnly = false;
+// Set while the coherent upkeep invalidates writes that include those of submission
+// `lazyAfterSerial` or earlier, which a wait reported complete before their records came: what
+// it makes lazy is read once that submission has completed, and what it reads at once is
+// ordered behind it by the device stream's WAIT_SERIAL (completion_feed.h, Speculation).
+inline thread_local uint64_t lazyAfterSerial = 0;
 
 inline WriteWatch& writeWatch() {
     static WriteWatch* instance = new WriteWatch;  // its thread outlives static destruction

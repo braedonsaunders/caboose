@@ -251,6 +251,20 @@ public:
         std::lock_guard<decltype(mutex_)> lock(mutex_);
         return closed_ || (serial <= lastSerial_ && !watches_.count(serial));
     }
+    // Whether watch `serial` is outstanding and was reported complete before its record came
+    // (Speculation, below).
+    bool speculated(uint64_t serial) {
+        std::lock_guard<decltype(mutex_)> lock(mutex_);
+        auto it = watches_.find(serial);
+        return it != watches_.end() && it->second.speculated;
+    }
+    // Blocks until watch `serial` has completed, its executor is lost or the feed ends (lazy
+    // readback's fills, write_watch.h: their bytes are read once the batch that wrote them is
+    // done).
+    void waitCompleted(uint64_t serial) {
+        std::unique_lock<decltype(mutex_)> lock(mutex_);
+        changed_.wait(lock, [&] { return closed_ || !serial || (serial <= lastSerial_ && !watches_.count(serial)); });
+    }
     // The oldest serial whose watch is outstanding, on any queue: every watch below it has
     // completed. One past the last serial when none is outstanding, and UINT64_MAX once the
     // feed has ended (nothing outstanding will be reported).
@@ -1587,12 +1601,30 @@ inline bool lostCall(uint64_t generation, const char* caller = __builtin_FUNCTIO
     }
     return lostCall(caller);
 }
+// What an executor's loss ends at once: connections of the process's own beside the device
+// stream (lazy readback's fills, write_watch.h) register here, so nothing waits on an executor
+// that is gone. Hooks run on the thread that saw the loss, after it is marked.
+inline std::vector<GenerationHook>& lossHooks() {
+    static auto* instance = new std::vector<GenerationHook>;
+    return *instance;
+}
+inline bool onExecutorLost(GenerationHook hook) {
+    std::lock_guard<std::mutex> lock(generationHooksMutex());
+    lossHooks().push_back(hook);
+    return true;
+}
 inline void markExecutorLost() {
     if (executorLost.exchange(true, std::memory_order_acq_rel)) return;
     executorGeneration.fetch_add(1, std::memory_order_acq_rel);
     lostSocketInode.store(socketInode());
     std::fprintf(stderr, "CABOOSE_GPU_EXECUTOR_LOST\n");
     tracker().loseAll();
+    std::vector<GenerationHook> hooks;
+    {
+        std::lock_guard<std::mutex> hooksLock(generationHooksMutex());
+        hooks = lossHooks();
+    }
+    for (GenerationHook hook : hooks) hook();
 }
 // A device stream connected to a (new) executor. A connection to another executor than the
 // one the process last connected to is a new generation even when none of the process's

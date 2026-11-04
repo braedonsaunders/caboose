@@ -5,6 +5,7 @@
 #include "write_watch.h"
 #include <cassert>
 #include <cstdio>
+#include <chrono>
 #include <cstring>
 #include <sys/mman.h>
 #include <thread>
@@ -19,8 +20,15 @@ static constexpr uint64_t B = caboose::memory::watchBlockBytes;
 static std::atomic<int> fetches{0};
 static std::atomic<uint64_t> fetchedBytes{0};
 static std::atomic<int> generation{1};
-static bool fetch(uint64_t device, uint64_t memory, uint64_t offset, uint64_t size, uint8_t* out) {
+// A fill of writes of a submission a wait reported complete early reads once it completes.
+static std::atomic<uint64_t> lastAfter{0};
+static std::atomic<bool> stalled{false}, lost{false};
+static bool fetch(uint64_t device, uint64_t memory, uint64_t offset, uint64_t size, uint8_t* out, uint64_t after) {
     assert(device == 3 && memory == 7);
+    lastAfter = after;
+    // A stalled executor: the fetch waits until the executor is lost, then fails.
+    while (stalled && !lost) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    if (lost) return false;
     ++fetches;
     fetchedBytes += size;
     for (uint64_t i = 0; i < size; ++i) out[i] = uint8_t(((offset + i) / 4096 + generation) & 0xff);
@@ -63,7 +71,7 @@ int main() {
     uint64_t confirmed = 100;
     auto lazyOf = [&](uint64_t begin, uint64_t end, uint64_t mapBegin = 0, uint64_t mapEnd = 16 * B - 1000) {
         Runs runs;
-        watch.makeLazy(memory, 3, 7, allocation, mapBegin, mapEnd, begin, end, confirmed,
+        watch.makeLazy(memory, 3, 7, allocation, mapBegin, mapEnd, begin, end, confirmed, 0,
                        [&](uint64_t b, uint64_t e) { runs.emplace_back(b, e); });
         return runs;
     };
@@ -137,6 +145,25 @@ int main() {
     assert(memory[4 * B] == uint8_t(4 * B / 4096 + 2));
     const auto after = watch.lazyStats();
     assert(after.fills > before.fills && after.filled > before.filled);
+    // Writes of submission 130, reported complete before its record came: lazy at once, even
+    // though bytes sent before 130 are not confirmed yet; the fill reads them after 130.
+    watch.noteSent(memory, 5 * B, 6 * B, 130);
+    Runs pending;
+    watch.makeLazy(memory, 3, 7, allocation, 0, 16 * B - 1000, 5 * B, 6 * B, confirmed, 130,
+                   [&](uint64_t b, uint64_t e) { pending.emplace_back(b, e); });
+    assert((pending == Runs{{5 * B, 6 * B}}));
+    assert(memory[5 * B] == uint8_t(5 * B / 4096 + 2) && lastAfter == 130);
+    // An executor lost while a fill waits on it: the fault resolves, with zeros.
+    assert((lazyOf(7 * B, 8 * B) == Runs{{7 * B, 8 * B}}));
+    stalled = true;
+    std::atomic<int> read{-1};
+    std::thread reader([&] { read = memory[7 * B + 1]; });
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    assert(read == -1);  // waiting on the stalled executor
+    lost = true;
+    reader.join();
+    assert(read == 0);
+    stalled = false; lost = false;
     watch.unwatch(memory);
     munmap(memory, bytes);
     std::printf("PASS lazy readback: lazy blocks, fills on first read, write and kernel access, deliveries, "

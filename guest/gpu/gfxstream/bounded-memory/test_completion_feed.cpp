@@ -331,8 +331,12 @@ int main() {
         const uint64_t first = c::connectionGeneration.load();
         c::executorConnected();
         assert(c::connectionGeneration.load() == first);
+        static std::atomic<int> lossHooksRun{0};
+        c::onExecutorLost([] { ++lossHooksRun; });
         c::markExecutorLost();
-        assert(c::lostCall(first));
+        assert(c::lostCall(first) && lossHooksRun == 1);
+        c::markExecutorLost();  // already lost: the hooks run once
+        assert(lossHooksRun == 1);
         c::executorConnected();
         c::noteExecutorSocket();
         assert(c::connectionGeneration.load() == first + 1 && !c::executorLost.load());

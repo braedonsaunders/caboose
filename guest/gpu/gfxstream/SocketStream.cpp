@@ -328,8 +328,8 @@ static std::string& firstPath = *new std::string;
 // more is one sized by the lost reply itself (vkGetPipelineCacheData's data, after its
 // size): it is left unwritten, never filled past the caller's buffer.
 constexpr size_t kLostReadLimit = size_t(1) << 30;
-static const unsigned char* lostReply(unsigned char* data, size_t len) {
-    caboose::completion::awaitExecutorReturn();  // CABOOSE_GPU_ON_LOSS=pause
+static const unsigned char* lostReply(unsigned char* data, size_t len, bool await = true) {
+    if (await) caboose::completion::awaitExecutorReturn();  // CABOOSE_GPU_ON_LOSS=pause
     if (len >= kLostReadLimit) return data;
     const int32_t lost = caboose::completion::lostResult();
     for (size_t i = 0; i < len; ++i) data[i] = reinterpret_cast<const unsigned char*>(&lost)[i % sizeof(lost)];
@@ -543,7 +543,8 @@ const unsigned char* CabooseSocketStream::readFully(void* data, size_t len) {
         if (n <= 0) {
             invalidate();
             if (handshaking) return nullptr;
-            return lostReply(start, static_cast<size_t>(p - start) + len);
+            // An auxiliary stream's read ends at once: nothing waits for a new executor there.
+            return lostReply(start, static_cast<size_t>(p - start) + len, !auxiliary(this));
         }
         caboose::memory::traffic::counters().received(static_cast<uint64_t>(n));
         p += n; len -= static_cast<size_t>(n);
@@ -553,7 +554,7 @@ const unsigned char* CabooseSocketStream::readFully(void* data, size_t len) {
 const unsigned char* CabooseSocketStream::commitBufferAndReadFully(size_t size, void* data, size_t len) {
     if (commitBuffer(size) != 0) {
         if (handshaking) return nullptr;
-        return lostReply(static_cast<unsigned char*>(data), len);
+        return lostReply(static_cast<unsigned char*>(data), len, !auxiliary(this));
     }
     return readFully(data, len);
 }

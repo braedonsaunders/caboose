@@ -71,11 +71,17 @@ stream (`../SocketStream.cpp`), with an encoder of its own: it takes no lock of 
 so a fault is served whatever the faulting thread holds, the device stream's encoder
 included (the driver writing a query's results into a lazy block, `sync-check`'s
 `lazy_query_results`). The auxiliary stream's hello sets nothing of the process's, it is no
-device stream, and its end is no executor loss; a new executor gets a new one. Since it is not
-ordered with the device stream, a block is lazy only when everything the phone must have done
-to it is done: the GPU writes the invalidate covers have completed (the coherent upkeep's are
-those of completed submissions; any other invalidate's only when every submission has
-completed, as a wait may have returned before its submission did), and the last bytes the
+device stream, and its end is no executor loss. A fill always returns: a device of an executor
+the process no longer has is not asked (the fill installs zeros, as the lost device's memory
+reads), an executor's loss shuts the auxiliary stream (its read ends at once, never waiting for
+a new executor), and a new executor gets a new auxiliary stream, so every fault waiting on a
+fill is woken whatever becomes of the executor. A fill of a speculated submission's writes waits
+for its record first, a wait that also ends with the executor. Since the auxiliary stream is
+not ordered with the device stream, a block is lazy only when everything the phone must have
+done to it is done before the fill reads it: the GPU writes the invalidate covers have
+completed or the fill waits for them (the coherent upkeep's are those of completed or
+speculated submissions; any other invalidate's only when every submission has completed), and
+the last bytes the
 device stream sent for the block went before a submission that has completed (each flush
 notes the next submission's number for its blocks). A block is read at once, as before, when
 it holds writes not yet sent or sent and not yet confirmed, when it is not wholly inside the
@@ -176,7 +182,8 @@ With `WAIT_SERIAL` (hello `0x400000`,
 [docs/gpu-live.md](../../../../docs/gpu-live.md#completion-feed)) the tracker may answer a
 blocking `vkWaitForFences` or `vkWaitSemaphores` before the records it waits for arrive. Each
 watch is classified when it is sent. It may be speculated when the submission's batches write
-no host-visible memory the guest refreshes, set, reset or wait for no event, end or reset no
+no coherent memory whose bytes their record carries (copies into buffers the GPU also reads,
+whose bytes it does not carry, are read back after the wait: Lazy readback, below), set, reset or wait for no event, end or reset no
 query, signal no fence or semaphore whose payload is imported or exportable (nor an untracked
 timeline), wait for no imported payload or untracked timeline, and its watch goes out on the
 process's only device stream. A submission no watch follows hands what it waits for and
@@ -196,6 +203,11 @@ been decoded that far. A record later reporting device loss makes the fence repo
 and the timeline be asked on the device, as for any watch; values reported reached are never
 lowered. Held frees still wait for the records. A new executor connection forgets what was
 held. `CABOOSE_GPU_SPECULATE=0` turns speculation off.
+
+The coherent upkeep's invalidate after a wait takes the writes of a speculated submission as it
+takes those of a completed one: what it makes lazy is filled once that submission's record has
+arrived (the fill waits for it), and what it reads at once goes on the device stream behind the
+`WAIT_SERIAL` the encoder sends first, so the phone reads it after the submission completed.
 
 ## Deferred frees
 
