@@ -4,7 +4,9 @@ Real tasks in real applications on the agent seat, done by a big model through d
 MCP. It compares the native tools (accessibility tree, semantic actions, batches) with a
 screenshot computer-use baseline: the same model with only screenshots, pointer and
 keyboard. Success is decided by each task's own check of the effect (a file, a setting, a
-page title), never by what the model reports. The `direct-` tasks are ones a direct tool can
+page title), never by what the model reports. The `flathub-` tasks run Flathub applications (GNOME Text Editor and Calculator, Gnumeric,
+Kate, Okular, GIMP, VSCodium) and the `wine-` tasks Windows programs (Notepad++, Notepad,
+7-Zip) from the agent profile's installations. The `direct-` tasks are ones a direct tool can
 do without the GUI (a setting, a spreadsheet, a replace, files, a page's numbers); the
 baseline does them through the GUI.
 
