@@ -95,8 +95,12 @@ def main():
         if first is None:
             report.append(f'no real picture within {o.seconds} s')
         log = check_chaos.run('docker', 'logs', '--timestamps', executor, check=False)
-        seat.stop('com.valvesoftware.Steam')
-        seat.sh(f'pkill -TERM -f steamwebhelper; pkill -TERM -f "{o.steam_home}"', check=False)
+        # Only this profile's Steam (its processes carry the seat's marker) and processes under
+        # its own Steam home: the owner's Steam and other checks' Flatpak Steam keep running.
+        marker = f'CABOOSE_CHAOS_SEAT={os.getpid()}'
+        seat.sh(f'for p in $(pgrep -u caboose -f com.valvesoftware.Steam); do tr "\\0" "\\n" < /proc/$p/environ 2>/dev/null | '
+                f'grep -qx {marker} && kill -TERM $p; done', user='caboose', check=False)
+        seat.sh(f'pkill -TERM -f "{o.steam_home}/"', check=False)
         time.sleep(10)
         steam = seat.sh(f'cat {seat.dir}/steam.log', check=False)
         logs = f'{o.steam_home}/.var/app/com.valvesoftware.Steam/.local/share/Steam/logs'
