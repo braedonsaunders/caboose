@@ -416,9 +416,10 @@ impl State {
                 }
                 matches
             }
-            Ok(_) if lookup.holds_until_bindable(bind.object, &ids, bind.pid).unwrap_or(false) => {
-                // An override-redirect window the bound process made that is not bindable yet
-                // (a menu made before it is shown): the bind is held until it is (gpu_pending.rs).
+            Ok(_) if !self.gpu_pending_binds.expired_before(bind.object, bind.pid) &&
+                lookup.holds_until_bindable(bind.object, &ids, bind.pid).unwrap_or(false) => {
+                // A window the bound process made that is not bindable yet (a menu, top-level
+                // or child made before it is shown): the bind is held until it is (gpu_pending.rs).
                 self.gpu_bind_holdable = true;
                 Vec::new()
             }
@@ -686,6 +687,7 @@ impl State {
             if held.expired(now) {
                 tracing::info!("held GPU X11 bind of {:#x} by process {} refused: no top-level held the window within {} ms",
                                held.object, held.pid, crate::gpu_pending::HOLD.as_millis());
+                self.gpu_pending_binds.remember_expired(held.object, held.pid);
                 self.refuse_gpu_bind(held.bind.request);
                 return;
             }
@@ -793,6 +795,7 @@ impl State {
 
     /// An X11 window was destroyed: the binds held for it are refused.
     pub(crate) fn refuse_pending_gpu_binds_of(&mut self, window: u32) {
+        self.gpu_pending_binds.forget_window(window);
         for bind in self.gpu_pending_binds.take_window(window, None) {
             tracing::info!("held GPU X11 bind of {window:#x} by process {} refused: the window was destroyed", bind.pid);
             self.refuse_gpu_bind(bind.request);
