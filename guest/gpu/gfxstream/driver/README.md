@@ -159,6 +159,7 @@ Each patch is one feature. Several change Mesa's generated encoder
 | 0086 completion-payloads | With hello `0x200000`, a batch's ended occlusion and timestamp queries and its GPU writes of coherent memory are watched with `COMPLETION_WATCH2`; the records' captures answer `vkGetQueryPoolResults` locally (every flag, a WAIT by waiting for the record) and fill the memory's shadow; a pool's destroy waits for the records that capture it (`../bounded-memory/completion_payloads.h`) |
 | 0087 silent-success | With hello `0x800000`, each device stream switches with REPLY_MODE once its feed runs, and the commands the guest does not wait for queue no reply; their failures arrive as FAULT records on the feed, as device loss (`../bounded-memory/silent_success.h`, docs/gpu-live.md "Silent success") |
 | 0088 local-invalidate | The invalidate after a wait skips the coherent ranges the batch's completion record stored in the shadow and reads only the rest; GPU writes are kept as up to eight spans per allocation and read as separate ranges unless one range takes no more round trips; a copy from an image marks the bytes of its texel blocks instead of 16 per texel (`../bounded-memory/gpu_writes.h`) |
+| 0089 speculated-waits | With hello `0x400000`, a blocking fence or timeline wait returns at once for submissions whose completion the process cannot otherwise observe (no host-visible writes the guest refreshes, events, queries or external payloads), at most three per queue ahead of their records; the device stream sends `WAIT_SERIAL` for them before its next command (`../bounded-memory/completion_feed.h`, Speculation) |
 
 The patch messages describe each change. To change the driver, prepare a tree, commit
 the prepared state, edit, and regenerate the affected patch with `git format-patch`
@@ -168,11 +169,11 @@ against the commit before it; then rebuild and run the tests below.
 
 Before Mesa's first command, `SocketStream.cpp` sends a 48-byte hello: `CBGLREF1`, a
 little-endian version (4) and feature mask, and the source fingerprint documented in
-[docs/gpu-live.md](../../../../docs/gpu-live.md). The driver offers mask `0xBBFFF0`; the
+[docs/gpu-live.md](../../../../docs/gpu-live.md). The driver offers mask `0xFBFFF0`; the
 broker answers with the required `0x70` plus the offered bits the connected phone
 supports, and the driver prints `CABOOSE_GPU_HELLO features=0x…` with what it was granted. A
 broker that predates a bit closes the connection, and the driver reconnects offering fewer:
-`0x1BFFF0`, `0xBFFF0`, `0x3FFF0`, `0x1FFF0`, `0xFFF0`, `0x7FF0`, `0x3FF0`, `0x1FF0`, `0xFF0`, `0x7F0`, `0xF0`, then `0x70`. An answer with bits the driver did not offer, or
+`0x3BFFF0`, `0x1BFFF0`, `0xBFFF0`, `0x3FFF0`, `0x1FFF0`, `0xFFF0`, `0x7FF0`, `0x3FF0`, `0x1FF0`, `0xFF0`, `0x7F0`, `0xF0`, then `0x70`. An answer with bits the driver did not offer, or
 any other difference, fails the connection, and with it Vulkan instance creation.
 `CABOOSE_GFXSTREAM_GUEST_HANDLES=0` offers `0x70` only. Patches 0013 and 0014, the
 creates and allocations of 0016 and the fence, semaphore and pipeline handles of 0018
@@ -199,6 +200,7 @@ hello for the completion feed. The rest of the series requires the `0x70` contra
 | 19 (`0x80000`) | Descriptor sets, inline uniform blocks included, allocated and written in the guest and committed with the next submit (patches 0067, 0072) |
 | 20 (`0x100000`) | Batched descriptor pools' set ids are the guest handles after the pool's, chosen in the guest (requires bit 7; patch 0085) |
 | 21 (`0x200000`) | Completion watches name the queries and coherent memory a batch ends and writes, and the records bring their captures (requires bit 9; patch 0086) |
+| 22 (`0x400000`) | The device stream takes `WAIT_SERIAL`, so waits may be speculated (requires bit 9; patch 0089) |
 | 23 (`0x800000`) | Silent success: no replies for the commands the guest does not wait for, failures on the feed (requires bits 7 and 9; used with bits 8, 12 and 16 too; patch 0087) |
 
 ## Runtime switches
@@ -208,7 +210,8 @@ hello for the completion feed. The rest of the series requires the `0x70` contra
 | `CABOOSE_GFXSTREAM_SOCKET` | Socket path of the broker; selects the Caboose transport |
 | `CABOOSE_GFXSTREAM_SURFACE_SOCKET` | Socket path of the broker's surface service |
 | `CABOOSE_GFXSTREAM_GUEST_HANDLES=0` | Do not offer guest-assigned handles |
-| `CABOOSE_READ_PROFILE=1` | Every two seconds and at exit, the eight opcodes with the most blocking read time (`opN` waiting for its own reply, `drainN` for earlier deferred replies, `waitN` for local waits), on stderr; calls above opcode 21009 are named (`wait_WaitSemaphores`) |
+| `CABOOSE_GPU_SPECULATE=0` | Never report a wait complete before its record arrives, with `WAIT_SERIAL` granted or not (patch 0089) |
+| `CABOOSE_READ_PROFILE=1` | Every two seconds and at exit, the eight opcodes with the most blocking read time (`opN` waiting for its own reply, `drainN` for earlier deferred replies, `waitN` for local waits), on stderr; calls above opcode 21009 are named (`wait_WaitSemaphores`); `speculated=N` counts the waits reported complete before their records since the process started |
 | `CABOOSE_COMMAND_PROFILE=1` | Every two seconds and at exit, the twelve commands that took the most device-stream bytes (`opN=KiB/count/mean bytes`), and the total bytes and commands, on stderr |
 | `CABOOSE_PRIVATE_GPU_COHERENT_LOG=1` | The first coherent-memory flushes and invalidates, per allocation, on stderr |
 | `CABOOSE_PRIVATE_GPU_FLUSH_TIMING=1` | Bounded flush timing records on stderr |

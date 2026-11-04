@@ -1,5 +1,5 @@
 From: Caboose <caboose@local>
-Subject: [PATCH 73/88] Report device-stream bytes per command on request
+Subject: [PATCH 73/89] Report device-stream bytes per command on request
 
 CABOOSE_COMMAND_PROFILE=1 reports, every 2 s and at exit, the twelve commands that took the
 most bytes of the device stream, with their count and mean size, and the total bytes and

@@ -1,5 +1,5 @@
 From: Caboose <caboose@local>
-Subject: [PATCH 75/88] Keep a reset descriptor pool's sets for their ids' next allocation
+Subject: [PATCH 75/89] Keep a reset descriptor pool's sets for their ids' next allocation
 
 DXVK allocates about 80,000 descriptor sets a second and resets their pools as frames
 retire; with batched sets each reset freed every set's object and state and each allocation

@@ -277,8 +277,8 @@ only known names, lowercased and sorted: `guest-handles`, `guest-handle-arrays`,
 `batched-descriptor-sets`, `batched-descriptor-sets-inline`
 ([Batched descriptor sets](#batched-descriptor-sets)), `guest-set-ids`
 ([Guest-chosen set ids](#guest-chosen-set-ids)), `completion-payloads`
-([Completion payloads](#completion-payloads)) and `silent-success`
-([Silent success](#silent-success)).
+([Completion payloads](#completion-payloads)), `wait-serial` ([Completion feed](#completion-feed))
+and `silent-success` ([Silent success](#silent-success)).
 The broker reads them from the authenticated upgrade request.
 
 A local process on the indexed v4 path may offer optional features in its 48-byte
@@ -289,17 +289,17 @@ images), `0x1000` (guest-assigned query pools; requires `0x80`) and `0x2000` (sh
 cache), `0x8000` (upload cache), `0x10000` (guest-assigned buffer views; requires `0x80`),
 `0x40000` (batched descriptor sets without inline uniform blocks), `0x80000` (batched
 descriptor sets with inline uniform blocks), `0x100000` (guest-chosen set ids; requires `0x80`),
-`0x200000` (completion payloads; requires `0x200`) and `0x800000` (silent success; requires
-`0x80` and `0x200`).
+`0x200000` (completion payloads; requires `0x200`), `0x400000` (WAIT_SERIAL; requires `0x200`)
+and `0x800000` (silent success; requires `0x80` and `0x200`).
 The broker replies with the required mask plus the offered bits whose capability
 the phone declared (`guest-handles`, `guest-handle-arrays`, `completion-feed`,
 `ordered-present`, `guest-images`, `guest-query-pools`, `shader-cache`, `upload-cache`,
 `guest-buffer-views`, `batched-descriptor-sets`, `batched-descriptor-sets-inline`, `guest-set-ids`,
-`completion-payloads`, `silent-success` respectively); it drops `0x100`, `0x1000`, `0x10000`,
-`0x100000` and `0x800000` when it does not grant `0x80`, and `0x200000` and `0x800000` when it
-does not grant `0x200`. An offer with unknown bits, one of those without `0x80`, `0x200000` or
-`0x800000` without `0x200`, or any other difference from the v4 hello closes the local
-connection. A process falls back to offering fewer features.
+`completion-payloads`, `wait-serial`, `silent-success` respectively); it drops `0x100`, `0x1000`,
+`0x10000`, `0x100000` and `0x800000` when it does not grant `0x80`, and `0x200000`, `0x400000` and
+`0x800000` when it does not grant `0x200`. An offer with unknown bits, one of those without `0x80`,
+`0x200000`, `0x400000` or `0x800000` without `0x200`, or any other difference from the v4 hello
+closes the local connection. A process falls back to offering fewer features.
 
 ### Batched descriptor sets
 
@@ -425,6 +425,21 @@ work the process sends after it reaches the GPU after the work the watch names, 
 process waiting for the feed. A serial above the process's last watch is a protocol error
 that ends the stream; process stop ends the wait.
 
+The guest uses it to speculate: a blocking `vkWaitForFences` or `vkWaitSemaphores` returns at
+once for submissions whose completion the process can observe only through the fence and
+timeline state it reports. Their batches write no host-visible memory the guest refreshes,
+set, reset or wait for no event, end or reset no query, and signal no fence or semaphore whose
+payload is imported or exportable. A speculated watch takes every earlier watch of its queue
+with it, and the watches that signal the timeline values its batches wait for; each must
+qualify, and none may wait for something the process has not yet sent (a timeline value no
+watch signals, an event, an imported payload), since the held stream is how it would arrive.
+The process speculates on a queue once one of its records arrived, with at most three
+speculated watches per queue whose records are still to come, and only while one device
+stream carries all its work. Before the next command it sends on that stream, it sends
+`WAIT_SERIAL` for the latest speculated watch of each queue; another device stream of the
+process waits for the records instead. A record that reports device loss is device loss,
+and a value reported reached stays reached. `CABOOSE_GPU_SPECULATE=0` turns speculation off.
+
 With `0x800000` a process may send `REPLY_MODE(1)` once on a device stream, which needs the
 process's completion feed (without one the stream ends). From then on the commands listed in
 `apps/ios/GPUStream/gfxstream/silent-success-opcodes.inc` (the commands whose replies the
@@ -445,7 +460,8 @@ loses an object it keeps resident. A fence or semaphore whose payload is
 imported or exportable, a fence signaled by the presentation engine's acquire, sparse
 binding signals and unwatched queues are asked about on the device stream as before.
 A reported timeline value can trail the device's actual value, as a status query on any
-device can; it never exceeds it.
+device can. It exceeds it only after a speculated wait (`0x400000`, above), and then nothing the process
+sends afterwards reaches the GPU before the device has caught up.
 
 ### Completion payloads
 

@@ -61,19 +61,22 @@ static constexpr unsigned char kHello[48] = {
 // it chooses the set ids of those descriptor pools itself (requires 0x80; docs/gpu-live.md,
 // "Guest-chosen set ids"); 0x200000 its completion watches name the queries and coherent
 // memory their batches end and write, and the feed's records bring them back (requires 0x200;
-// caboose-bounded-memory/completion_payloads.h); 0x800000 its device streams switch to silent
-// success, where the phone writes no reply for the commands the process does not wait for and
-// reports their failure on the feed (requires 0x80 and 0x200; docs/gpu-live.md, "Silent success").
-// It never offers 0x40000, the same without inline uniform blocks. The broker replies with the features both
+// caboose-bounded-memory/completion_payloads.h); 0x400000 it sends WAIT_SERIAL, so a wait may
+// report complete a submission whose completion it cannot otherwise observe (requires 0x200;
+// caboose-bounded-memory/completion_feed.h, Speculation); 0x800000 its device streams switch to
+// silent success, where the phone writes no reply for the commands the process does not wait for
+// and reports their failure on the feed (requires 0x80 and 0x200; docs/gpu-live.md, "Silent
+// success"). It never offers 0x40000, the same without inline uniform blocks. The broker replies with the features both
 // the process and the connected phone support. A broker that predates a feature closes
 // the connection instead, so the offer falls back to fewer features.
 static constexpr uint32_t kGuestHandles = 0x80, kGuestHandleArrays = 0x100, kCompletionFeed = 0x200,
                           kOrderedPresent = 0x400, kGuestImages = 0x800, kGuestQueryPools = 0x1000,
                           kShaderCache = 0x2000, kExecutorResume = 0x4000, kUploadCache = 0x8000,
                           kGuestBufferViews = 0x10000, kBatchedDescriptorSets = 0x80000,
-                          kGuestSetIds = 0x100000, kCompletionPayloads = 0x200000,
+                          kGuestSetIds = 0x100000, kCompletionPayloads = 0x200000, kWaitSerial = 0x400000,
                           kSilentSuccess = caboose::silent::kHelloBit;
-static const uint32_t kOffers[] = {0x3ff80 | kBatchedDescriptorSets | kGuestSetIds | kCompletionPayloads | kSilentSuccess,
+static const uint32_t kOffers[] = {0x3ff80 | kBatchedDescriptorSets | kGuestSetIds | kCompletionPayloads | kWaitSerial | kSilentSuccess,
+                                   0x3ff80 | kBatchedDescriptorSets | kGuestSetIds | kCompletionPayloads | kWaitSerial,
                                    0x3ff80 | kBatchedDescriptorSets | kGuestSetIds | kCompletionPayloads,
                                    0x3ff80 | kBatchedDescriptorSets | kGuestSetIds,
                                    0x3ff80 | kBatchedDescriptorSets, 0x3ff80, kGuestHandles | kGuestHandleArrays | kCompletionFeed | kOrderedPresent | kGuestImages |
@@ -149,6 +152,22 @@ int caboose_gfxstream_guest_set_ids = 0;
 // decides it; records are read the same way either way.
 extern "C" int caboose_gfxstream_completion_payloads;
 int caboose_gfxstream_completion_payloads = 0;
+// 1 while this process's device stream takes WAIT_SERIAL (hello feature 0x400000, granted with
+// the completion feed 0x200), so its waits may be speculated; each executor connection decides it.
+extern "C" int caboose_gfxstream_wait_serial;
+int caboose_gfxstream_wait_serial = 0;
+#if defined(CABOOSE_GFXSTREAM_PRIVATE_INDEXED_WSI)
+// Speculated watches whose records are still to come, at most, per queue.
+static constexpr uint32_t kSpeculationLimit = 3;
+// CABOOSE_GPU_SPECULATE=0 keeps every wait for the phone's records.
+static bool speculationAllowed() {
+    static const bool allowed = [] {
+        const char* value = std::getenv("CABOOSE_GPU_SPECULATE");
+        return !(value && std::strcmp(value, "0") == 0);
+    }();
+    return allowed;
+}
+#endif
 
 namespace {
 // The reply is the required hello with a subset of the offered features; returns them.
@@ -388,6 +407,8 @@ int CabooseSocketStream::connectWith(const char* path, const unsigned char* offe
     const uint32_t silentNeeds = kSilentSuccess | kGuestHandles | kGuestHandleArrays | kCompletionFeed |
                                  kGuestQueryPools | kGuestBufferViews;
     caboose::silent::replyMode().granted((features & silentNeeds) == silentNeeds);
+    const bool waitSerial = (features & kCompletionFeed) && (features & kWaitSerial);
+    __atomic_store_n(&caboose_gfxstream_wait_serial, waitSerial ? 1 : 0, __ATOMIC_RELEASE);
 #else
     caboose_gfxstream_guest_handles = 0;
 #endif
@@ -411,6 +432,10 @@ int CabooseSocketStream::connectWith(const char* path, const unsigned char* offe
         caboose::memory::staticQueryCache.reset();
     }
     caboose::completion::executorConnected();
+#if defined(CABOOSE_GFXSTREAM_PRIVATE_INDEXED_WSI)
+    caboose::completion::tracker().speculation(
+        __atomic_load_n(&caboose_gfxstream_wait_serial, __ATOMIC_ACQUIRE) && speculationAllowed() ? kSpeculationLimit : 0);
+#endif
     caboose::completion::noteExecutorSocket();
 #if defined(CABOOSE_GFXSTREAM_PRIVATE_INDEXED_WSI)
     if (features & kCompletionFeed) {

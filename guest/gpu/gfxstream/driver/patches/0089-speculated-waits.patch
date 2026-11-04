@@ -1,0 +1,340 @@
+From: Caboose <caboose@local>
+Subject: [PATCH 89/89] Report waits complete before their records, held behind
+ WAIT_SERIAL
+
+DXVK's queue thread blocks in vkWaitSemaphores for each submission's completion record
+from the phone: 0.8 to 4 s of every 5 s in Halo. With hello 0x400000 (WAIT_SERIAL, with the
+completion feed) a blocking vkWaitForFences or vkWaitSemaphores returns at once for a
+submission whose completion the process cannot observe except through the tracker: its
+batches write no host-visible memory the guest refreshes, set, reset or wait for no event,
+end or reset no query, and signal no fence or semaphore with an imported or exportable
+payload. The tracker reports its fence signaled and its timelines reached, together with
+every earlier watch of its queue and the watches that signal the timeline values it waits
+for, each of which must qualify and wait for nothing the process has not sent
+(caboose-bounded-memory/completion_feed.h, Speculation). Before the next command on the
+process's device stream, the encoder sends WAIT_SERIAL for each speculated watch, so the
+phone decodes nothing sent after the wait before that work has completed; another device
+stream waits for the records instead. A queue is speculated on once the phone answered one
+of its watches, with at most three speculated watches per queue whose records are still to
+come. A record that reports device loss is device loss. CABOOSE_GPU_SPECULATE=0 keeps every
+wait for the records; CABOOSE_READ_PROFILE reports the speculated waits.
+---
+diff --git a/src/gfxstream/guest/vulkan_enc/GfxStreamVulkanConnection.cpp b/src/gfxstream/guest/vulkan_enc/GfxStreamVulkanConnection.cpp
+index d27d9d7..93401ca 100644
+--- a/src/gfxstream/guest/vulkan_enc/GfxStreamVulkanConnection.cpp
++++ b/src/gfxstream/guest/vulkan_enc/GfxStreamVulkanConnection.cpp
+@@ -58,6 +58,7 @@ static uint64_t getThreadId() {
+ 
+ GfxStreamVulkanConnection::GfxStreamVulkanConnection(gfxstream::guest::IOStream* stream) {
+     mVkEnc = std::make_unique<gfxstream::vk::VkEncoder>(stream);
++    mVkEnc->cabooseMarkDeviceStream();
+ 
+ #ifdef CABOOSE_GFXSTREAM_PRIVATE_ICD
+     if (std::getenv("CABOOSE_GFXSTREAM_SOCKET")) return;
+diff --git a/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp b/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp
+index b05e6ca..12bcbf3 100644
+--- a/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp
++++ b/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp
+@@ -6046,9 +6046,10 @@ VkResult ResourceTracker::on_vkCreateFence(void* context, VkResult input_result,
+         caboose::memory::deferredReplies.forgetFence(caboose::handle_key(*pFence));
+     }
+     // A fence whose payload can be exported is followed through its sync file, not here.
+-    if (exportFenceInfoPtr)
++    if (exportFenceInfoPtr) {
+         caboose::completion::tracker().fenceUntracked(caboose::handle_key(*pFence));
+-    else
++        caboose::completion::tracker().fenceExternal(caboose::handle_key(*pFence));
++    } else
+         caboose::completion::tracker().fenceCreated(caboose::handle_key(*pFence),
+             pCreateInfo && (pCreateInfo->flags & VK_FENCE_CREATE_SIGNALED_BIT));
+ 
+@@ -6135,6 +6136,7 @@ VkResult ResourceTracker::on_vkImportFenceFdKHR(void* context, VkResult, VkDevic
+ 
+     if (!hasFence) return VK_ERROR_OUT_OF_HOST_MEMORY;
+     caboose::completion::tracker().fenceUntracked(caboose::handle_key(pImportFenceFdInfo->fence));
++    caboose::completion::tracker().fenceExternal(caboose::handle_key(pImportFenceFdInfo->fence));
+ 
+ #if defined(VK_USE_PLATFORM_ANDROID_KHR) || DETECT_OS_LINUX
+ 
+@@ -7312,6 +7314,9 @@ VkResult ResourceTracker::on_vkCreateSemaphore(void* context, VkResult input_res
+ #endif
+     input_result = enc->vkCreateSemaphore(device, &finalCreateInfo, pAllocator, pSemaphore,
+                                           true /* do lock */);
++    // A semaphore whose payload may be exported is never part of a speculated wait.
++    if (input_result == VK_SUCCESS && exportSemaphoreInfoPtr)
++        caboose::completion::tracker().semaphoreExternal(caboose::handle_key(*pSemaphore));
+     if (input_result == VK_SUCCESS && typeCi && typeCi->semaphoreType == VK_SEMAPHORE_TYPE_TIMELINE &&
+         !exportSemaphoreInfoPtr) {
+         caboose::completion::tracker().timelineCreated(caboose::handle_key(*pSemaphore),
+@@ -7464,8 +7469,10 @@ VkResult ResourceTracker::on_vkGetSemaphoreFdKHR(void* context, VkResult, VkDevi
+ VkResult ResourceTracker::on_vkImportSemaphoreFdKHR(
+     void* context, VkResult input_result, VkDevice device,
+     const VkImportSemaphoreFdInfoKHR* pImportSemaphoreFdInfo) {
+-    if (pImportSemaphoreFdInfo)
++    if (pImportSemaphoreFdInfo) {
+         caboose::completion::tracker().semaphoreUntracked(caboose::handle_key(pImportSemaphoreFdInfo->semaphore));
++        caboose::completion::tracker().semaphoreExternal(caboose::handle_key(pImportSemaphoreFdInfo->semaphore));
++    }
+ #if defined(VK_USE_PLATFORM_ANDROID_KHR) || DETECT_OS_LINUX
+     VkEncoder* enc = (VkEncoder*)context;
+     if (input_result != VK_SUCCESS) {
+diff --git a/src/gfxstream/guest/vulkan_enc/VkEncoder.cpp.inl b/src/gfxstream/guest/vulkan_enc/VkEncoder.cpp.inl
+index 2b3ae06..fa7c402 100644
+--- a/src/gfxstream/guest/vulkan_enc/VkEncoder.cpp.inl
++++ b/src/gfxstream/guest/vulkan_enc/VkEncoder.cpp.inl
+@@ -30,6 +30,10 @@ class VkEncoder::Impl {
+ 
+     ~Impl() { m_stream.decStreamRef(); }
+ 
++    // Caboose: whether this encoder writes a device stream (not a command buffer's staging),
++    // which holds behind speculated waits (caboose-bounded-memory/completion_feed.h).
++    bool m_cabooseDeviceStream = false;
++
+     VulkanCountingStream* countingStream() { return &m_countingStream; }
+     VulkanStreamGuest* stream() { return &m_stream; }
+     BumpPool* pool() { return &m_pool; }
+@@ -93,7 +97,25 @@ VkEncoder::VkEncoder(gfxstream::guest::IOStream* stream)
+ 
+ void VkEncoder::flush() { mImpl->flush(); }
+ 
+-void VkEncoder::lock() { mImpl->lock(); }
++// Caboose: before the first command a device stream sends after a speculated wait, WAIT_SERIAL
++// for each speculated watch, so the phone decodes nothing after it before that work has
++// completed; another device stream waits for the records instead (caboose-bounded-memory/
++// completion_feed.h, Speculation). Every command takes this lock before it writes.
++void VkEncoder::lock() {
++    mImpl->lock();
++    if (!mImpl->m_cabooseDeviceStream || !caboose::completion::tracker().speculating()) return;
++    const auto serials = caboose::completion::tracker().beforeCommand(caboose::handle_key(this));
++    auto stream = mImpl->stream();
++    for (uint64_t serial : serials)
++        caboose::completion::encodeWaitSerial(stream->reserve(caboose::completion::kWaitSerialPacketSize), serial);
++}
++
++void VkEncoder::cabooseMarkDeviceStream() {
++    // Commands sent without this lock (virtio-gpu's queue submit with commands) cannot be held.
++    if (!(sFeatureBits & VULKAN_STREAM_FEATURE_QUEUE_SUBMIT_WITH_COMMANDS_BIT)) mImpl->m_cabooseDeviceStream = true;
++}
++
++bool VkEncoder::cabooseDeviceStream() const { return mImpl->m_cabooseDeviceStream; }
+ 
+ void VkEncoder::unlock() { mImpl->unlock(); }
+ 
+diff --git a/src/gfxstream/guest/vulkan_enc/autogenerated/VkEncoder.cpp b/src/gfxstream/guest/vulkan_enc/autogenerated/VkEncoder.cpp
+index 90ecfd8..b3f784c 100644
+--- a/src/gfxstream/guest/vulkan_enc/autogenerated/VkEncoder.cpp
++++ b/src/gfxstream/guest/vulkan_enc/autogenerated/VkEncoder.cpp
+@@ -221,6 +221,9 @@ inline void reportLocked(bool atExit) {
+         std::fprintf(stderr, "%s%s:%llums/%llu", k ? "," : " waiters=", byThread[k].second.c_str(),
+                      (unsigned long long)(byThread[k].first / 1000),
+                      (unsigned long long)waiters[byThread[k].second].second);
++    // Waits reported complete before their records arrived (hello 0x400000), since the start.
++    if (const uint64_t speculated = caboose::completion::tracker().speculatedWaits())
++        std::fprintf(stderr, " speculated=%llu", (unsigned long long)speculated);
+     if (atExit) std::fprintf(stderr, " at_exit");
+     std::fprintf(stderr, "\n");
+     totals = Totals{};
+@@ -602,6 +605,18 @@ static size_t cabooseChainSize(VkStructureType root, const void* extension) {
+     return goldfish_vk_extension_struct_size(root, extension);
+ }
+ 
++// The stream a watch sent now goes out on, for speculation (caboose-bounded-memory/
++// completion_feed.h, Speculation): the encoder of the process's only device stream, or 0.
++extern "C" int caboose_gfxstream_device_fd;
++extern "C" int caboose_gfxstream_wait_serial;
++static uint64_t cabooseSpeculationStreamOf(VkEncoder* enc) {
++    if (!enc || !enc->cabooseDeviceStream() || caboose_gfxstream_device_fd < 0 ||
++        !__atomic_load_n(&caboose_gfxstream_wait_serial, __ATOMIC_ACQUIRE) ||
++        !caboose::memory::deferredReplies.singleEncoder(enc))
++        return 0;
++    return caboose::handle_key(enc);
++}
++
+ // Frees and destroys held until the work sent before them has completed
+ // (caboose-bounded-memory/deferred_destroys.h). Callers hold the encoder lock.
+ namespace caboose_deferred_destroy {
+@@ -650,15 +665,17 @@ inline void sendReady(Stream* stream, uint64_t device = 0) {
+ // is in flight and the caller sends it now. Queues whose latest submissions no watch
+ // follows get one first, so the hold covers every submission on every queue.
+ template <class Stream>
+-inline bool hold(Stream* stream, uint32_t opcode, uint64_t device, uint64_t handle, uint64_t memory = 0) {
++inline bool hold(VkEncoder* enc, Stream* stream, uint32_t opcode, uint64_t device, uint64_t handle, uint64_t memory = 0) {
+     if (!caboose::completion::feedActive.load(std::memory_order_acquire) ||
+         caboose::completion::executorLost.load(std::memory_order_acquire))
+         return false;
+     sendReady(stream);
+     auto& tracker = caboose::completion::tracker();
+     bool watched = false;
++    caboose::completion::Tracker::Batch empty;  // a watch of nothing but the queue's earlier work
++    empty.stream = cabooseSpeculationStreamOf(enc);
+     for (const auto& queue : caboose::memory::deferredDestroys.takeUnwatched()) {
+-        const uint64_t serial = tracker.submitted(0, {}, queue.queue, queue.device);
++        const uint64_t serial = tracker.submitted(0, {}, queue.queue, queue.device, {}, nullptr, &empty);
+         caboose::completion::encodeWatch(stream->reserve(caboose::completion::kWatchPacketSize),
+                                          queue.hostQueue, serial);
+         watched = true;
+@@ -703,6 +720,29 @@ static void cabooseAddTimelineSignals(const VkSubmitInfo2& submit,
+         out->push_back({caboose::handle_key(submit.pSignalSemaphoreInfos[i].semaphore),
+                         submit.pSignalSemaphoreInfos[i].value});
+ }
++// The semaphores a batch waits for, with their timeline values (0 for binary semaphores), and
++// every semaphore it signals, for speculation.
++static void cabooseAddSemaphores(const VkSubmitInfo& submit, caboose::completion::Tracker::Batch* out) {
++    const VkTimelineSemaphoreSubmitInfo* timeline = nullptr;
++    for (auto* next = static_cast<const VkBaseInStructure*>(submit.pNext); next; next = next->pNext)
++        if (next->sType == VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO)
++            timeline = reinterpret_cast<const VkTimelineSemaphoreSubmitInfo*>(next);
++    for (uint32_t i = 0; submit.pWaitSemaphores && i < submit.waitSemaphoreCount; ++i) {
++        const uint64_t value = timeline && timeline->pWaitSemaphoreValues && i < timeline->waitSemaphoreValueCount
++                                   ? timeline->pWaitSemaphoreValues[i]
++                                   : 0;
++        out->waits.push_back({caboose::handle_key(submit.pWaitSemaphores[i]), value});
++    }
++    for (uint32_t i = 0; submit.pSignalSemaphores && i < submit.signalSemaphoreCount; ++i)
++        out->signaled.push_back(caboose::handle_key(submit.pSignalSemaphores[i]));
++}
++static void cabooseAddSemaphores(const VkSubmitInfo2& submit, caboose::completion::Tracker::Batch* out) {
++    for (uint32_t i = 0; submit.pWaitSemaphoreInfos && i < submit.waitSemaphoreInfoCount; ++i)
++        out->waits.push_back({caboose::handle_key(submit.pWaitSemaphoreInfos[i].semaphore),
++                              submit.pWaitSemaphoreInfos[i].value});
++    for (uint32_t i = 0; submit.pSignalSemaphoreInfos && i < submit.signalSemaphoreInfoCount; ++i)
++        out->signaled.push_back(caboose::handle_key(submit.pSignalSemaphoreInfos[i].semaphore));
++}
+ static void cabooseAddCommandBuffers(const VkSubmitInfo& submit, std::vector<uint64_t>* out) {
+     for (uint32_t i = 0; submit.pCommandBuffers && i < submit.commandBufferCount; ++i)
+         out->push_back(caboose::handle_key(submit.pCommandBuffers[i]));
+@@ -737,10 +777,13 @@ static void cabooseWatchSubmission(VkEncoder* enc, Stream* stream, VkQueue queue
+     cabooseFetchWantedQueries(enc);
+     std::vector<std::pair<uint64_t, uint64_t>> signals;
+     std::vector<uint64_t> commandBuffers;
++    caboose::completion::Tracker::Batch batch;
+     for (uint32_t i = 0; submits && i < submitCount; ++i) {
+         cabooseAddTimelineSignals(submits[i], &signals);
+         cabooseAddCommandBuffers(submits[i], &commandBuffers);
++        cabooseAddSemaphores(submits[i], &batch);
+     }
++    batch.stream = cabooseSpeculationStreamOf(enc);
+     // A batch that sets or resets an event, ends or resets a query or writes coherent buffer
+     // memory is watched too.
+     const bool events = caboose::completion::tracker().setsEvents(commandBuffers);
+@@ -761,8 +804,11 @@ static void cabooseWatchSubmission(VkEncoder* enc, Stream* stream, VkQueue queue
+         return;
+     }
+     const VkDevice device = ResourceTracker::get()->cabooseGetQueueDevice(queue);
++    batch.hostWrites = gpuWrites;
+     if (fence == VK_NULL_HANDLE && signals.empty() && !events && !queries && !gpuWrites) {
+-        // Nothing waits for this batch; a held free asks for a watch behind it.
++        // Nothing waits for this batch; a held free asks for a watch behind it, and the next
++        // watch of its queue completes behind it.
++        caboose::completion::tracker().unwatchedSubmission(caboose::handle_key(queue), &batch, commandBuffers);
+         caboose::memory::deferredDestroys.submittedUnwatched(
+             caboose::handle_key(queue), get_host_u64_VkQueue(queue), caboose::handle_key(device));
+         caboose_deferred_destroy::sendReady(stream);
+@@ -781,7 +827,7 @@ static void cabooseWatchSubmission(VkEncoder* enc, Stream* stream, VkQueue queue
+     }
+     const uint64_t serial = caboose::completion::tracker().submitted(
+         caboose::handle_key(fence), signals, caboose::handle_key(queue), caboose::handle_key(device),
+-        commandBuffers, cabooseCaptures ? &captures : nullptr);
++        commandBuffers, cabooseCaptures ? &captures : nullptr, &batch);
+     if (gpuWrites) ResourceTracker::get()->cabooseSubmitCommandBuffersGpuWritten(commandBuffers, serial);
+     if (!captures.entries.empty()) {
+         const auto watch2 = caboose::completion::payloads::encodeWatch2(get_host_u64_VkQueue(queue), serial,
+@@ -2990,7 +3036,7 @@ void VkEncoder::vkFreeMemory(VkDevice device, VkDeviceMemory memory,
+         (uint32_t*)nullptr, 0, (uint32_t*)nullptr, 0);
+     // Held while work sent before it may still use the object (deferred_destroys.h).
+     if (!queueSubmitWithCommandsEnabled && !local_pAllocator &&
+-        caboose_deferred_destroy::hold(stream, OP_vkFreeMemory, get_host_u64_VkDevice(local_device),
++        caboose_deferred_destroy::hold(this, stream, OP_vkFreeMemory, get_host_u64_VkDevice(local_device),
+                                        get_host_u64_VkDeviceMemory(local_memory), caboose::handle_key(memory))) {
+         sResourceTracker->destroyMapping()->mapHandles_VkDeviceMemory((VkDeviceMemory*)&memory);
+         if (!queueSubmitWithCommandsEnabled && doLock) this->unlock();
+@@ -4245,6 +4291,8 @@ VkResult VkEncoder::vkQueueBindSparse(VkQueue queue, uint32_t bindInfoCount,
+     if (!queueSubmitWithCommandsEnabled && doLock) this->lock();
+     auto stream = mImpl->stream();
+     caboose_read_profile::currentOpcode = OP_vkQueueBindSparse;
++    // The next watch of this queue completes behind the bind, whose waits are not followed.
++    caboose::completion::tracker().unwatchedSubmission(caboose::handle_key(queue), nullptr);
+     caboose::memory::deferredReplies.drain(this, stream);
+     auto pool = mImpl->pool();
+     VkQueue local_queue;
+@@ -5510,7 +5558,7 @@ void VkEncoder::vkDestroyBuffer(VkDevice device, VkBuffer buffer,
+     }
+     // Held while work sent before it may still use the object (deferred_destroys.h).
+     if (!queueSubmitWithCommandsEnabled && !local_pAllocator &&
+-        caboose_deferred_destroy::hold(stream, OP_vkDestroyBuffer, get_host_u64_VkDevice(local_device),
++        caboose_deferred_destroy::hold(this, stream, OP_vkDestroyBuffer, get_host_u64_VkDevice(local_device),
+                                        get_host_u64_VkBuffer(local_buffer))) {
+         sResourceTracker->destroyMapping()->mapHandles_VkBuffer((VkBuffer*)&buffer);
+         if (!queueSubmitWithCommandsEnabled && doLock) this->unlock();
+@@ -5723,7 +5771,7 @@ void VkEncoder::vkDestroyImage(VkDevice device, VkImage image,
+     }
+     // Held while work sent before it may still use the object (deferred_destroys.h).
+     if (!queueSubmitWithCommandsEnabled && !local_pAllocator &&
+-        caboose_deferred_destroy::hold(stream, OP_vkDestroyImage, get_host_u64_VkDevice(local_device),
++        caboose_deferred_destroy::hold(this, stream, OP_vkDestroyImage, get_host_u64_VkDevice(local_device),
+                                        get_host_u64_VkImage(local_image))) {
+         sResourceTracker->destroyMapping()->mapHandles_VkImage((VkImage*)&image);
+         if (!queueSubmitWithCommandsEnabled && doLock) this->unlock();
+@@ -6030,7 +6078,7 @@ void VkEncoder::vkDestroyImageView(VkDevice device, VkImageView imageView,
+     }
+     // Held while work sent before it may still use the object (deferred_destroys.h).
+     if (!queueSubmitWithCommandsEnabled && !local_pAllocator &&
+-        caboose_deferred_destroy::hold(stream, OP_vkDestroyImageView, get_host_u64_VkDevice(local_device),
++        caboose_deferred_destroy::hold(this, stream, OP_vkDestroyImageView, get_host_u64_VkDevice(local_device),
+                                        get_host_u64_VkImageView(local_imageView))) {
+         sResourceTracker->destroyMapping()->mapHandles_VkImageView((VkImageView*)&imageView);
+         if (!queueSubmitWithCommandsEnabled && doLock) this->unlock();
+@@ -8941,7 +8989,7 @@ void VkEncoder::vkDestroyBufferView(VkDevice device, VkBufferView bufferView,
+     }
+     // Held while work sent before it may still use the object (deferred_destroys.h).
+     if (!queueSubmitWithCommandsEnabled && !local_pAllocator &&
+-        caboose_deferred_destroy::hold(stream, OP_vkDestroyBufferView, get_host_u64_VkDevice(local_device),
++        caboose_deferred_destroy::hold(this, stream, OP_vkDestroyBufferView, get_host_u64_VkDevice(local_device),
+                                        get_host_u64_VkBufferView(local_bufferView))) {
+         sResourceTracker->destroyMapping()->mapHandles_VkBufferView((VkBufferView*)&bufferView);
+         if (!queueSubmitWithCommandsEnabled && doLock) this->unlock();
+diff --git a/src/gfxstream/guest/vulkan_enc/autogenerated/VkEncoder.h b/src/gfxstream/guest/vulkan_enc/autogenerated/VkEncoder.h
+index b001a87..4c6459b 100644
+--- a/src/gfxstream/guest/vulkan_enc/autogenerated/VkEncoder.h
++++ b/src/gfxstream/guest/vulkan_enc/autogenerated/VkEncoder.h
+@@ -222,6 +222,10 @@ class VkEncoder {
+     // runs only after the device has decoded everything this stream sent before it. Zero
+     // when marks cannot order this process's work (more than one encoder).
+     uint64_t cabooseSendOrderMark(uint32_t doLock);
++    // Marks this encoder as one that writes a device stream: its commands hold behind
++    // speculated waits (caboose-bounded-memory/completion_feed.h, Speculation).
++    void cabooseMarkDeviceStream();
++    bool cabooseDeviceStream() const;
+     void cabooseFlushPresentationRetirements();
+     VkResult cabooseBeginCommandBufferDeferred(VkCommandBuffer commandBuffer,
+                                                const VkCommandBufferBeginInfo* pBeginInfo,
+diff --git a/src/gfxstream/guest/vulkan_enc/autogenerated/func_table.cpp b/src/gfxstream/guest/vulkan_enc/autogenerated/func_table.cpp
+index 2272da5..278fc98 100644
+--- a/src/gfxstream/guest/vulkan_enc/autogenerated/func_table.cpp
++++ b/src/gfxstream/guest/vulkan_enc/autogenerated/func_table.cpp
+@@ -1445,6 +1445,7 @@ void gfxstream_vk_CmdWaitEvents(VkCommandBuffer commandBuffer, uint32_t eventCou
+                                 const VkImageMemoryBarrier* pImageMemoryBarriers) {
+     MESA_TRACE_SCOPE("vkCmdWaitEvents");
+     VK_FROM_HANDLE(gfxstream_vk_command_buffer, gfxstream_commandBuffer, commandBuffer);
++    caboose::completion::tracker().commandBufferWaitsEvents(caboose::handle_key(gfxstream_commandBuffer->internal_object));
+     {
+         auto vkEnc = gfxstream::vk::ResourceTracker::getCommandBufferEncoder(
+             gfxstream_commandBuffer->internal_object);
+@@ -2713,6 +2714,7 @@ void gfxstream_vk_CmdWaitEvents2(VkCommandBuffer commandBuffer, uint32_t eventCo
+                                  const VkEvent* pEvents, const VkDependencyInfo* pDependencyInfos) {
+     MESA_TRACE_SCOPE("vkCmdWaitEvents2");
+     VK_FROM_HANDLE(gfxstream_vk_command_buffer, gfxstream_commandBuffer, commandBuffer);
++    caboose::completion::tracker().commandBufferWaitsEvents(caboose::handle_key(gfxstream_commandBuffer->internal_object));
+     {
+         auto vkEnc = gfxstream::vk::ResourceTracker::getCommandBufferEncoder(
+             gfxstream_commandBuffer->internal_object);
+@@ -3970,6 +3972,7 @@ void gfxstream_vk_CmdWaitEvents2KHR(VkCommandBuffer commandBuffer, uint32_t even
+                                     const VkDependencyInfo* pDependencyInfos) {
+     MESA_TRACE_SCOPE("vkCmdWaitEvents2KHR");
+     VK_FROM_HANDLE(gfxstream_vk_command_buffer, gfxstream_commandBuffer, commandBuffer);
++    caboose::completion::tracker().commandBufferWaitsEvents(caboose::handle_key(gfxstream_commandBuffer->internal_object));
+     {
+         auto vkEnc = gfxstream::vk::ResourceTracker::getCommandBufferEncoder(
+             gfxstream_commandBuffer->internal_object);
+-- 
+2.43.0
