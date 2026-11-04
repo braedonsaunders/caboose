@@ -264,7 +264,16 @@ is not refused: the decoder registers a stand-in under the same handle, with the
 layout, render pass and dynamic state, that runs a trivial vertex stage with rasterization
 discarded (or an empty kernel), so that pipeline's draws and dispatches do nothing, and the
 phone prints `CABOOSE_GPU_STANDIN kind=… handle=… index=… error=…` beside the provider's
-compile error. Pipeline libraries are refused as before. This covers device memory, fences, semaphores, buffers, images and
+compile error. Pipeline libraries are refused as before. Under guest-assigned handles the
+phone compiles pipelines off the decode thread, on a lane of two workers that holds at most
+256 pipelines: the decoder registers each handle at once and decodes on, and the first
+command that names the pipeline (a bind, a destroy, a library or base pipeline of another
+create) waits for that compile alone. Destroying a shader module, pipeline layout, render
+pass, descriptor set layout, sampler, pipeline cache, pipeline or the device first waits for
+the device's compiles. The reply is then success; a pipeline that could neither compile nor
+be stood in for ends the connection at its first use, which the process sees as device
+loss. A create whose result the process reads back (creation feedback, or
+fail-on-compile-required) and a create past the lane's bound compile in place. This covers device memory, fences, semaphores, buffers, images and
 views, samplers, shader modules, pipeline caches and layouts, descriptor set layouts
 and pools, command pools, render passes, framebuffers and pipelines; with `0x10000`, buffer
 views too. With `0x100` it
@@ -308,7 +317,9 @@ on its own stream. A process that holds a free until the work before it has comp
 sends one for a queue whose latest submissions no watch follows. The decoder serves both commands itself. For a watch it
 submits, under the queue's lock, an empty batch whose new fence signals once all work
 submitted to that queue before it has completed, holding the queue's instance and
-device alive until a watcher thread has waited for and destroyed that fence. Queues of
+device alive until a watcher thread has waited for and destroyed that fence. Each queue
+has its own watcher, so a record is written as soon as its queue's work completes, whatever
+another queue is still doing. Queues of
 another process and virtually shared queues are not watched. On the feed stream the
 phone writes one 16-byte record per watch: serial u64, status i32 and reserved u32
 zero. Status 0 means the work completed, `-4` the device was lost, and `1` the queue
@@ -469,8 +480,13 @@ store. The byte-exact forms are in `guest/gpu/gfxstream/upload-cache/vectors.jso
 The broker sends SESSION after the WebSocket upgrade. SESSION_READY requires
 actual native initialization and exact feature agreement. PROCESS_READY requires
 successful native process creation. STREAM_READY reserves the bounded socketpair
-and run/read workers for that process; it does not mean decoder TLS admission,
-command execution or GPU completion. A subsequent run failure revokes the lease.
+and the stream's run, reply-read and input-write workers for that process; it does not
+mean decoder TLS admission, command execution or GPU completion. Each stream's DATA waits
+in that stream's own input queue for its writer, so a decoder that is busy (a pipeline
+compile, a wait in the driver) holds back only its own stream; the serial worker never
+writes to a decoder. Queued input keeps its ingress charge until it is in the stream's
+socket, so the ingress limit still bounds it. The socketpair holds up to 1 MiB of commands
+and 256 KiB of replies where the kernel allows it. A subsequent run failure revokes the lease.
 The private hello is consumed at session negotiation; DATA begins with the real
 upstream client-flags word and ordered command bytes.
 
@@ -750,6 +766,18 @@ X11 `_NET_WM_PID` is not authority.
   X11 has no client isolation: any client of the seat's Xwayland can create a child
   window inside another's toplevel, so an X11 grant proves only that the bound
   process made the window it presents to on the owner's own display.
+- An X11 bind of an override-redirect window (or a window in one) that is not bindable
+  yet, because it is not mapped or the compositor has not taken in its map, is held
+  rather than refused when the X server records the bound process as the window's maker
+  and the broker's pidfd identifies it. Toolkits bind a menu's surface as soon as they
+  make the window, before it is shown. The compositor answers a held bind, by the rules
+  above, as soon as the window maps, looking again every 100 ms. It refuses it when the
+  window is destroyed, the process ends, a newer bind of the same window by the same
+  process arrives, or it has been held 4 s, inside the broker's 5 s wait for the answer;
+  at most 16 are held, and one more is refused at once. A broker that ends takes its held
+  binds with it, unanswered. A managed top-level's bind is never held: its map goes
+  through the compositor, and an application that presents before mapping it is answered
+  at once.
 - An inset surface, an X11 descendant of such a toplevel that does not cover it (a
   browser view CEF draws in its own child window) or a subsurface of a Wayland toplevel,
   bound by the process that made it (the same X-Resource and pidfd checks), becomes a

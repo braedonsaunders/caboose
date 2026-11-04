@@ -202,6 +202,13 @@ pub struct State {
     pub gpu_bind_new_child: Option<u64>,
     /// The X11 bind being answered names a window larger than its top-level (gpu_x11.rs).
     pub gpu_bind_larger: bool,
+    /// The X11 bind being answered names a window the bound process made that is not
+    /// bindable yet: it is held (gpu_pending.rs).
+    pub gpu_bind_holdable: bool,
+    /// X11 binds held until their windows are bindable, and whether a look at them again
+    /// is scheduled.
+    pub gpu_pending_binds: crate::gpu_pending::PendingBinds<crate::gpu_control::Bind>,
+    pub gpu_pending_sweep: bool,
     pub x11_identity: Option<crate::x11_identity::X11Identity>,
     /// The input-method service for applications without text-input-v3 (ibus.rs).
     pub ibus: Option<crate::ibus::Ibus>,
@@ -409,6 +416,12 @@ impl State {
                 }
                 matches
             }
+            Ok(_) if lookup.holds_until_bindable(bind.object, &ids, bind.pid).unwrap_or(false) => {
+                // An override-redirect window the bound process made that is not bindable yet
+                // (a menu made before it is shown): the bind is held until it is (gpu_pending.rs).
+                self.gpu_bind_holdable = true;
+                Vec::new()
+            }
             Ok(_) => {
                 // Binds are rare and retried a few times: each refusal says why, so a window
                 // left without its phone surface (white) can be told from the log alone.
@@ -523,8 +536,10 @@ impl State {
         // Each failure says where it came from: it also closes the display session.
         let at = std::panic::Location::caller();
         eprintln!("caboose-display: private GPU control failed at {}:{}", at.file(), at.line());
-        // Without the broker no release will come: return every held buffer.
+        // Without the broker no release will come: return every held buffer. Held binds
+        // were the broker's, whose requests a restarted broker numbers anew.
         self.release_remote_presents();
+        self.gpu_pending_binds.clear();
         if let Some(grants) = self.gpu_grants.as_mut() { grants.fail(); }
         self.net.fail_gpu_control();
         self.reconnect_for_gpu_epoch();
@@ -571,6 +586,7 @@ impl State {
         match self.net.enable_private_gpu(&token, &stream, &surface, self.config.private_gpu_indexed, &handle) {
             Ok(()) => {
                 self.gpu_grants = Some(grants);
+                self.gpu_pending_binds.clear();
                 self.gpu_started_at = std::time::Instant::now();
                 eprintln!("caboose-display: private GPU broker restarted");
             }
@@ -636,62 +652,153 @@ impl State {
         }
     }
 
+    /// Answers a bind: with a grant for the one window it matches, else refused. An X11 bind
+    /// of a window the bound process made that is not bindable yet is held instead, and
+    /// answered again (`since` is when it was first held) when an X11 window maps and every
+    /// `gpu_pending::SWEEP` (gpu_pending.rs).
+    fn answer_gpu_bind(&mut self, bind: crate::gpu_control::Bind, since: Option<std::time::Instant>) {
+        use crate::gpu_control;
+        // A newer bind of a window replaces the bind held for it by the same process.
+        if since.is_none() && bind.space == gpu_control::X11_WINDOW {
+            for old in self.gpu_pending_binds.take_window(bind.object, Some(bind.pid)) {
+                tracing::info!("held GPU X11 bind of {:#x} by process {} refused: a newer bind replaces it", old.object, old.pid);
+                self.refuse_gpu_bind(old.request);
+            }
+        }
+        self.gpu_bind_larger = false;
+        self.gpu_bind_holdable = false;
+        let mut matches = match bind.space {
+            gpu_control::X11_WINDOW => self.x11_gpu_bind_matches(&bind),
+            gpu_control::BUFFER_WINDOW => self.buffer_gpu_bind_matches(&bind),
+            _ => self.wayland_gpu_bind_matches(&bind),
+        };
+        if std::mem::take(&mut self.gpu_bind_holdable) {
+            let now = std::time::Instant::now();
+            let held = crate::gpu_pending::Held { object: bind.object, pid: bind.pid, since: since.unwrap_or(now), bind };
+            if held.expired(now) {
+                tracing::info!("held GPU X11 bind of {:#x} by process {} refused: no top-level held the window within {} ms",
+                               held.object, held.pid, crate::gpu_pending::HOLD.as_millis());
+                self.refuse_gpu_bind(held.bind.request);
+                return;
+            }
+            let (object, pid) = (held.object, held.pid);
+            match self.gpu_pending_binds.hold(held) {
+                Ok(()) => {
+                    if since.is_none() {
+                        tracing::info!("GPU X11 bind of {object:#x} by process {pid} held until the window is bindable");
+                    }
+                    self.schedule_pending_gpu_binds(crate::gpu_pending::SWEEP);
+                }
+                Err(bind) => {
+                    tracing::info!("GPU X11 bind of {object:#x} by process {pid} refused: {} binds are held already",
+                                   crate::gpu_pending::LIMIT);
+                    self.refuse_gpu_bind(bind.request);
+                }
+            }
+            return;
+        }
+        // A retained fallback display is not an authenticated owner layout.
+        // Ambiguous Wayland connections must remain ambiguous, even if
+        // only one happens to be on an eligible output.
+        if matches.len() == 1 && !self.bind_window(matches[0]).is_some_and(|window|
+            self.session.as_ref().is_some_and(|session| session.ready && session.owner_displays.contains(&window.display)) &&
+            self.displays.get(window.display).is_some_and(|display| {
+                let size = display.logical_size(); size.w > 0 && size.h > 0
+            })) { matches.clear(); }
+        // An application binding a window the compositor presents its own images in
+        // (a game's swapchain on its X11 window) gets it once that grant is retired:
+        // the compositor stops presenting there and revokes it, and the application's
+        // next attempt is granted.
+        // Nor does a present of the compositor's own take a window back meanwhile.
+        if bind.space == gpu_control::BUFFER_WINDOW && bind.pid == std::process::id() &&
+            matches.len() == 1 && self.yielding(matches[0]) {
+            matches.clear();
+        }
+        if bind.space != gpu_control::BUFFER_WINDOW && matches.len() == 1 &&
+            self.gpu_grants.as_ref().is_some_and(|grants| grants.buffer_window(matches[0])) {
+            self.yield_window(matches[0]);
+        }
+        let grant = self.gpu_grants.as_mut().and_then(|grants|
+            grants.bind(bind.process, bind.space, (bind.uid, bind.pid, bind.start_ticks, bind.object), &matches).ok());
+        // A child made for this bind lives only with its grant.
+        if let Some(child) = self.gpu_bind_new_child.take().filter(|_| grant.is_none()) {
+            self.children.remove(child);
+        }
+        if let Some(grant) = grant {
+            // A popup keeps the place and size its application gave it, and a window the
+            // phone placed keeps its geometry: CEF rebinding on every swapchain recreate
+            // would otherwise resize it to the display each time. The compositor's own
+            // images take the window's size as it is.
+            let grows = std::mem::take(&mut self.gpu_bind_larger);
+            let application = bind.pid != std::process::id();
+            if application && self.windows.get(grant.window)
+                .is_some_and(|window| window.kind != WindowKind::Popup && (grows || window.gpu_bind_follows_display())) {
+                self.configure_gpu_window_to_display(grant.window);
+            }
+            self.sync_windows();
+        }
+        if since.is_some() {
+            match &grant {
+                Some(grant) => tracing::info!("held GPU X11 bind of {:#x} by process {} attached to window {}",
+                                              bind.object, bind.pid, grant.window),
+                None => tracing::info!("held GPU X11 bind of {:#x} by process {} refused",
+                                       bind.object, bind.pid),
+            }
+        }
+        if gpu_control::response(bind.request, grant).and_then(|bytes| self.net.queue_gpu_control(bytes, None)).is_err() {
+            self.gpu_control_failed();
+        }
+    }
+
+    fn refuse_gpu_bind(&mut self, request: u64) {
+        if crate::gpu_control::response(request, None).and_then(|bytes| self.net.queue_gpu_control(bytes, None)).is_err() {
+            self.gpu_control_failed();
+        }
+    }
+
+    /// Looks at the held binds again after `delay`, unless that is already scheduled.
+    pub(crate) fn schedule_pending_gpu_binds(&mut self, delay: std::time::Duration) {
+        if self.gpu_pending_sweep || self.gpu_pending_binds.is_empty() { return; }
+        self.gpu_pending_sweep = true;
+        use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
+        let inserted = self.handle.insert_source(Timer::from_duration(delay), |_, _, state: &mut State| {
+            state.gpu_pending_sweep = false;
+            state.answer_pending_gpu_binds();
+            TimeoutAction::Drop
+        });
+        if inserted.is_err() {
+            // Nothing would look at them again: refuse them now.
+            self.gpu_pending_sweep = false;
+            for held in self.gpu_pending_binds.take_all() {
+                self.refuse_gpu_bind(held.bind.request);
+            }
+        }
+    }
+
+    /// Answers every held bind whose window is bindable now, and refuses those whose window
+    /// went, whose process ended or that waited too long; the rest stay held.
+    pub(crate) fn answer_pending_gpu_binds(&mut self) {
+        for held in self.gpu_pending_binds.take_all() {
+            self.answer_gpu_bind(held.bind, Some(held.since));
+        }
+    }
+
+    /// An X11 window was destroyed: the binds held for it are refused.
+    pub(crate) fn refuse_pending_gpu_binds_of(&mut self, window: u32) {
+        for bind in self.gpu_pending_binds.take_window(window, None) {
+            tracing::info!("held GPU X11 bind of {window:#x} by process {} refused: the window was destroyed", bind.pid);
+            self.refuse_gpu_bind(bind.request);
+        }
+    }
+
     fn handle_gpu_record(&mut self, record: crate::gpu_control::Record) {
-        use crate::gpu_control::{self, Record};
+        use crate::gpu_control::Record;
         match record {
             Record::Bind(bind) => {
                 if self.gpu_grants.as_mut().is_some_and(|grants| !grants.accept_bind_request(bind.request)) {
                     self.gpu_control_failed(); return;
                 }
-                self.gpu_bind_larger = false;
-                let mut matches = match bind.space {
-                    gpu_control::X11_WINDOW => self.x11_gpu_bind_matches(&bind),
-                    gpu_control::BUFFER_WINDOW => self.buffer_gpu_bind_matches(&bind),
-                    _ => self.wayland_gpu_bind_matches(&bind),
-                };
-                // A retained fallback display is not an authenticated owner layout.
-                // Ambiguous Wayland connections must remain ambiguous, even if
-                // only one happens to be on an eligible output.
-                if matches.len() == 1 && !self.bind_window(matches[0]).is_some_and(|window|
-                    self.session.as_ref().is_some_and(|session| session.ready && session.owner_displays.contains(&window.display)) &&
-                    self.displays.get(window.display).is_some_and(|display| {
-                        let size = display.logical_size(); size.w > 0 && size.h > 0
-                    })) { matches.clear(); }
-                // An application binding a window the compositor presents its own images in
-                // (a game's swapchain on its X11 window) gets it once that grant is retired:
-                // the compositor stops presenting there and revokes it, and the application's
-                // next attempt is granted.
-                // Nor does a present of the compositor's own take a window back meanwhile.
-                if bind.space == gpu_control::BUFFER_WINDOW && bind.pid == std::process::id() &&
-                    matches.len() == 1 && self.yielding(matches[0]) {
-                    matches.clear();
-                }
-                if bind.space != gpu_control::BUFFER_WINDOW && matches.len() == 1 &&
-                    self.gpu_grants.as_ref().is_some_and(|grants| grants.buffer_window(matches[0])) {
-                    self.yield_window(matches[0]);
-                }
-                let grant = self.gpu_grants.as_mut().and_then(|grants|
-                    grants.bind(bind.process, bind.space, (bind.uid, bind.pid, bind.start_ticks, bind.object), &matches).ok());
-                // A child made for this bind lives only with its grant.
-                if let Some(child) = self.gpu_bind_new_child.take().filter(|_| grant.is_none()) {
-                    self.children.remove(child);
-                }
-                if let Some(grant) = grant {
-                    // A popup keeps the place and size its application gave it, and a window the
-                    // phone placed keeps its geometry: CEF rebinding on every swapchain recreate
-                    // would otherwise resize it to the display each time. The compositor's own
-                    // images take the window's size as it is.
-                    let grows = std::mem::take(&mut self.gpu_bind_larger);
-                    let application = bind.pid != std::process::id();
-                    if application && self.windows.get(grant.window)
-                        .is_some_and(|window| window.kind != WindowKind::Popup && (grows || window.gpu_bind_follows_display())) {
-                        self.configure_gpu_window_to_display(grant.window);
-                    }
-                    self.sync_windows();
-                }
-                if gpu_control::response(bind.request, grant).and_then(|bytes| self.net.queue_gpu_control(bytes, None)).is_err() {
-                    self.gpu_control_failed();
-                }
+                self.answer_gpu_bind(bind, None);
             }
             Record::SurfaceRetired { epoch, grant, generation } => {
                 if self.gpu_grants.as_mut().is_none_or(|grants| grants.surface_retired_by_identity(epoch, grant, generation).is_err()) {

@@ -269,24 +269,74 @@ final class LiveGPUNativeBindingTests: XCTestCase {
         try binding.consume(wire(.session, sequence: 1, payload: LiveGPUEnvelope.hello))
         try binding.consume(wire(.processOpen, sequence: 2, process: 1))
         try binding.consume(wire(.streamOpen, sequence: 3, process: 1, stream: 1))
-        let done = expectation(description: "writer unblocked")
-        let writing = DispatchSemaphore(value: 0)
-        let returned = DispatchSemaphore(value: 0)
-        let payload = try wire(.data, sequence: 4, process: 1, stream: 1,
-            payload: Data(repeating: 3, count: LiveGPUEnvelope.maxPayload))
-        DispatchQueue.global().async {
-            defer { returned.signal(); done.fulfill() }
-            writing.signal()
-            do { try binding.consume(payload); XCTFail("cancelled write succeeded") } catch {}
-        }
         XCTAssertEqual(runtime.entered.wait(timeout: .now() + 2), .success)
-        XCTAssertEqual(writing.wait(timeout: .now() + 2), .success)
-        XCTAssertEqual(returned.wait(timeout: .now() + 0.05), .timedOut)
+        // More than the socket holds: the stream's writer waits for room, the consumer does not.
+        let released = DispatchSemaphore(value: 0)
+        for sequence: UInt64 in 4...15 {
+            try binding.consume(wire(.data, sequence: sequence, process: 1, stream: 1,
+                payload: Data(repeating: 3, count: LiveGPUEnvelope.maxPayload)), release: { released.signal() })
+        }
+        XCTAssertEqual(released.wait(timeout: .now() + 0.1), .success, "what fits in the socket is released")
+        var delivered = 1
+        while released.wait(timeout: .now() + 0.1) == .success { delivered += 1 }
+        XCTAssertLessThan(delivered, 12, "input still waiting for room keeps its charge")
         try binding.revoke()
-        wait(for: [done], timeout: 2)
+        // Revocation ends the writer, and every charge it still held is released.
+        for _ in 0..<(12 - delivered) { XCTAssertEqual(released.wait(timeout: .now() + 2), .success) }
         try binding.finish()
         XCTAssertTrue(runtime.allRunsJoinedBeforeFinish)
         XCTAssertEqual(runtime.finishedTokens, [1])
+    }
+    func testAStreamWhoseDecoderIsBusyHoldsBackNoOtherStream() throws {
+        let runtime = LiveRuntimeProbe(); runtime.idleTokens = [1]
+        let binding = try LiveGPUNativeBinding(backend: runtime)
+        let output = LiveOutputProbe()
+        try binding.start(output: { output.accept($0) }, failed: { output.fail($0) })
+        var seq: UInt64 = 0
+        func send(_ kind: LiveGPUEnvelope.Kind, _ p: UInt64 = 0, _ s: UInt64 = 0, _ data: Data = Data()) throws {
+            seq += 1; try binding.consume(wire(kind, sequence: seq, process: p, stream: s, payload: data))
+        }
+        try send(.session, 0, 0, LiveGPUEnvelope.hello)
+        try send(.processOpen, 1); try send(.streamOpen, 1, 1)
+        try send(.processOpen, 2); try send(.streamOpen, 2, 2)
+        // Process 1's decoder reads nothing: four megabytes is more than its socket holds.
+        let started = Date()
+        for _ in 0..<16 { try send(.data, 1, 1, Data(repeating: 7, count: LiveGPUEnvelope.maxPayload)) }
+        try send(.data, 2, 2, Data([1, 2, 3, 4])); try send(.fin, 2, 2)
+        XCTAssertTrue(output.waitForFINs(1), "the other stream is decoded and answered")
+        XCTAssertLessThan(Date().timeIntervalSince(started), 1)
+        XCTAssertEqual(runtime.lock.withLock { runtime.received[2] }, Data([1, 2, 3, 4]))
+        try send(.processStop, 1); try send(.processStop, 2)
+        try send(.revoke)
+        try binding.finish()
+        XCTAssertNil(output.error)
+        XCTAssertTrue(runtime.allRunsJoinedBeforeFinish)
+    }
+    func testQueuedInputReachesTheDecoderInOrderBeforeItsEnd() throws {
+        let runtime = LiveRuntimeProbe()
+        let binding = try LiveGPUNativeBinding(backend: runtime)
+        let output = LiveOutputProbe()
+        try binding.start(output: { output.accept($0) }, failed: { output.fail($0) })
+        try binding.consume(wire(.session, sequence: 1, payload: LiveGPUEnvelope.hello))
+        try binding.consume(wire(.processOpen, sequence: 2, process: 1))
+        try binding.consume(wire(.streamOpen, sequence: 3, process: 1, stream: 1))
+        var expected = Data()
+        var released = 0
+        let lock = NSLock()
+        for index in 0..<40 {
+            let chunk = Data((0..<(LiveGPUEnvelope.maxPayload - index)).map { UInt8(truncatingIfNeeded: $0 &+ index) })
+            expected.append(chunk)
+            try binding.consume(wire(.data, sequence: UInt64(4 + index), process: 1, stream: 1, payload: chunk),
+                                release: { lock.withLock { released += 1 } })
+        }
+        try binding.consume(wire(.fin, sequence: 44, process: 1, stream: 1))
+        XCTAssertTrue(output.waitForFINs(1))
+        XCTAssertEqual(runtime.lock.withLock { runtime.received[1] }, expected)
+        XCTAssertEqual(lock.withLock { released }, 40)
+        try binding.consume(wire(.processStop, sequence: 45, process: 1))
+        try binding.consume(wire(.revoke, sequence: 46))
+        try binding.finish()
+        XCTAssertNil(output.error)
     }
     func testOutputRejectionRevokesWorkers() throws {
         let runtime = LiveRuntimeProbe()
@@ -490,6 +540,8 @@ private final class LiveRuntimeProbe: LiveGPURuntimeBackend, @unchecked Sendable
     var cleanupGate: DispatchSemaphore?
     let cleaning = DispatchSemaphore(value: 0)
     var reads = true
+    /// Tokens whose decoder reads nothing until stopped (a decoder busy in the driver).
+    var idleTokens: Set<UInt64> = []
     let stopped = DispatchSemaphore(value: 0)
     func start() -> Int32 { lock.withLock { starts += 1 }; return 0 }
     var cacheRoots: [String?] = []
@@ -498,7 +550,7 @@ private final class LiveRuntimeProbe: LiveGPURuntimeBackend, @unchecked Sendable
     func run(_ token: UInt64, fd: Int32, maxPacket: Int, maxReply: Int) -> Int32 {
         lock.withLock { active[token, default: 0] += 1 }; entered.signal()
         defer { lock.withLock { active[token, default: 0] -= 1 } }
-        if !reads { stopped.wait(); return 0 }
+        if !reads || lock.withLock({ idleTokens.contains(token) }) { stopped.wait(); return 0 }
         var bytes = [UInt8](repeating: 0, count: 4096)
         while true {
             let count = Darwin.read(fd, &bytes, bytes.count)

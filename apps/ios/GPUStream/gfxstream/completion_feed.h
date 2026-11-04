@@ -9,6 +9,8 @@
 #include <memory>
 #include <mutex>
 #include <thread>
+#include <unordered_map>
+#include <vector>
 
 namespace caboose::gpuv2 {
 
@@ -16,7 +18,9 @@ namespace caboose::gpuv2 {
 //
 // COMPLETION_WATCH(queue, serial) arrives on a device stream right after a queue
 // submission. The watch submits a marker behind that submission and returns without
-// waiting; a watcher thread waits for markers in order and queues one record per watch.
+// waiting. Each queue has its own watcher lane, which waits for that queue's markers in
+// order and queues one record per watch the moment its marker completes, so a queue with
+// long work never holds back the records of another queue.
 // COMPLETION_FEED turns another stream of the same process into the writer of those
 // records. Records queued before the feed stream attaches are kept for it.
 class CompletionFeed {
@@ -34,6 +38,9 @@ public:
     static constexpr int32_t kUnwatched = 1;
     // Outstanding watches a process may have; beyond it a watch is reported unwatched.
     static constexpr size_t kMaxOutstanding = 4096;
+    // Watcher lanes (threads) a process may have. A marker of a queue past this joins the
+    // lane with the fewest markers.
+    static constexpr size_t kMaxLanes = 8;
 
     static bool isFeedOpcode(uint32_t opcode) {
         return opcode == kFeedOpcode || opcode == kWatchOpcode || opcode == kOrderOpcode;
@@ -65,8 +72,8 @@ public:
     // Runs the feed on `fd` until the guest closes it (0), `stop` is set or the socket is
     // shut down (0), or an error (errno). A later feed stream takes over from an earlier one.
     int run(int fd, const std::atomic_bool& stop);
-    // Ends the watcher once outstanding markers complete; called before destruction and
-    // on process stop. Records after this are dropped.
+    // Ends the watcher lanes once outstanding markers complete; called before destruction
+    // and on process stop. Records after this are dropped.
     void close();
 
     // Where completion stands, for a stalled-completion report (process_registry): the oldest
@@ -75,6 +82,7 @@ public:
     struct State {
         uint64_t watches = 0, unwatched = 0;
         size_t outstanding = 0;
+        size_t lanes = 0;
         uint64_t oldestSerial = 0, oldestQueue = 0;
         int64_t oldestWatchedMs = 0;
         uint64_t lastCompletedSerial = 0;
@@ -99,25 +107,32 @@ public:
 private:
     struct Pending { uint64_t serial = 0; Waiter wait; uint64_t queue = 0; int64_t watchedMs = 0; };
     struct Record { uint64_t serial; int32_t status; };
-    void watcherLoop();
+    // One watcher thread and the markers it waits for, in submission order.
+    struct Lane {
+        std::condition_variable changed;
+        std::deque<Pending> markers;
+        Pending waiting;  // the marker the lane waits for (no waiter), serial 0 when none
+        std::thread thread;
+    };
+    Lane& laneForLocked(uint64_t queue);
+    void watcherLoop(Lane& lane);
     void push(uint64_t serial, int32_t status);
 
     Submit submit_;
     std::mutex mutex_;
-    std::condition_variable markersChanged_;
-    std::deque<Pending> markers_;
+    std::vector<std::unique_ptr<Lane>> lanes_;
+    std::unordered_map<uint64_t, size_t> laneOfQueue_;  // queues with a lane of their own
+    size_t outstanding_ = 0;  // markers queued or waited for, over every lane
     std::deque<Record> records_;
     int wake_[2] = {-1, -1};
     uint64_t generation_ = 0;  // the current feed stream's run; earlier ones return
     bool detached_ = false;
     bool closing_ = false;
     bool attached_ = false;
-    Pending waiting_;  // the marker the watcher waits for (no waiter), serial 0 when none
     uint64_t watches_ = 0, unwatched_ = 0;
     uint64_t lastCompletedSerial_ = 0, lastWrittenSerial_ = 0;
     int32_t lastStatus_ = 0;
     int64_t lastCompletedMs_ = 0, lastWrittenMs_ = 0;
-    std::thread watcher_;
     std::mutex orderMutex_;
     std::condition_variable orderChanged_;
     uint64_t ordered_ = 0;

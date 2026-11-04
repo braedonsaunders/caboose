@@ -168,7 +168,9 @@ encoders (parameter sets on keyframes), keysym mapping on the real `us` keymap, 
 → byte conversion for deletions, flow control, the launch environment, configuration and
 per-instance state directories, the Xauthority format, the control socket's key
 combinations and text escapes, the clipboard's checks and type choice, bounded pipe
-transfers, and the transfer area's path and link checks.
+transfers, and the transfer area's path and link checks, the GPU surface binds held for
+override-redirect X11 windows not mapped yet (which binds are held, replaced, refused and
+bounded: `src/gpu_pending.rs`) and the X11 cover rules for a bound child window.
 
 `scripts/check.py` starts the compositor with real applications and drives it with the
 probe. Every check asserts on what arrived, not on a picture:
