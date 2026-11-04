@@ -1,0 +1,123 @@
+From: Caboose <caboose@local>
+Subject: [PATCH 82/83] Keep descriptor writes inside their set's bindings
+
+A batched descriptor write, copy or template update that ran past its layout's last binding
+was stopped only by an assert, which release builds compile away, so it wrote past the set's
+write table: Halo: MCC aborted in vkUpdateDescriptorSets with "free(): invalid pointer". It now
+stops at the last binding (reported once, CABOOSE_DESCRIPTOR_WRITE), and an inline uniform
+block write to a binding the layout lacks is dropped.
+---
+diff --git a/src/gfxstream/guest/vulkan_enc/DescriptorSetVirtualization.cpp b/src/gfxstream/guest/vulkan_enc/DescriptorSetVirtualization.cpp
+--- a/src/gfxstream/guest/vulkan_enc/DescriptorSetVirtualization.cpp
++++ b/src/gfxstream/guest/vulkan_enc/DescriptorSetVirtualization.cpp
+@@ -14,6 +14,12 @@
+ namespace gfxstream {
+ namespace vk {
+ 
++// Caboose: a descriptor write that ran past its layout's last binding (reported once).
++static void cabooseNotePastLastBinding() {
++    static std::atomic<bool> told{false};
++    if (!told.exchange(true)) mesa_loge("CABOOSE_DESCRIPTOR_WRITE ran past its layout's last binding\n");
++}
++
+ void clearReifiedDescriptorSet(ReifiedDescriptorSet* set) {
+     set->pool = VK_NULL_HANDLE;
+     set->setLayout = VK_NULL_HANDLE;
+@@ -126,7 +132,9 @@
+     if (isDescriptorTypeImageInfo(descType)) {
+         uint32_t i = 0;
+         while (i < descriptorCount) {
+-            assert(dstBinding < table.size());
++            // Caboose: a write past the layout's last binding stops there; asserts are off in
++            // release builds, where it wrote past the table.
++            if (dstBinding >= table.size()) { cabooseNotePastLastBinding(); break; }
+             if (arrOffset >= table[dstBinding].size()) {
+                 ++dstBinding;
+                 arrOffset = 0;
+@@ -142,7 +150,9 @@
+     } else if (isDescriptorTypeBufferInfo(descType)) {
+         uint32_t i = 0;
+         while (i < descriptorCount) {
+-            assert(dstBinding < table.size());
++            // Caboose: a write past the layout's last binding stops there; asserts are off in
++            // release builds, where it wrote past the table.
++            if (dstBinding >= table.size()) { cabooseNotePastLastBinding(); break; }
+             if (arrOffset >= table[dstBinding].size()) {
+                 ++dstBinding;
+                 arrOffset = 0;
+@@ -158,7 +168,9 @@
+     } else if (isDescriptorTypeBufferView(descType)) {
+         uint32_t i = 0;
+         while (i < descriptorCount) {
+-            assert(dstBinding < table.size());
++            // Caboose: a write past the layout's last binding stops there; asserts are off in
++            // release builds, where it wrote past the table.
++            if (dstBinding >= table.size()) { cabooseNotePastLastBinding(); break; }
+             if (arrOffset >= table[dstBinding].size()) {
+                 ++dstBinding;
+                 arrOffset = 0;
+@@ -187,6 +199,7 @@
+         // Caboose: the binding's bytes are kept whole: a write lands at its offset
+         // (dstArrayElement), and the next commit sends every byte written so far, so a
+         // partial write never undoes an earlier one.
++        if (dstBinding >= table.size() || table[dstBinding].empty()) return;  // Caboose: no such binding
+         auto& entry = table[dstBinding][0];
+         const size_t end = size_t(dstArrayElement) + descInlineUniformBlock->dataSize;
+         if (entry.inlineUniformBlockBuffer.size() < end) entry.inlineUniformBlockBuffer.resize(end);
+@@ -219,7 +232,7 @@
+     uint32_t arrOffset = copy->srcArrayElement;
+     uint32_t i = 0;
+     while (i < copy->descriptorCount) {
+-        assert(currBinding < srcTable.size());
++        if (currBinding >= srcTable.size()) break;  // Caboose: past the last binding
+         if (arrOffset >= srcTable[currBinding].size()) {
+             ++currBinding;
+             arrOffset = 0;
+@@ -233,8 +246,8 @@
+     currBinding = copy->dstBinding;
+     arrOffset = copy->dstArrayElement;
+     i = 0;
+-    while (i < copy->descriptorCount) {
+-        assert(currBinding < dstTable.size());
++    while (i < toCopy.size()) {
++        if (currBinding >= dstTable.size()) break;  // Caboose: past the last binding
+         if (arrOffset >= dstTable[currBinding].size()) {
+             ++currBinding;
+             arrOffset = 0;
+@@ -256,7 +269,7 @@
+     uint32_t arrOffset = dstArrayElement;
+     uint32_t i = 0;
+     while (i < count) {
+-        assert(currBinding < table.size());
++        if (currBinding >= table.size()) break;  // Caboose: past the last binding
+         if (arrOffset >= table[currBinding].size()) {
+             ++currBinding;
+             arrOffset = 0;
+@@ -281,7 +294,7 @@
+     uint32_t arrOffset = dstArrayElement;
+     uint32_t i = 0;
+     while (i < count) {
+-        assert(currBinding < table.size());
++        if (currBinding >= table.size()) break;  // Caboose: past the last binding
+         if (arrOffset >= table[currBinding].size()) {
+             ++currBinding;
+             arrOffset = 0;
+@@ -306,7 +319,7 @@
+     uint32_t arrOffset = dstArrayElement;
+     uint32_t i = 0;
+     while (i < count) {
+-        assert(currBinding < table.size());
++        if (currBinding >= table.size()) break;  // Caboose: past the last binding
+         if (arrOffset >= table[currBinding].size()) {
+             ++currBinding;
+             arrOffset = 0;
+@@ -326,6 +339,7 @@
+                                                         const void* pData,
+                                                         ReifiedDescriptorSet* set) {
+     DescriptorWriteTable& table = set->allWrites;
++    if (binding >= table.size() || table[binding].empty()) return;  // Caboose: no such binding
+     auto& entry = table[binding][0];
+     // Caboose: merged at its offset into the binding's bytes, as a write is.
+     const size_t end = size_t(dstArrayElement) + count;
+-- 
+2.43.0
