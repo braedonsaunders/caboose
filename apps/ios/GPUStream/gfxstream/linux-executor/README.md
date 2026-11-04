@@ -333,7 +333,12 @@ home of the check's own with a Steam Flatpak profile, never the computer owner's
 client. Each cycle applies one event at a random point: the executor ends and a new one
 connects (an app relaunch); the executor and the viewer end and return (a network drop, a
 lock); the executor stops answering for 2-8 s (a stall); the viewer reconnects; or fresh apps
-start and the executor ends 0-2 s later (during their warm-up, first bind and first present).
+start and the executor ends 0-2 s later (during their warm-up, first bind and first present);
+a new executor connects while the previous one is paused but still connected, which goes only
+afterwards (a phone that made a new executor while the host held the old one's transport); or
+the viewer returns at the other display size, 1280x800 or 800x1280 (a foldable phone folding
+or unfolding). `--events` runs a chosen sequence (kill, drop, stall, viewer, startup, replace,
+fold) instead of random ones.
 Then the long-lived apps must present real pictures again, and so must a freshly started
 Chromium, glxgears (shown in the compositor's own images) and, with `--triangle` (DXVK's
 d3d11 triangle in that home's Flatpak data), DXVK through Proton, each judged at its own

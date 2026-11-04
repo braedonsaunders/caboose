@@ -761,8 +761,12 @@ force local cleanup but cannot produce a remote-retirement receipt. On abrupt lo
 the phone drops every object of the lost connection; once the broker has ended every
 local client of that generation it reports the generation retired to the compositor,
 which ends every surface grant the generation held, and then releases the lease. A
-reconnect (which may wait up to 5 s for that) is admitted as a new generation and served
-by the same broker. Reconnect never replays stale
+reconnect is admitted as a new generation and served by the same broker. The newest
+executor connection is the phone's: one that arrives while an earlier connection still
+holds the lease (the host may hold a phone's transport for a resume the phone has given
+up) ends that connection as an abrupt loss and is admitted once its teardown, bounded at
+10 s, has released the lease (`CABOOSE_GPU_BROKER executor generation N superseded by a
+new executor`). Reconnect never replays stale
 handles or command history. A refused or abnormally ended executor session is logged
 as `CABOOSE_GPU_BROKER executor session ended: <reason>`. A TCP executor connection whose
 peer vanished without closing it counts as an abrupt loss within about 30 s: the broker

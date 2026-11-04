@@ -204,7 +204,7 @@ class Seat:
         if start:
             # Showing child windows (inset GPU windows bind), as the phone does.
             self.sh(f'exec {self.dir}/bin/caboose-display-probe --url ws://127.0.0.1:{PORT}/ --token-file {self.dir}/token '
-                    f'--duration 100000 --display 1280x800@60x1 --children >> {self.dir}/probe.log 2>&1', user='caboose', detach=True)
+                    f'--duration 100000 --display {"800x1280@60x1" if getattr(self, "folded", False) else "1280x800@60x1"} --children >> {self.dir}/probe.log 2>&1', user='caboose', detach=True)
 
     def viewer_alive(self):
         return subprocess.run(['docker', 'exec', self.computer, 'pgrep', '-f',
@@ -272,7 +272,7 @@ def main():
     parser.add_argument('--cycles', type=int, default=50)
     parser.add_argument('--seed', type=int, default=None)
     parser.add_argument('--events', help="comma-separated events to run in order, repeated (kill, drop, stall, viewer, "
-                        "startup), instead of random ones; the seed still picks their delays")
+                        "startup, replace, fold), instead of random ones; the seed still picks their delays")
     parser.add_argument('--steam-home', help="a home of the check's own holding a Steam Flatpak profile (never the owner's)")
     parser.add_argument('--triangle', help="DXVK's d3d11 triangle.exe, inside --steam-home's Flatpak data")
     parser.add_argument('--proton', default='/opt/caboose-games/GE-Proton11-11/proton')
@@ -398,7 +398,7 @@ def main():
             if missing:
                 raise RuntimeError('DXVK presented no real picture before the first cycle')
             print('DXVK presenting', flush=True)
-        events = ['kill', 'drop', 'stall', 'viewer', 'startup']
+        events = ['kill', 'drop', 'stall', 'viewer', 'startup', 'replace', 'fold']
         forced = [e.strip() for e in o.events.split(',')] if o.events else []
         if any(e not in events for e in forced):
             raise SystemExit(f'unknown event in --events: {o.events}')
@@ -416,6 +416,20 @@ def main():
                 run('docker', 'pause', name); time.sleep(rng.uniform(2, 8)); run('docker', 'unpause', name)
             elif event == 'viewer':
                 seat.viewer(start=False); time.sleep(rng.uniform(0, 2)); seat.viewer()
+            elif event == 'replace':
+                # The phone makes a new executor while its previous one still looks alive (the
+                # host holds a phone's transport for a resume): the old one stays connected,
+                # paused, while the new one connects, and goes only afterwards.
+                old = seat.executors[-1]
+                run('docker', 'pause', old); time.sleep(rng.uniform(0, 1)); seat.executor()
+                time.sleep(rng.uniform(2, 6))
+                seat.logs[old] = run('docker', 'logs', '--timestamps', old, check=False)
+                run('docker', 'unpause', old, check=False); run('docker', 'rm', '-f', old, check=False)
+            elif event == 'fold':
+                # A foldable phone folds or unfolds: the viewer comes back at the other size.
+                seat.folded = not getattr(seat, 'folded', False)
+                seat.viewer(start=False); time.sleep(rng.uniform(0, 1))
+                seat.viewer()
             elif event == 'startup':
                 fresh_apps(); time.sleep(rng.uniform(0, 2)); seat.end_executor(); time.sleep(rng.uniform(0, 2)); seat.executor()
                 stop_fresh()
@@ -438,7 +452,7 @@ def main():
             # glxgears draws with Zink and presents in its own window (its swapchain binds), or
             # reaches the compositor as an X11 window's pixels, which the compositor's own images
             # (the display's size) show.
-            wanted['fresh gl'] = lambda w, h: (w, h) in ((320, 240), (1280, 800))
+            wanted['fresh gl'] = lambda w, h: (w, h) in ((320, 240), (1280, 800), (800, 1280))
             if 'fresh dxvk' in fresh:
                 # Wine's windows for it are the triangle's at whatever size Wine and the
                 # compositor gave them (in a Wine desktop, or a top-level of its own).
