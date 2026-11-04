@@ -573,7 +573,11 @@ to an executor belongs to its generation:
   presentation queues, completion watches owed to old queues and host allocations shared
   through dma-bufs. A capability answer read while its executor was leaving is never stored
   under the next one.
-- **Connections.** The device stream reconnects with the next instance. A process's dma-buf
+- **Connections.** The device stream reconnects with the next instance. A connection that
+  reaches another executor's socket than the process last connected to starts a new
+  generation even if none of its streams had ended (an idle process learns of the change only
+  by connecting), and the generation advances before the loss is cleared, so another thread
+  calling on an object of the old generation meanwhile never reaches the new executor. A process's dma-buf
   registrations (`dmabuf/registration.h`) belong to the broker session they were made
   under, which the broker's device socket identifies; the process keeps the registrations of
   its live buffers and sends them again on every new connection of the same session, and
@@ -601,7 +605,7 @@ to an executor belongs to its generation:
   learns of a loss from its broker, so its lost device answers as a working one (submissions
   are dropped and complete, waits are satisfied, no call reports `VK_ERROR_DEVICE_LOST`) and Zink
   never takes its device-loss paths, whose teardown did not end; the renderer is made again
-  on the broker's report.
+  on the broker's report, and once a second for up to ten tries when it could not be made.
 
 `apps/ios/GPUStream/gfxstream/linux-executor/check_chaos.py` holds the stack to this: a seat
 of its own with the compositor, a long-lived Chromium, Steam's CEF client, and fresh
