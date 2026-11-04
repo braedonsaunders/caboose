@@ -4,7 +4,11 @@
 //
 //   d3d11_stress.exe [SECONDS] [THREADS] [DRAWS_PER_THREAD]
 //
-// Prints "frames=N fps=F" every 5 s and "done frames=N" at the end; exit code 0 on success.
+// Prints "frames=N fps=F" every 5 s and "done frames=N" at the end, and "FAIL …" for a failed
+// call or a wrong readback. Build it with MinGW-w64 and run it with check-dxvk.sh (APP):
+//
+//   x86_64-w64-mingw32-g++-posix -O2 -std=c++17 -static -o d3d11_stress.exe d3d11-stress.cpp \
+//       -ld3d11 -ld3dcompiler -ldxgi
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <d3d11.h>

@@ -209,6 +209,13 @@ case requires guest-chosen set ids, completion payloads, ordering barriers and s
 granted and no such allocation wait. `PORT`, `DISPLAY_ENV` (the display the triangle presents
 on), `SOCKETS` (a shorter directory for the GPU sockets) and `CASES` (a subset) let it run beside
 other checks on one computer; it ends only the triangle started from `BENCH_DIR`.
+`APP` runs another program from `BENCH_DIR` instead, with `APP_ARGS`, and `APP_ENV` adds
+environment to it: `d3d11-stress.cpp` beside the script (built with MinGW-w64, as its header
+shows) is a multi-threaded load, deferred contexts on worker threads recording hundreds of draws
+each with their own textures, samplers and dynamic constant buffers, per-frame texture churn, a
+compute pass copied to staging buffers read back on the CPU and occlusion queries
+(`APP=d3d11_stress.exe APP_ARGS="SECONDS THREADS DRAWS"`). A line starting `FAIL ` from the program
+or a `CABOOSE_LOCK_ORDER` report (`APP_ENV=CABOOSE_LOCK_ORDER=1`) fails the case.
 The release seal runs it.
 
 ## Bind of an unmapped popup

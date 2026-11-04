@@ -3,8 +3,10 @@ Subject: [PATCH 91/91] Free batched descriptor sets under the encoder lock and a
 
 With batched descriptor sets, freeing a set the device already allocated sends
 vkFreeDescriptorSets from the tracker, where no encoder lock is held, and the call was
-encoded without taking it. It wrote the device stream while other threads might be writing
-it, and it skipped what the lock sends first: WAIT_SERIAL for speculated waits (patch 0089).
+encoded without taking it. It wrote the device stream while other threads were writing it:
+their commands interleaved and the decoder read neither ("Failed to try unbox
+VkDescriptorSet", the process lost), with or without guest-chosen set ids. It also skipped
+what the lock sends first: WAIT_SERIAL for speculated waits (patch 0089).
 A process that waited for a batch (answered at once) and then freed the batch's sets had the
 phone free them before the batch ran; lavapipe then read a freed set in
 handle_descriptor_sets and the Linux executor faulted. The free now takes the lock like any
