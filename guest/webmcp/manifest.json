@@ -2,13 +2,36 @@
   "manifest_version": 3,
   "name": "Caboose WebMCP",
   "version": "1.0.0",
-  "description": "Gives the agent seat's desktop tools the tools a page declares with WebMCP, and tools derived from its forms, links and buttons.",
+  "description": "Gives the agent seat's desktop tools the tools a page declares with WebMCP, tools derived from its forms, links and buttons, and the browser's tabs through the DevTools protocol.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAv3soJnoKxHGX2/xkBN8T38IVO6bB/ZrPjEAmccIercsG2fOFChaGs+8hkYyeRGYr1/A/3qw6ESdeJQkvKNzE3Lu/0MUxlf4Sgm/CjxwXc8qzQRaPvxa7EdHidAplITjJ+OZDJRWdEkEXfur3WMU+DRvElZymEGe0oouNv9FdGi/n31VXCxcItdY9G5Je6fRK2cUfZMpuN4q8zzBBp771TqyfDY3Bs0H+jmqxrSOJx1P9u/gnQ6NW3E1N36b0c7TYybN5U4RjQWkwwabKutHzx2Pt7/UByTdXlo1T77iY2WVv5txtqZhGjwkKB4j4aq6YrpvzIXmbSIa2NNJQHh7/uwIDAQAB",
   "minimum_chrome_version": "120",
-  "permissions": ["nativeMessaging", "tabs"],
-  "background": { "service_worker": "service-worker.js" },
+  "permissions": [
+    "nativeMessaging",
+    "tabs",
+    "debugger"
+  ],
+  "background": {
+    "service_worker": "service-worker.js"
+  },
   "content_scripts": [
-    { "matches": ["<all_urls>"], "run_at": "document_start", "world": "MAIN", "js": ["page.js"] },
-    { "matches": ["<all_urls>"], "run_at": "document_start", "js": ["content.js"] }
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN",
+      "js": [
+        "page.js"
+      ]
+    },
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "run_at": "document_start",
+      "js": [
+        "content.js"
+      ]
+    }
   ]
 }
