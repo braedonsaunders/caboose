@@ -96,7 +96,7 @@ int main() {
         assert(results.next == 5 * perFrame && frames.pending() == 3 * perFrame);  // within half the bound again
         assert(frames.drain(&a, &results) && frames.pending() == 0);
     }
-    // Past 128 KiB of owed replies the oldest are read until half that is owed.
+    // Past 64 KiB of owed reply bytes the oldest are read until half that is owed.
     {
         DeferredReplies wide;
         ByteStream replies;
@@ -117,18 +117,18 @@ int main() {
         assert(wide.pending() == fill / 2 && replies.next == (fill / 2 + 1) * 64 && !replies.invalidated);
         assert(wide.drain(&a, &replies) && replies.next == replies.bytes.size());
     }
-    // However few bytes they are, at most 16384 replies are owed; past that the oldest half
-    // is read.
+    // At most 16384 results are owed (64 KiB); past that the oldest are read until half is.
     {
         DeferredReplies count;
         Stream results;
-        results.replies.assign(deferredReplyLimit + 1, 0);
-        count.add(&a, uint32_t(deferredReplyLimit - 1), 64);
+        const uint32_t most = uint32_t(deferredReplyByteLimit / sizeof(int32_t));
+        assert(most == 16384);
+        results.replies.assign(most + 1, 0);
+        count.add(&a, most, 64);
         assert(count.reserve(&a, &results, 64, deferredByteLimit, [] { return size_t(0); }) && results.next == 0);
-        count.add(&a, 1, 64);  // the bound: the next send waits
-        assert(deferredReplyLimit * sizeof(int32_t) <= deferredReplyByteLimit);
+        count.add(&a, 1, 64);
         assert(count.reserve(&a, &results, 64, deferredByteLimit, [] { return size_t(0); }));
-        assert(results.next == deferredReplyLimit / 2 && count.pending() == deferredReplyLimit / 2);
+        assert(results.next == most / 2 + 1 && count.pending() == most / 2);
         assert(count.drain(&a, &results) && count.pending() == 0);
     }
     // Non-blocking available() inside reserve() consumes already-arrived replies first,

@@ -42,15 +42,15 @@ bool drainDeferredReplies(uint32_t& pending, Stream* stream) {
     return true;
 }
 
-// Deferred commands in flight before their replies must be read, bounded three ways; past
-// any bound a send waits for the oldest replies, down to half of every bound.
-// - Replies owed, 16384: each is one `Reply` (under 80 bytes) kept here, so a process holds
-//   at most about 1.25 MiB of them (only one encoder defers).
-// - Their reply bytes, 128 KiB: replies that have arrived wait unread in the local socket
-//   back to the process, and the broker writes each reply before it reads the phone's next
-//   message, so a full socket would stall it and with it the phone. Linux holds about
-//   200 KiB in an AF_UNIX socket and asyncio 64 KiB more before the broker waits; replies
-//   that have arrived are read without blocking once a little is owed.
+// Deferred commands in flight before their replies must be read, bounded two ways; past
+// either bound a send waits for the oldest replies, down to half of both.
+// - Reply bytes owed, 64 KiB, so at most 16384 replies (each at least a 4-byte result) and
+//   about 1.25 MiB of their `Reply` records (only one encoder defers). Replies that have
+//   arrived wait unread in the local socket back to the process, and the broker writes each
+//   reply before it reads the phone's next message, so a full socket stalls it, and with it
+//   the completion feed the process may be waiting for: a deadlock. The phone's replies come
+//   in many small messages, each costing the socket far more than its bytes; 128 KiB already
+//   deadlocks DXVK. Replies that have arrived are read without blocking once a little is owed.
 // - Command bytes the phone has not answered, 24 MiB: eight frames of a game that sends
 //   3 MiB a frame. The guest keeps none of these bytes: they wait in the broker's queue and
 //   resume window (8 MiB each), the phone's ingress and its decoder's socket, and a send past
@@ -58,8 +58,7 @@ bool drainDeferredReplies(uint32_t& pending, Stream* stream) {
 //   DXVK's frame latency) is what limits the frames in flight; this bound only keeps a burst
 //   of uploads from queueing seconds of decoding ahead of a present or a synchronous call.
 inline constexpr uint64_t deferredByteLimit = 24 * 1024 * 1024;
-inline constexpr uint64_t deferredReplyByteLimit = 128 * 1024;
-inline constexpr size_t deferredReplyLimit = 16384;
+inline constexpr uint64_t deferredReplyByteLimit = 64 * 1024;
 inline constexpr uint64_t deferredReapBytes = 256 * 1024, deferredReapReplyBytes = 4096;
 
 // A fence wait sent right after the submit that signals the fence, so its
@@ -91,14 +90,13 @@ public:
     // Before sending a deferred command of `bytes`: once some commands or replies are owed,
     // consume the replies that have already arrived on the socket without blocking; if still
     // past a bound, drain only the oldest prefix needed to bring the remaining queue within
-    // half of every bound, rather than blocking on the newest just-sent command.
+    // half of both bounds, rather than blocking on the newest just-sent command.
     template<class Stream, class Available>
     bool reserve(const void* encoder, Stream* stream, uint64_t bytes,
                  uint64_t limit, Available available) {
         if (!total_.load(std::memory_order_relaxed)) return true;
         auto fits = [&](const Entry& entry) {
-            return entry.bytes + bytes <= limit && entry.replyBytes <= deferredReplyByteLimit &&
-                   entry.replies.size() < deferredReplyLimit;
+            return entry.bytes + bytes <= limit && entry.replyBytes <= deferredReplyByteLimit;
         };
         bool reapAvailable = false;
         {
@@ -121,13 +119,11 @@ public:
             auto& queued = found->second.replies;
             const uint64_t targetBytes = limit / 2;
             const uint64_t targetReplyBytes = deferredReplyByteLimit / 2;
-            const size_t targetReplies = deferredReplyLimit / 2;
             uint64_t remBytes = found->second.bytes;
             uint64_t remReplyBytes = found->second.replyBytes;
             size_t count = 0;
             while (count < queued.size() &&
-                   (count == 0 || remBytes + bytes > targetBytes || remReplyBytes > targetReplyBytes ||
-                    queued.size() - count > targetReplies)) {
+                   (count == 0 || remBytes + bytes > targetBytes || remReplyBytes > targetReplyBytes)) {
                 const uint64_t w = wireSize(queued[count]);
                 remBytes -= std::min(remBytes, queued[count].bytes);
                 remReplyBytes -= std::min(remReplyBytes, w);
