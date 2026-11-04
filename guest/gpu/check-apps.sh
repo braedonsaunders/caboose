@@ -85,6 +85,7 @@ expect_env LIBGL_KOPPER_DRI2 1
 expect_env ZINK_DESCRIPTORS lazy
 ! grep -q "^MESA_LOADER_DRIVER_OVERRIDE=" "$out/display.env" || fail "launch environment forces a Mesa driver"
 expect_env MESA_GL_VERSION_OVERRIDE 4.5COMPAT
+expect_env MESA_GLES_VERSION_OVERRIDE 3.2
 expect_env CABOOSE_GPU_EXECUTOR_SWITCH 1
 expect_env GALLIUM_DRIVER zink
 
