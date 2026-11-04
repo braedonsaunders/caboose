@@ -123,7 +123,8 @@ The picture is enlarged and greyed first (ImageMagick) and read as sparse text.
 A Wayland window that draws its own shadow is measured from the corner its toolkit uses:
 GTK 3 reports positions from the surface, shadow included, and GTK 4 from the window inside
 it. The top-level accessible's size says which. An X11 window that
-does not report its process is matched to the one application with a window of its title.
+does not report its process gets it from the X server (X-Resource), else is matched to the one
+application with a window of its title.
 
 These tools are the seat's assistive technology, and say so: before the first read and
 before each launch the server sets `org.a11y.Status.ScreenReaderEnabled` on the seat's

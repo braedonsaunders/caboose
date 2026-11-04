@@ -54,6 +54,10 @@ install_npm() {
 install_npm '@anthropic-ai/claude-code@2.1.312' 'sha512-/gx8byG8VOm4YoNuT5tal/Ov5Z5oydJzZkmHCJcBFLbNGGpyYDbKA/CNdB+iIKwcLQC8pVwBoj6Dt7H3L2J5bw=='
 install_npm '@openai/codex@0.165.0' 'sha512-aiwtQVp2KBhJld966CuU5bVfQ46VNB4mNTl6giX3WGZdt4euI3tv2RUqJpnupPNA8DXHg2z+RoQ0Zfw87dy8Lw=='
 install_npm '@google/gemini-cli@0.66.0' 'sha512-EAtsJ9/JxiphHlduzvhoCkb7I0LdOxyugB5NpUtVqKVGZIWjV3JmurvK89ZrvMbV3kwk5SdWINz1M5ZN/2K/Lw=='
+# The phone sets the display's size, so Xfce's display settings (which also need an output
+# management protocol the compositor does not offer) are hidden from the menu and the app list.
+install -d /usr/local/share/applications
+printf '[Desktop Entry]\nType=Application\nName=Display\nHidden=true\n' > /usr/local/share/applications/xfce-display-settings.desktop
 # Debian renames these binaries to avoid collisions with other packages.
 for mapping in bat:batcat fd:fdfind; do
   name=${mapping%%:*}; target=${mapping#*:}
