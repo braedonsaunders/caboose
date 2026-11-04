@@ -2572,7 +2572,7 @@ its actions. Their observation and action contract:
 | Tool | Does |
 | --- | --- |
 | `look` | The focused window's controls (id, role, name, value, states), optionally only those whose name matches, with its readable text, or with every window |
-| `act` | 1–30 steps in order (press, set, key, type, click, scroll, drag, focus, wait, launch), stopping at the first failure, then what changed |
+| `act` | 1–30 steps in order (press, set, key, type, click, scroll, drag, focus, wait, launch, tool), stopping at the first failure, then what changed |
 | `screenshot` | PNG of the seat or one window; `marks` numbers the controls on it and lists their ids and centres |
 
 Three tools with short definitions, because they go to the model on every turn; the
@@ -2600,6 +2600,16 @@ Its native messaging host listens on `$XDG_RUNTIME_DIR/caboose-webmcp/<browser p
 desktop MCP reaches it through the focused window's process, so `look` lists the page's
 tools and an `act` step `{"tool": name, "args": {...}}` calls one. A page's tool is the page's
 code: its results are the page's word, like its text.
+
+**Direct tools.** `look` also lists what the focused application offers through its own
+interfaces, and the same `tool` step calls it, so an agent can skip the GUI: its GApplication
+actions on its D-Bus names, its desktop entry's actions, its MPRIS player, `FileManager1`, its
+GSettings schemas and xfconf channel (typed and range-checked), its document through
+LibreOffice's UNO (the launcher opens the seat's UNO pipe), and, in Chromium, its tabs and a
+DevTools `evaluate` through the extension (`chrome.debugger`, attached for the one command).
+File tools work inside the agent profile's home only. `direct.py` finds all of them by
+general mechanisms, with the seat's launch environment, so they reach only the agent seat's
+session bus, settings and home.
 
 Controls include a bounded optional `value` for editable fields, selections and numeric
 controls. Password and sensitive fields omit it. Values do not enter element ID

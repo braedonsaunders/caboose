@@ -270,6 +270,15 @@ def gtk_actions(names):
     return tools
 
 
+def _state(name, path, action):
+    try:
+        reply = bus().call_sync(name, path, 'org.gtk.Actions', 'Describe', _v('(s)', (action,)), None, 0, 3000, None)
+        state = reply.get_child_value(0).get_child_value(2)
+        return state.get_child_value(0).get_child_value(0).unpack() if state.n_children() else None
+    except Exception:
+        return None
+
+
 def _state_type(name, path, action):
     try:
         _, GLib = _gi()
@@ -286,9 +295,19 @@ def gtk_call(spec, args):
     empty = GLib.Variant('a{sv}', {})
     if stateful and not param and 'state' in args:
         kind = _state_type(name, path, action) or 'b'
-        bus().call_sync(name, path, 'org.gtk.Actions', 'SetState',
-                        GLib.Variant.new_tuple(GLib.Variant('s', action), GLib.Variant('v', to_variant(kind, args['state'])), empty), None, 0, 5000, None)
-        return f'Set {action} to {json.dumps(args["state"])}.'
+        wanted = to_variant(kind, args['state'])
+        if _state(name, path, action) == wanted.unpack():
+            return f'{action} is already {json.dumps(wanted.unpack())}.'
+        # A toggle goes through the application's own handler, as its menu item does: SetState
+        # alone changes the action's state without what the application does on a change (a
+        # setting it writes). Activating toggles a boolean; SetState covers the rest.
+        if kind == 'b':
+            bus().call_sync(name, path, 'org.gtk.Actions', 'Activate',
+                            GLib.Variant.new_tuple(GLib.Variant('s', action), GLib.Variant('av', []), empty), None, 0, 5000, None)
+        if _state(name, path, action) != wanted.unpack():
+            bus().call_sync(name, path, 'org.gtk.Actions', 'SetState',
+                            GLib.Variant.new_tuple(GLib.Variant('s', action), GLib.Variant('v', wanted), empty), None, 0, 5000, None)
+        return f'Set {action} to {json.dumps(wanted.unpack())}.'
     values = [GLib.Variant('v', to_variant(param, args.get('value')))] if param else []
     bus().call_sync(name, path, 'org.gtk.Actions', 'Activate',
                     GLib.Variant.new_tuple(GLib.Variant('s', action), GLib.Variant('av', values), empty), None, 0, 5000, None)

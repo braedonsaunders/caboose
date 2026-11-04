@@ -29,6 +29,12 @@ python3 run.py --mode native --model claude-sonnet-5-5 --output native.jsonl \
 `CABOOSE_AGENT_PROFILE=/tmp/caboose-bench` makes the run directory the server's agent profile,
 so an application the agent launches has the same home as the task's files.
 
+`repeat.sh OUT-DIR [N] [MODEL]` (with `EXEC` and `MCP` set as above, `MCP` with
+`CABOOSE_DESKTOP_TRACE=/tmp/caboose-bench-trace.jsonl`) runs every task N times, native then
+pixels each round, and writes `summary.md` with `summarize.py`, which totals any record files
+per set (single-application, `flow-`, `direct-`) and mode, then each task. `results/` keeps
+the summaries of the runs reported.
+
 `--trace FILE` names the `CABOOSE_DESKTOP_TRACE` file the `--mcp` server writes inside the
 computer; each task's record then has `server` (tool milliseconds, reply characters,
 images, slowest calls). `--mode pixels` runs the baseline through `pixels-only.py`, which offers only
