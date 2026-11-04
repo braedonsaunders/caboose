@@ -205,7 +205,7 @@ final class LiveGPUResumeTests: XCTestCase {
         XCTAssertFalse(LiveGPUConnection.validCredential(String(repeating: "+", count: 43)))
         XCTAssertNotNil(URLSessionWebSocketTask.CloseCode(rawValue: 4001))
         let request = try LiveGPUConnection.makeRequest(hostURL: URL(string: "https://example.com")!, phoneToken: "phone")
-        XCTAssertTrue(request.value(forHTTPHeaderField: "X-Caboose-GPU-Features")!.hasSuffix(",executor-resume,zstd-stream,upload-cache,guest-buffer-views,batched-descriptor-sets"))
+        XCTAssertTrue(request.value(forHTTPHeaderField: "X-Caboose-GPU-Features")!.hasSuffix(",executor-resume,zstd-stream,upload-cache,guest-buffer-views,batched-descriptor-sets,guest-set-ids"))
         XCTAssertNil(request.value(forHTTPHeaderField: "X-Caboose-GPU-Resume"))
     }
 }

@@ -148,6 +148,7 @@ it('forwards only known phone GPU features, normalized', () => {
   expect(gpuFeatures('upload-cache,zstd-stream')).toEqual(['upload-cache', 'zstd-stream'])
   expect(gpuFeatures('upload-cache,guest-buffer-views')).toEqual(['guest-buffer-views', 'upload-cache'])
   expect(gpuFeatures('batched-descriptor-sets,zstd-stream')).toEqual(['batched-descriptor-sets', 'zstd-stream'])
+  expect(gpuFeatures('guest-set-ids,batched-descriptor-sets')).toEqual(['batched-descriptor-sets', 'guest-set-ids'])
   expect(gpuFeatures('completion-feed, guest-handle-arrays,GUEST-HANDLES,ordered-present')).toEqual(['completion-feed', 'guest-handle-arrays', 'guest-handles', 'ordered-present'])
   const client = new WebSocket('ws://test') as ControlledSocket
   void relayGPU(client, { displayURL: 'ws://guest:14600', displayToken: 't', computer: 'owner', executor: 'e', features: ['guest-handles'] })

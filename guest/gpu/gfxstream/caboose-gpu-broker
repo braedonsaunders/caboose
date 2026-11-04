@@ -49,14 +49,17 @@ HELLO_V4 = HELLO[:8] + struct.pack('<II', 4, 0x70) + HELLO[16:]
 # persistent store (docs/gpu-live.md, "Upload cache"), 0x10000 guest-assigned buffer views
 # (requires 0x80), 0x40000 descriptor sets allocated and written in the guest and sent with
 # the next submit in one vkQueueCommitDescriptorSetUpdatesGOOGLE (docs/gpu-live.md, "Batched
-# descriptor sets"). The reply grants the offered features the phone declared.
+# descriptor sets"), 0x100000 descriptor pools whose set ids the guest chooses (requires 0x80;
+# docs/gpu-live.md, "Guest-chosen set ids"). The reply grants the offered features the phone
+# declared.
 HELLO_FEATURES = {'guest-handles': 0x80, 'guest-handle-arrays': 0x100, 'completion-feed': 0x200,
                   'ordered-present': 0x400, 'guest-images': 0x800, 'guest-query-pools': 0x1000,
                   'shader-cache': 0x2000, 'executor-resume': 0x4000, 'upload-cache': 0x8000,
-                  'guest-buffer-views': 0x10000, 'batched-descriptor-sets': 0x40000}
+                  'guest-buffer-views': 0x10000, 'batched-descriptor-sets': 0x40000,
+                  'guest-set-ids': 0x100000}
 # Features that need guest-assigned handles (0x80) granted with them.
 CACHE_SESSION = 0x20000  # broker-local reply trailer, not a native decoder feature
-NEEDS_GUEST_HANDLES = 0x100 | 0x1000 | 0x10000
+NEEDS_GUEST_HANDLES = 0x100 | 0x1000 | 0x10000 | 0x100000
 HELLO_V4_GUEST_HANDLES = HELLO[:8] + struct.pack('<II', 4, 0xF0) + HELLO[16:]
 
 
