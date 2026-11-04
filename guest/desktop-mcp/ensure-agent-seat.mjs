@@ -26,7 +26,14 @@ export function controlAlive(env) {
 export function seatStarter(execute = run, alive = controlAlive, exists = existsSync) {
   let starting, cached
   const read = async () => {
-    const { stdout } = await execute('/usr/bin/python3', ['/opt/caboose/agent-profile.py', 'exec', '/bin/sh', '-c', 'set -a; unset CABOOSE_DISPLAY_CONTROL; . /run/caboose/agent-display.env; env -0'], { timeout: 5000 })
+    // The seat's launch environment, with the profile's home and data, cache and state
+    // directories over the ones the display recorded (those of the default profile). The
+    // configuration directory stays the seat's: its settings services (dconf, xfconf) keep
+    // their files there, and an application must read the settings they write.
+    const keep = 'h=$HOME d=$XDG_DATA_HOME k=$XDG_CACHE_HOME s=$XDG_STATE_HOME'
+    const restore = 'HOME=$h XDG_DATA_HOME=$d XDG_CACHE_HOME=$k XDG_STATE_HOME=$s'
+    const { stdout } = await execute('/usr/bin/python3', ['/opt/caboose/agent-profile.py', 'exec', '/bin/sh', '-c',
+      `set -a; unset CABOOSE_DISPLAY_CONTROL; ${keep}; . /run/caboose/agent-display.env; ${restore}; env -0`], { timeout: 5000 })
     return Object.fromEntries(stdout.split('\0').filter(line => line.includes('=')).map(line => {
       const at = line.indexOf('=')
       return [line.slice(0, at), line.slice(at + 1)]

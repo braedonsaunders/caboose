@@ -1,11 +1,18 @@
 # Sourced inside the computer before a task's setup, verify or reset, as the agent user with
 # the agent seat's environment (/run/caboose/agent-display.env). BENCH is the run directory.
 # The run's own home and data directories: no session restore or recent files carry over
-# from the agent profile or an earlier task. Settings stay with the seat's settings services
-# (dconf, xfconf), which tasks reset themselves.
+# from the agent profile or an earlier task. The run directory is the agent profile of the
+# desktop server too (CABOOSE_AGENT_PROFILE=$BENCH in --mcp), so applications the agent
+# launches share this home. Configuration (XDG_CONFIG_HOME) stays the seat's, with its
+# settings services (dconf, xfconf), which tasks reset themselves.
 export HOME="$BENCH/home" XDG_DATA_HOME="$BENCH/home/.local/share" XDG_CACHE_HOME="$BENCH/home/.cache" \
   XDG_STATE_HOME="$BENCH/home/.local/state"
-mkdir -p "$HOME"
+(umask 077; mkdir -p "$HOME/.config" "$HOME/.local/share" "$HOME/.local/state" "$HOME/.cache")
+# The seat's installed software stays the agent profile's, as desktop MCP's launch keeps it:
+# its user Flatpak installation and its Wine prefix.
+AGENT_HOME=/home/caboose/.local/share/caboose/agent-seat/home
+[ -d "$AGENT_HOME/.local/share/flatpak" ] && export FLATPAK_USER_DIR="$AGENT_HOME/.local/share/flatpak"
+[ -d "$AGENT_HOME/.wine" ] && export WINEPREFIX="$AGENT_HOME/.wine"
 TOOLS=${TOOLS:-/opt/caboose}  # where desktop MCP's helpers are installed
 SEAT=$TOOLS/seat.py
 # Start an application on the agent seat as desktop MCP's launch does, after announcing the
@@ -37,6 +44,29 @@ wait_window() {
   done
   windows; return 1
 }
+# The agent profile's LibreOffice profile, emptied between tasks: its document recovery would
+# carry one task's unsaved documents into the next.
+fresh_office() { rm -rf "${XDG_CONFIG_HOME:-$HOME/.config}/libreoffice"; }
+# The document portal's entries for this run's files: they outlive the run directory, and a
+# later task's file of the same path would reach an app through the stale one.
+forget_documents() {
+  flatpak documents --columns=id,origin 2>/dev/null | while read -r id origin; do
+    case "$origin" in "$BENCH"/*) flatpak document-unexport --doc-id "$id" >/dev/null 2>&1 ;; esac
+  done; true
+}
+# The seat's services started by D-Bus (the file dialogs of xdg-desktop-portal-gtk) take the
+# run's home too: the agent bus's activation environment is pointed at it, and an agent-seat
+# dialog service already running is ended so the next one starts with it. restore_home points
+# it back at the agent profile.
+seat_home() {
+  gdbus call --session --dest org.freedesktop.DBus --object-path /org/freedesktop/DBus --method org.freedesktop.DBus.UpdateActivationEnvironment \
+    "{'HOME': '$1', 'XDG_DATA_HOME': '$1/.local/share', 'XDG_CACHE_HOME': '$1/.cache', 'XDG_STATE_HOME': '$1/.local/state'}" >/dev/null
+  for pid in $(pgrep -u "$(id -u)" -x xdg-desktop-por); do
+    tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | grep -qx CABOOSE_SEAT=agent && grep -q portal-gtk "/proc/$pid/cmdline" && kill "$pid"
+  done; true
+}
+use_run_home() { seat_home "$HOME"; }
+restore_home() { seat_home "$AGENT_HOME"; }
 # End every process on the agent seat's windows, and anything still running from this run.
 end_apps() {
   for pid in $(windows | python3 -c 'import json, sys; print(" ".join({str(w["pid"]) for w in json.load(sys.stdin)["windows"] if w.get("pid")}))'); do kill "$pid" 2>/dev/null; done

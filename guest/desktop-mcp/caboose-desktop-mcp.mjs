@@ -29,6 +29,7 @@ const PAGE_TOOLS = process.env.CABOOSE_DESKTOP_PAGE_TOOLS !== '0'
 const A11Y = fileURLToPath(new URL('./a11y.py', import.meta.url))
 const SEAT = fileURLToPath(new URL('./seat.py', import.meta.url))
 const LAUNCHER = fileURLToPath(new URL('./launcher.py', import.meta.url))
+const DIRECT = fileURLToPath(new URL('./direct.py', import.meta.url))
 // What a launched app needs to build its accessibility tree: GTK's bridge must not be
 // switched off (NO_AT_BRIDGE, GTK_A11Y=none), Chromium and Electron read
 // ACCESSIBILITY_ENABLED, Gecko GNOME_ACCESSIBILITY, Qt QT_LINUX_ACCESSIBILITY_ALWAYS_ON.
@@ -43,18 +44,20 @@ const tools = [
   {
     name: 'look',
     description: 'The focused window\'s controls from its accessibility tree, one per line: id role "name" = value [states], '
-      + 'and in a browser the page\'s tools. find: only controls whose name contains it. text: also the window\'s readable text '
-      + '(documents, pages, terminals). windows: every window, with its id and position.',
-    inputSchema: { type: 'object', properties: { find: { type: 'string' }, text: { type: 'boolean' }, windows: { type: 'boolean' } } },
+      + 'the page\'s tools in a browser, and the app\'s direct tools. find: only controls and direct tools whose name contains it. text: also the window\'s readable text '
+      + '(documents, pages, terminals). windows: every window, with its id and position. ocr: also the words read from the '
+      + 'window\'s pixels with their positions, for areas the controls leave out (icon views, canvases).',
+    inputSchema: { type: 'object', properties: { find: { type: 'string' }, text: { type: 'boolean' }, windows: { type: 'boolean' }, ocr: { type: 'boolean' } } },
   },
   {
     name: 'act',
     description: 'Run steps in order, stopping at the first failure; then reply with what changed (+ added, ~ changed, - removed '
-      + 'controls; windows opened or closed). Put every step you already know in one call. A step is one of: {"press":id} '
-      + '{"set":id,"text":t} replaces a field\'s text, {"key":"ctrl+s"}, {"type":t}, {"click":[x,y],"button":1-3,"count":1-3}, '
+      + 'controls; windows opened or closed). Put every step you already know in one call; a control in a dialog that an earlier '
+      + 'step opens can be named instead of given by id ({"name":"Save","role":"button"}). A step is one of: {"press":id} '
+      + '{"set":id,"text":t} replaces a field\'s text (plain; type keeps formatting), {"key":"ctrl+s"}, {"type":t}, {"click":[x,y],"button":1-3,"count":1-3}, '
       + '{"scroll":[x,y],"dy":n}, {"drag":[x1,y1,x2,y2]}, {"focus":window}, {"launch":"command"}, '
-      + '{"tool":name,"args":{...}} calls a page tool. Every step waits for the application to react, so wait steps '
-      + '({"wait":ms}) are rarely needed.',
+      + '{"tool":name,"args":{...}} calls a page tool or a direct tool (look lists the app\'s; files.list|read|write|copy|'
+      + 'move|mkdir|trash|extract in the home always work). Direct tools skip the GUI: prefer them. Steps wait for the app to react; {"wait":ms} is rarely needed.',
     inputSchema: { type: 'object', properties: { steps: { type: 'array', items: { type: 'object' } } }, required: ['steps'] },
   },
   {
@@ -79,6 +82,7 @@ function text(value, name, max) {
 const observer = new Observer()
 const a11yWorker = new Worker(A11Y, [`--display=${DISPLAY}`], 30_000)
 const seatWorker = new Worker(SEAT)
+const directWorker = new Worker(DIRECT, [], 60_000)
 let seatEnvironment
 // These tools are the seat's assistive technology, and say so on its accessibility bus as a
 // screen reader does: Chromium, Electron and other toolkits that build their full tree only
@@ -94,6 +98,7 @@ async function workerRequest(worker, request) {
   if (ready !== seatEnvironment) {
     a11yWorker.close()
     seatWorker.close()
+    directWorker.close()
     seatEnvironment = ready
     await announceAssistiveTechnology(ready)
   }
@@ -125,12 +130,16 @@ async function view(full) {
   // raced the focus change describes the window before: read again, for up to 1.5 s, until
   // the read is of the focused window and, for one not seen before, shows controls.
   const stale = () => {
-    const focused = listing.windows.find(w => w.id === listing.focused)
+    // The read describes the window an open menu or tooltip belongs to, as a11y.py does.
+    let focused = listing.windows.find(w => w.id === listing.focused)
+    for (let hops = 0; focused?.kind === 'popup' && focused.parent != null && hops < 8; hops++)
+      focused = listing.windows.find(w => w.id === focused.parent) ?? focused
     if (!focused) return false
     if ((state.window?.title ?? '') !== (focused.title ?? '')) return true
     return !(state.elements ?? []).length && !observer.seen.has(listing.focused)
   }
-  for (let retry = 0; retry < 15 && stale(); retry++) {
+  const deadline = performance.now() + 1500
+  while (performance.now() < deadline && stale()) {
     await new Promise(resolve => setTimeout(resolve, 100))
     state = JSON.parse((await a11y('elements', {}))[0].text)
     listing = await seat('windows')
@@ -160,9 +169,71 @@ async function pixelFallback() {
     await rm(dir, { recursive: true, force: true })
   }
 }
-function ocr(file, rect, width, height) {
+// The focused window's words read from its pixels (OCR), with their centres in seat coordinates.
+async function windowWords() {
+  const listing = await seat('windows')
+  const window = listing.windows.find(w => w.id === listing.focused)
+  if (!window) return 'No window has the keyboard.'
+  const dir = await mkdtemp(join(tmpdir(), 'caboose-shot-'))
+  try {
+    const file = join(dir, 'window.png')
+    const shot = await seat('screenshot', '--out', file, '--window', String(window.id))
+    const png = await readFile(file)
+    const words = await ocr(file, shot.rect, png.readUInt32BE(16), png.readUInt32BE(20))
+    return words ? `Text read from pixels (OCR; x,y are seat coordinates of each line's centre):\n${words}` : 'No text was read from pixels.'
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+}
+// Scrolled areas the application draws but leaves out of its tree (a11y.py's `unread`: a
+// list or icon view a toolkit does not expose): their words read from the window's pixels.
+async function unreadWords(regions) {
+  const listing = await seat('windows')
+  const window = listing.windows.find(w => w.id === listing.focused)
+  if (!window) return ''
+  const dir = await mkdtemp(join(tmpdir(), 'caboose-shot-'))
+  try {
+    const file = join(dir, 'window.png')
+    const shot = await seat('screenshot', '--out', file, '--window', String(window.id))
+    const png = await readFile(file)
+    const [x0, y0, w, h] = shot.rect ?? [0, 0, png.readUInt32BE(16), png.readUInt32BE(20)]
+    const sx = png.readUInt32BE(16) / w, sy = png.readUInt32BE(20) / h
+    const lines = []
+    for (const [index, [x, y, rw, rh]] of regions.entries()) {
+      const crop = { x: Math.max(0, Math.round((x - x0) * sx)), y: Math.max(0, Math.round((y - y0) * sy)), w: Math.round(rw * sx), h: Math.round(rh * sy) }
+      if (crop.w < 8 || crop.h < 8) continue
+      const out = join(dir, `region-${index}.png`)
+      const done = await new Promise(resolve => {
+        const child = spawn('convert', [file, '-crop', `${crop.w}x${crop.h}+${crop.x}+${crop.y}`, '+repage', '-colorspace', 'Gray', '-resize', '200%', out], { stdio: 'ignore' })
+        child.on('error', () => resolve(false))
+        child.on('close', code => resolve(code === 0))
+      })
+      if (!done) continue
+      const words = await read(out, [x, y, rw, rh], crop.w * 2, crop.h * 2)
+      if (words) lines.push(`In ${x},${y},${rw}x${rh}, drawn but not exposed by the application (read from pixels; x,y are each line's centre):\n${words}`)
+    }
+    return lines.join('\n')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+}
+// Small interface text reads better enlarged and in grey (ImageMagick, where installed), and
+// as sparse text rather than a page (tesseract --psm 11).
+function enlarge(file) {
   return new Promise(resolve => {
-    const child = spawn('tesseract', [file, '-', 'tsv'], { stdio: ['ignore', 'pipe', 'ignore'] })
+    const out = file.replace(/\.png$/, '-x2.png')
+    const child = spawn('convert', [file, '-colorspace', 'Gray', '-resize', '200%', out], { stdio: 'ignore' })
+    child.on('error', () => resolve(null))
+    child.on('close', code => resolve(code === 0 ? out : null))
+  })
+}
+async function ocr(file, rect, width, height) {
+  const enlarged = await enlarge(file)
+  return read(enlarged ?? file, rect, enlarged ? width * 2 : width, enlarged ? height * 2 : height)
+}
+function read(file, rect, width, height) {
+  return new Promise(resolve => {
+    const child = spawn('tesseract', [file, '-', '--psm', '11', 'tsv'], { stdio: ['ignore', 'pipe', 'ignore'] })
     let out = ''
     child.stdout.on('data', chunk => { out += chunk })
     child.on('error', () => resolve(''))
@@ -172,7 +243,9 @@ function ocr(file, rect, width, height) {
       const lines = new Map()
       for (const row of out.split('\n').slice(1)) {
         const f = row.split('\t')
-        if (f.length < 12 || !f[11].trim() || Number(f[10]) < 50) continue
+        // Words only: textures and icons read as stray symbols at low confidence. A short
+        // name with digits ("p1") counts when it is read with high confidence.
+        if (f.length < 12 || Number(f[10]) < 70 || !(/[\p{L}]{3,}|\p{N}{2,}/u.test(f[11]) || (Number(f[10]) >= 85 && /\p{L}[\p{L}\p{N}]|\p{N}\p{L}/u.test(f[11])))) continue
         const key = `${f[2]}.${f[3]}.${f[4]}`
         const line = lines.get(key) ?? { words: [], left: Infinity, top: Infinity, right: 0, bottom: 0 }
         line.words.push(f[11].trim())
@@ -278,8 +351,26 @@ async function stale(action) {
 async function step(s) {
   if (!s || typeof s !== 'object') throw new Error('a step is an object such as {"press":"e3"}')
   if ('press' in s || 'set' in s) {
-    const id = element('press' in s ? s.press : s.set)
-    await inFocusedWindow(id)
+    const target = 'press' in s ? s.press : s.set
+    // A control named rather than given by id is found when the step runs, in whatever window
+    // has focus then, so one act can go through a dialog that the steps before it open.
+    let id
+    if (target && typeof target === 'object') {
+      // The accessibility tree can still describe the window that had focus a moment ago (a
+      // dialog an earlier step opened is mapping): look again until the name is in the window
+      // that has focus.
+      const deadline = performance.now() + 1500
+      for (;;) {
+        id = await byName(target)
+        try { await inFocusedWindow(id); break } catch (error) {
+          if (performance.now() > deadline) throw error
+          await new Promise(resolve => setTimeout(resolve, 100))
+        }
+      }
+    } else {
+      id = element(target)
+      await inFocusedWindow(id)
+    }
     if ('press' in s) { await stale(() => a11y('act', { element: id, action: 'press' })); return }
     if (typeof s.text !== 'string' || s.text.length > 100_000) throw new Error('set needs text, a string of at most 100000 characters')
     const { note } = JSON.parse((await stale(() => a11y('act', { element: id, action: 'set-text', text: s.text })))[0].text)
@@ -323,8 +414,14 @@ async function step(s) {
     if (left > 0) await new Promise(resolve => setTimeout(resolve, left))
   } else if ('tool' in s) {
     const name = text(s.tool, 'tool', 200)
-    if (!PAGE_TOOLS) throw new Error('page tools are off (CABOOSE_DESKTOP_PAGE_TOOLS=0)')
     if (s.args !== undefined && (typeof s.args !== 'object' || s.args === null || Array.isArray(s.args))) throw new Error('args must be an object')
+    if (DIRECT_GROUPS.test(name)) {
+      if (!DIRECT_TOOLS) throw new Error('direct tools are off (CABOOSE_DESKTOP_DIRECT_TOOLS=0)')
+      if (name.startsWith('terminal.')) return `${name}: ${await terminalTool(name, s.args ?? {})}`
+      const { result } = await workerRequest(directWorker, { op: 'call', window: await focusedWindow(), name, args: s.args ?? {} })
+      return `${name}: ${String(result).slice(0, 20000)}`
+    }
+    if (!PAGE_TOOLS) throw new Error('page tools are off (CABOOSE_DESKTOP_PAGE_TOOLS=0)')
     const pid = await focusedPid()
     let reply
     try { reply = await pageRequest(pid, { op: 'call', name, args: s.args ?? {} }) } catch { throw new Error('the focused window offers no page tools') }
@@ -339,18 +436,143 @@ async function step(s) {
   } else throw new Error('unknown step; use press, set, key, type, click, scroll, drag, focus, wait, launch or tool')
 }
 
+// Direct tools (direct.py): what the focused window's application, or the system, does
+// without its GUI, as typed tools. Their names start with a group; page tools have none.
+const DIRECT_GROUPS = /^(files|app|win|kde|desktop|media|folder|settings|doc|browser|chooser|terminal)\./
+const DIRECT_TOOLS = env.CABOOSE_DESKTOP_DIRECT_TOOLS !== '0'
+async function focusedWindow() {
+  const listing = await seat('windows')
+  let window = listing.windows.find(w => w.id === listing.focused)
+  for (let hops = 0; window?.kind === 'popup' && window.parent != null && hops < 8; hops++)
+    window = listing.windows.find(w => w.id === window.parent) ?? window
+  return window ? { pid: window.pid, app_id: window.app_id, desktop_id: window.desktop_id, title: window.title } : null
+}
+async function directTools() {
+  if (!DIRECT_TOOLS) return []
+  const window = await focusedWindow()
+  if (!window) return []
+  const tools = (await workerRequest(directWorker, { op: 'list', window })).tools ?? []
+  return [...tools, ...(await hasTerminal() ? TERMINAL_TOOLS : [])]
+}
+// A terminal in the focused window (VTE and other toolkits' terminal role): its session as
+// text, and a command run in it with its output back once the output stops changing.
+const TERMINAL_TOOLS = [
+  { name: 'terminal.read', params: { 'tail?': 'integer' }, description: "The terminal's text (its last tail characters, default 4000)" },
+  { name: 'terminal.run', params: { command: 'string', 'timeout?': 'seconds' },
+    description: 'Type a command and Return in this terminal; returns its output once the terminal stops changing (or timeout, default 30)' },
+]
+async function hasTerminal() {
+  const { elements } = JSON.parse((await a11y('elements', {}))[0].text)
+  return (elements ?? []).some(e => e.role === 'terminal')
+}
+async function terminalText() {
+  return JSON.parse((await a11y('text', {}))[0].text).text ?? ''
+}
+async function terminalTool(name, args) {
+  if (!await hasTerminal()) throw new Error('the focused window has no terminal')
+  if (name === 'terminal.read') {
+    const tail = Number.isInteger(args.tail) && args.tail > 0 ? Math.min(args.tail, 20000) : 4000
+    return (await terminalText()).trimEnd().slice(-tail)
+  }
+  if (name !== 'terminal.run') throw new Error(`no direct tool ${name}`)
+  const command = text(args.command, 'command', 10000)
+  if (command.includes('\n')) throw new Error('command must be one line')
+  const timeout = Math.min(Math.max(Number(args.timeout) || 30, 1), 600) * 1000
+  const before = await terminalText()
+  await step({ type: command + '\n' })
+  const deadline = performance.now() + timeout
+  let last = before, stableSince = performance.now(), changed = false
+  while (performance.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, 250))
+    const now = await terminalText()
+    if (now !== last) { last = now; stableSince = performance.now(); changed = true }
+    else if (changed && performance.now() - stableSince > 1000) break
+  }
+  const at = last.lastIndexOf(command)
+  const output = (at >= 0 ? last.slice(at + command.length) : last.slice(before.length)).replace(/^\s*\n/, '').trimEnd()
+  const finished = performance.now() < deadline
+  return (finished ? '' : `(still running after ${timeout / 1000} s) `) + (output.slice(-8000) || '(no output)')
+}
+const toolLine = t => `${t.name}(${Object.entries(t.params ?? {}).map(([k, v]) => `${k}: ${v}`).join(', ')}) — ${t.description}`
+// The focused application's direct tools, in full the first time `look` shows them.
+const shownDirect = new Map()
+async function directLines() {
+  const tools = await directTools()
+  if (!tools.length) return ''
+  const window = await focusedWindow()
+  const key = `${window?.pid}:${window?.app_id}`
+  const names = tools.map(t => t.name).join(' ')
+  if (shownDirect.get(key) === names) return `Direct tools of ${window?.app_id ?? 'this app'}: the ${tools.length} listed before.`
+  shownDirect.set(key, names)
+  const actions = tools.filter(t => /^(app|win|kde)\./.test(t.name))
+  const others = tools.filter(t => !/^(app|win|kde)\./.test(t.name))
+  const lines = [`Direct tools of ${window?.app_id ?? 'this app'} (no GUI needed; act {"tool":name,"args":{…}}):`, ...others.map(toolLine)]
+  if (actions.length) {
+    // Grouped by their name up to the last dot, each with its argument: (state) for a toggle
+    // (state: true|false), (type) for one taking a value.
+    const groups = new Map()
+    for (const t of actions) {
+      const at = t.name.lastIndexOf('.')
+      const arg = t.params?.value ? `(${t.params.value})` : t.params?.['state?'] ? '(state)' : ''
+      const key = t.name.slice(0, at)
+      groups.set(key, [...(groups.get(key) ?? []), t.name.slice(at + 1) + arg])
+    }
+    // Within about 1500 characters; a group too long for the room left shows its first names.
+    let shown = '', left = 0
+    for (const [prefix, names] of groups) {
+      const room = 1500 - shown.length
+      if (room < 80) { left += names.length; continue }
+      let kept = names
+      const render = list => list.length > 1 ? `${prefix}.{${list.join(',')}${list.length < names.length ? ',…' : ''}}` : `${prefix}.${list[0]}`
+      while (kept.length > 1 && render(kept).length > room) kept = kept.slice(0, Math.max(1, Math.floor(kept.length * 0.8)))
+      shown += (shown ? ' ' : '') + render(kept)
+      left += names.length - kept.length
+    }
+    lines.push(`D-Bus actions (GApplication, KDE; no args; (state) takes {"state":true|false}, (type) {"value":…}): ${shown}`
+      + (left ? ` and ${left} more (look find lists them)` : ''))
+  }
+  return lines.join('\n')
+}
+// The one control of the focused window with this name (and role, when given). A window that
+// is still opening is read again, for up to 1.5 s.
+async function byName({ name, role }) {
+  if (typeof name !== 'string' || !name) throw new Error('a named control needs a name, e.g. {"name":"Save","role":"button"}')
+  const deadline = performance.now() + 1500
+  for (;;) {
+    const { elements } = JSON.parse((await a11y('find', { query: name }))[0].text)
+    const match = (elements ?? []).filter(e => (e.name ?? '').replace(/[\s:]+$/, '').toLowerCase() === name.replace(/[\s:]+$/, '').toLowerCase()
+      && (!role || e.role === role || e.role.endsWith(` ${role}`)))
+    if (match.length === 1) return match[0].id
+    if (match.length > 1) throw new Error(`more than one ${role ?? 'control'} "${name}" in the window; use its id from look`)
+    if (performance.now() > deadline) throw new Error(`no ${role ?? 'control'} "${name}" in the focused window`)
+    await new Promise(resolve => setTimeout(resolve, 100))
+  }
+}
+
 const handlers = {
-  async look({ find, text: withText = false, windows = false } = {}) {
+  async look({ find, text: withText = false, windows = false, ocr: withOcr = false } = {}) {
     const parts = []
     if (windows) parts.push(windowLines((await seat('windows')).windows))
     if (find !== undefined) {
       const { elements, note } = JSON.parse((await a11y('find', { query: text(find, 'find', 500) }))[0].text)
       const lines = (elements ?? []).map(e => observer.line(observer.short(e.id), e))
+      const query = find.toLowerCase()
+      const tools = (await directTools().catch(() => [])).filter(t => t.name.toLowerCase().includes(query)).map(toolLine)
+      if (tools.length) lines.push('Direct tools:', ...tools)
       parts.push(lines.length ? lines.join('\n') : (note ?? 'No control matches.'))
     } else {
       parts.push(await view(true))
       const tools = await pageTools()
       if (tools) parts.push(tools)
+      // The files and folders the window works on, so paths need no guessing.
+      const where = DIRECT_TOOLS ? await focusedWindow().then(window => window && workerRequest(directWorker, { op: 'where', window })).catch(() => null) : null
+      if (where?.paths?.length) parts.push(`Its files: ${where.paths.join(', ')}`)
+      const direct = await directLines().catch(() => '')
+      if (direct) parts.push(direct)
+      if (lastState?.unread?.length) {
+        const words = await unreadWords(lastState.unread).catch(() => '')
+        if (words) parts.push(words)
+      }
       if (lastState?.note && !(lastState.elements ?? []).length && lastState.window) {
         const pictured = await pixelFallback().catch(() => [])
         if (pictured.length) return [{ type: 'text', text: parts.join('\n') }, ...pictured]
@@ -360,10 +582,13 @@ const handlers = {
       const { text: readable } = JSON.parse((await a11y('text', {}))[0].text)
       parts.push(`Text:\n${readable ?? ''}`)
     }
+    if (withOcr) parts.push(await windowWords().catch(error => `No text could be read from pixels: ${error.message}`))
     return [{ type: 'text', text: parts.join('\n') }]
   },
   async act({ steps, observe = true }) {
     if (!Array.isArray(steps) || steps.length < 1 || steps.length > 30) throw new Error('steps must hold 1–30 steps')
+    let windowsBefore = null
+    try { windowsBefore = new Set((await seat('windows')).windows.map(w => w.id)) } catch {}
     let done = 0, error
     const notes = []
     let after
@@ -376,17 +601,37 @@ const handlers = {
         if (after === 'type' && s && typeof s === 'object' && !('wait' in s)) {
           await seat('settle', 'quiet', ...(actedAt === undefined ? [] : [String(actedAt)]))
         }
+        // A shortcut's command can run after the key event, once the application gets to it
+        // (LibreOffice's ctrl+b): let it react before more input, or the text typed next can
+        // arrive first.
+        if (after === 'shortcut' && s && typeof s === 'object' && ('type' in s || 'key' in s)) {
+          await seat('settle', 'react', ...(actedAt === undefined ? [] : [String(actedAt)]))
+        }
         const began = performance.now()
         const note = await step(s); if (note) notes.push(note); done++
-        timing.push(`${Object.keys(s ?? {})[0]}:${Math.round(performance.now() - began)}`)
-        after = s && typeof s === 'object' && 'type' in s ? 'type' : undefined
+        timing.push(`${Object.keys(s ?? {})[0]}${s && typeof s.tool === 'string' ? `=${s.tool}` : ''}:${Math.round(performance.now() - began)}`)
+        after = s && typeof s === 'object' && 'type' in s ? 'type'
+          : s && typeof s === 'object' && typeof s.key === 'string' && /(^|\+)(ctrl|alt|super|control|meta)\+/i.test(s.key) ? 'shortcut' : undefined
       } catch (e) { error = e.message; break }
     }
     const head = done === steps.length ? (steps.length > 1 ? `Done ${done} steps.` : 'Done.') : `Did ${done} of ${steps.length}; stopped: ${error}`
     const content = [head + (notes.length ? ` (${notes.join('; ')})` : '')]
     if (observe) {
       const began = performance.now()
-      try { content.push(await changes()) } catch (e) { content.push(`Could not read the window: ${e.message}`) }
+      try {
+        let seen = await changes()
+        // An application busy building a window (a first file chooser can take seconds) draws
+        // nothing until it maps: after a press, key or click that changed nothing, wait a little
+        // for a new window before saying so.
+        if (seen === 'No change.' && windowsBefore && done && steps.slice(0, done).some(x => x && typeof x === 'object' && ('press' in x || 'key' in x || 'click' in x))) {
+          const deadline = performance.now() + 2500
+          while (performance.now() < deadline) {
+            await new Promise(resolve => setTimeout(resolve, 100))
+            if ((await seat('windows')).windows.some(w => !windowsBefore.has(w.id))) { seen = await changes(); break }
+          }
+        }
+        content.push(seen)
+      } catch (e) { content.push(`Could not read the window: ${e.message}`) }
       timing.push(`observe:${Math.round(performance.now() - began)}`)
     }
     lastTiming = timing
@@ -454,7 +699,7 @@ lines.on('line', line => {
   queue = queue.then(() => handle(message))
 })
 
-const close = () => { a11yWorker.close(); seatWorker.close() }
+const close = () => { a11yWorker.close(); seatWorker.close(); directWorker.close() }
 lines.on('close', () => { void queue.finally(close) })
 process.on('SIGTERM', () => { close(); process.exit(0) })
 process.on('SIGINT', () => { close(); process.exit(0) })

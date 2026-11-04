@@ -12,6 +12,7 @@ export class Observer {
     this.next = 1
     this.windows = null // last window listing, by id
     this.seen = new Map() // window id -> (short id -> rendered line) of its last observation
+    this.described = new Map() // full element id -> { role, name } as last read
   }
 
   // The element id a tool argument names: a short id from an observation, or a full id.
@@ -71,6 +72,7 @@ export class Observer {
     if (state?.partial && (full || !this.seen.has(focused))) lines.push(`(${state.partial})`)
     const current = new Map()
     for (const element of state?.elements ?? []) {
+      this.described.set(element.id, { role: element.role, name: element.name ?? '' })
       const short = this.short(element.id)
       current.set(short, this.line(short, element))
     }

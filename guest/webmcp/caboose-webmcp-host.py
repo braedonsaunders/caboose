@@ -8,7 +8,8 @@ after the browser process that started it,
     $XDG_RUNTIME_DIR/caboose-webmcp/<browser pid>.sock   (mode 0600, directory 0700)
 
 so desktop MCP, which knows a window's process, reaches that browser's active tab. A client
-sends one JSON request per line, { "op": "tools" } or { "op": "call", "name", "args" }, and
+sends one JSON request per line, { "op": "tools" }, { "op": "call", "name", "args" } or
+{ "op": "browser", "name", "args" } (the browser's tabs), and
 gets one JSON reply per line, { "ok", "result" | "error" }. The host ends when the browser
 closes its stdin, and removes its socket."""
 import json
@@ -73,8 +74,8 @@ def serve_client(conn):
         for line in stream:
             try:
                 request = json.loads(line)
-                if request.get('op') not in ('tools', 'call') or (request['op'] == 'call' and not isinstance(request.get('name'), str)):
-                    reply = {'ok': False, 'error': 'op must be tools or call (with a name)'}
+                if request.get('op') not in ('tools', 'call', 'browser') or (request['op'] != 'tools' and not isinstance(request.get('name'), str)):
+                    reply = {'ok': False, 'error': 'op must be tools, or call or browser with a name'}
                 else:
                     reply = ask(request)
             except ValueError as error:

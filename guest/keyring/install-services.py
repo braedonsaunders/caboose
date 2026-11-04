@@ -19,11 +19,17 @@ def permitted(path):
     return name != 'org.freedesktop.secrets' and not any(word in fields for word in ('keyring', 'kwallet'))
 
 
-def reconcile(source, canonical, target):
+def reconcile(source, canonical, target, overrides=None):
+    """`source`'s permitted registrations, the canonical Secret Service one, and those of
+    `overrides` (the agent seat's own, which replace the system's of the same name)."""
     desired = {CANONICAL: canonical.read_bytes()}
     for path in source.glob('*.service'):
         if path.name != CANONICAL and permitted(path):
             desired[path.name] = path.read_bytes()
+    if overrides is not None and overrides.is_dir():
+        for path in overrides.glob('*.service'):
+            if path.name != CANONICAL and permitted(path):
+                desired[path.name] = path.read_bytes()
     target.mkdir(mode=0o755, parents=True, exist_ok=True)
     info = target.lstat()
     if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():

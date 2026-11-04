@@ -757,8 +757,9 @@ def resolve_bus(display, start=0, tried=()):
 class Bus:
     """The accessibility registry, bound to one bus for the life of this process.
 
-    libatspi connects once, so a different bus means a fresh process: `retry` re-executes
-    this command against the next source when the wanted application is not on this one.
+    libatspi connects once, so a different bus means a different process: `retry` runs this
+    request against the next source when the wanted application is not on this one, through
+    one long-lived helper per bus when serving (see `BusWorker`).
     """
 
     def __init__(self, display):
@@ -791,13 +792,12 @@ class Bus:
         env.pop("AT_SPI_BUS_ADDRESS", None)
         if SERVING:
             args = ACTIVE_ARGS
-            command = [sys.executable, os.path.abspath(__file__), args.command, f"--display={args.display}"]
+            request = {"op": args.command, "display": args.display}
             for key in ("element", "action", "text", "query", "role"):
                 value = getattr(args, key, None)
                 if value is not None:
-                    command.append(f"--{key}={value}")
-            result = subprocess.run(command, env=env, capture_output=True, text=True, timeout=30)
-            raise ServedResult(json.loads(result.stdout))
+                    request[key] = value
+            raise ServedResult(BusWorker.ask(json.dumps(self.state, sort_keys=True), env, args.display, request))
         sys.stdout.flush()
         os.execve(sys.executable, [sys.executable, os.path.abspath(__file__)] + sys.argv[1:], env)
         return True  # not reached
@@ -826,6 +826,76 @@ class Bus:
             except Exception:
                 continue
         return best
+
+
+# Windows programs under Wine: Wine has no AT-SPI bridge, so caboose-msaa.exe, run in the
+# program's own prefix, reads its Win32 controls (wine/caboose-msaa.c). Their element paths
+# start with WINE_CONTROL (a child window) or WINE_MENU.
+WINE_CONTROL, WINE_MENU = 9000, 9001
+MSAA = [os.path.join(os.path.dirname(os.path.abspath(__file__)), "wine", "caboose-msaa.exe"),
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "caboose-msaa.exe")]
+
+
+def wine_prefix(pid):
+    """The Wine prefix of a Windows program's process, or None for any other process."""
+    try:
+        with open(f"/proc/{pid}/maps") as maps:
+            if not any(line.rstrip().endswith(("/ntdll.so", "wine64-preloader", "wine-preloader")) for line in maps):
+                return None
+        with open(f"/proc/{pid}/environ", "rb") as env:
+            values = dict(item.split(b"=", 1) for item in env.read().split(b"\0") if b"=" in item)
+    except OSError:
+        return None
+    prefix = values.get(b"WINEPREFIX") or (values.get(b"HOME", b"") + b"/.wine")
+    return prefix.decode(errors="replace")
+
+
+def wine_bridge(prefix, *fields):
+    helper = next((path for path in MSAA if os.path.exists(path)), None)
+    if helper is None:
+        return None
+    request = "\t".join(f.replace("\t", " ").replace("\n", " ") for f in fields) + "\n"
+    try:
+        done = subprocess.run(["wine", helper], input=request, capture_output=True, text=True, timeout=15,
+                              env=dict(os.environ, WINEPREFIX=prefix, WINEDEBUG="-all"))
+        return json.loads(done.stdout.splitlines()[0]) if done.stdout.strip() else None
+    except (OSError, subprocess.TimeoutExpired, ValueError, IndexError):
+        return None
+
+
+def wine_path(path):
+    kind, *rest = path.split(".")
+    return [WINE_CONTROL if kind == "w" else WINE_MENU] + [int(i) for i in rest]
+
+
+def wine_elements(target, prefix):
+    """The Win32 controls of the focused window of a program under Wine, as elements."""
+    title = target.screen.title(target.xid)
+    answer = wine_bridge(prefix, "list", title)
+    if not answer or not answer.get("ok"):
+        return None
+    rect = target.screen.rect(target.xid) or {}
+    wx, wy, ww, wh = answer.get("window") or [0, 0, 0, 0]
+    sx = (ww / rect["width"]) if rect.get("width") and ww else 1
+    sy = (wh / rect["height"]) if rect.get("height") and wh else 1
+    found = []
+    for e in answer.get("elements", []):
+        name = e.get("name") or ""
+        fingerprint = hashlib.sha1(f"wine|{e['role']}|{name[:100]}".encode()).hexdigest()[:6]
+        element = {"id": element_id(target.xid, target.pid, wine_path(e["path"]), fingerprint), "role": e["role"], "name": name,
+                   "states": [st for st in e.get("states", []) if st != "focusable"]}
+        x, y, w, h = e.get("bounds") or [0, 0, 0, 0]
+        if w and h:
+            element["bounds"] = {"x": round(rect.get("x", 0) + (x - wx) / sx), "y": round(rect.get("y", 0) + (y - wy) / sy),
+                                 "width": max(1, round(w / sx)), "height": max(1, round(h / sy))}
+        actions = ["press"] if e["role"] not in ("label", "panel", "status bar", "tool bar", "page tab list", "menu") and "disabled" not in e.get("states", []) else []
+        if "editable" in e.get("states", []):
+            actions.append("set-text")
+        element["actions"] = actions
+        if e.get("value"):
+            element["value"] = e["value"][:MAX_NAME]
+        found.append(element)
+    return found
 
 
 def titled_pid(bus, title):
@@ -878,6 +948,38 @@ class ServedResult(Exception):
         self.result = result
 
 
+class BusWorker:
+    """A long-lived helper serving one further accessibility bus, kept for this helper's life.
+
+    Every new AT-SPI client costs each GTK 3 application on its bus three descriptors that
+    at-spi2-atk before 2.62 keeps until the application exits, so a reader asks the same
+    client again rather than starting a new one per request."""
+    workers = {}  # bus state -> Popen
+
+    @classmethod
+    def ask(cls, key, env, display, request, timeout=30):
+        import selectors
+        worker = cls.workers.get(key)
+        if worker is None or worker.poll() is not None:
+            worker = subprocess.Popen([sys.executable, os.path.abspath(__file__), "serve", f"--display={display}"],
+                                      env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1)
+            cls.workers[key] = worker
+        try:
+            worker.stdin.write(json.dumps(request, ensure_ascii=False) + "\n")
+            worker.stdin.flush()
+            with selectors.DefaultSelector() as selector:
+                selector.register(worker.stdout, selectors.EVENT_READ)
+                line = worker.stdout.readline() if selector.select(timeout) else ""
+            if not line:
+                raise OSError("no answer")
+            return json.loads(line)
+        except (OSError, ValueError):
+            worker.kill()
+            worker.wait()
+            cls.workers.pop(key, None)
+            raise Failure("the accessibility helper for another bus did not answer")
+
+
 def get_bus(display):
     global WARM_BUS
     if not SERVING:
@@ -906,7 +1008,7 @@ def seat_windows():
 
 def needs_registration(op, request):
     """Whether the window a request reads or acts in is a top-level or dialog that appeared
-    after this helper registered, so its cache cannot hold it."""
+    after this helper last read the registry afresh, so its cache may not hold it."""
     if KNOWN_WINDOWS is None:
         return False
     now = seat_windows() or {}
@@ -946,6 +1048,11 @@ class Tree:
         self.top_roles = _roles(Atspi, "FRAME", "DIALOG", "WINDOW", "FILE_CHOOSER", "ALERT", "COLOR_CHOOSER",
                                 "FONT_CHOOSER", "DOCUMENT_FRAME")
         self.popup_roles = _roles(Atspi, "WINDOW", "MENU", "POPUP_MENU", "TOOL_TIP")
+        # Content read as text (look's text) rather than as controls, and containers that list
+        # their items: a scrolled area holding one is not unexposed.
+        self.text_content_roles = _roles(Atspi, "DOCUMENT_FRAME", "DOCUMENT_WEB", "DOCUMENT_TEXT", "DOCUMENT_SPREADSHEET",
+                                         "DOCUMENT_PRESENTATION", "DOCUMENT_EMAIL", "TERMINAL", "TEXT", "PARAGRAPH", "EMBEDDED")
+        self.content_roles = self.text_content_roles | _roles(Atspi, "TABLE", "TREE_TABLE", "TREE", "LIST", "LIST_BOX")
         self.block_roles = _roles(
             Atspi, "PARAGRAPH", "HEADING", "SECTION", "LIST", "LIST_ITEM", "TABLE", "TABLE_ROW", "FORM",
             "BLOCK_QUOTE", "ARTICLE", "FOOTER", "HEADER", "LANDMARK", "PANEL", "SEPARATOR", "DOCUMENT_WEB",
@@ -996,6 +1103,12 @@ class Tree:
     # selected children and the first few, instead of thousands of round trips.
     LARGE = 512
     SAMPLE = 32
+
+    def child_count(self, node):
+        try:
+            return node.get_child_count()
+        except Exception:
+            return 0
 
     def children(self, node):
         try:
@@ -1226,6 +1339,20 @@ def _norm(text):
     return " ".join((text or "").split()).casefold()
 
 
+def frame_origin(size, rect, surface, origin):
+    """Where a Wayland window's accessible coordinates start. Toolkits measure from different
+    corners of a window drawn with its own shadow: GTK 3 from the surface (shadow included),
+    GTK 4 from the window's geometry inside it. The top-level accessible's own size says which:
+    the geometry's size means the geometry's corner."""
+    if not size or not surface:
+        return origin
+    width, height = size
+    near = lambda box: abs(width - box["width"]) <= 2 and abs(height - box["height"]) <= 2
+    if near(rect) and not near(surface):
+        return (rect["x"], rect["y"])
+    return origin
+
+
 def match_frame(tree, app, screen, wid, active):
     """The application's top-level accessible for window `wid`, and the app's open popups:
     ((index, accessible, origin) or None, [(index, accessible, bounds, origin)], rect)."""
@@ -1281,6 +1408,8 @@ def match_frame(tree, app, screen, wid, active):
         best = showing[0]
     frame_index = best[0] if best else None
     popups = [popup for popup in popups if popup[0] != frame_index]
+    if best is not None and origin is not None and rect is not None:
+        origin = frame_origin(tree.window_size(best[1]), rect, expected, origin)
     scale = x11_scale(screen, wid, tree, best[1]) if best else None
     if scale is not None:
         origin = scale
@@ -1314,6 +1443,9 @@ def top_origin(screen, wid, pid, tree, top):
         return origin
     size = tree.window_size(top)
     frame = screen.frame_rect(wid)
+    rect = screen.rect(wid)
+    if size and rect and frame_origin(size, rect, frame, origin) != origin:
+        return (rect["x"], rect["y"])
     if size and not (frame and abs(frame["width"] - size[0]) <= 2 and abs(frame["height"] - size[1]) <= 2):
         popup = screen.popup_origin(pid, size)
         if popup is not None:
@@ -1346,7 +1478,13 @@ class Target:
             return
         self.bus = get_bus(self.screen.bus_display())
         self.app = self.bus.application(self.pid)
+        self.wine = None
         if self.app is None:
+            prefix = wine_prefix(self.pid)
+            if prefix is not None:
+                self.wine = wine_elements(self, prefix)
+                if self.wine is not None:
+                    return
             self.bus.retry(self.screen.bus_display())
             self.note = "The focused window's application exposes no accessibility tree; use a screenshot."
             return
@@ -1398,6 +1536,13 @@ def collect(target, query=None, role=None):
     def visit(node, path, node_role, states):
         if len(found) >= MAX_ELEMENTS:
             return False
+        if query is None and (node_role == tree.Atspi.Role.SCROLL_PANE or node_role in tree.content_roles):
+            box = tree.bounds(node, origin[0])
+            if box is not None and intersects(box, clip[0]):
+                if node_role == tree.Atspi.Role.SCROLL_PANE:
+                    panes.append(clipped(box, clip[0]))
+                elif tree.child_count(node) or node_role in tree.text_content_roles:
+                    content.append(box)
         if query is None:
             wanted = tree.interesting(node, node_role, states)
             if wanted is False:
@@ -1436,12 +1581,49 @@ def collect(target, query=None, role=None):
         return True
 
     clip, origin = [None], [None]
+    panes, content = [], []  # scroll panes; documents, texts and filled lists, readable as such
     for path, root, rect, at in target.roots():
         clip[0], origin[0] = rect, at
         tree.walk(root, path, visit)
         if len(found) >= MAX_ELEMENTS:
             break
+    if query is None and len(found) < MAX_ELEMENTS:
+        target.unread = unread_regions(panes, [e["bounds"] for e in found] + content)
     return found
+
+
+UNREAD_AREA = 160 * 120  # smaller scrolled areas are not worth reading from pixels
+UNREAD_COVER = 0.15  # the share of a scrolled area its exposed controls must cover
+
+
+def clipped(box, clip):
+    if clip is None:
+        return box
+    x, y = max(box["x"], clip["x"]), max(box["y"], clip["y"])
+    right = min(box["x"] + box["width"], clip["x"] + clip["width"])
+    bottom = min(box["y"] + box["height"], clip["y"] + clip["height"])
+    return {"x": x, "y": y, "width": max(0, right - x), "height": max(0, bottom - y)}
+
+
+def unread_regions(panes, boxes, limit=3):
+    """Scrolled areas whose content the application draws but does not expose: a large
+    scroll pane in which the exposed controls cover almost nothing (a list or icon view a
+    toolkit leaves out of its tree, a custom canvas). Innermost first, at most `limit`, as
+    [x, y, width, height] in seat coordinates."""
+    def covered(pane):
+        area = 0
+        for box in boxes:
+            part = clipped(box, pane)
+            area += part["width"] * part["height"]
+        return area / (pane["width"] * pane["height"])
+    regions = []
+    for pane in sorted(panes, key=lambda p: p["width"] * p["height"]):
+        if pane["width"] * pane["height"] < UNREAD_AREA or covered(pane) >= UNREAD_COVER:
+            continue
+        if any(intersects(pane, r) for r in regions):
+            continue
+        regions.append(pane)
+    return [[r["x"], r["y"], r["width"], r["height"]] for r in regions[:limit]]
 
 
 EMBED = "\ufffc"  # AT-SPI's object replacement character: an embedded child in a text
@@ -1589,7 +1771,59 @@ def resolve(display_name, element):
     return screen, xid, tree, node, states, top_origin(screen, xid, pid, tree, top)
 
 
+def wine_act(display_name, element, action, text):
+    """An action on a control of a program under Wine; False when the id is not one."""
+    match = ID_PATTERN.fullmatch(element or "")
+    if not match:
+        return False
+    path = [int(i) for i in match.group(3).split(".")]
+    if path[0] not in (WINE_CONTROL, WINE_MENU):
+        return False
+    xid, pid = int(match.group(1), 16), int(match.group(2))
+    screen = make_screen(display_name)
+    prefix = wine_prefix(pid)
+    if xid not in screen.clients or screen.pid(xid) != pid or not screen.confined(pid) or prefix is None:
+        raise Failure("element not found", NOT_FOUND)
+    where = ("w." if path[0] == WINE_CONTROL else "m.") + ".".join(str(i) for i in path[1:])
+    if action == "press":
+        answer = wine_bridge(prefix, "press", screen.title(xid), where)
+    elif action == "set-text":
+        answer = wine_bridge(prefix, "set", screen.title(xid), where, text or "")
+        if not answer or not answer.get("ok"):
+            # A control that takes no text by message (Scintilla's custom editor): the seat's
+            # pointer gives it focus and its keyboard replaces the text.
+            class Window:
+                pass
+            target = Window()
+            target.screen, target.xid, target.pid = screen, xid, pid
+            element_here = None
+            for _ in range(10):  # the window may be retitling as the text changes
+                target.screen = make_screen(display_name)
+                element_here = next((e for e in wine_elements(target, prefix) or [] if e["id"] == element), None)
+                if element_here:
+                    break
+                time.sleep(0.1)
+            bounds = (element_here or {}).get("bounds")
+            if not bounds:
+                raise Failure("the control takes no text and has no place on screen to type into")
+            screen.activate(xid)
+            screen.click(xid, bounds["x"] + min(bounds["width"] // 2, 40), bounds["y"] + min(bounds["height"] // 2, 20))
+            time.sleep(0.1)
+            screen.clear_text(xid)
+            time.sleep(0.1)
+            if text:
+                screen.type_text(xid, text)
+            return True
+    else:
+        raise Failure(f"{action} is not available on this control")
+    if not answer or not answer.get("ok"):
+        raise Failure((answer or {}).get("error") or "the program did not answer", NOT_FOUND if (answer or {}).get("error") == "element not found" else 1)
+    return True
+
+
 def act(display_name, element, action, text):
+    if wine_act(display_name, element, action, text):
+        return None
     screen, xid, tree, node, states, origin = resolve(display_name, element)
     if action == "press":
         if not (tree.has(states, "ENABLED") or tree.has(states, "SENSITIVE")):
@@ -1940,9 +2174,7 @@ def serve(display):
     global SERVING, ACTIVE_ARGS
     SERVING = True
     import faulthandler
-    replay = os.environ.pop(REPLAY, None)
-    for line in itertools.chain([replay] if replay else [], sys.stdin):
-        replaying = line is replay
+    for line in sys.stdin:
         try:
             request = json.loads(line)
             op = request.pop("op")
@@ -1953,17 +2185,18 @@ def serve(display):
             if WARM_BUS is not None:
                 _, GLib = _gio()
                 dispatch_accessibility_events(GLib.MainContext.default())
-            if not replaying and needs_registration(op, request):
-                reregister(display, op, request)
+            if needs_registration(op, request):
+                refresh()
             # A native accessibility call can stall outside our tree-walk budget.
             # Capture its stack before the parent terminates the bounded request.
             faulthandler.dump_traceback_later(10)
             try:
                 result, _ = execute(ACTIVE_ARGS)
+                if stale(op, result):
+                    refresh()
+                    result, _ = execute(ACTIVE_ARGS)
             finally:
                 faulthandler.cancel_dump_traceback_later()
-            if stale(op, result) and not replaying:
-                reregister(display, op, request)
         except ServedResult as result_error:
             result = result_error.result
         except Exception as error:
@@ -1972,31 +2205,37 @@ def serve(display):
         sys.stdout.flush()
 
 
-# A request a helper re-registered for, replayed by the new process before it reads stdin.
-REPLAY = "CABOOSE_A11Y_REPLAY"
-
-
-def reregister(display, op, request):
-    """Become a new process (same pipes) whose accessibility cache is read fresh, new windows
-    included; it answers this request first, then serves on."""
-    sys.stdout.flush()
-    os.execve(sys.executable, [sys.executable, os.path.abspath(__file__), "serve", f"--display={display}"],
-              dict(os.environ, **{REPLAY: json.dumps({"op": op, **request})}))
+def refresh():
+    """Read the registry's applications and their top-level windows afresh. libatspi's cache
+    learns of a new top-level (a dialog) from events that can lag behind and does not recover
+    by itself; clearing the cached children of the desktop and of each application makes the
+    next read ask the applications. The helper stays the same AT-SPI client: a new one would
+    cost each GTK 3 application three descriptors (see `BusWorker`)."""
+    global KNOWN_WINDOWS
+    bus = WARM_BUS
+    if bus is not None and bus.address:
+        _, GLib = _gio()
+        dispatch_accessibility_events(GLib.MainContext.default())
+        try:
+            bus.desktop.clear_cache_single()
+            for index in range(bus.desktop.get_child_count()):
+                app = bus.desktop.get_child_at_index(index)
+                if app is not None:
+                    app.clear_cache_single()
+        except Exception:
+            pass
+    KNOWN_WINDOWS = seat_windows()
 
 
 def stale(op, result):
-    """Whether a long-lived helper's answer comes from a cache that missed a new window: its
-    accessibility cache learns of a new top-level (a dialog) from events that can lag behind,
-    and does not recover by itself; a new registration reads it at once."""
+    """Whether a long-lived helper's answer comes from a cache that missed a new window."""
     if op in ("elements", "find", "text"):
         return str(result.get("note", "")).startswith("The focused window was not found")
     return op == "act" and result.get("error") == "element not found"
 
 
 def stale(op, result):
-    """Whether a long-lived helper's answer comes from a cache that missed a new window: its
-    accessibility cache learns of a new top-level (a dialog) from events that can lag behind,
-    and does not recover by itself; a new registration reads it at once."""
+    """Whether a long-lived helper's answer comes from a cache that missed a new window."""
     if op in ("elements", "find", "text"):
         return str(result.get("note", "")).startswith("The focused window was not found")
     return op == "act" and result.get("error") == "element not found"
@@ -2031,14 +2270,23 @@ def execute(args):
             except Exception:
                 pass
         if args.command == "text":
-            result["text"] = read_text(target) if target.app is not None else ""
+            if getattr(target, "wine", None) is not None:
+                result["text"] = "\n".join(e.get("value") or e["name"] for e in target.wine if e.get("value") or e["name"])
+            else:
+                result["text"] = read_text(target) if target.app is not None else ""
             if len(result["text"]) > MAX_TEXT:
                 result["text"] = result["text"][:MAX_TEXT]
                 result["truncated"] = True
         else:
             query = args.query if args.command == "find" else None
             role = args.role if args.command == "find" else None
-            result["elements"] = collect(target, query, role) if target.app is not None else []
+            if getattr(target, "wine", None) is not None:
+                q = _norm(query) if query is not None else None
+                result["elements"] = [e for e in target.wine if (q is None or q in _norm(e["name"])) and role_matches(e["role"], role)]
+            else:
+                result["elements"] = collect(target, query, role) if target.app is not None else []
+            if getattr(target, "unread", None):
+                result["unread"] = target.unread
             if target.app is not None and target.tree.partial:
                 result["partial"] = (f"{len(target.tree.partial)} large container(s) ({', '.join(str(c) for c in target.tree.partial[:3])} children) "
                                      "are read in part: their selected children and the first few")

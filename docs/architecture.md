@@ -704,6 +704,30 @@ each wake the host bind-remounts an older container's read-only `/sys/fs/cgroup`
 that container's mount namespace with a one-shot privileged helper. A microVM computer has
 no app scopes. See [guest/scopes](../guest/scopes/README.md).
 
+**FUSE.** A container computer is created with the host's `/dev/fuse` and `CAP_SYS_ADMIN`, so
+its setuid `fusermount3` can mount the Flatpak document portal's file system; its seccomp
+profile allows the mount calls only with that capability. The tradeoff: `CAP_SYS_ADMIN` lets
+the container's root mount and administer inside its own namespaces, a wider surface than
+FUSE alone, in exchange for Flatpak apps receiving the files chosen for them. On a host whose
+Docker applies AppArmor's default profile (which denies `mount`), the computer's spec adds
+`apparmor=unconfined`. A container created before this has neither until it is created
+again; meanwhile the host runs `<computer>-fuse` beside it, a privileged sidecar in its process
+namespace running `caboose-fuse-broker`, which mounts FUSE only on a directory the caller owns
+under `/run/user/<uid>` (`nosuid`, `nodev`, the options `fusermount3` gives a user) for the
+computer's `fusermount3`, `caboose-fusermount`; libfuse opens `/dev/fuse` itself first, so the
+broker leaves an empty placeholder there. Where `/dev/fuse` is a real device,
+`caboose-fusermount` runs the original `fusermount3`.
+
+**System Flatpak.** A container computer's `/var/lib/flatpak` is a volume of its own
+(`<computer>-flatpak`), filled from the image on first use, so system-wide Flatpak apps
+(Steam) survive the container being created again; removing the computer removes it.
+
+One document portal serves the computer's user, on the owner's bus, at the
+`/run/user/<uid>/doc` every Flatpak sandbox and `xdg-desktop-portal` expect; the agent
+seat's bus forwards `org.freedesktop.portal.Documents` to it (`caboose-documents-forwarder`,
+as Secret Service is forwarded), for its unsandboxed callers only. This holds for microVM
+computers too.
+
 **Services.** The same daemon is the container computer's service manager. A service is
 declared in a unit file, a subset of systemd's: root's in `/etc/caboose/services/<name>.service`
 (may set `User=`) and the owner's in `~/.config/caboose/services/<name>.service` (run as the
@@ -2572,7 +2596,7 @@ its actions. Their observation and action contract:
 | Tool | Does |
 | --- | --- |
 | `look` | The focused window's controls (id, role, name, value, states), optionally only those whose name matches, with its readable text, or with every window |
-| `act` | 1–30 steps in order (press, set, key, type, click, scroll, drag, focus, wait, launch), stopping at the first failure, then what changed |
+| `act` | 1–30 steps in order (press, set, key, type, click, scroll, drag, focus, wait, launch, tool), stopping at the first failure, then what changed |
 | `screenshot` | PNG of the seat or one window; `marks` numbers the controls on it and lists their ids and centres |
 
 Three tools with short definitions, because they go to the model on every turn; the
@@ -2600,6 +2624,18 @@ Its native messaging host listens on `$XDG_RUNTIME_DIR/caboose-webmcp/<browser p
 desktop MCP reaches it through the focused window's process, so `look` lists the page's
 tools and an `act` step `{"tool": name, "args": {...}}` calls one. A page's tool is the page's
 code: its results are the page's word, like its text.
+
+**Direct tools.** `look` also lists what the focused application offers through its own
+interfaces, and the same `tool` step calls it, so an agent can skip the GUI: its GApplication
+and KDE main-window actions on its D-Bus names, its desktop entry's actions, its terminal as
+text with a typed `run`, an open portal file dialog answered without the dialog (caboose-portal
+on the agent seat), its MPRIS player, `FileManager1`, its
+GSettings schemas and xfconf channel (typed and range-checked), its document through
+LibreOffice's UNO (the launcher opens the seat's UNO pipe), and, in Chromium, its tabs and a
+DevTools `evaluate` through the extension (`chrome.debugger`, attached for the one command).
+File tools work inside the agent profile's home only. `direct.py` finds all of them by
+general mechanisms, with the seat's launch environment, so they reach only the agent seat's
+session bus, settings and home.
 
 Controls include a bounded optional `value` for editable fields, selections and numeric
 controls. Password and sensitive fields omit it. Values do not enter element ID

@@ -19,6 +19,7 @@ import shlex
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 
 here = pathlib.Path(__file__).resolve().parent
@@ -32,18 +33,24 @@ p.add_argument('--label', help='what to call this run in its records (default: t
 p.add_argument('--output', required=True)
 p.add_argument('--task', action='append', default=[])
 p.add_argument('--timeout', type=int, default=900)
+p.add_argument('--prompt-suffix', default='', help='appended to every task prompt ({id} is the task id), e.g. to have routines saved')
 p.add_argument('--tools', default='/opt/caboose', help="directory of desktop MCP's helpers inside the computer")
 p.add_argument('--trace', help='CABOOSE_DESKTOP_TRACE file of the --mcp server inside the computer, summarised per task')
 a = p.parse_args()
 tasks = [t for t in json.loads((here / 'tasks.json').read_text())['tasks'] if not a.task or t['id'] in a.task]
 prelude = (here / 'prelude.sh').read_text()
-BENCH = '/tmp/caboose-bench'
+BENCH = '/home/caboose/caboose-bench'
 
 
 def computer(script, timeout=120):
     body = f"export BENCH={BENCH} TOOLS={shlex.quote(a.tools)}\nset -a; . /run/caboose/agent-display.env; set +a\n{prelude}\n{script}\n"
-    r = subprocess.run(shlex.split(a.exec_), input=body, text=True, capture_output=True, timeout=timeout)
-    return r.returncode, (r.stdout + r.stderr).strip()
+    for attempt in (1, 2):
+        try:
+            r = subprocess.run(shlex.split(a.exec_), input=body, text=True, capture_output=True, timeout=timeout)
+            return r.returncode, (r.stdout + r.stderr).strip()
+        except subprocess.TimeoutExpired:
+            if attempt == 2:
+                raise  # the connection to the computer, not the task: a second stall ends the run
 
 
 PROMPT = ('You are operating a Linux desktop, the agent seat, through the caboose-desktop tools. '
@@ -62,14 +69,14 @@ code, text = computer('windows')
 if json.loads(text)['windows']:
     sys.exit('the agent seat has windows open; run on an empty seat')
 for task in tasks:
-    computer(f'end_apps; rm -rf "$BENCH"; mkdir -p "$BENCH"')
+    computer(f'end_apps; fresh_office; forget_documents; rm -rf "$BENCH"; mkdir -m 700 -p "$BENCH"; use_run_home')
     code, text = computer(f"{task['setup']}\nwait_window {shlex.quote(task['app'])}", timeout=180)
     record = {'task': task['id'], 'mode': a.label or a.mode, 'model': a.model}
     if code != 0:
         record.update(success=False, error='setup: ' + text[-300:])
     else:
         time.sleep(1.0)  # the application finishes building its first window
-        prompt = PROMPT.format(task=task['prompt'])
+        prompt = PROMPT.format(task=task['prompt']) + (' ' + a.prompt_suffix.format(id=task['id']) if a.prompt_suffix else '')
         if a.agent == 'claude':
             command = ['claude', '-p', prompt, '--model', a.model, '--output-format', 'stream-json', '--verbose',
                        '--tools', '', '--strict-mcp-config', '--mcp-config', config.name, '--allowedTools', 'mcp__desktop',
@@ -81,10 +88,25 @@ for task in tasks:
                        '-c', f'mcp_servers.desktop.command={json.dumps(server[0])}', '-c', f'mcp_servers.desktop.args={json.dumps(server[1:])}',
                        '-c', 'mcp_servers.desktop.tool_timeout_sec=180', '-c', 'mcp_servers.desktop.startup_timeout_sec=60', '-c', 'mcp_servers.desktop.default_tools_approval_mode="approve"', '-c', 'approval_policy="never"', prompt]
         started = time.monotonic()
-        calls, names, result = 0, {}, {}
+        calls, names, result, model_turns = 0, {}, {}, []
         try:
-            run = subprocess.run(command, capture_output=True, text=True, timeout=a.timeout, cwd=tempfile.gettempdir())
-            for line in run.stdout.splitlines():
+            # Read as it streams, so each turn's model time (from the last tool result to the next
+            # tool call) is measured apart from the tools' own time.
+            child = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, cwd=tempfile.gettempdir())
+            timer = threading.Timer(a.timeout, child.kill); timer.start()
+            lines, since = [], started
+            for line in child.stdout:
+                lines.append(line)
+                now = time.monotonic()
+                try: event = json.loads(line)
+                except ValueError: continue
+                if event.get('type') == 'assistant' and any(p.get('type') == 'tool_use' for p in event['message'].get('content', [])):
+                    model_turns.append(round(now - since, 2))
+                if event.get('type') == 'user':
+                    since = now
+            child.wait(); timer.cancel()
+            if child.returncode == -9: raise subprocess.TimeoutExpired(command, a.timeout)
+            for line in lines:
                 try: event = json.loads(line)
                 except ValueError: continue
                 if event.get('type') == 'assistant':
@@ -106,6 +128,11 @@ for task in tasks:
         except subprocess.TimeoutExpired:
             result = {'subtype': 'timeout'}
         seconds = time.monotonic() - started
+        if result.get('is_error') and not calls:
+            # The agent never ran (no usable account, a provider outage): a run without it
+            # measures nothing, so stop rather than record a failure.
+            computer('end_apps; forget_documents; rm -rf "$BENCH"; restore_home')
+            sys.exit(f"the agent did not run on {task['id']}: {str(result.get('result') or result.get('subtype'))[:300]}")
         code, text = computer(task['verify'])
         if a.trace:
             _, lines = computer(f'cat {shlex.quote(a.trace)} 2>/dev/null; rm -f {shlex.quote(a.trace)}')
@@ -114,12 +141,12 @@ for task in tasks:
                                 'slowest': sorted(calls_, key=lambda c: -c['ms'])[:6]}
         usage = result.get('usage', {})
         record.update(success=code == 0, said=(result.get('result') or result.get('subtype') or '')[-200:], seconds=round(seconds, 1),
-                      toolCalls=calls, tools=names, turns=result.get('num_turns'), costUsd=result.get('total_cost_usd'),
+                      toolCalls=calls, tools=names, modelTurns=model_turns, turns=result.get('num_turns'), costUsd=result.get('total_cost_usd'),
                       inputTokens=usage.get('input_tokens', 0) + usage.get('cache_creation_input_tokens', 0) + usage.get('cache_read_input_tokens', 0),
                       outputTokens=usage.get('output_tokens', 0))
     if task.get('reset'): computer(task['reset'])
     computer('end_apps')
     print(json.dumps(record), flush=True)
     with open(a.output, 'a') as f: f.write(json.dumps(record) + '\n')
-computer('end_apps; rm -rf "$BENCH"')
+computer('end_apps; forget_documents; rm -rf "$BENCH"; restore_home')
 pathlib.Path(config.name).unlink()

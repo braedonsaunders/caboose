@@ -28,6 +28,7 @@ import glob
 import json
 import os
 import pathlib
+import re
 import shlex
 import signal
 import statistics
@@ -85,7 +86,9 @@ def entries(only, skip):
         if entry.get('Type') != 'Application' or entry.get('NoDisplay', '').lower() == 'true' or entry.get('Hidden', '').lower() == 'true' \
                 or entry.get('Terminal', '').lower() == 'true' or not entry.get('Exec'):
             continue
-        words = [w for w in shlex.split(entry['Exec']) if not (len(w) == 2 and w.startswith('%'))]
+        # A desktop entry's string escapes (\\\\, \\s, …) first, then its quoting.
+        exec_line = re.sub(r'\\([\\snrt])', lambda m: {'s': ' ', 'n': '\n', 'r': '\r', 't': '\t', '\\': '\\'}[m.group(1)], entry['Exec'])
+        words = [w for w in shlex.split(exec_line) if not (len(w) == 2 and w.startswith('%'))]
         found[ident] = {'id': ident, 'name': entry.get('Name', ident), 'exec': words}
     return list(found.values())
 

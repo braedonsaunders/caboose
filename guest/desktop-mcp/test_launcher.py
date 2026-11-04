@@ -36,11 +36,26 @@ class Plan(unittest.TestCase):
         self.program('chromium', body=f'#!/bin/sh\nLIBDIR={lib}\nexec $LIBDIR/chromium "$@"\n'.encode())
         self.assertEqual(launcher.plan('chromium')[1], '--force-renderer-accessibility')
 
+    def test_libreoffice_opens_the_seats_uno_pipe_once(self):
+        self.program('soffice', body=b'#!/bin/sh\n', files=['soffice.bin'])
+        self.assertEqual(launcher.plan('soffice --calc a.ods'), ['soffice', launcher.UNO_ACCEPT, '--calc', 'a.ods'])
+        self.assertEqual(launcher.plan('soffice --accept=socket --calc'), ['soffice', '--accept=socket', '--calc'])
+
     def test_other_programs_and_shell_lines_start_as_asked(self):
         self.program('mousepad')
         self.assertEqual(launcher.plan('mousepad a.txt'), ['mousepad', 'a.txt'])
         self.assertIsNone(launcher.plan('mousepad a.txt && echo done'))
         self.assertEqual(launcher.plan('browser --force-renderer-accessibility'), ['browser', '--force-renderer-accessibility'])
+
+
+class Refusal(unittest.TestCase):
+    def test_a_program_asking_for_x11_is_recognised(self):
+        self.assertTrue(launcher.needs_x11(b'xfce4-keyboard-settings-WARNING: Keyboard settings are only available on X11'))
+        self.assertTrue(launcher.needs_x11(b'does not seem to support the wlr-output-management protocol'))
+        self.assertFalse(launcher.needs_x11(b'Gtk-Message: Failed to load module "canberra-gtk-module"'))
+
+    def test_any_other_program_runs_once_and_its_status_is_kept(self):
+        self.assertEqual(launcher.run(['/bin/sh', '-c', 'echo fine >&2; exit 3']), 3)
 
 
 class Java(unittest.TestCase):

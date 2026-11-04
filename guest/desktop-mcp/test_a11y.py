@@ -83,19 +83,75 @@ class PressTests(unittest.TestCase):
 
 
 class StaleCacheTests(unittest.TestCase):
-    def test_a_missed_window_or_element_is_read_again_by_a_fresh_helper(self):
+    def test_a_missed_window_or_element_is_read_again(self):
         self.assertTrue(a11y.stale('elements', {'elements': [], 'note': "The focused window was not found in its application's accessibility tree; use a screenshot."}))
         self.assertTrue(a11y.stale('act', {'ok': False, 'error': 'element not found'}))
         self.assertFalse(a11y.stale('elements', {'elements': [], 'note': 'No window is open on this display.'}))
         self.assertFalse(a11y.stale('act', {'ok': False, 'error': 'element is disabled'}))
 
-    def test_a_re_registered_helper_answers_the_replayed_request_first(self):
-        import json, subprocess
-        env = dict(os.environ, CABOOSE_A11Y_REPLAY=json.dumps({"op": "bogus"}))
-        done = subprocess.run([sys.executable, os.path.join(os.path.dirname(__file__), "a11y.py"), "serve", "--display=:999"],
-                              input=json.dumps({"op": "also-bogus"}) + "\n", capture_output=True, text=True, env=env, timeout=20)
-        lines = [json.loads(l) for l in done.stdout.splitlines()]
-        self.assertEqual(lines, [{"error": "invalid worker request"}, {"error": "invalid worker request"}])
+    def test_a_stale_answer_is_read_again_by_the_same_helper(self):
+        # A new AT-SPI client costs every GTK 3 application descriptors it never gives back,
+        # so the helper reads the registry afresh in place rather than becoming a new process.
+        import io, json
+        stale = {'elements': [], 'note': "The focused window was not found in its application's accessibility tree; use a screenshot."}
+        fresh = {'elements': [{'id': 'x'}]}
+        out = io.StringIO()
+        with patch.object(a11y, 'execute', side_effect=[(stale, 0), (fresh, 0)]) as execute, \
+                patch.object(a11y, 'refresh') as refresh, \
+                patch.object(a11y.os, 'execve', side_effect=AssertionError('re-executed')), \
+                patch.object(a11y.sys, 'stdin', io.StringIO(json.dumps({'op': 'elements'}) + '\n')), \
+                patch.object(a11y.sys, 'stdout', out):
+            a11y.serve(':999')
+        self.assertEqual(json.loads(out.getvalue()), fresh)
+        self.assertEqual(execute.call_count, 2)
+        refresh.assert_called_once_with()
+
+    def test_another_bus_is_asked_through_one_long_lived_helper(self):
+        env = dict(os.environ, CABOOSE_A11Y_BUS_STATE='{"next": 9, "tried": []}')
+        try:
+            first = a11y.BusWorker.ask('test', env, ':999', {'op': 'bogus'})
+            pid = a11y.BusWorker.workers['test'].pid
+            second = a11y.BusWorker.ask('test', env, ':999', {'op': 'bogus'})
+            self.assertEqual(a11y.BusWorker.workers['test'].pid, pid)
+            self.assertEqual([first, second], [{'error': 'invalid worker request'}] * 2)
+        finally:
+            worker = a11y.BusWorker.workers.pop('test', None)
+            if worker:
+                worker.kill()
+                worker.wait()
+
+
+class FrameOriginTests(unittest.TestCase):
+    surface = {"x": -61, "y": -55, "width": 722, "height": 602}
+    rect = {"x": 0, "y": 0, "width": 600, "height": 480}
+
+    def test_a_frame_the_size_of_the_window_geometry_measures_from_its_corner(self):
+        self.assertEqual(a11y.frame_origin((600, 480), self.rect, self.surface, (-61, -55)), (0, 0))
+
+    def test_a_frame_the_size_of_the_surface_measures_from_the_surface(self):
+        self.assertEqual(a11y.frame_origin((722, 602), self.rect, self.surface, (-61, -55)), (-61, -55))
+
+    def test_a_window_without_a_shadow_keeps_its_origin(self):
+        rect = {"x": 10, "y": 20, "width": 600, "height": 480}
+        self.assertEqual(a11y.frame_origin((600, 480), rect, dict(rect), (10, 20)), (10, 20))
+        self.assertEqual(a11y.frame_origin(None, rect, dict(rect), (10, 20)), (10, 20))
+
+
+class UnreadTests(unittest.TestCase):
+    pane = {"x": 0, "y": 100, "width": 600, "height": 380}
+
+    def test_a_scrolled_area_with_only_its_column_headers_exposed_is_unread(self):
+        headers = [{"x": 0, "y": 100, "width": 600, "height": 31}]
+        self.assertEqual(a11y.unread_regions([self.pane], headers), [[0, 100, 600, 380]])
+
+    def test_a_scrolled_area_whose_items_are_exposed_is_read(self):
+        rows = [{"x": 0, "y": 100 + 30 * i, "width": 600, "height": 30} for i in range(6)]
+        self.assertEqual(a11y.unread_regions([self.pane], rows), [])
+
+    def test_small_areas_and_outer_panes_of_an_unread_one_are_left_out(self):
+        small = {"x": 0, "y": 0, "width": 100, "height": 100}
+        outer = {"x": 0, "y": 0, "width": 800, "height": 600}
+        self.assertEqual(a11y.unread_regions([outer, small, self.pane], []), [[0, 100, 600, 380]])
 
 
 class CoverTests(unittest.TestCase):

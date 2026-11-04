@@ -63,6 +63,7 @@ install -Dm755 "$root/desktop-mcp/caboose-desktop-mcp.mjs" /opt/caboose/desktop-
 install -Dm755 "$root/desktop-mcp/a11y.py" /opt/caboose/a11y.py
 install -Dm755 "$root/desktop-mcp/seat.py" /opt/caboose/seat.py
 install -Dm755 "$root/desktop-mcp/launcher.py" /opt/caboose/launcher.py
+install -Dm755 "$root/desktop-mcp/direct.py" /opt/caboose/direct.py
 install -Dm644 "$root/desktop-mcp/ensure-agent-seat.mjs" /opt/caboose/ensure-agent-seat.mjs
 # desktop-mcp.mjs imports these beside itself.
 install -Dm644 "$root/desktop-mcp/worker.mjs" /opt/caboose/worker.mjs
@@ -79,8 +80,10 @@ sh "$root/notifications/install.sh"
 sh "$root/webmcp/install.sh"
 bash "$root/phone/install.sh"
 sh "$root/bridge/install.sh"
-sh "$root/keyring/install.sh"
+# Flatpak before the keyring: the agent bus's activation directory is drawn from the system's
+# D-Bus services, the document portal's among them.
 sh "$root/flatpak/install.sh" "$mode"
+sh "$root/keyring/install.sh"
 sh "$root/game/install.sh"
 sh "$root/gpu/install.sh"
 sh "$root/agentd/install.sh"

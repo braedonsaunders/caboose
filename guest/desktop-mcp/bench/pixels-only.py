@@ -2,7 +2,7 @@
 """MCP stdio proxy for the screenshot baseline: runs the desktop MCP command given as
 arguments and offers the agent screenshot computer use only. Its tools are the usual
 screenshot, pointer and keyboard ones (screenshot, list_windows, focus, click, drag, type,
-key, scroll), each carried out as one desktop MCP step whose reply is cut to "Done." or the
+key, scroll, and launch to start an application), each carried out as one desktop MCP step whose reply is cut to "Done." or the
 error, so no accessibility data reaches the agent."""
 import json
 import subprocess
@@ -24,6 +24,8 @@ TOOLS = [
     {'name': 'key', 'description': 'Press a key or combination, e.g. "Return", "ctrl+s".', 'inputSchema': {'type': 'object', 'properties': {'combo': {'type': 'string'}}, 'required': ['combo']}},
     {'name': 'scroll', 'description': 'Scroll at (x, y): positive dy down, positive dx right, in wheel steps.',
      'inputSchema': {'type': 'object', 'properties': {'x': point, 'y': point, 'dx': point, 'dy': point}, 'required': ['x', 'y']}},
+    {'name': 'launch', 'description': 'Start an application, e.g. "mousepad notes.txt" or "soffice --writer".',
+     'inputSchema': {'type': 'object', 'properties': {'command': {'type': 'string'}}, 'required': ['command']}},
 ]
 
 
@@ -34,6 +36,7 @@ def step(name, a):
     if name == 'type': return {'type': a.get('text')}
     if name == 'key': return {'key': a.get('combo')}
     if name == 'scroll': return {'scroll': [a.get('x'), a.get('y')], **{k: a[k] for k in ('dx', 'dy') if k in a}}
+    if name == 'launch': return {'launch': a.get('command')}
 
 
 child = subprocess.Popen(sys.argv[1:], stdin=subprocess.PIPE, stdout=subprocess.PIPE, bufsize=0)
@@ -82,7 +85,7 @@ for line in sys.stdin:
             params['arguments'] = {k: v for k, v in args.items() if k == 'window'}
         elif name == 'list_windows':
             params.update(name='look', arguments={'windows': True}); pending[message.get('id')] = 'windows'
-        elif name in ('focus', 'click', 'drag', 'type', 'key', 'scroll'):
+        elif name in ('focus', 'click', 'drag', 'type', 'key', 'scroll', 'launch'):
             params.update(name='act', arguments={'steps': [step(name, args)], 'observe': False}); pending[message.get('id')] = 'step'
         else:
             out({'jsonrpc': '2.0', 'id': message.get('id'), 'error': {'code': -32602, 'message': f'unknown tool {name}'}}); continue

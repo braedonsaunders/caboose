@@ -13,9 +13,9 @@ marked `[derived]` in `look`.
 | --- | --- |
 | `page.js` | In the page's own JavaScript world from document_start: lists and runs the page's declared tools through `document.modelContext` (Chromium's WebMCP; where the browser has none, this file provides `registerTool`, `getTools` and `executeTool` itself), and derives and runs the general ones |
 | `content.js` | Carries requests from the service worker to `page.js` over window messages, and the replies back |
-| `service-worker.js` | Holds the native messaging connection and asks the browser's active tab |
-| `caboose-webmcp-host.py` | Native messaging host `com.caboose.webmcp`: listens on `$XDG_RUNTIME_DIR/caboose-webmcp/<browser pid>.sock` (0600, in a 0700 directory) for desktop MCP, one JSON request per line (`{"op": "tools"}` or `{"op": "call", "name", "args"}`), one JSON reply per line (`{"ok", "result" \| "error"}`) |
-| `zz-caboose-agent` | `/etc/chromium.d` file: on the agent seat (`CABOOSE_SEAT=agent`), Chromium starts with `--force-renderer-accessibility`, `--enable-features=WebMCPTesting` (Chromium's WebMCP with its tool listing and calls) and this extension |
+| `service-worker.js` | Holds the native messaging connection, asks the browser's active tab, and works the tabs (`chrome.tabs`; `evaluate` through the DevTools protocol, `chrome.debugger`, attached for the one command) |
+| `caboose-webmcp-host.py` | Native messaging host `com.caboose.webmcp`: listens on `$XDG_RUNTIME_DIR/caboose-webmcp/<browser pid>.sock` (0600, in a 0700 directory) for desktop MCP, one JSON request per line (`{"op": "tools"}`, `{"op": "call", "name", "args"}`, or `{"op": "browser", "name", "args"}` for the tabs: `tabs`, `activate {index}`, `open {url, new_tab?}`, `evaluate {expression}`), one JSON reply per line (`{"ok", "result" \| "error"}`) |
+| `zz-caboose-agent` | `/etc/chromium.d` file: on the agent seat (`CABOOSE_SEAT=agent`), Chromium starts with `--force-renderer-accessibility`, `--enable-features=WebMCPTesting` (Chromium's WebMCP with its tool listing and calls), `--silent-debugger-extension-api` (no debugging bar over the page while `evaluate` runs) and this extension |
 | `install.sh` | Installs the extension into `/opt/caboose/webmcp`, the host's manifest into `/etc/chromium/native-messaging-hosts`, and the flags file; `guest/components/install.sh` runs it |
 
 Desktop MCP finds a window's host by the window's process, which is the browser that started

@@ -15,8 +15,12 @@ def private_dir(path):
         raise RuntimeError('agent state must be a private owned directory')
 
 
-def environment(owner_home):
-    root = Path(owner_home) / '.local/share/caboose/agent-seat'
+def environment(owner_home, root=None):
+    """The agent seat's launch environment. `root` holds the profile (its `home` and version):
+    by default the owner's ~/.local/share/caboose/agent-seat; CABOOSE_AGENT_PROFILE names
+    another, so a run that resets its own directory (the desktop benchmark) has the apps the
+    agent launches share its home."""
+    root = Path(root) if root else Path(owner_home) / '.local/share/caboose/agent-seat'
     private_dir(root)
     fd = os.open(root / '.init.lock', os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
     try:
@@ -41,7 +45,16 @@ def environment(owner_home):
                 os.fsync(directory_fd)
             finally:
                 os.close(directory_fd)
-        return dict(HOME=str(home), XDG_CONFIG_HOME=str(home / '.config'),
+        # Another profile keeps the seat's installed software: its user Flatpak installation
+        # and its Wine prefix stay those of the default profile.
+        software = {}
+        if root != Path(owner_home) / '.local/share/caboose/agent-seat':
+            default = Path(owner_home) / '.local/share/caboose/agent-seat/home'
+            if (default / '.local/share/flatpak').is_dir():
+                software['FLATPAK_USER_DIR'] = str(default / '.local/share/flatpak')
+            if (default / '.wine').is_dir():
+                software['WINEPREFIX'] = str(default / '.wine')
+        return dict(**software, HOME=str(home), XDG_CONFIG_HOME=str(home / '.config'),
                     XDG_DATA_HOME=str(home / '.local/share'), XDG_CACHE_HOME=str(home / '.cache'),
                     XDG_STATE_HOME=str(home / '.local/state'), CABOOSE_SEAT='agent',
                     DBUS_SESSION_BUS_ADDRESS='unix:path=/run/user/1000/agent-bus')
@@ -50,7 +63,7 @@ def environment(owner_home):
 
 
 def main():
-    values = environment('/home/caboose')
+    values = environment('/home/caboose', os.environ.get('CABOOSE_AGENT_PROFILE') or None)
     if sys.argv[1:2] == ['exec'] and len(sys.argv) > 2:
         os.environ.update(values)
         os.execvp(sys.argv[2], sys.argv[2:])
