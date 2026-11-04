@@ -280,8 +280,10 @@ only known names, lowercased and sorted: `guest-handles`, `guest-handle-arrays`,
 `batched-descriptor-sets`, `batched-descriptor-sets-inline`
 ([Batched descriptor sets](#batched-descriptor-sets)), `guest-set-ids`
 ([Guest-chosen set ids](#guest-chosen-set-ids)), `completion-payloads`
-([Completion payloads](#completion-payloads)), `wait-serial` ([Completion feed](#completion-feed))
-and `silent-success` ([Silent success](#silent-success)).
+([Completion payloads](#completion-payloads)), `wait-serial` ([Completion feed](#completion-feed)),
+`silent-success` ([Silent success](#silent-success)) and `executor-stats`
+([Executor stats](#executor-stats)). A host that does not know a name drops it, so the phone
+must be paired with a host at least as new as its features.
 The broker reads them from the authenticated upgrade request.
 
 A local process on the indexed v4 path may offer optional features in its 48-byte
@@ -738,6 +740,31 @@ whose worker frees it once the GPU is done (`CABOOSE_GPU_TEARDOWN_DEFERRED`, `_F
 `_PENDING` every 30 s), and the teardown goes on. When cleanup has not returned by its
 deadline, and every 10 s after, the phone prints where each process stands
 (`CABOOSE_GPU_TEARDOWN_STEP`, `CABOOSE_GPU_TEARDOWN_PROCESS`).
+
+## Executor stats
+
+A phone that declares `executor-stats` keeps a few always-on counters in its executor: commands
+decoded and the time inside the decoder, bytes read from the computer's streams and the time
+waiting for them, the time writing replies, completion watches submitted and completed (their
+submit-to-completion time, and the time the GPU had watched work in flight, counted once however
+many queues overlap), and the watches waiting now and the most waiting at once. Each is a
+relaxed atomic add; nothing is gated by build configuration or the environment.
+
+After the session is ready the broker sends `STATS_REQUEST` (kind 48, session scope, 8 bytes:
+interval in milliseconds as u32, then a reserved u32; the broker asks for 1000). The phone then
+sends `EXECUTOR_STATS` (kind 47, session scope, 96 bytes: `caboose_gpu_executor_stats`, twelve
+u64 totals since its runtime started, the first the record's size) at that interval, except
+while suspended, until the session ends. A second request, an interval outside 100 to 60 000 ms,
+or stats nobody asked for end the connection. Every 5 s the broker prints what changed:
+
+`CABOOSE_GPU_EXECUTOR_STATS elapsed_ms=… commands=… decode_ms=… read_bytes=… read_wait_ms=…
+flush_ms=… submitted=… completed=… completion_mean_us=… gpu_busy_pct=… outstanding=…
+outstanding_max=… at=…`
+
+These sit beside the broker's own `CABOOSE_GPU_SURFACE_STATS` (presents per second, gaps and
+link bytes per surface; see the broker's README), which need nothing from the phone. Both are
+counters only, never handles, payloads or identities. The phone's frame-lab pictures and its
+console mirror stay opt-in diagnostics.
 
 ## Executor generations
 

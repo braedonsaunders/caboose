@@ -23,7 +23,7 @@ export const GPU_SUSPENDED_CLOSE = 4001
  * so it frees the executor at once (docs/gpu-live.md, "Resuming an executor"). */
 export const GPU_EXECUTOR_ENDED_CLOSE = 4410
 /** GPU capabilities a phone may declare; the host forwards only these, never other text. */
-export const GPU_FEATURES = ['guest-handles', 'guest-handle-arrays', 'completion-feed', 'ordered-present', 'guest-images', 'guest-query-pools', 'shader-cache', 'executor-resume', 'zstd-stream', 'upload-cache', 'guest-buffer-views', 'batched-descriptor-sets', 'batched-descriptor-sets-inline', 'guest-set-ids', 'completion-payloads', 'wait-serial', 'silent-success'] as const
+export const GPU_FEATURES = ['guest-handles', 'guest-handle-arrays', 'completion-feed', 'ordered-present', 'guest-images', 'guest-query-pools', 'shader-cache', 'executor-resume', 'zstd-stream', 'upload-cache', 'guest-buffer-views', 'batched-descriptor-sets', 'batched-descriptor-sets-inline', 'guest-set-ids', 'completion-payloads', 'wait-serial', 'silent-success', 'executor-stats'] as const
 
 /** The known features named in a phone's `X-Caboose-GPU-Features` header, sorted. */
 export function gpuFeatures(header: string | string[] | undefined): string[] {

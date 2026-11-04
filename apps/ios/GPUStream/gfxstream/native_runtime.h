@@ -3,6 +3,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <vulkan/vulkan.h>
+#include "executor_stats_abi.h"
 #ifdef __cplusplus
 extern "C" {
 #endif

@@ -1,6 +1,7 @@
 // Copyright 2026 Caboose contributors. SPDX-License-Identifier: Apache-2.0
 #include "process_registry.h"
 #include "completion_feed.h"
+#include "executor_stats.h"
 #include "decode_connection.h"
 #include "frame_buffer.h"
 #include "render_thread_info.h"
@@ -187,7 +188,15 @@ extern "C" int caboose_gfx_process_open(caboose_gfx_registry* registry, uint64_t
                         (VkQueue)(uintptr_t)boxedQueue, &marker) != VK_SUCCESS)
                     return {};
                 std::shared_ptr<gfxstream::host::vk::CabooseCompletionMarker> held(std::move(marker));
-                return [held, abandon, context, state](const caboose::gpuv2::CompletionFeed::AfterFence& afterFence) -> int32_t {
+                // Counted from submission until the watch ends, however it ends (executor stats).
+                struct Watched {
+                    uint64_t since = caboose::gpuv2::stats::noteSubmitted();
+                    std::atomic_bool ended{false};
+                    void end(bool done) { if (!ended.exchange(true)) caboose::gpuv2::stats::noteCompleted(since, done); }
+                    ~Watched() { end(false); }
+                };
+                auto watched = std::make_shared<Watched>();
+                return [held, abandon, context, state, watched](const caboose::gpuv2::CompletionFeed::AfterFence& afterFence) -> int32_t {
                     // Waited in slices: once the process is finished, a marker whose work has
                     // not completed is handed (with its fence and device lease) to the deferred
                     // teardown, which frees it when the GPU is done, and the feed goes on.
@@ -195,6 +204,7 @@ extern "C" int caboose_gfx_process_open(caboose_gfx_registry* registry, uint64_t
                         VkResult result = held->vk->vkWaitForFences(held->device, 1, &held->fence,
                                                                     VK_TRUE, 100'000'000ull);
                         if (result != VK_TIMEOUT) {
+                            watched->end(result == VK_SUCCESS);
                             // Captures (WATCH2) are taken while the marker still holds the device.
                             if (result == VK_SUCCESS) {
                                 afterFence([&](const caboose::gpuv2::CompletionFeed::Capture& c, unsigned char* out) -> int32_t {

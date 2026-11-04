@@ -61,6 +61,9 @@ class Kind(IntEnum):
     QUIESCED = 44
     EXECUTOR_RESUME = 45
     SNAPSHOT_REFUSED = 46
+    # Executor stats (feature `executor-stats`, docs/gpu-live.md "Executor stats").
+    EXECUTOR_STATS = 47
+    STATS_REQUEST = 48
 
 
 # Outside the directional sequence: sequence 0, never retained or sent again.
@@ -68,10 +71,13 @@ UNSEQUENCED = frozenset((Kind.ACK, Kind.RESUME))
 SESSION_KINDS = frozenset((Kind.SESSION, Kind.SESSION_READY, Kind.REVOKE, Kind.REVOKED, Kind.EXECUTOR_DRAIN,
                            Kind.TRANSPORT_CONFIG, Kind.TRANSPORT_READY, Kind.ACK, Kind.RESUME,
                            Kind.EXECUTOR_SUSPEND, Kind.QUIESCE, Kind.QUIESCED, Kind.EXECUTOR_RESUME,
-                           Kind.SNAPSHOT_REFUSED))
+                           Kind.SNAPSHOT_REFUSED, Kind.EXECUTOR_STATS, Kind.STATS_REQUEST))
 # Fixed payload sizes of the resume kinds.
 RESUME_SIZES = {Kind.ACK: 8, Kind.RESUME: 32, Kind.EXECUTOR_SUSPEND: 0, Kind.QUIESCE: 0, Kind.QUIESCED: 0,
                 Kind.EXECUTOR_RESUME: 8, Kind.SNAPSHOT_REFUSED: 8}
+# Fixed payload sizes of the stats kinds: STATS_REQUEST {interval_ms u32, reserved u32};
+# EXECUTOR_STATS, caboose_gpu_executor_stats (12 little-endian u64, the first its size).
+STATS_SIZES = {Kind.EXECUTOR_STATS: 96, Kind.STATS_REQUEST: 8}
 
 
 class ProtocolError(ValueError):
@@ -122,6 +128,9 @@ def _validate(kind, executor, generation, process, stream, sequence, length):
     if kind in RESUME_SIZES:
         if length != RESUME_SIZES[kind]:
             raise ProtocolError("invalid resume control size")
+    elif kind in STATS_SIZES:
+        if length != STATS_SIZES[kind]:
+            raise ProtocolError("invalid stats size")
     elif is_surface(kind):
         if length < 40:
             raise ProtocolError("truncated surface control")

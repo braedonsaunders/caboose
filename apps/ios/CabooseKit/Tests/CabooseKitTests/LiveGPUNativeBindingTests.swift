@@ -494,6 +494,49 @@ final class LiveGPUNativeBindingTests: XCTestCase {
         try? binding.finish()
     }
 
+    func testStatsRequestSendsTheExecutorsCountersAtItsInterval() throws {
+        let runtime = LiveRuntimeProbe()
+        let counters = LiveGPUExecutorStats(commands: 1200, decodeMicroseconds: 9000, readBytes: 4096,
+            submitted: 30, completed: 29, gpuBusyMicroseconds: 400, outstanding: 1, outstandingMax: 3)
+        runtime.stats = counters
+        let binding = try LiveGPUNativeBinding(backend: runtime)
+        let output = LiveOutputProbe()
+        try binding.start(output: { output.accept($0) }, failed: { output.fail($0) })
+        try binding.consume(wire(.session, sequence: 1, payload: LiveGPUEnvelope.hello))
+        // Nothing until the computer asks.
+        Thread.sleep(forTimeInterval: 0.25)
+        XCTAssertFalse(try output.frames().contains { $0.kind == .executorStats })
+        var interval = Data(count: 8); interval[0] = 100
+        try binding.consume(wire(.statsRequest, sequence: 2, payload: interval))
+        let deadline = Date().addingTimeInterval(3)
+        var sent: [LiveGPUEnvelope] = []
+        while sent.count < 2 && Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.05)
+            sent = try output.frames().filter { $0.kind == .executorStats }
+        }
+        XCTAssertGreaterThanOrEqual(sent.count, 2)
+        XCTAssertEqual(sent.first?.payload, counters.payload)
+        XCTAssertEqual(sent.first?.payload.count, LiveGPUExecutorStats.size)
+        // A second request is a protocol violation.
+        XCTAssertThrowsError(try binding.consume(wire(.statsRequest, sequence: 3, payload: interval)))
+        try? binding.revoke()
+        let after = try output.frames().filter { $0.kind == .executorStats }.count
+        Thread.sleep(forTimeInterval: 0.3)
+        XCTAssertEqual(try output.frames().filter { $0.kind == .executorStats }.count, after)
+    }
+
+    func testExecutorStatsPayloadAndRequestedInterval() {
+        let stats = LiveGPUExecutorStats(commands: 1, outstandingMax: 2)
+        XCTAssertEqual(stats.payload.prefix(8), Data([96, 0, 0, 0, 0, 0, 0, 0]))
+        XCTAssertEqual(stats.payload.suffix(8), Data([2, 0, 0, 0, 0, 0, 0, 0]))
+        var request = Data(count: 8)
+        request[0] = 0xe8; request[1] = 3
+        XCTAssertEqual(LiveGPUExecutorStats.requestedInterval(request), 1000)
+        request[0] = 50; request[1] = 0
+        XCTAssertNil(LiveGPUExecutorStats.requestedInterval(request))
+        XCTAssertNil(LiveGPUExecutorStats.requestedInterval(Data(count: 4)))
+    }
+
     private func hex(_ text: String) -> Data {
         let chars = Array(text.utf8)
         return Data(stride(from: 0, to: chars.count, by: 2).map { UInt8(String(bytes: chars[$0..<$0 + 2], encoding: .utf8)!, radix: 16)! })
@@ -562,6 +605,8 @@ private final class LiveRuntimeProbe: LiveGPURuntimeBackend, @unchecked Sendable
         }
     }
     func stop(_ token: UInt64) -> Int32 { stopped.signal(); return 0 }
+    var stats: LiveGPUExecutorStats?
+    func executorStats() -> LiveGPUExecutorStats? { lock.withLock { stats } }
     var suspendResult: Int32 = 0
     var gate: [String] = []
     func suspend(timeoutMilliseconds: UInt32) -> Int32 { lock.withLock { gate.append("suspend") }; return suspendResult }

@@ -165,6 +165,15 @@ class ExecutorResumeProtocolTests(unittest.TestCase):
         encode(session(Kind.EXECUTOR_RESUME, 4, (1).to_bytes(4, "little") + bytes(4)))
         encode(session(Kind.QUIESCED, 9))
 
+    def test_stats_kinds_have_fixed_sizes_and_session_scope(self):
+        encode(session(Kind.STATS_REQUEST, 1, (1000).to_bytes(4, "little") + bytes(4)))
+        encode(session(Kind.EXECUTOR_STATS, 2, (96).to_bytes(8, "little") + bytes(88)))
+        for kind, size in ((Kind.STATS_REQUEST, 4), (Kind.EXECUTOR_STATS, 88)):
+            with self.assertRaises(ProtocolError):
+                encode(session(kind, 1, bytes(size)))
+        with self.assertRaises(ProtocolError):
+            encode(Envelope(Kind.EXECUTOR_STATS, IDENTITY, 7, 11, 0, 1, bytes(96)))
+
     def test_a_replaying_decoder_skips_envelopes_it_already_has(self):
         got, parser = [], Decoder(IDENTITY, 7, replay=True)
         parser.feed(encode(frame(sequence=1)) + encode(frame(sequence=2)), got.append)
