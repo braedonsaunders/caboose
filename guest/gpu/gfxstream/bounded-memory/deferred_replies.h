@@ -42,14 +42,22 @@ bool drainDeferredReplies(uint32_t& pending, Stream* stream) {
     return true;
 }
 
-// Deferred commands in flight before their replies must be read. Past 6 MiB of commands
-// the phone has not answered, a send waits for the oldest half: the broker would take more
-// (its flow control paces only the transport), but every byte queued ahead of a present or a
-// synchronous call delays it by the time the phone takes to decode it. What must also stay
-// small is the replies left unread: they wait in the socket back to the process, and a full
-// socket would stall the broker's writer and with it the phone. Replies that have arrived
-// are read without blocking once a little is owed.
-inline constexpr uint64_t deferredByteLimit = 6 * 1024 * 1024;
+// Deferred commands in flight before their replies must be read, bounded two ways; past
+// either bound a send waits for the oldest replies, down to half of both.
+// - Reply bytes owed, 64 KiB, so at most 16384 replies (each at least a 4-byte result) and
+//   about 1.25 MiB of their `Reply` records (only one encoder defers). Replies that have
+//   arrived wait unread in the local socket back to the process, and the broker writes each
+//   reply before it reads the phone's next message, so a full socket stalls it, and with it
+//   the completion feed the process may be waiting for: a deadlock. The phone's replies come
+//   in many small messages, each costing the socket far more than its bytes; 128 KiB already
+//   deadlocks DXVK. Replies that have arrived are read without blocking once a little is owed.
+// - Command bytes the phone has not answered, 24 MiB: eight frames of a game that sends
+//   3 MiB a frame. The guest keeps none of these bytes: they wait in the broker's queue and
+//   resume window (8 MiB each), the phone's ingress and its decoder's socket, and a send past
+//   what those take blocks in the socket. Frame pacing (two unretired ordered presents,
+//   DXVK's frame latency) is what limits the frames in flight; this bound only keeps a burst
+//   of uploads from queueing seconds of decoding ahead of a present or a synchronous call.
+inline constexpr uint64_t deferredByteLimit = 24 * 1024 * 1024;
 inline constexpr uint64_t deferredReplyByteLimit = 64 * 1024;
 inline constexpr uint64_t deferredReapBytes = 256 * 1024, deferredReapReplyBytes = 4096;
 
@@ -81,8 +89,8 @@ class DeferredReplies {
 public:
     // Before sending a deferred command of `bytes`: once some commands or replies are owed,
     // consume the replies that have already arrived on the socket without blocking; if still
-    // past the bound, drain only the oldest prefix needed to bring the remaining queue within
-    // half the bound, rather than blocking on the newest just-sent command.
+    // past a bound, drain only the oldest prefix needed to bring the remaining queue within
+    // half of both bounds, rather than blocking on the newest just-sent command.
     template<class Stream, class Available>
     bool reserve(const void* encoder, Stream* stream, uint64_t bytes,
                  uint64_t limit, Available available) {

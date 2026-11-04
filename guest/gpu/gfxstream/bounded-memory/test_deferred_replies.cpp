@@ -69,21 +69,67 @@ int main() {
     assert(table.reserve(&a, &first, 801, 1000) && first.next == 3 && table.pending() == 0);
 
     // The default bound lets commands run megabytes ahead while their replies stay small,
-    // and drains the oldest half once the replies owed pass 64 KiB, leaving newer replies
-    // in flight instead of stalling on the newest just-sent command.
+    // and drains the oldest half once past it, leaving newer replies in flight instead of
+    // stalling on the newest just-sent command.
     {
         DeferredReplies big;
         Stream results;
-        const uint32_t many = uint32_t(deferredReplyByteLimit / sizeof(int32_t));
-        results.replies.assign(many + 2, 0);
-        big.addCheckedResults(&a, 1, 4 * 1024 * 1024);  // one 4 MiB flush, one result
+        results.replies.assign(4, 0);
+        big.addCheckedResults(&a, 1, deferredByteLimit - 2 * 1024 * 1024);  // one large flush, one result
         assert(big.reserve(&a, &results, 1024 * 1024) && results.next == 0);
-        assert(big.reserve(&a, &results, 3 * 1024 * 1024) && results.next == 1 && big.pending() == 0);  // past 6 MiB
-        big.addCheckedResults(&a, many, 1024);                 // exactly 64 KiB of results owed
-        assert(big.reserve(&a, &results, 64) && results.next == 1);
-        big.addCheckedResult(&a, 64);                          // one more: past the reply bound
-        assert(big.reserve(&a, &results, 64) && results.next == 1 + many / 2 + 1 && big.pending() == many / 2);
-        assert(big.drain(&a, &results) && results.next == many + 2 && big.pending() == 0);
+        assert(big.reserve(&a, &results, 3 * 1024 * 1024) && results.next == 1 && big.pending() == 0);  // past the bound
+    }
+    // Eight frames of 3 MiB of commands, each with a submit, a flush and a few hundred binds
+    // and resets, run ahead of the phone without waiting; the ninth waits for the oldest.
+    {
+        DeferredReplies frames;
+        Stream results;
+        constexpr uint32_t perFrame = 400;
+        constexpr uint64_t frameBytes = 3 * 1024 * 1024;
+        results.replies.assign(10 * perFrame, 0);
+        for (int frame = 0; frame < 8; ++frame) {
+            assert(frames.reserve(&a, &results, frameBytes, deferredByteLimit, [] { return size_t(0); }));
+            frames.addCheckedResults(&a, perFrame, frameBytes);
+        }
+        assert(results.next == 0 && frames.pending() == 8 * perFrame);
+        assert(frames.reserve(&a, &results, frameBytes, deferredByteLimit, [] { return size_t(0); }));
+        assert(results.next == 5 * perFrame && frames.pending() == 3 * perFrame);  // within half the bound again
+        assert(frames.drain(&a, &results) && frames.pending() == 0);
+    }
+    // Past 64 KiB of owed reply bytes the oldest are read until half that is owed.
+    {
+        DeferredReplies wide;
+        ByteStream replies;
+        auto owe = [&](uint32_t count) {
+            for (uint32_t i = 0; i < count; ++i) {
+                auto data = std::make_shared<QueryReply>();
+                data->data.resize(60);
+                for (int b = 0; b < 60; ++b) replies.bytes.push_back(0);
+                replies.put<int32_t>(0);
+                wide.addDataReply(&a, std::move(data), 64);
+            }
+        };
+        const uint32_t fill = uint32_t(deferredReplyByteLimit / 64);  // exactly the bound
+        owe(fill);
+        assert(wide.reserve(&a, &replies, 64, deferredByteLimit, [] { return size_t(0); }) && replies.next == 0);
+        owe(1);
+        assert(wide.reserve(&a, &replies, 64, deferredByteLimit, [] { return size_t(0); }));
+        assert(wide.pending() == fill / 2 && replies.next == (fill / 2 + 1) * 64 && !replies.invalidated);
+        assert(wide.drain(&a, &replies) && replies.next == replies.bytes.size());
+    }
+    // At most 16384 results are owed (64 KiB); past that the oldest are read until half is.
+    {
+        DeferredReplies count;
+        Stream results;
+        const uint32_t most = uint32_t(deferredReplyByteLimit / sizeof(int32_t));
+        assert(most == 16384);
+        results.replies.assign(most + 1, 0);
+        count.add(&a, most, 64);
+        assert(count.reserve(&a, &results, 64, deferredByteLimit, [] { return size_t(0); }) && results.next == 0);
+        count.add(&a, 1, 64);
+        assert(count.reserve(&a, &results, 64, deferredByteLimit, [] { return size_t(0); }));
+        assert(results.next == most / 2 + 1 && count.pending() == most / 2);
+        assert(count.drain(&a, &results) && count.pending() == 0);
     }
     // Non-blocking available() inside reserve() consumes already-arrived replies first,
     // avoiding a blocking drain when enough bytes are sitting in the socket buffer.

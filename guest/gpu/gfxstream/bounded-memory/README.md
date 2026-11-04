@@ -14,7 +14,7 @@ transfer and reply handling, so it can be tested without Mesa.
 | `write_watch.h` | The blocks an application wrote to coherent memory since they were last sent, recorded with userfaultfd write protection (`/dev/userfaultfd`), so the flush before a submit sends only those; without the device, whole mappings |
 | `upload_cache.h` | The phone's upload cache (docs/gpu-live.md, "Upload cache"): the inventory and allowance per executor, the pieces each device stream stored, what a whole 4096-byte piece of a range of at least 16 KiB is sent as, and its wire form; BLAKE3 and the bytes are checked against `../upload-cache/vectors.json` by `../upload-cache/test_upload_cache_vectors.cpp` |
 | `cb_staging.h` | A command buffer's local, budgeted recording stream, sent with its queue submit |
-| `deferred_replies.h` | Replies the caller does not wait for, read as they arrive and drained in order once 6 MiB of commands or 64 KiB of their replies are owed; prefetched fence waits; guest-assigned handle checks |
+| `deferred_replies.h` | Replies the caller does not wait for, read as they arrive and drained in order once 64 KiB of replies or 24 MiB of their commands are owed; prefetched fence waits; guest-assigned handle checks |
 | `deferred_destroys.h` | Frees and destroys held until every queue submission sent before them has completed (Deferred frees, below) |
 | `event_status.h` | Event status asked for without waiting when the completion tracker does not follow the event |
 | `memory_traffic.h` | What a process moves, always counted and reported every five seconds in which anything moved: bytes its sockets sent and received, mapped memory flushed and read back by the application or the driver's coherent upkeep, and the readback ranges copies into buffers marked |
@@ -54,8 +54,14 @@ Flushes, fence and command-pool resets, binds, queue submits, guest-assigned cre
 plain allocations within the heap budget do not wait for their replies. `DeferredReplies` queues them per encoder; every later read drains them
 first, in stream order. Replies that have fully arrived are read without blocking as more
 deferred commands are sent, once 256 KiB of commands or 4 KiB of replies are owed. Past
-6 MiB of commands the phone has not answered, or 64 KiB of owed replies, a send waits for the
-oldest half: commands queued further ahead would only delay the next present. A failed
+64 KiB of owed replies (at most 16384) or 24 MiB of commands the phone has not answered (eight
+frames of a game that sends 3 MiB a frame), a send reads the oldest replies until half of each
+is owed. The guest keeps about 80 bytes per owed reply and none of the commands. The reply
+bound keeps unread replies within what the local socket holds: the broker writes each reply
+before it reads the phone's next message, so a full socket would also hold back the
+completion feed the process waits on, and with DXVK 128 KiB already does. The command bound
+keeps a burst of uploads from queueing seconds of decoding ahead of the next present; frame
+pacing, not these bounds, limits the frames in flight. A failed
 reset or flush is reported on stderr. A failed bind, or a create whose handle the
 device refused or renamed, invalidates the stream: the application can no longer observe
 that failure, so the device is lost. Only the first encoder of a process may defer; a
