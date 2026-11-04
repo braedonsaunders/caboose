@@ -83,16 +83,18 @@ for task in tasks:
                        '--permission-mode', 'bypassPermissions', '--no-session-persistence', '--setting-sources', 'project']
         else:
             # Codex keeps its shell; the read-only sandbox has no network, so the computer is
-            # reachable only through the desktop server.
+            # reachable only through the desktop server, which must be up before the first turn
+            # (Codex otherwise starts without its tools).
             command = ['codex', 'exec', '--json', '--ephemeral', '--skip-git-repo-check', '--ignore-rules', '-s', 'read-only', '-m', a.model,
                        '-c', f'mcp_servers.desktop.command={json.dumps(server[0])}', '-c', f'mcp_servers.desktop.args={json.dumps(server[1:])}',
-                       '-c', 'mcp_servers.desktop.tool_timeout_sec=180', '-c', 'mcp_servers.desktop.startup_timeout_sec=60', '-c', 'mcp_servers.desktop.default_tools_approval_mode="approve"', '-c', 'approval_policy="never"', prompt]
+                       '-c', 'mcp_servers.desktop.tool_timeout_sec=180', '-c', 'mcp_servers.desktop.startup_timeout_sec=60', '-c', 'mcp_servers.desktop.required=true', '-c', 'mcp_servers.desktop.default_tools_approval_mode="approve"', '-c', 'approval_policy="never"', prompt]
         started = time.monotonic()
         calls, names, result, model_turns = 0, {}, {}, []
         try:
             # Read as it streams, so each turn's model time (from the last tool result to the next
             # tool call) is measured apart from the tools' own time.
-            child = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, cwd=tempfile.gettempdir())
+            errors = tempfile.TemporaryFile('w+')
+            child = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=errors, text=True, cwd=tempfile.gettempdir())
             timer = threading.Timer(a.timeout, child.kill); timer.start()
             lines, since = [], started
             for line in child.stdout:
@@ -106,6 +108,10 @@ for task in tasks:
                     since = now
             child.wait(); timer.cancel()
             if child.returncode == -9: raise subprocess.TimeoutExpired(command, a.timeout)
+            if child.returncode and not any(line.strip() for line in lines):
+                # It never ran (Codex refuses to start without its desktop server).
+                errors.seek(0)
+                result = {'is_error': True, 'result': (errors.read().strip().splitlines() or [f'exit {child.returncode}'])[-1]}
             for line in lines:
                 try: event = json.loads(line)
                 except ValueError: continue
