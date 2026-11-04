@@ -1,14 +1,16 @@
-//! GPU binds held for override-redirect X11 windows that are not bindable yet. A toolkit
-//! binds its Vulkan surface to a menu, tooltip or dropdown as soon as it has made the
-//! window, often before the window is mapped (a menu made ahead of being shown), or before
-//! the compositor has taken in the map. Such a bind, by the process that made the window,
-//! is held unanswered rather than refused, and answered once the window is a bindable
-//! surface. It is refused when the window goes, the process ends, a newer bind of the same
-//! window by the same process replaces it, or it has waited `HOLD`, which is shorter than
-//! the broker's wait for the compositor's answer (docs/gpu-live.md). At most `LIMIT` are
-//! held. A managed top-level's bind is never held: its map goes through the compositor,
-//! and an application that presents before it maps its window is answered at once.
-//! Only standard-library types here, so the rules are tested on any host.
+//! GPU binds held for X11 windows that are not bindable yet. A toolkit binds its Vulkan
+//! surface to a window as soon as it has made it, often before the window is mapped (a
+//! menu made ahead of being shown, a top-level or a child made before its first show), or
+//! before the compositor has taken in the map. Such a bind, by the process that made the
+//! window, is held unanswered rather than refused, and answered once the window is a
+//! bindable surface. It is refused when the window goes, the process ends, a newer bind of
+//! the same window by the same process replaces it, or it has waited `HOLD`, which is
+//! shorter than the broker's wait for the compositor's answer (docs/gpu-live.md). At most
+//! `LIMIT` are held. A window whose bind waited out `HOLD` is not held again (its later
+//! binds are refused at once, and granted as usual once it is bindable), so a window that
+//! never maps costs its process one wait. Only standard-library types here, so the rules
+//! are tested on any host.
+use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 /// The most binds held at once; the broker allows 64 outstanding binds in all.
@@ -17,15 +19,16 @@ pub const LIMIT: usize = 16;
 pub const HOLD: Duration = Duration::from_millis(4000);
 /// How often held binds are looked at again while any are held.
 pub const SWEEP: Duration = Duration::from_millis(100);
+/// How many windows whose hold expired are remembered (oldest forgotten first).
+pub const REMEMBERED: usize = 64;
 // A held bind is answered, at the latest by the sweep after `HOLD`, before the broker gives
 // up on it, and the held binds leave the broker room for others.
 const _: () = assert!(HOLD.as_millis() + SWEEP.as_millis() < 5000 && LIMIT < 64);
 
-/// Whether a bind of a window no bindable top-level holds yet is held: the window is, or
-/// is in, an override-redirect window, and the X server records the bound process `pid` as
-/// the client that made it (`maker`).
-pub fn holdable(override_redirect: bool, maker: Option<u32>, pid: u32) -> bool {
-    override_redirect && maker == Some(pid)
+/// Whether a bind of a window no bindable top-level holds yet is held: the X server records
+/// the bound process `pid` as the client that made it (`maker`).
+pub fn holdable(maker: Option<u32>, pid: u32) -> bool {
+    maker == Some(pid)
 }
 
 /// One held bind: the X11 window it names, the bound process, and when it was first held.
@@ -46,10 +49,12 @@ impl<T> Held<T> {
 #[derive(Debug)]
 pub struct PendingBinds<T> {
     held: Vec<Held<T>>,
+    /// (window, process) whose held bind waited out `HOLD`.
+    expired: VecDeque<(u32, u32)>,
 }
 
 impl<T> Default for PendingBinds<T> {
-    fn default() -> Self { Self { held: Vec::new() } }
+    fn default() -> Self { Self { held: Vec::new(), expired: VecDeque::new() } }
 }
 
 impl<T> PendingBinds<T> {
@@ -82,6 +87,19 @@ impl<T> PendingBinds<T> {
 
     /// Forgets every held bind without answering it: its broker is gone.
     pub fn clear(&mut self) { self.held.clear(); }
+
+    /// A held bind of `object` by `pid` waited out `HOLD`: that window is not held again.
+    pub fn remember_expired(&mut self, object: u32, pid: u32) {
+        if self.expired.contains(&(object, pid)) { return; }
+        if self.expired.len() >= REMEMBERED { self.expired.pop_front(); }
+        self.expired.push_back((object, pid));
+    }
+
+    /// Whether `pid`'s bind of `object` waited out `HOLD` before.
+    pub fn expired_before(&self, object: u32, pid: u32) -> bool { self.expired.contains(&(object, pid)) }
+
+    /// The X11 window `object` was destroyed (its id may be made again).
+    pub fn forget_window(&mut self, object: u32) { self.expired.retain(|&(o, _)| o != object); }
 }
 
 #[cfg(test)]
@@ -93,11 +111,26 @@ mod tests {
     }
 
     #[test]
-    fn only_an_override_redirect_window_the_bound_process_made_is_held() {
-        assert!(holdable(true, Some(42), 42));
-        assert!(!holdable(true, Some(43), 42), "another process made it");
-        assert!(!holdable(true, None, 42), "the X server does not know who made it");
-        assert!(!holdable(false, Some(42), 42), "a managed top-level maps through the compositor");
+    fn only_a_window_the_bound_process_made_is_held() {
+        assert!(holdable(Some(42), 42));
+        assert!(!holdable(Some(43), 42), "another process made it");
+        assert!(!holdable(None, 42), "the X server does not know who made it");
+    }
+
+    #[test]
+    fn a_window_whose_hold_expired_is_not_held_again_until_it_goes() {
+        let mut pending = PendingBinds::<u64>::default();
+        assert!(!pending.expired_before(0x400003, 42));
+        pending.remember_expired(0x400003, 42);
+        pending.remember_expired(0x400003, 42);
+        assert!(pending.expired_before(0x400003, 42));
+        assert!(!pending.expired_before(0x400003, 43), "another process's bind of it is its own");
+        pending.forget_window(0x400003);
+        assert!(!pending.expired_before(0x400003, 42), "a destroyed window's id may be made again");
+        // Bounded: the oldest is forgotten first.
+        for i in 0..=REMEMBERED as u32 { pending.remember_expired(0x500000 + i, 42); }
+        assert!(!pending.expired_before(0x500000, 42));
+        assert!(pending.expired_before(0x500000 + REMEMBERED as u32, 42));
     }
 
     #[test]

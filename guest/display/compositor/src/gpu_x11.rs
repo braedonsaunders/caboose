@@ -73,9 +73,9 @@ impl X11Windows {
     /// not taken in its map yet, and the X server records `pid` as the client that created it.
     pub fn holds_until_bindable(&self, window: Window, toplevels: &[Window], pid: u32) -> Result<bool, Error> {
         if self.toplevel_of(window, toplevels)?.is_some() { return Ok(false); }
-        let Some(outer) = self.outermost(window)? else { return Ok(false) };
-        let override_redirect = self.conn.get_window_attributes(outer)?.reply()?.override_redirect;
-        Ok(crate::gpu_pending::holdable(override_redirect, self.client_pid(window)?, pid))
+        // A window still in the tree (destroyed ones are not).
+        if self.outermost(window)?.is_none() { return Ok(false); }
+        Ok(crate::gpu_pending::holdable(self.client_pid(window)?, pid))
     }
 
     /// The child of the root window that `window` is or is in.
