@@ -956,7 +956,12 @@ and waited for, and its success is kept in the session's instance scope, so ever
 it in the session starts without those round trips; a new executor connection starts with none.
 A process's first start command may come before its feed runs: it waits up to 100 ms for the
 feed, then asks the command instead (`guest/gpu/gfxstream/bounded-memory/one_way_start.h`).
-`CABOOSE_ONE_WAY_START=0` asks every start command.
+`CABOOSE_ONE_WAY_START=0` asks every start command. Once a FAULT has lost the device, the
+process's destroys of what it made (the refused instance or device among them) stay in the
+process: every command checks for the loss before it is sent. A destroy the process sends
+before the FAULT reaches it names an object the phone never made, and the phone ends that
+process's streams, which the process sees as the same loss; the executor and every other
+process go on.
 
 ## Launch timeline
 
