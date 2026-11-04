@@ -6,6 +6,7 @@ import { loadCatalog, type Architecture, type CatalogData, type CatalogEntry, ty
 import { APP_ID, CATEGORIES, type FlathubApp, type FlathubIndex } from './flathub.js'
 import type { CraftReleases } from './releases.js'
 import type { RuntimeDepot } from './depot.js'
+import type { LibraryRecord, RecordedApp, RecordedDebian } from './library-record.js'
 
 type Operation = 'install' | 'update' | 'remove'
 type Progress = { id: string; operation: Operation; phase: 'queued' | 'installing' | 'finished' | 'failed'; message?: string; stage?: string; value?: number | null; downloadedBytes?: number; totalBytes?: number }
@@ -77,6 +78,19 @@ export function flathubEntry(app: FlathubApp): Entry {
     developer: app.developer, verified: app.verified, license: app.license, installs: app.installs }
 }
 
+/** A Debian application found through AppStream as a Library entry. */
+function debianEntry(id: string, d: RecordedDebian): Entry {
+  return { id, name: d.name, summary: d.summary, category: 'Utilities', categories: ['Utilities'], origin: 'debian', curated: false, developer: null, verified: false, license: d.license || null, installs: null,
+    storeComponent: d.componentId, icon: '', desktopId: d.desktopId, fileTypes: { extensions: [], utTypes: [] }, source: { kind: 'apt', packages: [d.package] } }
+}
+
+/** What the Library record keeps for an app; null for a Flathub app, which the computer's Flatpak volume keeps. */
+export function recordFor(app: Entry): RecordedApp | null {
+  if (app.source.kind === 'flatpak') return null
+  if (app.origin !== 'debian' || app.source.kind !== 'apt' || !app.storeComponent) return { id: app.id }
+  return { id: app.id, debian: { name: app.name, summary: app.summary, desktopId: app.desktopId, package: app.source.packages[0]!, componentId: app.storeComponent, license: app.license } }
+}
+
 function words(value: string): string[] { return value.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(Boolean) }
 
 /** What the guest installs for a game on this architecture: its archive and, if pinned, this architecture's native build only. */
@@ -95,6 +109,8 @@ export interface CatalogOptions {
   computer?: string
   /** The computer's architecture, which picks a game's native build; the host's own by default. */
   arch?: Architecture
+  /** What the owner installed through the Library outside the Flatpak volume, kept by the host. */
+  record?: LibraryRecord
   now?: () => number
 }
 
@@ -113,6 +129,7 @@ export class AppCatalog {
   private readonly depot: RuntimeDepot | undefined
   private readonly computer: string
   private readonly arch: Architecture
+  private readonly record: LibraryRecord | undefined
   private readonly now: () => number
   private states: Record<string, State> = {}
   private progress = new Map<string, Progress>()
@@ -137,6 +154,7 @@ export class AppCatalog {
     this.depot = settings.depot
     this.computer = settings.computer ?? 'owner'
     this.arch = settings.arch ?? (process.arch === 'arm64' ? 'aarch64' : 'x86_64')
+    this.record = settings.record
     this.now = settings.now ?? Date.now
   }
   get busy(): boolean { return this.working || this.observing || Object.values(this.states).some(state => state.active) }
@@ -159,8 +177,7 @@ export class AppCatalog {
       const v = object(value)
       if (typeof v.package !== 'string' || !/^[a-z0-9][a-z0-9+.-]{0,99}$/.test(v.package) || v.id !== `debian-${v.package}` || typeof v.desktopId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_.+-]{0,199}\.desktop$/.test(v.desktopId) || typeof v.name !== 'string' || !v.name || v.name.length > 160 || typeof v.summary !== 'string' || !v.summary || v.summary.length > 500 || typeof v.license !== 'string' || v.license.length > 200 || typeof v.componentId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_.+-]{0,199}$/.test(v.componentId)) continue
       if (this.data.apps.some(app => app.source.kind === 'apt' && app.source.packages.includes(v.package as string))) continue
-      this.store.set(v.id as string, { id: v.id as string, name: v.name, summary: v.summary, category: 'Utilities', categories: ['Utilities'], origin: 'debian', curated: false, developer: null, verified: false, license: v.license || null, installs: null,
-        storeComponent: v.componentId, icon: '', desktopId: v.desktopId, fileTypes: { extensions: [], utTypes: [] }, source: { kind: 'apt', packages: [v.package] } })
+      this.store.set(v.id as string, debianEntry(v.id as string, { name: v.name, summary: v.summary, desktopId: v.desktopId, package: v.package, componentId: v.componentId, license: v.license || null }))
     }
   }
   /** Loads Flathub's index, so an app found by an earlier search can be operated on after a restart. */
@@ -243,6 +260,11 @@ export class AppCatalog {
     this.environment = { flatpak: environment.flatpak === true, sandbox: environment.sandbox === true, depot: environment.depot === true }
     const states: Record<string, State> = {}
     for (const app of tracked) states[app.id] = parseState(app.id, apps[app.id])
+    // Apps the Library installed before the host kept its record join it.
+    for (const app of tracked) {
+      const state = states[app.id]!
+      if (state.installedVersion && state.operationId && state.progress?.operation !== 'remove') await this.remember(app, 'install')
+    }
     const flatpaks = new Map<string, Entry>()
     const runtimes: string[] = []
     for (const [id, value] of Object.entries(apps)) {
@@ -331,6 +353,7 @@ export class AppCatalog {
               catch (error) { await this.reconcile(app.id, action, operationId, error) }
             } finally { pollActive = false; clearInterval(timer) }
             this.updates.delete(app.id)
+            await this.remember(app, action)
             this.setProgress({ id: app.id, operation: action, phase: 'finished' })
           } catch (error) {
             const message = error instanceof Error ? error.message : String(error)
@@ -383,6 +406,36 @@ export class AppCatalog {
       due = []
     } finally { this.working = false; release() }
     if (due.length && !this.busy && this.guest()) this.startMany(due, 'update')
+  }
+  /** Keeps the Library record in step with a finished operation. A record that cannot be written fails nothing. */
+  private async remember(app: Entry, action: Operation): Promise<void> {
+    const recorded = this.record && recordFor(app)
+    if (!recorded) return
+    try {
+      if (action === 'remove') await this.record!.remove(app.id)
+      else await this.record!.add(recorded)
+    } catch (error) { console.error(`Cannot update the Library record for ${app.id}:`, error instanceof Error ? error.message : error) }
+  }
+  /**
+   * Installs each app in the Library record that the computer lacks, as one ordinary install
+   * operation: a container created again starts from its image. Returns the apps started.
+   */
+  async reapply(): Promise<string[]> {
+    if (!this.record || !this.guest()) return []
+    const recorded = await this.record.list()
+    if (!recorded.length) return []
+    try { await this.restore() } catch { /* the record names its Debian apps itself */ }
+    for (const app of recorded) {
+      if (app.debian && !this.store.has(app.id) && !this.curated.some(entry => entry.id === app.id)) this.store.set(app.id, debianEntry(app.id, app.debian))
+    }
+    await this.list()
+    const missing = recorded.flatMap(app => {
+      const entry = this.curated.find(item => item.id === app.id) ?? this.store.get(app.id)
+      const state = entry ? this.states[entry.id] : undefined
+      return entry && state && !state.installedVersion && !state.active ? [entry] : []
+    })
+    if (missing.length) this.startMany(missing, 'install')
+    return missing.map(app => app.id)
   }
   /** A channel timeout is not proof that apt stopped. Keep the lease until the guest answers. */
   private async reconcile(id: string, operation: Operation, operationId: string, error: unknown): Promise<void> {

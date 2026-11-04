@@ -323,3 +323,68 @@ describe('Flathub in the Library', () => {
     expect(s.calls.filter(call => call.action === 'updates')).toHaveLength(2)
   })
 })
+
+describe('the Library record', () => {
+  async function computer(options: { stored?: unknown[]; apps?: Record<string, unknown> } = {}) {
+    const { mkdtempSync } = await import('node:fs'), { tmpdir } = await import('node:os'), { join } = await import('node:path')
+    const { LibraryRecord } = await import('./library-record.js')
+    const file = join(mkdtempSync(join(tmpdir(), 'caboose-record-')), 'library-apps.json')
+    const calls: Array<{ action: string; argument: any }> = []
+    let apps: Record<string, unknown> = options.apps ?? {}
+    const guest = { run: vi.fn(async (_command: string, args: string[]) => {
+      if (args.length === 3) return JSON.stringify(options.stored ?? [])
+      const action = args[2]!, argument = JSON.parse(args[3]!)
+      if (action === 'list') return JSON.stringify({ apps, environment: { flatpak: true, sandbox: true } })
+      if (action === 'progress') return 'null'
+      calls.push({ action, argument })
+      const finished = (operation: string) => ({ installedVersion: '1.0', active: false, operationId: argument.operationId, progress: { operation, phase: 'finished', stage: 'finished' } })
+      if (action === 'install') apps = { ...apps, [argument.id]: finished('install') }
+      if (action === 'remove') { const { [argument.id]: _gone, ...rest } = apps; apps = { ...rest, [argument.id]: { installedVersion: null, active: false, operationId: argument.operationId, progress: { operation: 'remove', phase: 'finished', stage: 'finished' } } } }
+      return ''
+    }) }
+    const make = () => new AppCatalog(() => guest, () => {}, () => () => {}, { data, releases, record: new LibraryRecord(file) })
+    return { catalog: make(), make, calls, file, record: () => new LibraryRecord(file).list(), wipe: () => { apps = {}; options.stored = [] } }
+  }
+  const mousepad = { id: 'debian-mousepad', package: 'mousepad', componentId: 'org.xfce.mousepad', desktopId: 'org.xfce.mousepad.desktop', name: 'Mousepad', summary: 'Text editor', license: 'GPL-2.0+' }
+
+  it('keeps what the owner installs outside the Flatpak volume, and forgets what they remove', async () => {
+    const c = await computer()
+    c.catalog.start('gimp', 'install'); await settle()
+    c.catalog.start('gridcraft', 'install'); await settle()
+    expect(await c.record()).toEqual([{ id: 'gimp' }, { id: 'gridcraft' }])
+    c.catalog.start('gimp', 'remove'); await settle()
+    expect(await c.record()).toEqual([{ id: 'gridcraft' }])
+  })
+
+  it('keeps a Debian app found through AppStream with what it takes to install it again', async () => {
+    const c = await computer({ stored: [mousepad] })
+    await c.catalog.list()
+    c.catalog.start('debian-mousepad', 'install'); await settle()
+    expect(await c.record()).toEqual([{ id: 'debian-mousepad', debian: { name: 'Mousepad', summary: 'Text editor', desktopId: 'org.xfce.mousepad.desktop', package: 'mousepad', componentId: 'org.xfce.mousepad', license: 'GPL-2.0+' } }])
+  })
+
+  it('takes in apps the Library installed before the record, but not ones it never operated on', async () => {
+    const c = await computer({ apps: { krita: { installedVersion: '5.2', active: false, operationId: 'earlier', progress: { operation: 'install', phase: 'finished', stage: 'finished' } }, vlc: { installedVersion: '3.0', active: false } } })
+    await c.catalog.list()
+    expect(await c.record()).toEqual([{ id: 'krita' }])
+  })
+
+  it('installs on a computer created again everything recorded that it lacks, Debian apps whose guest records are gone included', async () => {
+    const c = await computer({ stored: [mousepad] })
+    await c.catalog.list()
+    for (const id of ['debian-mousepad', 'gimp', 'powder-toy']) { c.catalog.start(id, 'install'); await settle() }
+    c.wipe()
+    c.calls.length = 0
+    const fresh = c.make()
+    expect(await fresh.reapply()).toEqual(['debian-mousepad', 'gimp', 'powder-toy'])
+    await settle()
+    expect(c.calls.filter(call => call.action === 'install').map(call => [call.argument.id, call.argument.source.kind, call.argument.source.packages])).toEqual([['debian-mousepad', 'apt', ['mousepad']], ['gimp', 'apt', ['gimp']], ['powder-toy', 'game', undefined]])
+    expect((await fresh.list()).apps.filter(app => app.installedVersion).map(app => app.id).sort()).toEqual(['debian-mousepad', 'gimp', 'powder-toy'])
+    expect(await fresh.reapply()).toEqual([])
+  })
+
+  it('never records a Flathub app: the computer\'s Flatpak volume keeps it', async () => {
+    const { recordFor, flathubEntry } = await import('./app-catalog.js')
+    expect(recordFor(flathubEntry({ appId: 'org.gimp.GIMP', name: 'GIMP', summary: 'Images', developer: null, license: null, verified: false, icon: '', categories: ['Create'], keywords: [], runtime: 'org.gnome.Platform/x86_64/49', installs: 1 }))).toBeNull()
+  })
+})
