@@ -260,7 +260,8 @@ as to an asked one.
 ## Device work
 
 `device_work.h` counts what the process sends that can make the device write memory:
-every queue command (submissions, sparse binds, command flushes, per queue) and the
+every queue command (submissions, staged submissions, sparse binds, command flushes, per
+queue) and the
 host-side copies and layout transitions of host image copy. Two questions are answered
 from it without asking the phone:
 
