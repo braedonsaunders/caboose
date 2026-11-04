@@ -83,7 +83,7 @@ or removed (`- e14`). A window seen for the first time is listed whole. Bounds a
 out; `screenshot` with `marks` gives positions when coordinates are needed.
 
 A Windows program under Wine has no AT-SPI tree; its window is read by `caboose-msaa.exe`
-(`wine/caboose-msaa.c`, built by the component install where Wine and MinGW are installed),
+(`wine/caboose-msaa.c`, cross-built by the image's build stage and installed beside `a11y.py`),
 which runs in the program's own prefix and lists its Win32 child controls with roles from
 their window classes, their text and states. `press` uses a control's default action and
 `set` its text by message, or for a control that takes no text by message (Scintilla), the
@@ -198,8 +198,12 @@ a11y.py serve    --display :101
 - `serve`: newline-delimited JSON requests on stdin with `op` (`elements`, `find`, `act`,
   `text`) and the corresponding CLI option names; one JSON response per request. The
   display is fixed for the worker lifetime. Python/GI and the AT-SPI connection stay warm;
-  queued accessibility events refresh the normal libatspi cache between requests;
-  a bus fallback executes a bounded single-call helper against the next bus. Existing CLI
+  queued accessibility events refresh the normal libatspi cache between requests. A request
+  for a window the cache has not seen (a new dialog) clears the cached children of the
+  registry and of each application and reads again in the same process, and a bus fallback
+  asks one long-lived worker per further bus: the worker stays one AT-SPI client for its
+  life, because every new client used to cost each GTK 3 application three descriptors
+  (at-spi2-atk before 2.62, which the image replaces from trixie-backports). Existing CLI
   commands and `act`'s `{ "ok": true }` response remain unchanged.
 
 When a list is empty for a reason (no window, a window whose application exposes no tree,
@@ -316,7 +320,9 @@ display (default `:101`) and `CABOOSE_DISPLAY_CONTROL` the seat.
 
 - `node --test ensure-agent-seat.test.mjs worker.test.mjs` checks cached startup,
   recovery, warm helpers, timeouts and restart without replay.
-- `python3 -m unittest test_a11y.py test_readiness.py` checks password/value handling
+- `python3 -m unittest test_a11y.py test_readiness.py` checks password/value handling,
+  that a stale answer is read again in the same worker and that another bus is asked through
+  one long-lived worker,
   and that readiness sends no WebSocket handshake (the readiness stand-in runs unprivileged).
 - `./check-bounded.sh` runs the Linux Docker gate with a two-CPU, 4 GiB, 512-process
   builder (30-minute build timeout) and a two-CPU, 1500 MiB, 256-process test container
@@ -329,7 +335,7 @@ display (default `:101`) and `CABOOSE_DISPLAY_CONTROL` the seat.
   and other seats' processes.
 - `./check-a11y.sh [--rmi]` exercises the helper and the server in real X sessions under
   Docker on any amd64 or arm64 machine; no KVM. It builds the image `caboose-a11y-check` from
-  `check/Dockerfile` (Debian 13 with Xvfb, Xwayland, D-Bus, at-spi2-core, Mousepad, Chromium,
+  `check/Dockerfile` (Debian 13 with Xvfb, Xwayland, D-Bus, at-spi2-core from trixie-backports as the image has it, xdg-desktop-portal-gtk, Mousepad, Chromium,
   Node, and Caboose Display built from this checkout), runs `check/run.sh` in a throwaway
   container with this directory mounted read-only, and removes the container (`--rmi`
   removes the image too). It prints PASS or FAIL per assertion and exits 1 if any failed:
@@ -347,6 +353,9 @@ display (default `:101`) and `CABOOSE_DISPLAY_CONTROL` the seat.
   - **Isolation**: nothing of `:100` (pids, windows, text) appears in `:101` results, an
     owner element's id is rejected on `:101` with exit 3 and the owner's window is untouched,
     and a process with windows on both displays is not read.
+  - **Descriptors**: 100 new AT-SPI clients, each reading every application as an assistive
+    technology does, leave `xdg-desktop-portal-gtk` and a GTK 3 window with no more than six
+    extra descriptors (at-spi2-atk 2.56 left 300).
   - **Stale ids**: a changed fingerprint, an unknown path, a malformed id and an id from a
     closed window are rejected with exit 3, and the replacement window is untouched.
   - **Both Caboose Display instances as the computer runs them**, each on a session bus of

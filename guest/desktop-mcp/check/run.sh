@@ -104,6 +104,33 @@ wait_for "$logs/agent2.log" ready; sleep 1
 a11y :101 act --display :101 --element "$save" --action press >/dev/null; code=$?
 check 'id from a closed window rejected (exit 3)' test "$code" = 3
 check 'replacement window untouched' bash -c "! grep -q 'clicked Save' $logs/agent2.log"
+echo '== New AT-SPI clients leave no descriptors behind in GTK 3 applications'
+# Each client below opens a direct connection to every application it reads, as any
+# assistive technology does; at-spi2-atk before 2.62 kept three descriptors per closed one.
+shared :100 /usr/libexec/xdg-desktop-portal-gtk --replace >"$logs/portal-gtk.log" 2>&1 &
+sleep 2
+portal=$(pgrep -u caboose -f /usr/libexec/xdg-desktop-portal-gtk | head -1)
+client='import gi, time
+gi.require_version("Atspi", "2.0")
+from gi.repository import Atspi, GLib
+Atspi.init(); desktop = Atspi.get_desktop(0)
+apps = [desktop.get_child_at_index(i) for i in range(desktop.get_child_count())]
+for _ in range(20):
+    GLib.MainContext.default().iteration(False); time.sleep(0.01)
+print(sorted(a.get_name() for a in apps if a and a.get_child_count() >= 0))'
+fds() { ls "/proc/$1/fd" | wc -l; }
+registered=$(shared :100 python3 -c "$client" 2>&1)
+detail=$registered
+check 'xdg-desktop-portal-gtk is on the accessibility bus' grep -q xdg-desktop-portal-gtk <<<"$registered"
+portal_before=$(fds "$portal"); owner_before=$(fds "$owner_pid")
+for _ in $(seq 1 100); do shared :100 python3 -c "$client" >/dev/null 2>&1; done
+sleep 1
+portal_after=$(fds "$portal"); owner_after=$(fds "$owner_pid")
+detail="xdg-desktop-portal-gtk $portal_before -> $portal_after descriptors"
+check '100 new AT-SPI clients: xdg-desktop-portal-gtk descriptors flat' test $((portal_after - portal_before)) -le 6
+detail="GTK 3 window $owner_before -> $owner_after descriptors"
+check '100 new AT-SPI clients: a GTK 3 window'"'"'s descriptors flat' test $((owner_after - owner_before)) -le 6
+kill "$portal" 2>/dev/null
 pkill -u caboose -f fixture.py; pkill -u caboose mousepad; pkill Xvfb; sleep 1
 
 echo '== Caboose Display: the owner display and the agent seat, as the computer runs them'

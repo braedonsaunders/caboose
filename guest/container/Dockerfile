@@ -13,6 +13,12 @@ RUN cd /src && cargo build --release --locked --jobs "$CARGO_BUILD_JOBS" -p cabo
 # The Caboose VA-API driver (guest/vaapi).
 COPY vaapi /vaapi
 RUN make -C /vaapi BUILD=/out/vaapi /out/vaapi/caboose_drv_video.so
+# The Win32 side of desktop MCP's Wine reader (guest/desktop-mcp/wine), cross-built here so no
+# computer needs a Windows compiler.
+RUN apt-get update && apt-get install -y --no-install-recommends gcc-mingw-w64-x86-64-win32 && rm -rf /var/lib/apt/lists/*
+COPY desktop-mcp/wine /wine
+RUN mkdir -p /out/wine && x86_64-w64-mingw32-gcc -O2 -municode -o /out/wine/caboose-msaa.exe /wine/caboose-msaa.c \
+      -loleacc -loleaut32 -lole32 -luuid -luser32
 # The GBM backend for the computer's render node (guest/gpu/gbm).
 COPY gpu/gbm /gbm
 RUN make -C /gbm BUILD=/out/gbm /out/gbm/vgem_gbm.so
@@ -54,6 +60,7 @@ RUN printf 'deb https://deb.debian.org/debian trixie main contrib non-free non-f
 COPY image/apps.sh image/desktop-apps.sh image/desktop-apps.tsv /tmp/
 RUN bash /tmp/apps.sh && rm /tmp/apps.sh /tmp/desktop-apps.sh /tmp/desktop-apps.tsv
 COPY desktop-mcp /tmp/desktop-mcp
+COPY --from=display /out/wine/caboose-msaa.exe /tmp/desktop-mcp/wine/caboose-msaa.exe
 RUN /tmp/desktop-mcp/install.sh
 COPY agentd/caboose-agentd.mjs agentd/agent-tools.mjs agentd/library-mcp.mjs agentd/package.json agentd/install.sh /tmp/agentd/
 RUN /tmp/agentd/install.sh && rm -rf /tmp/agentd

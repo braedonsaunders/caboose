@@ -77,12 +77,6 @@ rm -rf /opt/caboose/media-handoff
 rm -f /etc/chromium.d/caboose-scroll /etc/chromium.d/zz-caboose-extensions /usr/share/chromium/extensions/caboose-media-handoff /etc/chromium/native-messaging-hosts/com.caboose.media.json
 sh "$root/notifications/install.sh"
 sh "$root/webmcp/install.sh"
-# The Win32 side of desktop MCP's Wine reader, built where Wine and a MinGW compiler are
-# installed (wine/caboose-msaa.c).
-if command -v wine >/dev/null && command -v x86_64-w64-mingw32-gcc >/dev/null; then
-    x86_64-w64-mingw32-gcc -O2 -municode -o /opt/caboose/caboose-msaa.exe "$root/desktop-mcp/wine/caboose-msaa.c" \
-        -loleacc -loleaut32 -lole32 -luuid -luser32 && chmod 0755 /opt/caboose/caboose-msaa.exe
-fi
 bash "$root/phone/install.sh"
 sh "$root/bridge/install.sh"
 sh "$root/keyring/install.sh"

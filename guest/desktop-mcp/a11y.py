@@ -757,8 +757,9 @@ def resolve_bus(display, start=0, tried=()):
 class Bus:
     """The accessibility registry, bound to one bus for the life of this process.
 
-    libatspi connects once, so a different bus means a fresh process: `retry` re-executes
-    this command against the next source when the wanted application is not on this one.
+    libatspi connects once, so a different bus means a different process: `retry` runs this
+    request against the next source when the wanted application is not on this one, through
+    one long-lived helper per bus when serving (see `BusWorker`).
     """
 
     def __init__(self, display):
@@ -791,13 +792,12 @@ class Bus:
         env.pop("AT_SPI_BUS_ADDRESS", None)
         if SERVING:
             args = ACTIVE_ARGS
-            command = [sys.executable, os.path.abspath(__file__), args.command, f"--display={args.display}"]
+            request = {"op": args.command, "display": args.display}
             for key in ("element", "action", "text", "query", "role"):
                 value = getattr(args, key, None)
                 if value is not None:
-                    command.append(f"--{key}={value}")
-            result = subprocess.run(command, env=env, capture_output=True, text=True, timeout=30)
-            raise ServedResult(json.loads(result.stdout))
+                    request[key] = value
+            raise ServedResult(BusWorker.ask(json.dumps(self.state, sort_keys=True), env, args.display, request))
         sys.stdout.flush()
         os.execve(sys.executable, [sys.executable, os.path.abspath(__file__)] + sys.argv[1:], env)
         return True  # not reached
@@ -948,6 +948,38 @@ class ServedResult(Exception):
         self.result = result
 
 
+class BusWorker:
+    """A long-lived helper serving one further accessibility bus, kept for this helper's life.
+
+    Every new AT-SPI client costs each GTK 3 application on its bus three descriptors that
+    at-spi2-atk before 2.62 keeps until the application exits, so a reader asks the same
+    client again rather than starting a new one per request."""
+    workers = {}  # bus state -> Popen
+
+    @classmethod
+    def ask(cls, key, env, display, request, timeout=30):
+        import selectors
+        worker = cls.workers.get(key)
+        if worker is None or worker.poll() is not None:
+            worker = subprocess.Popen([sys.executable, os.path.abspath(__file__), "serve", f"--display={display}"],
+                                      env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1)
+            cls.workers[key] = worker
+        try:
+            worker.stdin.write(json.dumps(request, ensure_ascii=False) + "\n")
+            worker.stdin.flush()
+            with selectors.DefaultSelector() as selector:
+                selector.register(worker.stdout, selectors.EVENT_READ)
+                line = worker.stdout.readline() if selector.select(timeout) else ""
+            if not line:
+                raise OSError("no answer")
+            return json.loads(line)
+        except (OSError, ValueError):
+            worker.kill()
+            worker.wait()
+            cls.workers.pop(key, None)
+            raise Failure("the accessibility helper for another bus did not answer")
+
+
 def get_bus(display):
     global WARM_BUS
     if not SERVING:
@@ -976,7 +1008,7 @@ def seat_windows():
 
 def needs_registration(op, request):
     """Whether the window a request reads or acts in is a top-level or dialog that appeared
-    after this helper registered, so its cache cannot hold it."""
+    after this helper last read the registry afresh, so its cache may not hold it."""
     if KNOWN_WINDOWS is None:
         return False
     now = seat_windows() or {}
@@ -2068,9 +2100,7 @@ def serve(display):
     global SERVING, ACTIVE_ARGS
     SERVING = True
     import faulthandler
-    replay = os.environ.pop(REPLAY, None)
-    for line in itertools.chain([replay] if replay else [], sys.stdin):
-        replaying = line is replay
+    for line in sys.stdin:
         try:
             request = json.loads(line)
             op = request.pop("op")
@@ -2081,17 +2111,18 @@ def serve(display):
             if WARM_BUS is not None:
                 _, GLib = _gio()
                 dispatch_accessibility_events(GLib.MainContext.default())
-            if not replaying and needs_registration(op, request):
-                reregister(display, op, request)
+            if needs_registration(op, request):
+                refresh()
             # A native accessibility call can stall outside our tree-walk budget.
             # Capture its stack before the parent terminates the bounded request.
             faulthandler.dump_traceback_later(10)
             try:
                 result, _ = execute(ACTIVE_ARGS)
+                if stale(op, result):
+                    refresh()
+                    result, _ = execute(ACTIVE_ARGS)
             finally:
                 faulthandler.cancel_dump_traceback_later()
-            if stale(op, result) and not replaying:
-                reregister(display, op, request)
         except ServedResult as result_error:
             result = result_error.result
         except Exception as error:
@@ -2100,31 +2131,37 @@ def serve(display):
         sys.stdout.flush()
 
 
-# A request a helper re-registered for, replayed by the new process before it reads stdin.
-REPLAY = "CABOOSE_A11Y_REPLAY"
-
-
-def reregister(display, op, request):
-    """Become a new process (same pipes) whose accessibility cache is read fresh, new windows
-    included; it answers this request first, then serves on."""
-    sys.stdout.flush()
-    os.execve(sys.executable, [sys.executable, os.path.abspath(__file__), "serve", f"--display={display}"],
-              dict(os.environ, **{REPLAY: json.dumps({"op": op, **request})}))
+def refresh():
+    """Read the registry's applications and their top-level windows afresh. libatspi's cache
+    learns of a new top-level (a dialog) from events that can lag behind and does not recover
+    by itself; clearing the cached children of the desktop and of each application makes the
+    next read ask the applications. The helper stays the same AT-SPI client: a new one would
+    cost each GTK 3 application three descriptors (see `BusWorker`)."""
+    global KNOWN_WINDOWS
+    bus = WARM_BUS
+    if bus is not None and bus.address:
+        _, GLib = _gio()
+        dispatch_accessibility_events(GLib.MainContext.default())
+        try:
+            bus.desktop.clear_cache_single()
+            for index in range(bus.desktop.get_child_count()):
+                app = bus.desktop.get_child_at_index(index)
+                if app is not None:
+                    app.clear_cache_single()
+        except Exception:
+            pass
+    KNOWN_WINDOWS = seat_windows()
 
 
 def stale(op, result):
-    """Whether a long-lived helper's answer comes from a cache that missed a new window: its
-    accessibility cache learns of a new top-level (a dialog) from events that can lag behind,
-    and does not recover by itself; a new registration reads it at once."""
+    """Whether a long-lived helper's answer comes from a cache that missed a new window."""
     if op in ("elements", "find", "text"):
         return str(result.get("note", "")).startswith("The focused window was not found")
     return op == "act" and result.get("error") == "element not found"
 
 
 def stale(op, result):
-    """Whether a long-lived helper's answer comes from a cache that missed a new window: its
-    accessibility cache learns of a new top-level (a dialog) from events that can lag behind,
-    and does not recover by itself; a new registration reads it at once."""
+    """Whether a long-lived helper's answer comes from a cache that missed a new window."""
     if op in ("elements", "find", "text"):
         return str(result.get("note", "")).startswith("The focused window was not found")
     return op == "act" and result.get("error") == "element not found"
