@@ -22,6 +22,7 @@ transfer and reply handling, so it can be tested without Mesa.
 | `requirements_cache.h` | Image and buffer memory requirements by exact creation parameters, so an identical object needs no query; kept by device identity in a file shared by every process made the same way |
 | `static_query_cache.h` | Answers of physical-device format queries, which cannot change, by their exact parameters |
 | `device_answers.h` | Device fingerprints and the parameters of a descriptor set layout support question, whose answers join the capability cache (Physical capability cache, below) |
+| `device_work.h` | What the process sent that can make the device write memory, by queue: memory nothing was sent since its allocation could have written is read from nowhere, and a queue with nothing sent since it was last reported idle is idle |
 | `query_results.h` | Query results without a round trip: a no-wait vkGetQueryPoolResults returns what its earlier identical request found, and resets drop stale results |
 | `completion_feed.h` | The completion feed's wire format, its record reader, and the tracker of every fence, timeline semaphore, event and query the process follows, with the query values and memory captures records bring, and which waits it may report complete before their records (Speculated waits, below); the pause-on-loss waits: a paused process holds a loss until a new executor's socket appears, including a loss the phone replies with and a device stream that ends before the broker removes the old socket (`test_pause_on_loss.cpp`) |
 | `gpu_writes.h` | The GPU's writes of coherent memory: up to eight disjoint spans per allocation, what an invalidate reads of them (each span its own atom-aligned range unless one range takes no more 64 KiB round trips), and the bytes a copy from an image writes in its buffer, from the texel block size |
@@ -244,6 +245,35 @@ immutable samplers, or a structure of another kind, is always asked, and so is a
 chain other than the variable descriptor count. The instance version has a scope of its
 own, the instance scope, in an `instance-` log: every process of the session shares the
 answer one of them received, and the broker deletes the log when the next session starts.
+The instance extensions and the physical device count are kept there too, and so is the
+identity of the session's GPU once a process has asked it: a process whose every instance
+finds exactly one physical device takes that identity for its device when it enumerates,
+so the answers kept for it are found before the process asks anything. A process that
+looks for an answer it may never give itself (the identity, the count) peeks: it never
+claims the question, so no other process waits for it.
+
+The host's features answer for the chain the encoder sends (without the structures the
+driver answers itself), its memory properties and its sparse image format answers are
+kept in the physical device's scope; the driver's own adjustments apply to a kept answer
+as to an asked one.
+
+## Device work
+
+`device_work.h` counts what the process sends that can make the device write memory:
+every queue command (submissions, sparse binds, command flushes, per queue) and the
+host-side copies and layout transitions of host image copy. Two questions are answered
+from it without asking the phone:
+
+- An application's invalidate of memory nothing was sent since its allocation reads
+  nothing: the mapped bytes are what the process put there, and new memory's contents are
+  undefined. Memory allocated with contents of its own (a flag beyond the device mask and
+  device address, or a capture replay address) is always read.
+- A `vkQueueWaitIdle` on a queue nothing was sent to since the device last reported it
+  idle, or ever, returns at once; a reported idle covers only what was sent before the wait.
+
+A command counted that writes nothing only makes these answers ask the device as before.
+The `app_unwritten_invalidates` field of `CABOOSE_GPU_MEMORY_TRAFFIC` counts the
+invalidates answered this way.
 
 Files are untrusted seat-user data, not an authorization source. Readers require a
 private directory and regular private files owned by the effective user, and reject

@@ -118,6 +118,22 @@ public:
     }
     // An answer of any size (a structure chain or a list), for `storeBytes`.
     bool lookupBytes(const std::string& input,std::string* out) { return lookupValue(input,0,out); }
+    // An answer other processes may have stored, without claiming the question when there is
+    // none: for a question this process may never answer itself.
+    bool peekBytes(const std::string& input,std::string* out) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        lookupEpoch()=epoch_;
+        if (disabled()) return false;
+        auto scoped=normalize(input);
+        auto it=entries_.find(scoped.second);
+        if (it==entries_.end() && !scoped.first.empty()) {
+            auto file=files_.find(scoped.first);
+            if (file!=files_.end()) adoptLocked(scoped.first,file->second);
+            it=entries_.find(scoped.second);
+        }
+        if (it==entries_.end()) return false;
+        *out=it->second; return true;
+    }
     template<class T> void store(const std::string& input,const T& value) {
         storeBytes(input,std::string(reinterpret_cast<const char*>(&value),sizeof(T)));
     }
