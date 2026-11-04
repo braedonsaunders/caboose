@@ -22,6 +22,8 @@
 namespace caboose::silent {
 
 inline constexpr uint32_t kHelloBit = 0x800000;
+// One-way start (one_way_start.h): requires kHelloBit.
+inline constexpr uint32_t kOneWayStartBit = 0x1000000;
 
 // REPLY_MODE: an ordinary 8-byte packet header (opcode, total size 16), mode u32, reserved u32
 // zero. No reply. Sent once per device stream, before the first command whose reply the
@@ -29,9 +31,9 @@ inline constexpr uint32_t kHelloBit = 0x800000;
 inline constexpr uint32_t kReplyModeOpcode = 0x4342FE06;
 inline constexpr uint32_t kReplyModePacketSize = 16;
 inline constexpr uint32_t kModeSilentSuccess = 1;
-inline void encodeReplyMode(uint8_t out[kReplyModePacketSize]) {
-    const uint32_t opcode = kReplyModeOpcode, size = kReplyModePacketSize, mode = kModeSilentSuccess,
-                   reserved = 0;
+// `mode` is kModeSilentSuccess, or 3 for one-way start's commands (one_way_start.h).
+inline void encodeReplyMode(uint8_t out[kReplyModePacketSize], uint32_t mode = kModeSilentSuccess) {
+    const uint32_t opcode = kReplyModeOpcode, size = kReplyModePacketSize, reserved = 0;
     std::memcpy(out, &opcode, 4);
     std::memcpy(out + 4, &size, 4);
     std::memcpy(out + 8, &mode, 4);
@@ -164,6 +166,9 @@ public:
     // granted (guest-assigned handles, handle arrays, query pools and buffer views, and the feed).
     void granted(bool value) { granted_.store(value, std::memory_order_release); }
     bool granted() const { return granted_.load(std::memory_order_acquire); }
+    // Whether one-way start (one_way_start.h, hello kOneWayStartBit) was granted with it.
+    void startGranted(bool value) { startGranted_.store(value, std::memory_order_release); }
+    bool startGranted() const { return granted() && startGranted_.load(std::memory_order_acquire); }
 
     // True once, when `encoder` must send REPLY_MODE now: granted, the feed is running, the
     // executor is there, and its stream has not switched under this connection generation.
@@ -224,6 +229,7 @@ public:
 private:
     struct State { uint64_t generation = 0; bool unconfirmed = false; };
     std::atomic<bool> granted_{false};
+    std::atomic<bool> startGranted_{false};
     std::atomic<bool> active_{false};
     mutable std::mutex mutex_;
     std::unordered_map<const void*, State> states_;

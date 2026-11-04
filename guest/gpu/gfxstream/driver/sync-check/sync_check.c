@@ -14,6 +14,7 @@
 #include <pthread.h>
 #include <signal.h>
 #include <sys/wait.h>
+#include <dlfcn.h>
 #include <unistd.h>
 #include <xcb/xcb.h>
 #include <vulkan/vulkan.h>
@@ -1597,6 +1598,189 @@ static void abandonedWorkCase(void) {
            exited ? WEXITSTATUS(status) : -1, (nowUs() - start) / 1000.0);
 }
 
+// The process the one_way cases start (one-way start, ../../bounded-memory/one_way_start.h): an
+// instance, its physical device, a device and its queue, then one empty batch waited for.
+// 0: the batch completed; 5: the device was lost; 6: the instance was refused; 3: setup failed.
+//
+// Without `mispredict` they are made as this probe's other child processes make theirs, through
+// the loader. With it, the driver is called directly (the loader would refuse the instance
+// itself), its instance enables a layer no executor has, which nothing checks before the phone,
+// and CABOOSE_ONE_WAY_START=predict sends that creation without its reply: the phone refuses
+// it, and the process must see its device lost, never hang.
+typedef PFN_vkVoidFunction (VKAPI_PTR *PFN_icdGetInstanceProcAddr)(VkInstance, const char*);
+static PFN_icdGetInstanceProcAddr directDriver(void) {
+    // The first manifest of VK_DRIVER_FILES is the driver under test.
+    const char* files = getenv("VK_DRIVER_FILES");
+    if (!files) return NULL;
+    char manifest[4096];
+    snprintf(manifest, sizeof(manifest), "%s", files);
+    char* colon = strchr(manifest, ':');
+    if (colon) *colon = 0;
+    FILE* file = fopen(manifest, "r");
+    if (!file) return NULL;
+    char text[4096];
+    const size_t n = fread(text, 1, sizeof(text) - 1, file);
+    fclose(file);
+    text[n] = 0;
+    const char* key = strstr(text, "\"library_path\"");
+    const char* start = key ? strchr(key + strlen("\"library_path\""), '"') : NULL;
+    const char* end = start ? strchr(start + 1, '"') : NULL;
+    if (!start || !end || end - start - 1 >= 1024) return NULL;
+    char library[1024];
+    memcpy(library, start + 1, (size_t)(end - start - 1));
+    library[end - start - 1] = 0;
+    void* handle = dlopen(library, RTLD_NOW | RTLD_LOCAL);
+    return handle ? (PFN_icdGetInstanceProcAddr)dlsym(handle, "vk_icdGetInstanceProcAddr") : NULL;
+}
+
+static int oneWayChild(int mispredict) {
+    PFN_vkCreateInstance createInstance = vkCreateInstance;
+    PFN_icdGetInstanceProcAddr icd = NULL;
+    if (mispredict) {
+        icd = directDriver();
+        if (!icd) return 3;
+        createInstance = (PFN_vkCreateInstance)icd(NULL, "vkCreateInstance");
+        if (!createInstance) return 3;
+    }
+    VkApplicationInfo app = {VK_STRUCTURE_TYPE_APPLICATION_INFO};
+    app.pApplicationName = "caboose-sync-check-one-way";
+    app.apiVersion = VK_API_VERSION_1_3;
+    const char* absent = "VK_LAYER_CABOOSE_absent";
+    VkInstanceCreateInfo instanceInfo = {VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
+    instanceInfo.pApplicationInfo = &app;
+    if (mispredict) {
+        instanceInfo.enabledLayerCount = 1;
+        instanceInfo.ppEnabledLayerNames = &absent;
+    }
+    VkInstance childInstance;
+    VkResult result = createInstance(&instanceInfo, NULL, &childInstance);
+    if (result == VK_ERROR_LAYER_NOT_PRESENT) return 6;
+    if (result == VK_ERROR_DEVICE_LOST || result == VK_ERROR_INITIALIZATION_FAILED) return 5;
+    if (result != VK_SUCCESS) return 3;
+#define CHILD_CALL(name) PFN_##name call_##name = icd ? (PFN_##name)icd(childInstance, #name) : name
+    CHILD_CALL(vkEnumeratePhysicalDevices);
+    CHILD_CALL(vkGetDeviceProcAddr);
+#undef CHILD_CALL
+    uint32_t count = 1;
+    VkPhysicalDevice childPhysical;
+    result = call_vkEnumeratePhysicalDevices(childInstance, &count, &childPhysical);
+    if (result == VK_ERROR_DEVICE_LOST || result == VK_ERROR_INITIALIZATION_FAILED) return 5;
+    if ((result != VK_SUCCESS && result != VK_INCOMPLETE) || !count) return 3;
+    PFN_vkCreateDevice createDevice = icd ? (PFN_vkCreateDevice)icd(childInstance, "vkCreateDevice") : vkCreateDevice;
+    const float priority = 1.0f;
+    VkDeviceQueueCreateInfo queueInfo = {VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};
+    queueInfo.queueFamilyIndex = 0;
+    queueInfo.queueCount = 1;
+    queueInfo.pQueuePriorities = &priority;
+    VkDeviceCreateInfo deviceInfo = {VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
+    deviceInfo.queueCreateInfoCount = 1;
+    deviceInfo.pQueueCreateInfos = &queueInfo;
+    VkDevice childDevice;
+    result = createDevice(childPhysical, &deviceInfo, NULL, &childDevice);
+    if (result == VK_ERROR_DEVICE_LOST || result == VK_ERROR_INITIALIZATION_FAILED) return 5;
+    if (result != VK_SUCCESS) return 3;
+#define DEVICE_CALL(name) PFN_##name call_##name = icd ? (PFN_##name)call_vkGetDeviceProcAddr(childDevice, #name) : name
+    DEVICE_CALL(vkGetDeviceQueue);
+    DEVICE_CALL(vkCreateFence);
+    DEVICE_CALL(vkQueueSubmit);
+    DEVICE_CALL(vkWaitForFences);
+    DEVICE_CALL(vkQueueWaitIdle);
+#undef DEVICE_CALL
+    VkQueue childQueue;
+    call_vkGetDeviceQueue(childDevice, 0, 0, &childQueue);
+    VkFenceCreateInfo fenceInfo = {VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+    VkFence fence;
+    result = call_vkCreateFence(childDevice, &fenceInfo, NULL, &fence);
+    if (result == VK_SUCCESS) result = call_vkQueueSubmit(childQueue, 0, NULL, fence);
+    if (result == VK_SUCCESS) result = call_vkWaitForFences(childDevice, 1, &fence, VK_TRUE, 20000000000ull);
+    if (result == VK_SUCCESS) result = call_vkQueueWaitIdle(childQueue);
+    if (result == VK_ERROR_DEVICE_LOST) return 5;
+    if (result != VK_SUCCESS) return 3;
+    if (!icd) {
+        vkDestroyFence(childDevice, fence, NULL);
+        vkDestroyDevice(childDevice, NULL);
+        vkDestroyInstance(childInstance, NULL);
+    }
+    return 0;
+}
+
+// Runs oneWayChild in a new process with the driver's diagnostics, and returns its exit status
+// (-1 when it did not exit within 40 s, and was killed), how many commands it sent one-way, and
+// whether its executor granted one-way start.
+static int runOneWayChild(int mispredict, int* oneWay, int* granted) {
+    int pipefd[2];
+    if (pipe(pipefd) != 0) fail("pipe", VK_ERROR_INITIALIZATION_FAILED);
+    fflush(stdout);
+    const pid_t child = fork();
+    if (child < 0) fail("fork", VK_ERROR_INITIALIZATION_FAILED);
+    if (child == 0) {
+        close(pipefd[0]);
+        dup2(pipefd[1], 2);
+        close(pipefd[1]);
+        setenv("CABOOSE_CAPABILITY_CACHE_DIAGNOSTICS", "1", 1);
+        if (mispredict) setenv("CABOOSE_ONE_WAY_START", "predict", 1);
+        execl("/proc/self/exe", "sync_check", "--one-way-child", mispredict ? "1" : "0", (char*)NULL);
+        _exit(4);
+    }
+    close(pipefd[1]);
+    char output[65536];
+    size_t used = 0;
+    const uint64_t start = nowUs();
+    for (;;) {
+        const int64_t left = 40000 - (int64_t)((nowUs() - start) / 1000);
+        if (left <= 0) break;
+        struct pollfd ready = {pipefd[0], POLLIN, 0};
+        if (poll(&ready, 1, (int)left) != 1) break;
+        const ssize_t n = read(pipefd[0], output + used, sizeof(output) - 1 - used);
+        if (n <= 0) break;
+        used += (size_t)n;
+        if (used == sizeof(output) - 1) used = 0;  // only the counts matter
+    }
+    output[used] = 0;
+    close(pipefd[0]);
+    int status = 0, exited = 0;
+    while (nowUs() - start < 41000000u) {
+        if (waitpid(child, &status, WNOHANG) == child) { exited = 1; break; }
+        struct timespec pause = {0, 20000000};
+        nanosleep(&pause, NULL);
+    }
+    if (!exited) {
+        kill(child, SIGKILL);
+        waitpid(child, &status, 0);
+    }
+    *oneWay = 0;
+    for (const char* line = strstr(output, "CABOOSE_ONE_WAY_START opcode="); line;
+         line = strstr(line + 1, "CABOOSE_ONE_WAY_START opcode="))
+        ++*oneWay;
+    *granted = 0;
+    const char* hello = strstr(output, "CABOOSE_GPU_HELLO features=0x");
+    if (hello) *granted = (strtoul(hello + strlen("CABOOSE_GPU_HELLO features=0x"), NULL, 16) & 0x1000000u) != 0;
+    return exited && WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+}
+
+// one_way_start: a process made as one before it in the session starts without waiting for
+// the phone. one_way_misprediction: a prediction the phone does not bear out is the loss of the
+// device, never a hang.
+static void oneWayCases(const char* only) {
+    int firstSent = 0, secondSent = 0, granted = 0, grantedAgain = 0;
+    if (!only || strstr("one_way_start", only)) {
+        const int first = runOneWayChild(0, &firstSent, &granted);
+        const int second = runOneWayChild(0, &secondSent, &grantedAgain);
+        // Instance, device and queue at least; the list too once the session knows its count.
+        const int ok = first == 0 && second == 0 && (!granted || secondSent >= 3);
+        report("one_way_start", ok, "granted=%d first=%d second=%d sent_one_way=%d/%d", granted, first, second,
+               firstSent, secondSent);
+    }
+    if (!only || strstr("one_way_misprediction", only)) {
+        int sent = 0;
+        const int status = runOneWayChild(1, &sent, &granted);
+        // Without one-way start the instance is asked, and refused.
+        const int ok = granted ? status == 5 : status == 6;
+        report("one_way_misprediction", ok, "granted=%d status=%d sent_one_way=%d (5: device lost; 6: refused; -1: hung)",
+               granted, status, sent);
+    }
+}
+
 int main(int argc, char** argv) {
     if (argc>1 && !strcmp(argv[1],"--lifetime-child")) {
         for (int i=0;i<32;++i) {
@@ -1612,6 +1796,7 @@ int main(int argc, char** argv) {
     }
     if (argc > 3 && !strcmp(argv[1], "--exit-child")) return exitChild(atoi(argv[2]), atoi(argv[3]));
     if (argc > 3 && !strcmp(argv[1], "--map-window")) return mapWindowChild((xcb_window_t)strtoul(argv[2], NULL, 10), atoi(argv[3]));
+    if (argc > 2 && !strcmp(argv[1], "--one-way-child")) return oneWayChild(atoi(argv[2]));
     const int abandon = argc > 1 && !strcmp(argv[1], "--abandon");
     const char* only = argc > 1 && !abandon ? argv[1] : NULL;
     VkApplicationInfo app = {VK_STRUCTURE_TYPE_APPLICATION_INFO};
@@ -1721,6 +1906,7 @@ int main(int argc, char** argv) {
     RUN("coherent_rewrite", coherentRewriteCase());
     RUN("exit_latency", exitLatencyCase());
     RUN("abandoned_work", abandonedWorkCase());
+    if (!only || strstr("one_way_start", only) || strstr("one_way_misprediction", only)) oneWayCases(only);
     // Needs a compositor that maps windows (a running computer), so only when named.
     if (only && !strcmp(only, "unmapped_popup")) unmappedPopupCase();
 
