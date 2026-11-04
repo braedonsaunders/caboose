@@ -83,7 +83,7 @@ or removed (`- e14`). A window seen for the first time is listed whole. Bounds a
 out; `screenshot` with `marks` gives positions when coordinates are needed.
 
 A Windows program under Wine has no AT-SPI tree; its window is read by `caboose-msaa.exe`
-(`wine/caboose-msaa.c`, built by the component install where Wine and MinGW are installed),
+(`wine/caboose-msaa.c`, cross-built by the image's build stage and installed beside `a11y.py`),
 which runs in the program's own prefix and lists its Win32 child controls with roles from
 their window classes, their text and states. `press` uses a control's default action and
 `set` its text by message, or for a control that takes no text by message (Scintilla), the
