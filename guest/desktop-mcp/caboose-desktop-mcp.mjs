@@ -353,8 +353,23 @@ async function step(s) {
     const target = 'press' in s ? s.press : s.set
     // A control named rather than given by id is found when the step runs, in whatever window
     // has focus then, so one act can go through a dialog that the steps before it open.
-    const id = target && typeof target === 'object' ? await byName(target) : element(target)
-    await inFocusedWindow(id)
+    let id
+    if (target && typeof target === 'object') {
+      // The accessibility tree can still describe the window that had focus a moment ago (a
+      // dialog an earlier step opened is mapping): look again until the name is in the window
+      // that has focus.
+      const deadline = performance.now() + 1500
+      for (;;) {
+        id = await byName(target)
+        try { await inFocusedWindow(id); break } catch (error) {
+          if (performance.now() > deadline) throw error
+          await new Promise(resolve => setTimeout(resolve, 100))
+        }
+      }
+    } else {
+      id = element(target)
+      await inFocusedWindow(id)
+    }
     if ('press' in s) { await stale(() => a11y('act', { element: id, action: 'press' })); return }
     if (typeof s.text !== 'string' || s.text.length > 100_000) throw new Error('set needs text, a string of at most 100000 characters')
     const { note } = JSON.parse((await stale(() => a11y('act', { element: id, action: 'set-text', text: s.text })))[0].text)
@@ -532,6 +547,8 @@ const handlers = {
       } else expanded.push(s)
     }
     steps = expanded
+    let windowsBefore = null
+    try { windowsBefore = new Set((await seat('windows')).windows.map(w => w.id)) } catch {}
     let done = 0, error
     const notes = []
     let after
@@ -569,7 +586,20 @@ const handlers = {
     const content = [head + (notes.length ? ` (${notes.join('; ')})` : '')]
     if (observe) {
       const began = performance.now()
-      try { content.push(await changes()) } catch (e) { content.push(`Could not read the window: ${e.message}`) }
+      try {
+        let seen = await changes()
+        // An application busy building a window (a first file chooser can take seconds) draws
+        // nothing until it maps: after a press, key or click that changed nothing, wait a little
+        // for a new window before saying so.
+        if (seen === 'No change.' && windowsBefore && done && steps.slice(0, done).some(x => x && typeof x === 'object' && ('press' in x || 'key' in x || 'click' in x || 'replay' in x))) {
+          const deadline = performance.now() + 2500
+          while (performance.now() < deadline) {
+            await new Promise(resolve => setTimeout(resolve, 100))
+            if ((await seat('windows')).windows.some(w => !windowsBefore.has(w.id))) { seen = await changes(); break }
+          }
+        }
+        content.push(seen)
+      } catch (e) { content.push(`Could not read the window: ${e.message}`) }
       timing.push(`observe:${Math.round(performance.now() - began)}`)
     }
     lastTiming = timing
