@@ -1551,9 +1551,9 @@ reaches the compositor as shared memory. Mesa reports that renderer as unacceler
 application that declines unaccelerated OpenGL draws with its own CPU renderer. The driver offers the logic operations and
 custom border colours Zink needs for desktop OpenGL where the phone lacks them
 (`gfxstream/feature-emulation`). The phone has no geometry shaders or transform feedback,
-for which Zink would offer only OpenGL 2.1: `MESA_GL_VERSION_OVERRIDE=4.5COMPAT` and
-`MESA_GLSL_VERSION_OVERRIDE=450` offer what the computer's renderer offers without a phone,
-and a shader that uses either feature fails to compile or draw. Zink settles its descriptor mode once per process, on the first
+for which Zink would offer only OpenGL 2.1 and OpenGL ES 2.0: `MESA_GL_VERSION_OVERRIDE=4.5COMPAT`,
+`MESA_GLSL_VERSION_OVERRIDE=450` and `MESA_GLES_VERSION_OVERRIDE=3.2` offer what the computer's
+renderer offers without a phone, and a shader that uses either feature fails to compile or draw. Zink settles its descriptor mode once per process, on the first
 device it opens: the CPU device has descriptor buffers and the phone's GPU has none, so a
 process that started without a phone would fail every later renderer on it.
 `ZINK_DESCRIPTORS=lazy`, set for applications and for caboose-display itself, keeps one mode
