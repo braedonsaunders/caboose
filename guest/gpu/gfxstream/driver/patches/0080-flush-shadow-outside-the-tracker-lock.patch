@@ -9,36 +9,40 @@ end of loading). The shadow is now told after the tracker lock is released.
 diff --git a/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp b/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp
 --- a/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp
 +++ b/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp
-@@ -1842,6 +1842,13 @@
+@@ -1842,6 +1842,16 @@
  }
  
  void ResourceTracker::cabooseMarkBufferGpuWritten(VkCommandBuffer commandBuffer, VkBuffer buffer, VkDeviceSize dstOffset, VkDeviceSize size, bool requireReadbackBuffer, bool queryResults) {
 +    // Caboose: the flush shadow is told after mLock is released (this is destroyed after the
 +    // lock). A flush holds the shadow's lock while it reads mappings under mLock, so taking
 +    // the shadow's lock under mLock here deadlocked a recording thread against a submitting one.
++    // Filled in with set(): assigning from a temporary would run the temporary's destructor,
++    // and so tell the shadow, under the lock.
 +    struct ForgetRange {
++        void set(uint64_t k, uint64_t b, uint64_t e) { key = k, begin = b, end = e; }
 +        uint64_t key = 0, begin = 0, end = 0;
 +        ~ForgetRange() { if (key) caboose::memory::flushShadow.forgetRange(key, begin, end); }
 +    } forget;
      std::lock_guard<std::recursive_mutex> lock(mLock);
      auto bufIt = info_VkBuffer.find(buffer);
      if (bufIt == info_VkBuffer.end() || bufIt->second.currentBacking == VK_NULL_HANDLE) return;
-@@ -1878,7 +1885,7 @@
+@@ -1878,7 +1888,7 @@
          absEnd = memInfo.allocationSize;
      }
      // The host copy of these bytes now differs from the last flush; resend them.
 -    caboose::memory::flushShadow.forgetRange(caboose::handle_key(bufIt->second.currentBacking), absBegin, absEnd);
-+    forget = {caboose::handle_key(bufIt->second.currentBacking), absBegin, absEnd};
++    forget.set(caboose::handle_key(bufIt->second.currentBacking), absBegin, absEnd);
      if (gpuConsumed) return;
      if (!memInfo.socketShadow || !memInfo.device) return;
      auto devIt = info_VkDevice.find(memInfo.device);
-@@ -5306,6 +5313,13 @@
+@@ -5306,6 +5316,14 @@
          return host_result;
      }
  
 +    // Caboose: as in cabooseMarkBufferGpuWritten, the flush shadow is told after mLock is
 +    // released.
 +    struct NoteRefreshed {
++        void set(uint64_t k, uint64_t a, uint64_t o, uint64_t s, const uint8_t* b) { key = k, allocation = a, offset = o, size = s, base = b; }
 +        uint64_t key = 0, allocation = 0, offset = 0, size = 0;
 +        const uint8_t* base = nullptr;
 +        ~NoteRefreshed() { if (key) caboose::memory::flushShadow.noteRefreshed(key, base, allocation, offset, size); }
@@ -46,7 +50,7 @@ diff --git a/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp b/src/gfxstream/
      std::unique_lock<std::recursive_mutex> lock(mLock);
  
      auto deviceMemoryInfoIt = info_VkDeviceMemory.find(memory);
-@@ -5324,10 +5338,9 @@
+@@ -5324,10 +5342,9 @@
              ? deviceMemoryInfo.allocationSize - offset : size;
          deviceMemoryInfo.socketMapped = true;
          if (deviceMemoryInfo.socketGpuWritten) {
@@ -54,9 +58,9 @@ diff --git a/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp b/src/gfxstream/
 -                caboose::handle_key(memory), deviceMemoryInfo.ptr,
 -                deviceMemoryInfo.allocationSize, deviceMemoryInfo.socketMapOffset,
 -                deviceMemoryInfo.socketMapSize);
-+            refreshed = {caboose::handle_key(memory), deviceMemoryInfo.allocationSize,
-+                         deviceMemoryInfo.socketMapOffset, deviceMemoryInfo.socketMapSize,
-+                         deviceMemoryInfo.ptr};
++            refreshed.set(caboose::handle_key(memory), deviceMemoryInfo.allocationSize,
++                          deviceMemoryInfo.socketMapOffset, deviceMemoryInfo.socketMapSize,
++                          deviceMemoryInfo.ptr);
          }
          *ppData = deviceMemoryInfo.ptr + offset;
          return VK_SUCCESS;
