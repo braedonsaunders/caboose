@@ -530,6 +530,10 @@ to an executor belongs to its generation:
   connects to the new executor with its next `vkCreateInstance`, so an application recovers
   by making a new instance, as Chromium's GPU process, Zink contexts and the compositor do.
   One that cannot recover ends, as a DXVK game does.
+- **Results.** A lost device gives the results its specification allows: a call that may
+  report the loss reports `VK_ERROR_DEVICE_LOST`; any other (mapping, allocation, enumeration,
+  image-format queries, exports) succeeds locally or fails as that command may, and memory
+  allocated while lost is local zeroed memory that maps (`bounded-memory/lost_memory.h`).
 - **Answers and tables.** What the driver keeps of an executor's answers is either keyed by
   generation (the capability cache's connection identity, the shader and upload cache
   inventories, the completion feed, deferred replies, extension lists) or forgotten through
@@ -557,7 +561,11 @@ to an executor belongs to its generation:
   its own process's phone memory; importing it elsewhere gets memory nobody drew into), so a
   window shows a client buffer only when the broker presents it. An output that goes away is
   disabled before it is destroyed, so an application starting during a display reconnect is
-  not ended by a protocol error.
+  not ended by a protocol error. Its own process runs with `CABOOSE_GPU_ON_LOSS=quiet`: it
+  learns of a loss from its broker, so its lost device answers as a working one (submissions
+  are dropped and complete, waits are satisfied, no call reports `VK_ERROR_DEVICE_LOST`) and Zink
+  never takes its device-loss paths, whose teardown did not end; the renderer is made again
+  on the broker's report.
 
 `apps/ios/GPUStream/gfxstream/linux-executor/check_chaos.py` holds the stack to this: a seat
 of its own with the compositor, a long-lived Chromium, Steam's CEF client, and fresh
