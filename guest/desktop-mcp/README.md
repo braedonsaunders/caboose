@@ -131,7 +131,12 @@ lets applications draw once a second, so `seat.py` asks the compositor to let th
 Before the read that follows an `act`, the server lets the
 seat settle on the compositor's commit record: after a press, until the first commit after
 it (at most 150 ms); after a text edit, until no window committed for 30 ms (at most
-300 ms). It does not guarantee an application has finished navigation.
+300 ms). It does not guarantee an application has finished navigation. Within an `act`, a
+step after typed text waits the same way for the text to be drawn, and input after a shortcut
+(a key with ctrl, alt or super) waits for the first commit after it (at most 150 ms): an
+application can run a shortcut's command after the key event (LibreOffice's ctrl+b), and text
+typed next would otherwise arrive first. A press, key or click that changes nothing waits up to
+2.5 s for a new window, which a busy application may still be building.
 
 Control lines include an optional value (up to 200 characters) for editable fields, selected
 options and numeric controls. Password and sensitive fields omit values. Values never

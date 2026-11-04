@@ -561,13 +561,20 @@ const handlers = {
         if (after === 'type' && s && typeof s === 'object' && !('wait' in s)) {
           await seat('settle', 'quiet', ...(actedAt === undefined ? [] : [String(actedAt)]))
         }
+        // A shortcut's command can run after the key event, once the application gets to it
+        // (LibreOffice's ctrl+b): let it react before more input, or the text typed next can
+        // arrive first.
+        if (after === 'shortcut' && s && typeof s === 'object' && ('type' in s || 'key' in s)) {
+          await seat('settle', 'react', ...(actedAt === undefined ? [] : [String(actedAt)]))
+        }
         const began = performance.now()
         const run = s && s.replay ? await replayStep(s.replay, s.texts) : s
         const note = await step(run); if (note) notes.push(note); done++
         journalStep(s && s.replay ? { ...s.replay, ...(s.replay.text ? { text: run.text } : {}), ...(s.replay.type ? { type: run.type } : {}) } : s,
           Math.round(performance.now() - began))
         timing.push(`${Object.keys(s ?? {})[0]}:${Math.round(performance.now() - began)}`)
-        after = s && typeof s === 'object' && 'type' in s ? 'type' : undefined
+        after = s && typeof s === 'object' && 'type' in s ? 'type'
+          : s && typeof s === 'object' && typeof s.key === 'string' && /(^|\+)(ctrl|alt|super|control|meta)\+/i.test(s.key) ? 'shortcut' : undefined
       } catch (e) { error = e.message; break }
     }
     let saved = ''
