@@ -406,6 +406,12 @@ def main():
             stop_fresh()
             seconds = time.monotonic() - started
             if missing:
+                # What the seat had then: its X windows and the check's own processes.
+                with open(os.path.join(o.out, 'failure.txt'), 'w') as f:
+                    f.write(seat.sh(f'. {seat.dir}/client; xwininfo -root -tree 2>&1 | head -200', user='caboose', check=False))
+                    f.write(seat.sh(f'for p in $(pgrep -u caboose); do tr "\\0" "\\n" < /proc/$p/environ 2>/dev/null | '
+                                    f'grep -qx CABOOSE_CHAOS_SEAT={os.getpid()} && ps -o pid,lstart,args -p $p | tail -1; done',
+                                    user='caboose', check=False))
                 print(f'FAIL cycle {cycle}/{o.cycles} {event} after {delay:.1f} s: no real picture from {", ".join(missing)} '
                       f'({len(pictures)} pictures since the cycle, executor generation {seat.generation})', flush=True)
                 return 1

@@ -30,8 +30,35 @@ format unsupported, other enumerations are empty, semaphore and fence exports ar
 (-1), host image copies and layout transitions succeed. A descriptor pool whose set ids the
 executor never sent makes its sets locally, and a pool out of ids reports
 VK_ERROR_OUT_OF_POOL_MEMORY instead of taking an id it does not have: Zink, allocating a
-descriptor set when its executor left, got VK_ERROR_DEVICE_LOST and crashed.
+descriptor set when its executor left, got VK_ERROR_DEVICE_LOST and crashed. A lost device's
+command pools keep their staging until they are destroyed: resetting each of Zink's piled-up
+pools walked every pool's command buffers and held the compositor for tens of seconds.
 ---
+diff --git a/src/gfxstream/guest/vulkan/gfxstream_vk_cmd.cpp b/src/gfxstream/guest/vulkan/gfxstream_vk_cmd.cpp
+index 1b6d6ab..8d97dcf 100644
+--- a/src/gfxstream/guest/vulkan/gfxstream_vk_cmd.cpp
++++ b/src/gfxstream/guest/vulkan/gfxstream_vk_cmd.cpp
+@@ -4,6 +4,7 @@
+  */
+ 
+ #include "ResourceTracker.h"
++#include "Resources.h"
+ #include "VkEncoder.h"
+ #include "gfxstream_vk_private.h"
+ #include "util/perf/cpu_trace.h"
+@@ -62,7 +63,11 @@ VkResult gfxstream_vk_ResetCommandPool(VkDevice device, VkCommandPool commandPoo
+         vkResetCommandPool_VkResult_return = vkEnc->vkResetCommandPool(
+             gfxstream_device->internal_object, gfxstream_commandPool->internal_object, flags,
+             true /* do lock */);
+-        if (vkResetCommandPool_VkResult_return == VK_SUCCESS) {
++        // A lost device's pool keeps its staging until it is destroyed: Zink, tearing down a
++        // lost device, resets each of its piled-up pools, and walking every pool's command
++        // buffers each time took the compositor tens of seconds.
++        if (vkResetCommandPool_VkResult_return == VK_SUCCESS &&
++            !caboose::completion::lostCall(cabooseGenerationOf(gfxstream_device->internal_object))) {
+             gfxstream::vk::ResourceTracker::get()->resetCommandPoolStagingInfo(
+                 gfxstream_commandPool->internal_object);
+         }
 diff --git a/src/gfxstream/guest/vulkan/gfxstream_vk_device.cpp b/src/gfxstream/guest/vulkan/gfxstream_vk_device.cpp
 index 3e5ad47..83c6c16 100644
 --- a/src/gfxstream/guest/vulkan/gfxstream_vk_device.cpp
