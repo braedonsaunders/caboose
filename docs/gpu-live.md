@@ -261,7 +261,10 @@ native decoder.
 
 The guest scopes its exact format/image-format cache to this nonce, negotiated protocol
 and features, queried backend/device/driver properties, and guest source fingerprint.
-Consequently a replacement executor or backend cannot reuse a previous session's file.
+Consequently a replacement executor or backend cannot reuse a previous session's file. The
+instance scope also keeps the session's instance extensions, physical device count and the
+identity of its one GPU, so a process starting later in the session asks none of its
+capability answers again (bounded-memory README, Physical capability cache).
 The seat-owned files contain bounded scalar query results, not authorization data;
 [`static_query_cache.h`](../guest/gpu/gfxstream/bounded-memory/README.md#physical-capability-cache)
 describes validation and the existing sandbox mount used for storage.
@@ -661,6 +664,14 @@ socket, so the ingress limit still bounds it. The socketpair holds up to 1 MiB o
 and 256 KiB of replies where the kernel allows it. A subsequent run failure revokes the lease.
 The private hello is consumed at session negotiation; DATA begins with the real
 upstream client-flags word and ordered command bytes.
+
+The phone takes a process's PROCESS_OPEN, its streams' STREAM_OPEN and their DATA in the
+order the broker sends them, and answers each opening before anything the data after it
+asks for. The broker therefore answers a guest's local hello as soon as it has sent the
+openings, and relays the guest's data behind them without waiting a round trip for each
+answer; replies are relayed only after the stream's STREAM_READY. An opening the phone
+never answers fails the session, as it does when the broker waits for it. A surface bind a
+process asks for before its PROCESS_READY waits for it.
 
 FIN is a half-close after preceding DATA, not permission to discard reverse
 replies. PROCESS_STOP revokes admission and interrupts active native runs.
