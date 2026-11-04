@@ -1,5 +1,5 @@
 From: Caboose <caboose@local>
-Subject: [PATCH 78/85] Compile trace scopes away without a tracer
+Subject: [PATCH 78/86] Compile trace scopes away without a tracer
 
 MESA_TRACE_SCOPE formatted its name into a 4 KiB stack buffer with vsnprintf on every
 call, tracer or not: every Vulkan entry point of the driver paid it, thousands of times

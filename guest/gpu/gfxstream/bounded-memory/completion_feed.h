@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 #pragma once
+#include "completion_payloads.h"
 #include "lock_order.h"
 #include <algorithm>
 #include <atomic>
@@ -11,6 +12,8 @@
 #include <sys/stat.h>
 #include <thread>
 #include <cstring>
+#include <map>
+#include <memory>
 #include <string>
 #include <mutex>
 #include <unordered_map>
@@ -67,7 +70,9 @@ inline void encodeFeed(uint8_t out[kFeedPacketSize]) {
 }
 
 // The guest's view of every fence and timeline semaphore whose signal operations it has
-// seen. An object stays "tracked" only while each of its signal operations is either a
+// seen, and of its events and queries; with completion payloads (completion_payloads.h), of
+// its queries' values too, and the coherent memory its batches write is captured for it. An
+// object stays "tracked" only while each of its signal operations is either a
 // watched submission or done by the guest itself; any other (an imported payload, a
 // presentation-engine acquire, a submission the phone cannot watch) makes it untracked
 // until a reset, and the caller then asks the device as before.
@@ -75,6 +80,32 @@ class Tracker {
 public:
     enum class Fence { Unsignaled, Signaled, Pending, Untracked };
     using Clock = std::chrono::steady_clock;
+
+    // --- Completion payloads (hello 0x200000) ---------------------------------------------
+    // A range of coherent memory a batch writes on the GPU: the guest's key of the
+    // allocation, the phone's handle of it, and the bytes [offset, offset + size).
+    struct MemoryWrite { uint64_t memory, handle, offset, size; };
+    // What a watch asks the phone to capture: in, the batch's memory writes; out, the
+    // COMPLETION_WATCH2 entries (empty: a plain watch).
+    struct Captures {
+        std::vector<MemoryWrite> memory;
+        std::vector<payloads::Entry> entries;
+    };
+    // Where captured bytes of an allocation go: its guest shadow, kept alive while written,
+    // the offsets [begin, end) of it that may be written, and the allocation's size.
+    struct MemoryTarget {
+        std::shared_ptr<uint8_t> keep;
+        uint8_t* base = nullptr;
+        uint64_t begin = 0, end = 0, allocation = 0;
+    };
+    // Set by the driver: finds an allocation's shadow (false when it has none), and is told
+    // of bytes stored there. Neither is called with this tracker's lock held.
+    using ResolveMemory = bool (*)(uint64_t memory, MemoryTarget* out);
+    using StoredMemory = void (*)(uint64_t memory, const MemoryTarget& target, uint64_t offset, uint64_t size);
+    void memoryHooks(ResolveMemory resolve, StoredMemory stored) {
+        resolve_.store(resolve, std::memory_order_release);
+        stored_.store(stored, std::memory_order_release);
+    }
 
     // --- Fences -----------------------------------------------------------------------
     void fenceCreated(uint64_t fence, bool signaled) {
@@ -109,8 +140,11 @@ public:
     }
     // A submission's signal operations on `queue`, before it is sent. Returns the serial
     // to watch.
+    // With `captures`, the watch is COMPLETION_WATCH2: its entries name the batch's ended
+    // queries of captured pools and its memory writes, within one record's payload.
     uint64_t submitted(uint64_t fence, const std::vector<std::pair<uint64_t, uint64_t>>& timelineSignals,
-                       uint64_t queue = 0, uint64_t device = 0, const std::vector<uint64_t>& commandBuffers = {}) {
+                       uint64_t queue = 0, uint64_t device = 0, const std::vector<uint64_t>& commandBuffers = {},
+                       Captures* captures = nullptr) {
         std::lock_guard<decltype(mutex_)> lock(mutex_);
         const uint64_t serial = ++lastSerial_;
         Watch watch;
@@ -138,6 +172,7 @@ public:
                 const uint32_t count = std::min(op.count, kMaxQueryRange);
                 for (uint32_t i = 0; i < count; ++i) {
                     QueryState& query = pool[op.first + i];
+                    query.known = false;
                     if (op.kind == QueryOp::End) {
                         query.state = QueryState::Pending;
                         query.serial = serial;
@@ -160,6 +195,10 @@ public:
             if (it == semaphores_.end() || !it->second.tracked) continue;
             watch.signals.push_back({semaphore, value});
             it->second.pending = std::max(it->second.pending, value);
+        }
+        if (captures) {
+            requestLocked(serial, watch, *captures);
+            captures->entries = watch.entries;
         }
         watches_.emplace(serial, std::move(watch));
         return serial;
@@ -202,7 +241,15 @@ public:
                 if (serial <= through && (queue ? watch.queue == queue : watch.device == device))
                     serials.push_back(serial);
         }
-        for (uint64_t serial : serials) complete(serial, kCompleted);
+        // Their records, with what they captured, are still to come.
+        for (uint64_t serial : serials) {
+            std::lock_guard<decltype(mutex_)> lock(mutex_);
+            auto it = watches_.find(serial);
+            if (it == watches_.end()) continue;
+            Watch watch = std::move(it->second);
+            watches_.erase(it);
+            finishWatchLocked(serial, kCompleted, std::move(watch), {}, true);
+        }
     }
 
     // --- Timeline semaphores ------------------------------------------------------------
@@ -347,6 +394,89 @@ public:
     void queryPoolDestroyed(uint64_t pool) {
         std::lock_guard<decltype(mutex_)> lock(mutex_);
         queryPools_.erase(pool);
+        capturedPools_.erase(pool);
+    }
+    // A query pool was made on `device` (`handle` is the phone's name of it): an occlusion or
+    // timestamp pool has its queries' values captured with completion payloads, by watches of
+    // that device's queues, and answered here.
+    void queryPoolCreated(uint64_t pool, uint64_t handle, uint64_t device, int32_t queryType) {
+        std::lock_guard<decltype(mutex_)> lock(mutex_);
+        queryPools_.erase(pool);
+        if (payloads::capturedType(queryType)) capturedPools_[pool] = CapturedPool{handle, device};
+        else capturedPools_.erase(pool);
+    }
+    // The decoder destroys a pool without a lock against the capture of its queries: a pool
+    // is destroyed only once every record that captures it has arrived. Waits for those
+    // records (or the feed's end); whether it had to.
+    bool waitPoolCaptures(uint64_t pool) {
+        std::unique_lock<decltype(mutex_)> lock(mutex_);
+        auto outstanding = [&] {
+            auto found = poolCaptures_.find(pool);
+            return !closed_ && found != poolCaptures_.end() && found->second;
+        };
+        if (!outstanding()) return false;
+        changed_.wait(lock, [&] { return !outstanding(); });
+        return true;
+    }
+    bool poolCaptured(uint64_t pool) {
+        std::lock_guard<decltype(mutex_)> lock(mutex_);
+        auto found = poolCaptures_.find(pool);
+        return !closed_ && found != poolCaptures_.end() && found->second;
+    }
+    // A batch whose completion nobody will report: the queries it ends or resets are asked
+    // on the device until they are reset again.
+    void queriesUntracked(const std::vector<uint64_t>& commandBuffers) {
+        std::lock_guard<decltype(mutex_)> lock(mutex_);
+        for (uint64_t cb : commandBuffers) {
+            auto found = commandQueries_.find(cb);
+            if (found == commandQueries_.end()) continue;
+            for (const auto& op : found->second) {
+                auto& pool = queryPools_[op.pool];
+                if (op.kind == QueryOp::Untrack) {
+                    for (auto& entry : pool) entry.second = untrackedQuery();
+                    continue;
+                }
+                const uint32_t count = std::min(op.count, kMaxQueryRange);
+                for (uint32_t i = 0; i < count; ++i) pool[op.first + i] = untrackedQuery();
+            }
+        }
+    }
+    // Whether vkGetQueryPoolResults for the range can be answered from captured values:
+    // Ready now, Pending until an outstanding record arrives, or AskDevice.
+    enum class Values { Ready, Pending, AskDevice };
+    Values queryValues(uint64_t pool, uint32_t first, uint32_t count) {
+        std::lock_guard<decltype(mutex_)> lock(mutex_);
+        return queryValuesLocked(pool, first, count);
+    }
+    // Waits while queryValues() is Pending (a WAIT): until the records arrive or the feed ends.
+    Values waitQueryValues(uint64_t pool, uint32_t first, uint32_t count) {
+        std::unique_lock<decltype(mutex_)> lock(mutex_);
+        Values values = Values::AskDevice;
+        changed_.wait(lock, [&] { return (values = queryValuesLocked(pool, first, count)) != Values::Pending; });
+        return values;
+    }
+    // vkGetQueryPoolResults from captured values: VK_SUCCESS, VK_NOT_READY, or
+    // payloads::kAskDevice (nothing written) when the device must answer
+    // (payloads::writeResults).
+    int32_t queryResults(uint64_t pool, uint32_t first, uint32_t count, size_t dataSize, void* data, uint64_t stride,
+                         uint32_t flags) {
+        std::lock_guard<decltype(mutex_)> lock(mutex_);
+        if (lost_ || closed_ || !count || count > kMaxQueryRange || !capturedPools_.count(pool))
+            return payloads::kAskDevice;
+        auto queries = queryPools_.find(pool);
+        if (queries == queryPools_.end()) return payloads::kAskDevice;
+        return payloads::writeResults(count, dataSize, data, stride, flags, [&](uint32_t i) {
+            payloads::Known known;
+            auto query = queries->second.find(first + i);
+            if (query == queries->second.end()) return known;
+            if (query->second.state == QueryState::Available && query->second.known) {
+                known.state = payloads::Known::Available;
+                known.value = query->second.value;
+            } else if (query->second.state == QueryState::Pending || query->second.state == QueryState::Reset) {
+                known.state = payloads::Known::Unavailable;
+            }
+            return known;
+        });
     }
     enum class Queries { Available, NotReady, AskDevice };
     // Whether every query of the range is available; AskDevice when any is not followed.
@@ -426,12 +556,78 @@ public:
 
     // --- Feed ---------------------------------------------------------------------------
     // A record from the feed stream. Unknown serials (already superseded) are ignored.
-    void complete(uint64_t serial, int32_t status) {
+    void complete(uint64_t serial, int32_t status) { completeRecord(serial, status, nullptr, 0); }
+    // A record and its payload (completion_payloads.h). Captured memory is stored in its
+    // allocations' shadows before the watch completes, so nothing that waits for the
+    // submission sees the shadow before; a capture of memory a later batch also writes, or
+    // whose watch an idle wait already completed, is not stored. A malformed payload is
+    // not used, and the record still completes its watch.
+    void completeRecord(uint64_t serial, int32_t status, const uint8_t* payload, size_t size) {
+        std::vector<payloads::Capture> captures;
+        if (status != kCompleted || !payload || !size || !payloads::parsePayload(payload, size, &captures))
+            captures.clear();
+        // The memory captures worth storing, and where they go: resolved without the lock.
+        struct Store { uint64_t memory; MemoryTarget target; uint64_t offset, size; const uint8_t* data; };
+        std::vector<Store> stores;
+        const ResolveMemory resolve = resolve_.load(std::memory_order_acquire);
+        if (resolve && !captures.empty()) {
+            std::vector<std::pair<uint64_t, const payloads::Capture*>> wanted;
+            {
+                std::lock_guard<decltype(mutex_)> lock(mutex_);
+                auto it = watches_.find(serial);
+                if (it != watches_.end())
+                    for (const auto& capture : captures) {
+                        if (capture.entry.kind != payloads::kMemoryRange || capture.status != 0) continue;
+                        const uint64_t memory = it->second.memoryKeyOf(capture.entry);
+                        auto writer = memoryWriters_.find(memory);
+                        if (memory && writer != memoryWriters_.end() && writer->second == serial)
+                            wanted.push_back({memory, &capture});
+                    }
+            }
+            for (const auto& [memory, capture] : wanted) {
+                Store store{memory, {}, capture->entry.a, capture->entry.b, capture->data};
+                if (resolve(memory, &store.target) && store.target.base && store.offset >= store.target.begin &&
+                    store.offset <= store.target.end && store.size <= store.target.end - store.offset)
+                    stores.push_back(std::move(store));
+            }
+        }
+        std::vector<Store> stored;
+        {
+            std::lock_guard<decltype(mutex_)> lock(mutex_);
+            auto it = watches_.find(serial);
+            if (it == watches_.end()) {
+                // The record of a watch an idle wait completed: its queries' values.
+                auto pending = valueWatches_.find(serial);
+                if (pending == valueWatches_.end()) return;
+                finishQueriesLocked(serial, status, pending->second, captures);
+                releaseCapturesLocked(pending->second);
+                valueWatches_.erase(pending);
+                changed_.notify_all();
+                return;
+            }
+            for (auto& store : stores) {
+                auto writer = memoryWriters_.find(store.memory);
+                if (writer == memoryWriters_.end() || writer->second != serial) continue;
+                std::memcpy(store.target.base + store.offset, store.data, size_t(store.size));
+                stored.push_back(std::move(store));
+            }
+            Watch watch = std::move(it->second);
+            watches_.erase(it);
+            finishWatchLocked(serial, status, std::move(watch), captures, false);
+        }
+        const StoredMemory note = stored_.load(std::memory_order_acquire);
+        if (note)
+            for (const auto& store : stored) note(store.memory, store.target, store.offset, store.size);
+    }
+    size_t pendingValueRecords() {
         std::lock_guard<decltype(mutex_)> lock(mutex_);
-        auto it = watches_.find(serial);
-        if (it == watches_.end()) return;
-        Watch watch = std::move(it->second);
-        watches_.erase(it);
+        return valueWatches_.size();
+    }
+
+private:
+    struct Watch;
+    void finishWatchLocked(uint64_t serial, int32_t status, Watch watch,
+                           const std::vector<payloads::Capture>& captures, bool idle) {
         for (const auto& [event, set] : watch.events) {
             auto found = events_.find(event);
             if (found == events_.end()) continue;
@@ -440,14 +636,18 @@ public:
             else if (found->second.state != EventState::Untracked)
                 found->second.state = set ? EventState::Set : EventState::Reset;
         }
-        for (const auto& [poolHandle, index] : watch.queries) {
-            auto pool = queryPools_.find(poolHandle);
-            if (pool == queryPools_.end()) continue;
-            auto query = pool->second.find(index);
-            if (query == pool->second.end() || query->second.state != QueryState::Pending ||
-                query->second.serial != serial) continue;
-            query->second.state = status == kCompleted ? QueryState::Available : QueryState::Untracked;
-            query->second.serial = 0;
+        for (const auto& entry : watch.memory) {
+            auto writer = memoryWriters_.find(entry.first);
+            if (writer != memoryWriters_.end() && writer->second == serial) memoryWriters_.erase(writer);
+        }
+        ValueWatch values{std::move(watch.queries), std::move(watch.entries), std::move(watch.keys)};
+        if (idle && hasQueryEntries(values)) {
+            // Completed, but the record with its queries' values is still to come: they stay
+            // pending until then.
+            valueWatches_[serial] = std::move(values);
+        } else {
+            finishQueriesLocked(serial, status, values, captures);
+            releaseCapturesLocked(values);
         }
         if (status == kDeviceLost) {
             if (watch.device) lostDevices_.insert(watch.device);
@@ -468,6 +668,8 @@ public:
         }
         changed_.notify_all();
     }
+
+public:
     // The executor is gone: every device of this process is lost.
     void loseAll() {
         std::lock_guard<decltype(mutex_)> lock(mutex_);
@@ -484,6 +686,10 @@ public:
         for (auto& [handle, state] : semaphores_) state.tracked = false;
         for (auto& [handle, state] : events_) state.state = EventState::Untracked;
         queryPools_.clear();
+        capturedPools_.clear();
+        valueWatches_.clear();
+        poolCaptures_.clear();
+        memoryWriters_.clear();
         commandQueries_.clear();
         watches_.clear();
         lost_ = false;
@@ -566,12 +772,141 @@ private:
         std::vector<std::pair<uint64_t, uint64_t>> signals;
         std::vector<std::pair<uint64_t, bool>> events;  // set (true) or reset, in order
         std::vector<std::pair<uint64_t, uint32_t>> queries;  // (pool, index) ended in the batch
+        // COMPLETION_WATCH2 entries, and the guest key of each one's pool or allocation.
+        std::vector<payloads::Entry> entries;
+        std::vector<uint64_t> keys;
+        std::vector<std::pair<uint64_t, uint64_t>> memory;  // (allocation, serial) it writes
+        uint64_t memoryKeyOf(const payloads::Entry& entry) const {
+            for (size_t i = 0; i < entries.size(); ++i)
+                if (entries[i] == entry && entry.kind == payloads::kMemoryRange) return keys[i];
+            return 0;
+        }
     };
     // A query as the process knows it. Reset: reset and not ended since (never available).
     struct QueryState {
         enum State { Reset, Pending, Available, Untracked } state = Reset;
         uint64_t serial = 0;  // the watch of the batch that ends it, while Pending
+        bool known = false;   // Available with the value the phone captured
+        uint64_t value = 0;
     };
+    static QueryState untrackedQuery() {
+        QueryState state;
+        state.state = QueryState::Untracked;
+        return state;
+    }
+    // The queries of a completed watch whose record, with their values, is still to come.
+    struct ValueWatch {
+        std::vector<std::pair<uint64_t, uint32_t>> queries;
+        std::vector<payloads::Entry> entries;
+        std::vector<uint64_t> keys;
+    };
+    static bool hasQueryEntries(const ValueWatch& watch) {
+        for (const auto& entry : watch.entries)
+            if (entry.kind == payloads::kQueryRange) return true;
+        return false;
+    }
+    // Bounded by the watches outstanding: the phone writes a record for each.
+    std::map<uint64_t, ValueWatch> valueWatches_;
+    struct CapturedPool { uint64_t handle, device; };
+    std::unordered_map<uint64_t, CapturedPool> capturedPools_;
+    std::unordered_map<uint64_t, uint32_t> poolCaptures_;    // pool -> watches capturing it
+    void releaseCapturesLocked(const ValueWatch& watch) {
+        for (size_t i = 0; i < watch.entries.size(); ++i) {
+            if (watch.entries[i].kind != payloads::kQueryRange) continue;
+            auto found = poolCaptures_.find(watch.keys[i]);
+            if (found != poolCaptures_.end() && !--found->second) poolCaptures_.erase(found);
+        }
+    }
+    std::unordered_map<uint64_t, uint64_t> memoryWriters_;   // allocation -> its latest writing serial
+    std::atomic<ResolveMemory> resolve_{nullptr};
+    std::atomic<StoredMemory> stored_{nullptr};
+    // The batch's captures, within one record: its ended queries of captured pools as ranges,
+    // then its memory writes, while entries and payload bytes last. Every allocation it
+    // writes records it as the latest writer, captured or not.
+    void requestLocked(uint64_t serial, Watch& watch, const Captures& captures) {
+        uint64_t payload = 0;
+        auto add = [&](const payloads::Entry& entry, uint64_t key) {
+            const uint64_t bytes = payloads::captureSize(entry);
+            if (watch.entries.size() >= payloads::kMaxEntries || bytes > payloads::kMaxPayload - payload)
+                return false;
+            payload += bytes;
+            watch.entries.push_back(entry);
+            watch.keys.push_back(key);
+            return true;
+        };
+        std::vector<std::pair<uint64_t, uint32_t>> ended;
+        for (const auto& query : watch.queries) {
+            auto pool = capturedPools_.find(query.first);
+            if (pool != capturedPools_.end() && pool->second.device == watch.device) ended.push_back(query);
+        }
+        std::sort(ended.begin(), ended.end());
+        ended.erase(std::unique(ended.begin(), ended.end()), ended.end());
+        for (size_t i = 0; i < ended.size();) {
+            size_t j = i + 1;
+            while (j < ended.size() && ended[j].first == ended[i].first &&
+                   uint64_t(ended[j].second) == uint64_t(ended[j - 1].second) + 1) ++j;
+            if (!add({payloads::kQueryRange, capturedPools_[ended[i].first].handle, ended[i].second, j - i},
+                     ended[i].first)) break;
+            ++poolCaptures_[ended[i].first];
+            i = j;
+        }
+        for (const auto& write : captures.memory) {
+            if (!write.memory || !write.handle || !write.size) continue;
+            memoryWriters_[write.memory] = serial;
+            watch.memory.push_back({write.memory, serial});
+            add({payloads::kMemoryRange, write.handle, write.offset, write.size}, write.memory);
+        }
+    }
+    // The queries the batch `serial` ended: available (with the value its record captured)
+    // when it completed, asked on the device otherwise. A query reset or ended again since
+    // is left alone.
+    void finishQueriesLocked(uint64_t serial, int32_t status, const ValueWatch& watch,
+                             const std::vector<payloads::Capture>& captures) {
+        if (status == kCompleted) {
+            for (const auto& capture : captures) {
+                if (capture.entry.kind != payloads::kQueryRange || (capture.status != 0 && capture.status != 1))
+                    continue;
+                uint64_t poolKey = 0;
+                for (size_t i = 0; i < watch.entries.size(); ++i)
+                    if (watch.entries[i] == capture.entry) poolKey = watch.keys[i];
+                auto pool = queryPools_.find(poolKey);
+                if (!poolKey || pool == queryPools_.end()) continue;
+                for (uint64_t q = 0; q < capture.entry.b; ++q) {
+                    uint64_t pair[2];
+                    std::memcpy(pair, capture.data + q * 16, 16);
+                    auto query = pool->second.find(uint32_t(capture.entry.a + q));
+                    if (query == pool->second.end() || query->second.state != QueryState::Pending ||
+                        query->second.serial != serial || pair[1] != 1) continue;
+                    query->second.value = pair[0];
+                    query->second.known = true;
+                }
+            }
+        }
+        for (const auto& [poolHandle, index] : watch.queries) {
+            auto pool = queryPools_.find(poolHandle);
+            if (pool == queryPools_.end()) continue;
+            auto query = pool->second.find(index);
+            if (query == pool->second.end() || query->second.state != QueryState::Pending ||
+                query->second.serial != serial) continue;
+            query->second.state = status == kCompleted ? QueryState::Available : QueryState::Untracked;
+            if (status != kCompleted) query->second.known = false;
+            query->second.serial = 0;
+        }
+    }
+    Values queryValuesLocked(uint64_t pool, uint32_t first, uint32_t count) const {
+        if (lost_ || closed_ || !count || count > kMaxQueryRange || !capturedPools_.count(pool))
+            return Values::AskDevice;
+        auto queries = queryPools_.find(pool);
+        if (queries == queryPools_.end()) return Values::AskDevice;
+        bool pending = false;
+        for (uint32_t i = 0; i < count; ++i) {
+            auto query = queries->second.find(first + i);
+            if (query == queries->second.end()) return Values::AskDevice;
+            if (query->second.state == QueryState::Pending) pending = true;
+            else if (query->second.state != QueryState::Available || !query->second.known) return Values::AskDevice;
+        }
+        return pending ? Values::Pending : Values::Ready;
+    }
     struct QueryOp {
         uint64_t pool;
         uint32_t first, count;
@@ -637,6 +972,28 @@ private:
     std::unordered_set<uint64_t> lostDevices_;
     bool closed_ = false;
 };
+
+// Reads one record of the feed stream with recv(data, size) (true once all of it arrived) and
+// applies it to `tracker`: the 16-byte head (serial, status, payload bytes, which a phone
+// without completion payloads sends as 0) and its payload. A record with serial 0 is not a
+// completion (a fault report) and is skipped. False when the stream ended, or a record
+// announces more than one may carry, which ends the feed.
+template <class Recv> inline bool readRecord(Recv recv, Tracker& tracker) {
+    uint8_t head[payloads::kRecordHeadSize];
+    if (!recv(head, sizeof(head))) return false;
+    uint64_t serial;
+    int32_t status;
+    uint32_t bytes;
+    std::memcpy(&serial, head, 8);
+    std::memcpy(&status, head + 8, 4);
+    std::memcpy(&bytes, head + 12, 4);
+    if (bytes > payloads::kMaxPayload) return false;
+    thread_local std::vector<uint8_t> payload;
+    payload.resize(bytes);
+    if (bytes && !recv(payload.data(), bytes)) return false;
+    if (serial) tracker.completeRecord(serial, status, payload.data(), bytes);
+    return true;
+}
 
 // Set while this process's completion feed is running.
 inline std::atomic<bool> feedActive{false};
