@@ -4,24 +4,20 @@ import { cgroupRemountArgs, cgroupWritable, containerPlacement, createContainerC
 import { DISPLAY_ENV } from './display.test.js'
 
 /** `published` are the container ports Docker reports as mapped; the bridge address is 172.18.0.2. */
-const isBroker = (args: string[]) => args.some(arg => arg.includes('caboose.fuse-broker-for'))
-/** The computer's own `docker run` calls, without its FUSE broker's. */
-const computerRuns = (calls: string[][]) => calls.filter(call => call[0] === 'run' && !isBroker(call))
+const computerRuns = (calls: string[][]) => calls.filter(call => call[0] === 'run')
 
 function fakeDocker(initial: 'missing' | 'running' | 'paused' | 'exited', published = ['14700', '14701']) {
   let status = initial
-  let broker = false
   const calls: string[][] = []
   const docker: Docker = async args => {
     calls.push(args)
     switch (args[0]) {
       case 'inspect':
-        if (isBroker(args)) { if (!broker || status !== 'running') throw new Error('No such object'); return `running ${args.at(-1)!.replace(/-fuse$/, '')}\n` }
         if (status === 'missing') throw new Error('No such object')
         if (args.includes('{{json .HostConfig}}')) return '{"Memory":4294967296,"NanoCpus":2000000000}'
         if (args.some(arg => arg.includes('.IPAddress'))) return '172.18.0.2\n'
         return `${status}\n`
-      case 'run': if (isBroker(args)) broker = true; else status = 'running'; return 'id\n'
+      case 'run': status = 'running'; return 'id\n'
       case 'start': case 'unpause': status = 'running'; return ''
       case 'pause': status = 'paused'; return ''
       case 'stop': status = 'exited'; return ''
@@ -86,19 +82,6 @@ describe('createContainerController', () => {
     expect(run.join(' ')).toContain('-v caboose-owner-flatpak:/var/lib/flatpak')
     await controller.destroy!()
     expect(fake.calls).toContainEqual(['volume', 'rm', '-f', 'caboose-owner-flatpak'])
-  })
-
-  it('starts the FUSE broker beside the computer, in its process namespace, from its own files', async () => {
-    const fake = fakeDocker('missing')
-    const controller = createContainerController(settings, { fence: async () => {}, docker: fake.docker, exists: () => false })
-    await controller.wake('headless')
-    const runs = fake.calls.filter(call => call[0] === 'run')
-    expect(runs).toHaveLength(2)
-    const broker = runs[1]!
-    const name = runs[0]![runs[0]!.indexOf('--name') + 1]!
-    expect(broker).toEqual(expect.arrayContaining(['--rm', '--name', `${name}-fuse`, '--privileged', `--pid=container:${name}`, '--network', 'none',
-      '--label', `caboose.fuse-broker-for=${name}`, '--entrypoint', 'python3']))
-    expect(broker.at(-1)).toBe('/proc/1/root/opt/caboose/flatpak/caboose-fuse-broker')
   })
 
   it('creates a computer with its own image, folders, devices and options, without repeating the host’s', async () => {
@@ -449,7 +432,7 @@ it('removes only its failed bind attempt and retries with new ports', async () =
   const docker: Docker = async (args, timeout) => {
     calls.push(args)
     if (args[0] === 'ps') return ''
-    if (args[0] === 'run' && !isBroker(args)) {
+    if (args[0] === 'run') {
       runs++
       if (runs === 1) {
         attempt = args.find(arg => arg.startsWith('caboose.port-attempt='))!.split('=')[1]!

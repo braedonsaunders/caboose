@@ -638,6 +638,15 @@ final class DesktopModel {
         menu.show(items, at: anchor, above: true)
     }
 
+    /// A click on a Launchpad page arrow. Direction 0 is the arrow at the end of the pages,
+    /// kept in place so its click is used up there instead of closing Launchpad.
+    func turnLauncherPage(_ direction: Int) {
+        guard direction != 0 else { return }
+        launcherFrames = [:]
+        launcherPageFrames = [:]
+        launcherPage = max(0, launcherPage + direction)
+    }
+
     func click(button: Int = 1, session: (any DisplaySession)?, open: (String) -> Void) {
         guard let session else { return }
         let hit = hitTest(cursor, windows: session.windows)
@@ -673,9 +682,7 @@ final class DesktopModel {
             }
         }
         if case .launcherPage(let direction) = hit {
-            launcherFrames = [:]
-            launcherPageFrames = [:]
-            launcherPage = max(0, launcherPage + direction)
+            turnLauncherPage(direction)
             return
         }
         if launchpadOpen, hit != .launchpadButton, hit != .panelButton {

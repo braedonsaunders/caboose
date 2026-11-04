@@ -70,13 +70,16 @@ def toolkit(pid):
 
 def entries(only, skip):
     homes = [os.environ.get('XDG_DATA_HOME', os.path.expanduser('~/.local/share'))]
-    dirs = ['/usr/share/applications', '/var/lib/flatpak/exports/share/applications'] + [f'{h}/flatpak/exports/share/applications' for h in homes] \
-        + [f'{h}/applications' for h in homes]  # the user's own entries, Wine's among them
-    found = {}
-    for path in sorted(p for d in dirs for p in glob.glob(f'{d}/**/*.desktop', recursive=True)):
+    # In XDG order, so an entry of the same id in an earlier directory (a local one that hides
+    # a packaged entry) decides.
+    dirs = [f'{h}/applications' for h in homes] + ['/usr/local/share/applications', '/usr/share/applications',
+            '/var/lib/flatpak/exports/share/applications'] + [f'{h}/flatpak/exports/share/applications' for h in homes]
+    found, seen = {}, set()
+    for path in (p for d in dirs for p in sorted(glob.glob(f'{d}/**/*.desktop', recursive=True))):
         ident = pathlib.Path(path).stem
-        if ident in found or (only and ident not in only) or ident in skip:
+        if ident in seen or (only and ident not in only) or ident in skip:
             continue
+        seen.add(ident)
         config = configparser.RawConfigParser(strict=False, interpolation=None)
         try:
             config.read(path, encoding='utf-8')
@@ -138,6 +141,15 @@ def agent_orphans(before):
 
 
 def end(seat, process, before):
+    # Close each window as its close button would, so the application quits as it means to
+    # (a single-instance lock a killed one leaves can keep it from starting again); then
+    # signals for what is left.
+    for w in seat.windows()['windows']:
+        try: seat.request(f"close {int(w['id'])}")
+        except Exception: pass
+    for _ in range(30):
+        if not seat.windows()['windows']: break
+        time.sleep(0.1)
     for w in seat.windows()['windows']:
         try: os.kill(w['pid'], signal.SIGTERM)
         except (OSError, KeyError, TypeError): pass
