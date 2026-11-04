@@ -165,6 +165,12 @@ class Seat:
         except RuntimeError:
             # Where the broker waits, in the display log, before the seat goes.
             self.sh(f"pkill -USR1 -f '{self.dir}/libexec/caboose-gpu-broker'", check=False)
+            if self.o.gdb:
+                # And the compositor's native stacks, on the host.
+                for pid in run('pgrep', '-f', f'{self.dir}/bin/caboose-display --listen', check=False).split():
+                    with open(os.path.join(self.o.out, f'gdb-compositor-{pid}.txt'), 'w') as trace:
+                        subprocess.run(['timeout', '60', 'gdb', '-p', pid, '-batch', '-ex', f'set sysroot /proc/{pid}/root',
+                                        '-ex', 'thread apply all bt 30'], stdout=trace, stderr=subprocess.STDOUT)
             time.sleep(1)
             raise
         return name

@@ -1,0 +1,25 @@
+From: Caboose <caboose@local>
+Subject: [PATCH 78/78] Compile trace scopes away without a tracer
+
+MESA_TRACE_SCOPE formatted its name into a 4 KiB stack buffer with vsnprintf on every
+call, tracer or not: every Vulkan entry point of the driver paid it, thousands of times
+a frame, and Zink's teardown of a lost device spent its time there. Built without
+Perfetto, GPUVis or Sysprof (as the driver is), a scope is now nothing.
+---
+diff --git a/src/util/perf/cpu_trace.h b/src/util/perf/cpu_trace.h
+index 60c0382..3cff898 100644
+--- a/src/util/perf/cpu_trace.h
++++ b/src/util/perf/cpu_trace.h
+@@ -95,7 +95,9 @@ struct mesa_trace_flow {
+ 
+ #endif /* HAVE_SYSPROF */
+ 
+-#if __has_attribute(cleanup) && __has_attribute(unused)
++/* Without a tracer a scope is nothing: it would otherwise format its name on every call. */
++#if __has_attribute(cleanup) && __has_attribute(unused) && \
++   (defined(HAVE_PERFETTO) || defined(HAVE_GPUVIS) || defined(HAVE_SYSPROF))
+ 
+ #include <stdarg.h>
+ #include <stdio.h>
+-- 
+2.43.0

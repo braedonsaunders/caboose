@@ -148,6 +148,7 @@ Each patch is one feature. Several change Mesa's generated encoder
 | 0075 recycled-descriptor-sets | A batched pool keeps the sets a reset clears and makes them again in place at their ids' next allocation; an inline uniform block binding takes one write-table entry |
 | 0076 sleeping-encoder-lock | Threads waiting for the shared encoder sleep instead of spinning |
 | 0077 executor-generations | Every dispatchable object records its executor generation; calls on an earlier generation's objects report device loss, and one reset hook forgets the previous executor's cached answers and tables |
+| 0078 trace-scopes-without-a-tracer | Trace scopes compile to nothing without a tracer, instead of formatting their names on every call |
 
 The patch messages describe each change. To change the driver, prepare a tree, commit
 the prepared state, edit, and regenerate the affected patch with `git format-patch`
