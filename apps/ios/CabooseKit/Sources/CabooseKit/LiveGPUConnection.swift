@@ -193,7 +193,7 @@ public final class LiveGPUConnection: NSObject, LiveGPUResumeSocket, URLSessionW
     /// ("Upload cache"), registers buffer views under guest-assigned handles, batches descriptor
     /// sets ("Batched descriptor sets") and takes the set ids a guest chose for its pools
     /// ("Guest-chosen set ids").
-    static let features = "guest-handles,guest-handle-arrays,completion-feed,ordered-present,guest-images,guest-query-pools,shader-cache,executor-resume,zstd-stream,upload-cache,guest-buffer-views,batched-descriptor-sets,guest-set-ids"
+    static let features = "guest-handles,guest-handle-arrays,completion-feed,ordered-present,guest-images,guest-query-pools,shader-cache,executor-resume,zstd-stream,upload-cache,guest-buffer-views,batched-descriptor-sets,guest-set-ids,completion-payloads,wait-serial,silent-success"
     static let resumeHeader = "X-Caboose-GPU-Resume"
     /// A resume attempt waits this long for its upgrade; the next follows at once.
     static let resumeTimeout: TimeInterval = 3

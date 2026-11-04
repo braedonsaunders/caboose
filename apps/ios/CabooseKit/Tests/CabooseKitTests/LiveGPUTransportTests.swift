@@ -8,7 +8,7 @@ final class LiveGPUTransportTests: XCTestCase {
         XCTAssertEqual(request.url?.absoluteString, "wss://example.com/v1/gpu")
         XCTAssertEqual(request.value(forHTTPHeaderField: "Sec-WebSocket-Protocol"), "caboose.gpu.live.v1")
         XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer phone")
-        XCTAssertEqual(request.value(forHTTPHeaderField: "X-Caboose-GPU-Features"), "guest-handles,guest-handle-arrays,completion-feed,ordered-present,guest-images,guest-query-pools,shader-cache,executor-resume,zstd-stream,upload-cache,guest-buffer-views,batched-descriptor-sets,guest-set-ids")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "X-Caboose-GPU-Features"), "guest-handles,guest-handle-arrays,completion-feed,ordered-present,guest-images,guest-query-pools,shader-cache,executor-resume,zstd-stream,upload-cache,guest-buffer-views,batched-descriptor-sets,guest-set-ids,completion-payloads,wait-serial,silent-success")
         XCTAssertNil(request.value(forHTTPHeaderField: "Sec-WebSocket-Extensions"))
         for url in ["https://example.com?executor=forged", "https://user@example.com", "https://example.com#fragment", "file:///tmp/gpu"] {
             XCTAssertThrowsError(try LiveGPUConnection.makeRequest(hostURL: URL(string: url)!, phoneToken: "phone"))
@@ -335,13 +335,19 @@ private final class GPUGatedConsumer: LiveGPUByteConsumer, @unchecked Sendable {
 private final class GPUQueuingConsumer: LiveGPUByteConsumer, LiveGPUDeferredIngress, @unchecked Sendable {
     private let lock = NSLock()
     private var releases: [@Sendable () -> Void] = []
+    private var releasing = false
     func start(output: @escaping @Sendable (Data) -> Bool, failed: @escaping @Sendable (Error) -> Void) throws {}
     func consume(_ bytes: Data) throws { XCTFail("the session passes the release") }
     func consume(_ bytes: Data, release: @escaping @Sendable () -> Void) throws {
-        lock.withLock { releases.append(release) }
+        // Once released, input still on its way to the consumer is released as it arrives.
+        if lock.withLock({ () -> Bool in if !releasing { releases.append(release) }; return releasing }) { release() }
     }
     func releaseAll() {
-        let pending = lock.withLock { () -> [@Sendable () -> Void] in defer { releases = [] }; return releases }
+        let pending = lock.withLock { () -> [@Sendable () -> Void] in
+            releasing = true
+            defer { releases = [] }
+            return releases
+        }
         for release in pending { release() }
     }
     func requestDrain() throws {}
