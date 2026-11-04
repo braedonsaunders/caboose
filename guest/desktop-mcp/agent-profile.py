@@ -15,8 +15,12 @@ def private_dir(path):
         raise RuntimeError('agent state must be a private owned directory')
 
 
-def environment(owner_home):
-    root = Path(owner_home) / '.local/share/caboose/agent-seat'
+def environment(owner_home, root=None):
+    """The agent seat's launch environment. `root` holds the profile (its `home` and version):
+    by default the owner's ~/.local/share/caboose/agent-seat; CABOOSE_AGENT_PROFILE names
+    another, so a run that resets its own directory (the desktop benchmark) has the apps the
+    agent launches share its home."""
+    root = Path(root) if root else Path(owner_home) / '.local/share/caboose/agent-seat'
     private_dir(root)
     fd = os.open(root / '.init.lock', os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
     try:
@@ -50,7 +54,7 @@ def environment(owner_home):
 
 
 def main():
-    values = environment('/home/caboose')
+    values = environment('/home/caboose', os.environ.get('CABOOSE_AGENT_PROFILE') or None)
     if sys.argv[1:2] == ['exec'] and len(sys.argv) > 2:
         os.environ.update(values)
         os.execvp(sys.argv[2], sys.argv[2:])
