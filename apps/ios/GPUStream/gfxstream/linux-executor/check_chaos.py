@@ -310,7 +310,8 @@ def main():
 
     def stop_fresh():
         seat.stop(f'{seat.dir}/home/fresh-')
-        seat.stop('glxgears -geometry 320x240')
+        # glxgears runs in other checks too: only the seat's own (its marker) is ended.
+        stop_marked('glxgears -geometry 320x240')
         stop_wine()
 
     def stop_marked(pattern):
