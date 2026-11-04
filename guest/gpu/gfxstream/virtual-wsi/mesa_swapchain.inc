@@ -307,9 +307,9 @@ static VkResult allocateImages(DeviceSwapchain& swap, const VkImageCreateInfo& i
         if (result!=VK_SUCCESS) return result;
         VkMemoryDedicatedRequirements dedicated{}; dedicated.sType=VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS;
         VkMemoryRequirements2 returned{}; returned.sType=VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2; returned.pNext=&dedicated;
-        VkImageMemoryRequirementsInfo2 queryInfo{}; queryInfo.sType=VK_STRUCTURE_TYPE_IMAGE_MEMORY_REQUIREMENTS_INFO_2;
-        queryInfo.image=image.image;
-        encoder->vkGetImageMemoryRequirements2(device->internal_object,&queryInfo,&returned,true);
+        // An image made like one of an earlier swapchain, in any process, has its answer cached.
+        gfxstream::vk::ResourceTracker::get()->cabooseImageRequirements(encoder,device->internal_object,
+            image.image,&returned);
         auto requirements=returned.memoryRequirements;
         // The first compatible type the guest never maps, else the first compatible type
         // (lavapipe has only mapped ones). Later types may be lazily allocated (patch 0010

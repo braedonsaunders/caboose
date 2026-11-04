@@ -39,6 +39,26 @@ public:
         closeAll();
     }
     static constexpr size_t kMaxEntries=8192, kMaxKeyBytes=4096, kMaxValueBytes=65536;
+    // The scope of answers no physical device is asked for (the executor's instance version),
+    // identified as a physical device is: a key value no handle takes.
+    static constexpr uint64_t kInstanceScope=1;
+    // Where a process keeps its scopes' logs: `capabilities/` beside the executor socket it
+    // was given, otherwise the user's cache directory. Empty when it cannot be made.
+    static std::string defaultDirectory() {
+        const char* socket=std::getenv("CABOOSE_GFXSTREAM_SOCKET");
+        std::string directory;
+        if (socket && socket[0]=='/' && std::strrchr(socket,'/')!=socket) {
+            directory=std::string(socket,size_t(std::strrchr(socket,'/')-socket))+"/capabilities";
+        } else {
+            const char* cache=std::getenv("XDG_CACHE_HOME");
+            const char* home=std::getenv("HOME");
+            directory=cache && *cache=='/' ? std::string(cache)
+                : home && *home=='/' ? std::string(home)+"/.cache" : std::string();
+            if (!directory.empty()) { mkdir(directory.c_str(),0700); directory+="/caboose-gpu"; }
+        }
+        if (!directory.empty() && mkdir(directory.c_str(),0700)!=0 && errno!=EEXIST) directory.clear();
+        return directory;
+    }
     static constexpr size_t kMaxScopes=64, kMaxFileBytes=8u<<20, kMaxPendingBytes=256u<<10;
     // How long a claim holds other processes back from asking the same question: far
     // longer than one round trip, short enough that a claimant that died costs little.
@@ -53,7 +73,10 @@ public:
     }
     // Called only after receiving the identity from this connected physical device.
     // The filename hash is an index, never proof: the full identity must match on read.
-    void identify(uint64_t physical,std::string identity,const std::string& directory,uint64_t expectedEpoch=0) {
+    // `name` begins the log's file name: "formats" logs are kept as the next sessions' history
+    // (warmup/README.md); others end with their session.
+    void identify(uint64_t physical,std::string identity,const std::string& directory,uint64_t expectedEpoch=0,
+                  const char* name="formats") {
         if (!physical || identity.empty() || identity.size()>kMaxKeyBytes) return;
         std::lock_guard<std::mutex> lock(mutex_);
         if (expectedEpoch && expectedEpoch!=epoch_) return;
@@ -62,10 +85,15 @@ public:
         identity=connection_+identity;
         identities_[physical]=identity;
         if (directory.empty() || files_.count(identity) || files_.size()>=kMaxScopes) return;
-        char suffix[40]; std::snprintf(suffix,sizeof(suffix),"/formats-%016llx.bin",(unsigned long long)digest(identity));
+        char suffix[64]; std::snprintf(suffix,sizeof(suffix),"/%.16s-%016llx.bin",name,(unsigned long long)digest(identity));
         Scope& scope=files_[identity];
         scope.path=directory+suffix;
         loadLocked(identity,scope);
+    }
+    // Whether `physical` has a scope on the current connection.
+    bool identified(uint64_t physical) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return identities_.count(physical)!=0;
     }
     // A replacement executor cannot inherit physical handle associations, even when
     // its handles reuse the old numeric values. Persistent files stay identity scoped.

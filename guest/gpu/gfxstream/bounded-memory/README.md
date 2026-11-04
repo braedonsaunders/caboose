@@ -21,6 +21,7 @@ transfer and reply handling, so it can be tested without Mesa.
 | `async_allocation.h` | Which device-memory allocations may skip the round trip: plain ones that keep their heap at most half committed |
 | `requirements_cache.h` | Image and buffer memory requirements by exact creation parameters, so an identical object needs no query; kept by device identity in a file shared by every process made the same way |
 | `static_query_cache.h` | Answers of physical-device format queries, which cannot change, by their exact parameters |
+| `device_answers.h` | Device fingerprints and the parameters of a descriptor set layout support question, whose answers join the capability cache (Physical capability cache, below) |
 | `query_results.h` | Query results without a round trip: a no-wait vkGetQueryPoolResults returns what its earlier identical request found, and resets drop stale results |
 | `completion_feed.h` | The completion feed's wire format, its record reader, and the tracker of every fence, timeline semaphore, event and query the process follows, with the query values and memory captures records bring, and which waits it may report complete before their records (Speculated waits, below); the pause-on-loss waits: a paused process holds a loss until a new executor's socket appears, including a loss the phone replies with and a device stream that ends before the broker removes the old socket (`test_pause_on_loss.cpp`) |
 | `gpu_writes.h` | The GPU's writes of coherent memory: up to eight disjoint spans per allocation, what an invalidate reads of them (each span its own atom-aligned range unless one range takes no more 64 KiB round trips), and the bytes a copy from an image writes in its buffer, from the texel block size |
@@ -192,8 +193,18 @@ uses `$XDG_CACHE_HOME/caboose-gpu` or `~/.cache/caboose-gpu`. No additional sand
 is added. Format queries accept no extension chain or exactly `VkFormatProperties3`;
 image-format queries require empty input and output extension chains. Other chains go
 to the executor. Image answers persist only success or format-not-supported results.
-Logical-device descriptor-layout support queries remain real queries: enabled device
-features affect their answers.
+
+Descriptor set layout support depends on the extensions and features a device was made
+with, so its answers are kept in the physical device's scope under the device's
+fingerprint (`device_answers.h`): two 64-bit digests of the device's creation, its queues,
+its extensions in any order, its features and each pNext structure's contents as the
+executor receives them. A device made with a structure the encoder does not know, a
+device group or a memory report callback has no fingerprint and always asks. The question
+is the layout's flags, bindings, binding flags and mutable descriptor types; a layout with
+immutable samplers, or a structure of another kind, is always asked, and so is an output
+chain other than the variable descriptor count. The instance version has a scope of its
+own, the instance scope, in an `instance-` log: every process of the session shares the
+answer one of them received, and the broker deletes the log when the next session starts.
 
 Files are untrusted seat-user data, not an authorization source. Readers require a
 private directory and regular private files owned by the effective user, and reject
@@ -216,13 +227,16 @@ last attempt when the process exits. A forked child opens its own lock before wr
 Unsafe paths, a lock held past 5 ms, oversized or corrupt records produce cache misses.
 Current connection/device identity always comes from real queries.
 `CABOOSE_CAPABILITY_CACHE_DIAGNOSTICS=1` prints hits, misses, appended records and bytes,
-time spent appending and contended locks at exit; `CABOOSE_CAPABILITY_CACHE_DISABLE=1`
-bypasses the cache.
+time spent appending and contended locks at exit, and the requirements cache's
+`CABOOSE_REQUIREMENTS_CACHE` line: questions answered from it, asked and kept, and asked
+uncached because of the object's creation or the question's own chains;
+`CABOOSE_CAPABILITY_CACHE_DISABLE=1` bypasses the cache.
 
 `test_static_query_cache.cpp` covers fresh-process reuse, changed identities/protocols,
-concurrent and forked writers, lock contention and held-back records, append-only write
+the instance scope, concurrent and forked writers, lock contention and held-back records, append-only write
 volume, unsafe permissions, symlinks, size limits, torn tails, corrupt records and other
-formats. `../../../../apps/ios/GPUStream/gfxstream/linux-executor/check-capabilities.sh`
+formats. `test_device_answers.cpp` covers fingerprints, device lifetimes and layout
+questions. `../../../../apps/ios/GPUStream/gfxstream/linux-executor/check-capabilities.sh`
 measures a genuinely empty cache and two fresh warmed processes, with separate format,
 device-creation and descriptor-query timings. A warmed result does not measure first-use
 latency.
@@ -273,8 +287,8 @@ and memory stored in a shadow included; delivered memory (`test_delivered_memory
 stored ranges count as delivered, notes before completion, idle waits during a store, and
 what the invalidate still reads; and GPU writes (`test_gpu_writes.cpp`): bounded spans,
 subtraction, invalidate ranges and image copy sizes. They exercise
-the headers, not the generated encoder or a device. `test_requirements_cache.cpp` needs
-Vulkan's headers on the include path (`test.sh` uses Mesa's, or
+the headers, not the generated encoder or a device. `test_requirements_cache.cpp` and
+`test_device_answers.cpp` need Vulkan's headers on the include path (`test.sh` uses Mesa's, or
 `CABOOSE_VULKAN_INCLUDE`).
 
 `CABOOSE_CAPABILITY_CACHE_DISABLE=1` bypasses lookups and stores for a baseline run

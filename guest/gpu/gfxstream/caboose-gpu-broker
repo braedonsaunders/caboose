@@ -558,7 +558,8 @@ def retire_capabilities(directory):
     """Moves earlier executor sessions' capability logs (static_query_cache.h) from the
     seat's `capabilities/` into `capabilities/history/`, keeping the newest HISTORY_LOGS.
     Their answers belonged to those sessions and are never read as answers again; the
-    warm-up asks the new executor the same questions (warmup/README.md)."""
+    warm-up asks the new executor the same questions (warmup/README.md). Logs of the
+    instance scope hold no question worth asking again and end with their session."""
     try:
         fd = os.open(directory / 'capabilities', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
     except OSError:
@@ -574,6 +575,11 @@ def retire_capabilities(directory):
         if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o077:
             return
         for name in os.listdir(fd):
+            if name.startswith('instance-') and len(name) <= 64:
+                with contextlib.suppress(OSError):
+                    if stat.S_ISREG(os.stat(name, dir_fd=fd, follow_symlinks=False).st_mode):
+                        os.unlink(name, dir_fd=fd)
+                continue
             if not name.startswith('formats-') or len(name) > 64:
                 continue
             with contextlib.suppress(OSError):

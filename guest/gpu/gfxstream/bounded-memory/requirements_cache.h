@@ -3,6 +3,7 @@
 #include <cerrno>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <fcntl.h>
 #include <mutex>
@@ -171,6 +172,30 @@ public:
         return values_.size();
     }
 
+    // How each requirements question was answered, for CABOOSE_CAPABILITY_CACHE_DIAGNOSTICS:
+    // from the cache, asked and kept, or asked and not kept because the object was made with
+    // parameters that are not cached, or the question's own chains are not.
+    enum class Outcome { hit, kept, uncachedObject, uncachedQuestion };
+    void count(Outcome outcome) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        ++outcomes_[size_t(outcome)];
+    }
+    uint64_t counted(Outcome outcome) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return outcomes_[size_t(outcome)];
+    }
+    bool known(uint64_t object) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return objects_.count(object) != 0;
+    }
+    void report() {
+        std::unique_lock<std::mutex> lock(mutex_, std::try_to_lock);
+        if (!lock.owns_lock() || !std::getenv("CABOOSE_CAPABILITY_CACHE_DIAGNOSTICS")) return;
+        std::fprintf(stderr, "CABOOSE_REQUIREMENTS_CACHE hits=%llu kept=%llu uncached_object=%llu uncached_question=%llu\n",
+                     (unsigned long long)outcomes_[0], (unsigned long long)outcomes_[1],
+                     (unsigned long long)outcomes_[2], (unsigned long long)outcomes_[3]);
+    }
+
 private:
     template <class T> static void put(std::string* key, const T& value) {
         key->append(reinterpret_cast<const char*>(&value), sizeof(value));
@@ -252,10 +277,15 @@ private:
     std::unordered_map<std::string, Value> values_;
     std::unordered_map<uint64_t, uint64_t> identities_;  // device -> identity
     std::unordered_map<uint64_t, std::string> files_;    // identity -> file
+    uint64_t outcomes_[4] = {};
 };
 
 // Never destroyed: a process's exit runs static destructors while its other threads may
 // still be inside the driver.
-inline RequirementsCache& requirementsCache = *new RequirementsCache;
+inline RequirementsCache& requirementsCache = *[] {
+    auto* cache = new RequirementsCache;
+    std::atexit([] { requirementsCache.report(); });
+    return cache;
+}();
 
 }  // namespace caboose::memory

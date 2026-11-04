@@ -136,5 +136,20 @@ int main() {
         std::remove(foreign.c_str());
         rmdir(directory);
     }
+    // Each question's outcome is counted for the diagnostics line.
+    {
+        RequirementsCache counted;
+        using Outcome = RequirementsCache::Outcome;
+        counted.count(Outcome::hit); counted.count(Outcome::hit); counted.count(Outcome::uncachedObject);
+        assert(counted.counted(Outcome::hit) == 2 && counted.counted(Outcome::uncachedObject) == 1);
+        assert(counted.counted(Outcome::kept) == 0 && counted.counted(Outcome::uncachedQuestion) == 0);
+        std::string key;
+        assert(RequirementsCache::imageKey(0x7000, &image, &key));
+        assert(!counted.known(0x71));
+        counted.created(0x71, key);
+        assert(counted.known(0x71));
+        counted.destroyed(0x71);
+        assert(!counted.known(0x71));
+    }
     return 0;
 }
