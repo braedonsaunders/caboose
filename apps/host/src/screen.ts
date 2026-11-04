@@ -5,13 +5,13 @@ import { ownerEnv, x11Display } from './display.js'
  * The owner's display through its accessibility tree, for the iPhone's on-device agent and
  * the web console: list the focused window's controls, act on one, type, press a shortcut.
  * Wayland and X11 applications alike: everything runs as `caboose` with the owner display's
- * launch environment, through /opt/caboose/a11y.py and /opt/caboose/seat.py (see
- * guest/desktop-mcp), which reach the seat through Caboose Display's control socket. See
+ * launch environment, through the caboose-computer-use package's a11y and seat helpers (see
+ * guest/computer-use), which reach the seat through Caboose Display's control socket. See
  * docs/architecture.md § Screen.
  */
-const A11Y = '/opt/caboose/a11y.py'
+const A11Y = '/usr/libexec/caboose/a11y'
 /** The seat's pointer, keyboard and windows, through Caboose Display's control socket. */
-const SEAT = '/opt/caboose/seat.py'
+const SEAT = '/usr/libexec/caboose/seat'
 const ELEMENT_ID = /^[\x21-\x7e]{1,200}$/
 const ACTIONS = new Set(['press', 'focus', 'set-text'])
 /** One or more key combinations: `ctrl+s`, `alt+f4`, `ctrl+shift+t Return`. */

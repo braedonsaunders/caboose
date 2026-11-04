@@ -12,10 +12,10 @@ ARG CARGO_BUILD_JOBS=2
 RUN cd /src && cargo build --release --locked --jobs "$CARGO_BUILD_JOBS" -p caboose-display -p caboose-display-probe
 COPY vaapi /vaapi
 RUN make -C /vaapi BUILD=/out/vaapi /out/vaapi/caboose_drv_video.so
-# The Win32 side of desktop MCP's Wine reader (guest/desktop-mcp/wine), cross-built here so no
-# computer needs a Windows compiler.
+# The Win32 side of computer use's Wine reader (guest/computer-use/wine), cross-built here so no
+# computer needs a Windows compiler; it becomes the caboose-computer-use-wine package.
 RUN apt-get update && apt-get install -y --no-install-recommends gcc-mingw-w64-x86-64-win32 && rm -rf /var/lib/apt/lists/*
-COPY desktop-mcp/wine /wine
+COPY computer-use/wine /wine
 RUN mkdir -p /out/wine && x86_64-w64-mingw32-gcc -O2 -municode -o /out/wine/caboose-msaa.exe /wine/caboose-msaa.c \
       -loleacc -loleaut32 -lole32 -luuid -luser32
 
@@ -32,10 +32,9 @@ COPY container/caboose-session /builder/container/
 COPY files /builder/files
 COPY terminal /builder/terminal
 COPY ports /builder/ports
-COPY desktop-mcp /builder/desktop-mcp
-COPY --from=display /out/wine/caboose-msaa.exe /builder/desktop-mcp/wine/caboose-msaa.exe
+COPY computer-use /builder/computer-use
+COPY --from=display /out/wine/caboose-msaa.exe /builder/computer-use/wine/caboose-msaa.exe
 COPY notifications /builder/notifications
-COPY webmcp /builder/webmcp
 COPY scopes /builder/scopes
 
 COPY phone /builder/phone

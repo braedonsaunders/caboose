@@ -6,11 +6,16 @@
 // file. caboose-agentd passes it to every ACP agent with the agent seat's environment, so
 // app_open shows the app on the agent's own display. No dependencies beyond node:.
 import { execFile, spawn } from 'node:child_process'
+import { existsSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { createInterface } from 'node:readline'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { promisify } from 'node:util'
-import { ensureAgentSeat } from '../desktop-mcp/ensure-agent-seat.mjs'
+
+// The agent seat's start, from the caboose-computer-use package (guest/computer-use), or this
+// checkout's where the package is not installed.
+const SEAT_SESSION = '/usr/lib/caboose/computer-use/server/seat-session.mjs'
+const { ensureAgentSeat } = await import(existsSync(SEAT_SESSION) ? pathToFileURL(SEAT_SESSION).href : new URL('../computer-use/server/seat-session.mjs', import.meta.url).href)
 
 const run = promisify(execFile)
 const PROTOCOL = '2025-06-18'

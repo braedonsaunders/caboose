@@ -22,7 +22,7 @@ ExecStartPre=+/usr/bin/install -d -m 0755 /run/caboose
 ExecStartPre=+/usr/bin/install -o caboose -g caboose -m 0644 /dev/null /run/caboose/display.env
 ExecStart=/usr/local/bin/caboose-display --env-file /run/caboose/display.env
 # Start Xwayland's accessibility bus before any app, so every X11 app on it joins that bus.
-ExecStartPost=-/bin/sh -c 'caboose-display-ready 60 14600 && set -a && . /run/caboose/display.env && exec python3 /opt/caboose/a11y.py bus --display "$DISPLAY" --wait 30'
+ExecStartPost=-/bin/sh -c 'caboose-display-ready 60 14600 && set -a && . /run/caboose/display.env && exec /usr/libexec/caboose/a11y bus --display "$DISPLAY" --wait 30'
 Restart=on-failure
 RestartSec=1
 

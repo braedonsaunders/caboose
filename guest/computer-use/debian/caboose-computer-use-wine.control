@@ -1,0 +1,13 @@
+Package: caboose-computer-use-wine
+Version: @VERSION@
+Architecture: amd64
+Maintainer: Braedon Saunders <bsaunders@rassaun.com>
+Section: utils
+Priority: optional
+Depends: caboose-computer-use, wine
+Installed-Size: @SIZE@
+Homepage: https://github.com/braedonsaunders/caboose
+Description: Caboose computer use: the Wine applications' accessibility reader
+ caboose-msaa.exe, run under Wine in an application's prefix, reads a Windows
+ program's controls through MSAA and UI Automation for the caboose-computer-use
+ tools, which have no AT-SPI tree for it.

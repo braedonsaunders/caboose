@@ -100,8 +100,9 @@ it (see [Updating a running computer](#updating-a-running-computer)).
   at boot and gives `/dev/udmabuf` to the `caboose` group for the driver's decode surfaces; on
   a kernel without the module, GL players decode locally.
 - **Guest components**, each installed by its own `install.sh` or files:
-  - [`guest/desktop-mcp`](../desktop-mcp/README.md): the agents' desktop MCP server and
-    `/opt/caboose/a11y.py`, with apps' accessibility trees switched on;
+  - [`guest/computer-use`](../computer-use/README.md): the `caboose-computer-use` packages,
+    agents' computer-use tools and the accessibility helpers, with apps' accessibility trees
+    switched on, checked after install by `check/installed.sh`;
   - [`guest/agentd`](../agentd/README.md): the agent runner in `/opt/caboose/agentd`;
   - [`guest/files`](../files/README.md): the file service and `caboose-files.service`
     (installed, started by the host at each wake);
@@ -136,7 +137,7 @@ no longer open any (`xdg-desktop-portal-gtk` stopped showing file dialogs).
 | Category | Lineup |
 | --- | --- |
 | Browsers and writing | Chromium, Obsidian, LibreOffice (with its GTK 3 backend, so it is a Wayland application), Mousepad |
-| Desktop tools | Xfce Terminal, Thunar, Evince, KeePassXC, File Roller, mpv, Tesseract OCR (English; desktop MCP reads text from windows without an accessibility tree) |
+| Desktop tools | Xfce Terminal, Thunar, Evince, KeePassXC, File Roller, mpv, Tesseract OCR (English; the computer-use tools read text from windows without an accessibility tree) |
 | Runtimes | Wine (64-bit Windows programs), the Java runtime with its ATK accessibility wrapper |
 | Development | VS Code, Neovim, Git, GitHub CLI, delta, Docker and Compose, Lazygit, Lazydocker, btop, tmux, mise, Node 22, uv |
 | Shell | ripgrep, fd, bat, eza, fzf, zoxide, jq, tree, ncdu, htop, fastfetch, yt-dlp, tealdeer, ffmpeg, ImageMagick |
@@ -183,7 +184,7 @@ checkout copied into the computer, as root:
 
 ```sh
 bash guest/image/apps.sh                   # the app lineup
-sh guest/desktop-mcp/install.sh
+sh guest/computer-use/install.sh
 sh guest/agentd/install.sh
 ```
 
@@ -220,7 +221,7 @@ Against a deployed host (see [`apps/host`](../../apps/host/README.md#real-host-c
 - `node apps/host/scripts/check-catalog.mjs` installs PhotoCraft from the catalog and
   requires a new window, which exercises Mesa software rendering.
 
-The components have their own checks: `guest/desktop-mcp/check-a11y.sh` (Docker),
+The components have their own checks: `guest/computer-use/check/check-a11y.sh` (Docker),
 `guest/notifications/check.sh` and `check-container.sh`, `guest/phone/check.sh`,
 `guest/game/check.sh`, `guest/files/check-service.py` and `guest/terminal/check-service.py`.
 
