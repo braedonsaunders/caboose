@@ -912,7 +912,7 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
 
         key = (b'e' * 16, b'g' * 16, 7)
         identity = key[0] + key[1] + struct.pack('<Q', key[2])
-        async def request_bind(_session, process_id, obj, space=0):
+        async def request_bind(_session, process_id, obj, space=0, probe=False):
             self.assertEqual(process_id, p1)
             session.surfaces[key] = {
                 'process': p1, 'window': 12, 'retiring': False, 'retire_sent': False,
@@ -1147,7 +1147,7 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
         peer = mock.Mock()
         result = control_protocol.BindResult(1, 0, b'e' * 16, b'g' * 16, 12, 7)
         key = (result.epoch, result.grant, result.generation)
-        async def bind(_session, process, obj, space=0):
+        async def bind(_session, process, obj, space=0, probe=False):
             self.assertEqual((process, obj), (1, 9))
             session.surfaces[key] = {'process': 1, 'window': 12, 'retiring': False, 'retired': asyncio.Event()}
             return result
@@ -1190,7 +1190,7 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
         key = (result.epoch, result.grant, result.generation)
         values = json.loads((HERE.parent / 'broker' / 'live-swapchain-vectors.json').read_text())
         vectors = {item['name']: bytes.fromhex(item['payload']) for item in values}
-        async def bind(_session, _process, _obj, space=0):
+        async def bind(_session, _process, _obj, space=0, probe=False):
             session.surfaces[key] = {'process': 1, 'window': 12, 'retiring': False, 'retired': asyncio.Event(),
                                      'stats': broker.SurfaceStats(1, session.processes[1])}
             return result
