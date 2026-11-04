@@ -8,6 +8,11 @@
 export HOME="$BENCH/home" XDG_DATA_HOME="$BENCH/home/.local/share" XDG_CACHE_HOME="$BENCH/home/.cache" \
   XDG_STATE_HOME="$BENCH/home/.local/state"
 (umask 077; mkdir -p "$HOME/.config" "$HOME/.local/share" "$HOME/.local/state" "$HOME/.cache")
+# The seat's installed software stays the agent profile's, as desktop MCP's launch keeps it:
+# its user Flatpak installation and its Wine prefix.
+AGENT_HOME=/home/caboose/.local/share/caboose/agent-seat/home
+[ -d "$AGENT_HOME/.local/share/flatpak" ] && export FLATPAK_USER_DIR="$AGENT_HOME/.local/share/flatpak"
+[ -d "$AGENT_HOME/.wine" ] && export WINEPREFIX="$AGENT_HOME/.wine"
 TOOLS=${TOOLS:-/opt/caboose}  # where desktop MCP's helpers are installed
 SEAT=$TOOLS/seat.py
 # Start an application on the agent seat as desktop MCP's launch does, after announcing the

@@ -335,6 +335,97 @@
       "setup": "mkdir -p $HOME/Documents; printf '<!doctype html><title>Invoice</title><h1>Invoice 1187</h1><table><tr><th>Item</th><th>Price</th></tr><tr><td>Rope</td><td>12.50</td></tr><tr><td>Cleats</td><td>8.75</td></tr><tr><td>Fenders</td><td>31.00</td></tr><tr><td>Shackle</td><td>9.00</td></tr></table>' > $HOME/Documents/invoice.html; start chromium --no-first-run --no-default-browser-check --user-data-dir=$HOME/chromium file://$HOME/Documents/invoice.html",
       "prompt": "Add up the prices in the table on the open page and write the total, just the number with two decimals, into a new text file total.txt in the Documents folder of the home directory.",
       "verify": "test \"$(tr -d ' \\n' < $HOME/Documents/total.txt)\" = 61.25"
+    },
+    {
+      "id": "flathub-texteditor-save",
+      "app": "org.gnome.TextEditor",
+      "setup": "mkdir -p $HOME/Documents; start flatpak run org.gnome.TextEditor",
+      "prompt": "In the open Text Editor (GNOME), type the text \"tide table 0614\" and save it as tides.txt in the Documents folder of the home directory.",
+      "verify": "grep -q 'tide table 0614' $HOME/Documents/tides.txt"
+    },
+    {
+      "id": "flathub-texteditor-edit",
+      "app": "org.gnome.TextEditor",
+      "setup": "mkdir -p $HOME/Documents; printf 'berth four is free\\n' > $HOME/Documents/berths.txt; start flatpak run org.gnome.TextEditor $HOME/Documents/berths.txt",
+      "prompt": "In the open Text Editor window, change \"four\" to \"nine\" and save the file.",
+      "verify": "grep -qx 'berth nine is free' $HOME/Documents/berths.txt"
+    },
+    {
+      "id": "flathub-calculator-mode",
+      "app": "org.gnome.Calculator",
+      "setup": "rm -rf $HOME/.var/app/org.gnome.Calculator; start flatpak run org.gnome.Calculator",
+      "prompt": "Switch the open Calculator to its Advanced mode.",
+      "verify": "grep -q \"button-mode='advanced'\" $HOME/.var/app/org.gnome.Calculator/config/glib-2.0/settings/keyfile"
+    },
+    {
+      "id": "flathub-gnumeric-total",
+      "app": "gnumeric",
+      "setup": "mkdir -p $HOME/Documents; printf '14\\n22\\n31\\n' > $HOME/Documents/loads.csv; start flatpak run org.gnumeric.Gnumeric $HOME/Documents/loads.csv",
+      "prompt": "In the open Gnumeric spreadsheet, put a formula for the sum of A1:A3 in A4, then save it as a CSV file named totals.csv in the Documents folder of the home directory.",
+      "verify": "test \"$(sed -n 4p $HOME/Documents/totals.csv | tr -d '\\r\" ')\" = 67"
+    },
+    {
+      "id": "flathub-kate-replace",
+      "app": "org.kde.kate",
+      "setup": "mkdir -p $HOME/Documents; printf 'crane one\\ncrane two\\n' > $HOME/Documents/cranes.txt; start flatpak run org.kde.kate $HOME/Documents/cranes.txt",
+      "prompt": "In the open Kate window, replace every \"crane\" with \"hoist\" and save the file.",
+      "verify": "test \"$(cat $HOME/Documents/cranes.txt)\" = \"$(printf 'hoist one\\nhoist two')\""
+    },
+    {
+      "id": "flathub-kate-new",
+      "app": "org.kde.kate",
+      "setup": "mkdir -p $HOME/Documents; start flatpak run org.kde.kate",
+      "prompt": "In the open Kate window, make a new document with the text \"pier log 77\" and save it as pier.txt in the Documents folder of the home directory.",
+      "verify": "grep -q 'pier log 77' $HOME/Documents/pier.txt"
+    },
+    {
+      "id": "flathub-okular-read",
+      "app": "org.kde.okular",
+      "setup": "mkdir -p $HOME/Documents; python3 -c \"\nimport sys\ntext = sys.argv[1]\nobjs = ['<< /Type /Catalog /Pages 2 0 R >>', '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',\n        '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>',\n        None, '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>']\nstream = 'BT /F1 28 Tf 72 700 Td (' + text + ') Tj ET'\nobjs[3] = '<< /Length %d >>\\nstream\\n%s\\nendstream' % (len(stream), stream)\nout, offsets = '%PDF-1.4\\n', []\nfor i, o in enumerate(objs):\n    offsets.append(len(out)); out += '%d 0 obj\\n%s\\nendobj\\n' % (i + 1, o)\nxref = len(out)\nout += 'xref\\n0 %d\\n0000000000 65535 f \\n' % (len(objs) + 1) + ''.join('%010d 00000 n \\n' % o for o in offsets)\nout += 'trailer\\n<< /Size %d /Root 1 0 R >>\\nstartxref\\n%d\\n%%%%EOF\\n' % (len(objs) + 1, xref)\nopen(sys.argv[2], 'w').write(out)\n\"  'Manifest 5521 Granite' $HOME/Documents/manifest.pdf; start flatpak run org.kde.okular $HOME/Documents/manifest.pdf",
+      "prompt": "Read the line of text on the PDF open in Okular and write it, exactly, into a new text file manifest.txt in the Documents folder of the home directory.",
+      "verify": "grep -qx 'Manifest 5521 Granite' $HOME/Documents/manifest.txt"
+    },
+    {
+      "id": "flathub-gimp-export",
+      "app": "org.gimp.GIMP",
+      "setup": "mkdir -p $HOME/Documents; start flatpak run org.gimp.GIMP --new-instance --no-splash",
+      "prompt": "In GIMP, create a new image 320 pixels wide and 200 pixels high and export it as a PNG named canvas.png in the Documents folder of the home directory.",
+      "verify": "python3 -c \"import struct,sys; d=open(sys.argv[1],'rb').read(24); sys.exit(0 if d[:8]==b'\\\\x89PNG\\\\r\\\\n\\\\x1a\\\\n' and struct.unpack('>II', d[16:24])==(320,200) else 1)\" $HOME/Documents/canvas.png"
+    },
+    {
+      "id": "flathub-codium-file",
+      "app": "codium",
+      "setup": "mkdir -p $HOME/Documents/quay; start flatpak run com.vscodium.codium --user-data-dir=$HOME/codium --disable-workspace-trust --new-window $HOME/Documents/quay",
+      "prompt": "In the open VSCodium window with the quay folder, create a file notes.md in that folder containing the line \"# Quay\" and save it.",
+      "verify": "grep -qx '# Quay' $HOME/Documents/quay/notes.md"
+    },
+    {
+      "id": "wine-notepadpp-append",
+      "app": "notepad++.exe",
+      "setup": "mkdir -p $HOME/Documents; printf 'first line\\r\\n' > $HOME/Documents/log.txt; start wine \"$WINEPREFIX/drive_c/Program Files/Notepad++/notepad++.exe\" -multiInst -nosession \"Z:$HOME/Documents/log.txt\"",
+      "prompt": "In the open Notepad++ window, add a second line reading \"second line\" after the existing one, and save the file.",
+      "verify": "tr -d '\\r' < $HOME/Documents/log.txt | grep -qx 'second line' && tr -d '\\r' < $HOME/Documents/log.txt | grep -qx 'first line'"
+    },
+    {
+      "id": "wine-notepad-save",
+      "app": "notepad.exe",
+      "setup": "mkdir -p $HOME/Documents; start wine notepad",
+      "prompt": "In the open Notepad window, type \"anchor 31\" and save it as anchor.txt in the Documents folder of the home directory (on drive Z:, the Linux file system).",
+      "verify": "tr -d '\\r' < $HOME/Documents/anchor.txt | grep -q 'anchor 31'"
+    },
+    {
+      "id": "wine-7zip-extract",
+      "app": "7zfm.exe",
+      "setup": "mkdir -p $HOME/Documents; python3 -c \"import zipfile, os; z = zipfile.ZipFile(os.environ['HOME'] + '/Documents/cargo.zip', 'w'); z.writestr('cargo/list.txt', 'crates 40\\n'); z.close()\"; start wine \"$WINEPREFIX/drive_c/Program Files/7-Zip/7zFM.exe\" \"Z:$HOME/Documents\"",
+      "prompt": "In the open 7-Zip File Manager, extract cargo.zip into a new folder named unpacked in the same Documents folder.",
+      "verify": "grep -qx 'crates 40' $HOME/Documents/unpacked/cargo/list.txt || grep -qx 'crates 40' $HOME/Documents/unpacked/list.txt"
+    },
+    {
+      "id": "flathub-texteditor-to-files",
+      "app": "org.gnome.TextEditor",
+      "setup": "mkdir -p $HOME/Documents/inbox; for n in 1 2 3; do printf \"note $n\\n\" > $HOME/Documents/inbox/n$n.txt; done; start flatpak run org.gnome.TextEditor $HOME/Documents/inbox/n2.txt",
+      "prompt": "Append the line \"filed\" to the file open in Text Editor and save it, then move the inbox folder's three .txt files into a new folder named done inside Documents.",
+      "verify": "for n in 1 2 3; do test -f $HOME/Documents/done/n$n.txt || exit 1; done; grep -qx filed $HOME/Documents/done/n2.txt"
     }
   ]
 }
