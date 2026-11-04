@@ -86,7 +86,7 @@ for case in ${CASES:-phone setids poolids unbatched older}; do
     --entrypoint sh caboose-linux-executor -c "printf %s '$token' > /tmp/token; exec python3 -u \
     /repo/apps/ios/GPUStream/gfxstream/linux-executor/executor.py --connect 127.0.0.1:$port --token-file /tmp/token \
     --library /build/libcaboose_gpu_executor.so --features $features --no-checksums" > /dev/null
-  i=0; until docker logs "$name" 2>&1 | grep -q 'session ready'; do i=$((i + 1)); [ $i -le 150 ] || fail "$case: executor readiness"; sleep 0.2; done
+  i=0; until docker logs "$name" 2>&1 | grep -q 'session ready'; do i=$((i + 1)); [ $i -le 150 ] || { docker logs "$name" > "$out/executor-$case.log" 2>&1; fail "$case: executor readiness ($out/executor-$case.log)"; }; sleep 0.2; done
   docker exec -u caboose "$computer" sh -c "set -a; . $display; set +a
     CABOOSE_GFXSTREAM_SOCKET=$sockets/gpu-$case/gpu.sock CABOOSE_GFXSTREAM_SURFACE_SOCKET=$sockets/gpu-$case/surface.sock \
     CABOOSE_READ_PROFILE=1 DXVK_LOG_LEVEL=info DXVK_LOG_PATH=none timeout $((seconds + 300)) flatpak run --filesystem=$sockets --filesystem=${proton%/*}:ro --env=VK_DRIVER_FILES=$dir/icd.json \
