@@ -103,6 +103,18 @@ window's grant first. A client must have finished rendering a buffer before comm
 it: Chromium's GBM presentation waits for its rendering fence first, and the image is
 copied on the registering process's queue.
 
+## GBM in Flatpak applications
+
+A Flatpak runtime's libgbm searches only its own backend directory, where Mesa's generic
+backend cannot allocate on `vgem` (its dumb-buffer request is refused), so a sandboxed
+application (Chromium's and CEF's GPU process on X11, which allocate their native pixmaps with
+GBM and export them as dma-bufs) would get no buffers. `install-live.py --gbm vgem_gbm.so`
+installs the backend in `lib/gbm` of the Flatpak "host" GL extension of its architecture
+(`GL32.host` for an i386 build) and sets `GBM_BACKENDS_PATH` in the system-wide Flatpak
+override: each extension's backend directory at its sandbox path and at the path Steam's
+container runtime gives it (`/run/parent/usr/...`), then the runtime's and the container
+runtime's own backend directories, so every other device keeps its backend.
+
 ## OpenGL on the render node
 
 Mesa has no DRI driver of its own for `vgem`. `caboose-vgem.conf`
