@@ -51,12 +51,25 @@ page declares, and tools derived from its forms, links and buttons, marked `[der
 `name(param: type, …) — description`, and the step `{"tool": name, "args": {...}}` calls one
 and returns its result; see [guest/webmcp](../webmcp/README.md).
 
-**Routines.** `act` with `save: name`, once a task is done, keeps the steps that worked since
-the last save as a routine of the focused application, each control by role and name and each
-text as a parameter, in `$XDG_STATE_HOME/caboose/routines.json` of the agent profile. `look`
-lists an application's routines first, with their step count, an estimate of their time and the
-texts they used; the step `{"run": name, "texts": [...]}` replays one against the window as it
-is, finding each control again by role and name.
+**Direct tools** do what the GUI would, through the application's or the system's own
+interfaces, so an agent can skip the clicks. `look` lists the focused application's once, after
+its controls (`look` with `find` searches them too), and `{"tool": name, "args": {...}}` calls
+one. `direct.py` finds them with general mechanisms, for whichever application has the window,
+and acts only in the agent seat's session (its bus, its profile's home and settings):
+
+| Tools | From | Offered when |
+| --- | --- | --- |
+| `files.list`, `read`, `write`, `copy`, `move`, `mkdir`, `trash`, `extract` | the file system, inside the agent's home only (symbolic links resolved; `trash`, never delete; archive entries that would leave the target refused) | always |
+| `app.*`, `win.*` | the application's GApplication actions (`org.gtk.Actions` on the D-Bus names its process owns); `win.*` those of its one exported window; `{"state": …}` sets a toggle, `{"value": …}` passes an argument | the application exports actions |
+| `desktop.*` | its desktop entry's actions, started through the launcher | its entry has actions |
+| `media.play`, `pause`, `play_pause`, `next`, `previous`, `stop`, `status`, `open` | its MPRIS player | it owns `org.mpris.MediaPlayer2.*` |
+| `folder.show` | `org.freedesktop.FileManager1` | it owns that name |
+| `settings.get`, `settings.set` | its GSettings schemas (an id with the application's name as a component), typed and range-checked by the schema, and its xfconf channel (named like the application), typed by the stored value | it has either |
+| `doc.info`, `text`, `cells`, `set_cells`, `append`, `replace`, `slide`, `save` | its document through LibreOffice's UNO (the launcher opens the seat's UNO pipe); `save` with a path picks the format by extension | the window is LibreOffice's, started by the launcher |
+| `browser.tabs`, `activate`, `open`, `evaluate` | Chromium's tabs, and the DevTools protocol for `evaluate`, through the Caboose WebMCP extension | the window is Chromium's on the agent seat |
+
+The listing names each tool's arguments and their types; D-Bus actions are grouped by their
+name up to the last dot. `CABOOSE_DESKTOP_DIRECT_TOOLS=0` leaves direct tools out.
 
 A failure comes back as a sentence the model can act on; an id that no longer resolves says
 to look again. The server's `initialize` reply carries one line of `instructions`.

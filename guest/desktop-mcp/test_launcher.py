@@ -36,6 +36,11 @@ class Plan(unittest.TestCase):
         self.program('chromium', body=f'#!/bin/sh\nLIBDIR={lib}\nexec $LIBDIR/chromium "$@"\n'.encode())
         self.assertEqual(launcher.plan('chromium')[1], '--force-renderer-accessibility')
 
+    def test_libreoffice_opens_the_seats_uno_pipe_once(self):
+        self.program('soffice', body=b'#!/bin/sh\n', files=['soffice.bin'])
+        self.assertEqual(launcher.plan('soffice --calc a.ods'), ['soffice', launcher.UNO_ACCEPT, '--calc', 'a.ods'])
+        self.assertEqual(launcher.plan('soffice --accept=socket --calc'), ['soffice', '--accept=socket', '--calc'])
+
     def test_other_programs_and_shell_lines_start_as_asked(self):
         self.program('mousepad')
         self.assertEqual(launcher.plan('mousepad a.txt'), ['mousepad', 'a.txt'])

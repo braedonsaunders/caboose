@@ -8,7 +8,7 @@ here=$(dirname "$0")
 install -d -m 0755 /opt/caboose
 install -m 0755 "$here/caboose-desktop-mcp.mjs" /opt/caboose/desktop-mcp.mjs
 install -m 0644 "$here/worker.mjs" "$here/observation.mjs" "$here/ensure-agent-seat.mjs" /opt/caboose/
-install -m 0755 "$here/a11y.py" "$here/seat.py" "$here/launcher.py" "$here/annotate.py" "$here/caboose-targets.py" /opt/caboose/
+install -m 0755 "$here/a11y.py" "$here/seat.py" "$here/launcher.py" "$here/annotate.py" "$here/caboose-targets.py" "$here/direct.py" /opt/caboose/
 # The Wine reader, cross-built by the image's build stage (wine/caboose-msaa.c).
 if [ -f "$here/wine/caboose-msaa.exe" ]; then install -m 0755 "$here/wine/caboose-msaa.exe" /opt/caboose/; fi
 # The desktop-wide switch toolkits consult (org.a11y.Status IsEnabled follows it): Firefox,

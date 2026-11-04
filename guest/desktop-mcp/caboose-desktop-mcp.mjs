@@ -14,7 +14,6 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createInterface } from 'node:readline'
 import { createConnection } from 'node:net'
-import { mkdirSync, readFileSync, writeFileSync, renameSync } from 'node:fs'
 import { Worker } from './worker.mjs'
 import { Observer } from './observation.mjs'
 import { controlAlive, ensureAgentSeat } from './ensure-agent-seat.mjs'
@@ -30,6 +29,7 @@ const PAGE_TOOLS = process.env.CABOOSE_DESKTOP_PAGE_TOOLS !== '0'
 const A11Y = fileURLToPath(new URL('./a11y.py', import.meta.url))
 const SEAT = fileURLToPath(new URL('./seat.py', import.meta.url))
 const LAUNCHER = fileURLToPath(new URL('./launcher.py', import.meta.url))
+const DIRECT = fileURLToPath(new URL('./direct.py', import.meta.url))
 // What a launched app needs to build its accessibility tree: GTK's bridge must not be
 // switched off (NO_AT_BRIDGE, GTK_A11Y=none), Chromium and Electron read
 // ACCESSIBILITY_ENABLED, Firefox GNOME_ACCESSIBILITY, Qt QT_LINUX_ACCESSIBILITY_ALWAYS_ON.
@@ -44,7 +44,7 @@ const tools = [
   {
     name: 'look',
     description: 'The focused window\'s controls from its accessibility tree, one per line: id role "name" = value [states], '
-      + 'and in a browser the page\'s tools. find: only controls whose name contains it. text: also the window\'s readable text '
+      + 'the page\'s tools in a browser, and the app\'s direct tools. find: only controls and direct tools whose name contains it. text: also the window\'s readable text '
       + '(documents, pages, terminals). windows: every window, with its id and position. ocr: also the words read from the '
       + 'window\'s pixels with their positions, for areas the controls leave out (icon views, canvases).',
     inputSchema: { type: 'object', properties: { find: { type: 'string' }, text: { type: 'boolean' }, windows: { type: 'boolean' }, ocr: { type: 'boolean' } } },
@@ -56,10 +56,9 @@ const tools = [
       + 'step opens can be named instead of given by id ({"name":"Save","role":"button"}). A step is one of: {"press":id} '
       + '{"set":id,"text":t} replaces a field\'s text (plain; type keeps formatting), {"key":"ctrl+s"}, {"type":t}, {"click":[x,y],"button":1-3,"count":1-3}, '
       + '{"scroll":[x,y],"dy":n}, {"drag":[x1,y1,x2,y2]}, {"focus":window}, {"launch":"command"}, '
-      + '{"tool":name,"args":{...}} calls a page tool, {"run":routine,"texts":[...]} replays a saved routine. Steps wait for '
-      + 'the app to react; {"wait":ms} is rarely needed. save:name, once a task is done, keeps '
-      + 'its steps as a routine of the application, replayable later with other texts.',
-    inputSchema: { type: 'object', properties: { steps: { type: 'array', items: { type: 'object' } }, save: { type: 'string' } }, required: ['steps'] },
+      + '{"tool":name,"args":{...}} calls a page tool or a direct tool (look lists the app\'s; files.list|read|write|copy|'
+      + 'move|mkdir|trash|extract in the home always work). Direct tools skip the GUI: prefer them. Steps wait for the app to react; {"wait":ms} is rarely needed.',
+    inputSchema: { type: 'object', properties: { steps: { type: 'array', items: { type: 'object' } } }, required: ['steps'] },
   },
   {
     name: 'screenshot',
@@ -83,6 +82,7 @@ function text(value, name, max) {
 const observer = new Observer()
 const a11yWorker = new Worker(A11Y, [`--display=${DISPLAY}`], 30_000)
 const seatWorker = new Worker(SEAT)
+const directWorker = new Worker(DIRECT, [], 60_000)
 let seatEnvironment
 // These tools are the seat's assistive technology, and say so on its accessibility bus as a
 // screen reader does: Chromium, Electron and other toolkits that build their full tree only
@@ -98,6 +98,7 @@ async function workerRequest(worker, request) {
   if (ready !== seatEnvironment) {
     a11yWorker.close()
     seatWorker.close()
+    directWorker.close()
     seatEnvironment = ready
     await announceAssistiveTechnology(ready)
   }
@@ -413,8 +414,13 @@ async function step(s) {
     if (left > 0) await new Promise(resolve => setTimeout(resolve, left))
   } else if ('tool' in s) {
     const name = text(s.tool, 'tool', 200)
-    if (!PAGE_TOOLS) throw new Error('page tools are off (CABOOSE_DESKTOP_PAGE_TOOLS=0)')
     if (s.args !== undefined && (typeof s.args !== 'object' || s.args === null || Array.isArray(s.args))) throw new Error('args must be an object')
+    if (DIRECT_GROUPS.test(name)) {
+      if (!DIRECT_TOOLS) throw new Error('direct tools are off (CABOOSE_DESKTOP_DIRECT_TOOLS=0)')
+      const { result } = await workerRequest(directWorker, { op: 'call', window: await focusedWindow(), name, args: s.args ?? {} })
+      return `${name}: ${String(result).slice(0, 20000)}`
+    }
+    if (!PAGE_TOOLS) throw new Error('page tools are off (CABOOSE_DESKTOP_PAGE_TOOLS=0)')
     const pid = await focusedPid()
     let reply
     try { reply = await pageRequest(pid, { op: 'call', name, args: s.args ?? {} }) } catch { throw new Error('the focused window offers no page tools') }
@@ -429,49 +435,55 @@ async function step(s) {
   } else throw new Error('unknown step; use press, set, key, type, click, scroll, drag, focus, wait, launch or tool')
 }
 
-// Routines: an act run that worked, kept per application with its controls named by role and
-// name (ids do not outlive the server) and its texts as parameters, so a repeated task replays
-// in one call. Stored in $XDG_STATE_HOME/caboose/routines.json of the agent's profile.
-function routinesFile() {
-  const state = env.XDG_STATE_HOME || join(env.HOME || '/tmp', '.local', 'state')
-  return join(state, 'caboose', 'routines.json')
-}
-function loadRoutines() {
-  try { return JSON.parse(readFileSync(routinesFile(), 'utf8')) } catch { return {} }
-}
-function saveRoutines(all) {
-  const file = routinesFile()
-  mkdirSync(join(file, '..'), { recursive: true })
-  writeFileSync(file + '.tmp', JSON.stringify(all, null, 1))
-  renameSync(file + '.tmp', file)
-}
-async function focusedApp() {
+// Direct tools (direct.py): what the focused window's application, or the system, does
+// without its GUI, as typed tools. Their names start with a group; page tools have none.
+const DIRECT_GROUPS = /^(files|app|win|desktop|media|folder|settings|doc|browser)\./
+const DIRECT_TOOLS = env.CABOOSE_DESKTOP_DIRECT_TOOLS !== '0'
+async function focusedWindow() {
   const listing = await seat('windows')
-  return listing.windows.find(w => w.id === listing.focused)?.app_id ?? ''
+  let window = listing.windows.find(w => w.id === listing.focused)
+  for (let hops = 0; window?.kind === 'popup' && window.parent != null && hops < 8; hops++)
+    window = listing.windows.find(w => w.id === window.parent) ?? window
+  return window ? { pid: window.pid, app_id: window.app_id, desktop_id: window.desktop_id, title: window.title } : null
 }
-// The steps that have worked since the last save (the task so far), each control kept as
-// { role, name } as it was read when the step ran.
-let journal = []
-function journalStep(s, ms = 0) {
-  const out = { ...s, ms }
-  for (const verb of ['press', 'set']) if (verb in s && typeof s[verb] !== 'object') {
-    const described = observer.described.get(observer.resolve(String(s[verb])))
-    if (!described) return
-    out[verb] = described
+async function directTools() {
+  if (!DIRECT_TOOLS) return []
+  const window = await focusedWindow()
+  if (!window) return []
+  return (await workerRequest(directWorker, { op: 'list', window })).tools ?? []
+}
+const toolLine = t => `${t.name}(${Object.entries(t.params ?? {}).map(([k, v]) => `${k}: ${v}`).join(', ')}) — ${t.description}`
+// The focused application's direct tools, in full the first time `look` shows them.
+const shownDirect = new Map()
+async function directLines() {
+  const tools = await directTools()
+  if (!tools.length) return ''
+  const window = await focusedWindow()
+  const key = `${window?.pid}:${window?.app_id}`
+  const names = tools.map(t => t.name).join(' ')
+  if (shownDirect.get(key) === names) return `Direct tools of ${window?.app_id ?? 'this app'}: the ${tools.length} listed before.`
+  shownDirect.set(key, names)
+  const actions = tools.filter(t => /^(app|win)\./.test(t.name))
+  const others = tools.filter(t => !/^(app|win)\./.test(t.name))
+  const lines = [`Direct tools of ${window?.app_id ?? 'this app'} (no GUI needed; act {"tool":name,"args":{…}}):`, ...others.map(toolLine)]
+  if (actions.length) {
+    // Grouped by their name up to the last dot, each with its argument: (state) for a toggle
+    // (state: true|false), (type) for one taking a value.
+    const groups = new Map()
+    for (const t of actions) {
+      const at = t.name.lastIndexOf('.')
+      const arg = t.params?.value ? `(${t.params.value})` : t.params?.['state?'] ? '(state)' : ''
+      const key = t.name.slice(0, at)
+      groups.set(key, [...(groups.get(key) ?? []), t.name.slice(at + 1) + arg])
+    }
+    const parts = [...groups].map(([prefix, names]) => names.length > 1 ? `${prefix}.{${names.join(',')}}` : `${prefix}.${names[0]}`)
+    let shown = '', left = 0
+    for (const part of parts) if (shown.length + part.length < 1500) shown += (shown ? ' ' : '') + part; else left++
+    lines.push(`D-Bus actions (no args; (state) takes {"state":true|false}, (type) {"value":…}): ${shown}`
+      + (left ? ` and ${left} more groups (look find lists them)` : ''))
   }
-  journal.push(out)
+  return lines.join('\n')
 }
-// A routine from the journal, its texts as $1, $2, …
-function asRoutine(steps) {
-  let texts = 0
-  return steps.filter(s => !('wait' in s) && !('launch' in s)).map(s => {
-    const { ms, ...out } = s
-    if ('text' in s) out.text = `$${++texts}`
-    if ('type' in s) out.type = `$${++texts}`
-    return out
-  })
-}
-// A saved step for the window as it is: its control found again by role and name.
 // The one control of the focused window with this name (and role, when given). A window that
 // is still opening is read again, for up to 1.5 s.
 async function byName({ name, role }) {
@@ -488,17 +500,6 @@ async function byName({ name, role }) {
   }
 }
 
-async function replayStep(s, texts) {
-  const out = { ...s }
-  for (const verb of ['press', 'set']) if (verb in s && typeof s[verb] === 'object') out[verb] = await byName(s[verb])
-  for (const key of ['text', 'type']) if (typeof out[key] === 'string' && /^\$\d+$/.test(out[key])) {
-    const value = texts[Number(out[key].slice(1)) - 1]
-    if (typeof value !== 'string') throw new Error(`the routine needs text ${out[key]}`)
-    out[key] = value
-  }
-  return out
-}
-
 const handlers = {
   async look({ find, text: withText = false, windows = false, ocr: withOcr = false } = {}) {
     const parts = []
@@ -506,18 +507,16 @@ const handlers = {
     if (find !== undefined) {
       const { elements, note } = JSON.parse((await a11y('find', { query: text(find, 'find', 500) }))[0].text)
       const lines = (elements ?? []).map(e => observer.line(observer.short(e.id), e))
+      const query = find.toLowerCase()
+      const tools = (await directTools().catch(() => [])).filter(t => t.name.toLowerCase().includes(query)).map(toolLine)
+      if (tools.length) lines.push('Direct tools:', ...tools)
       parts.push(lines.length ? lines.join('\n') : (note ?? 'No control matches.'))
     } else {
       parts.push(await view(true))
       const tools = await pageTools()
       if (tools) parts.push(tools)
-      // Routines of this application come first: one replays a whole task in a single act.
-      const routines = Object.entries(loadRoutines()[await focusedApp().catch(() => '')] ?? {})
-      if (routines.length) parts.unshift(routines.map(([name, r]) => {
-        return `Routine ${JSON.stringify(name)}: ${r.steps.length} steps, about ${((r.ms ?? 300 * r.steps.length) / 1000).toFixed(1)} s in one call: `
-          + `act {"steps":[{"run":${JSON.stringify(name)},"texts":[…]}]}, with texts in this order (last time ${JSON.stringify(r.texts ?? [])}). `
-          + 'Use it when the task is the same.'
-      }).join('\n'))
+      const direct = await directLines().catch(() => '')
+      if (direct) parts.push(direct)
       if (lastState?.unread?.length) {
         const words = await unreadWords(lastState.unread).catch(() => '')
         if (words) parts.push(words)
@@ -534,19 +533,8 @@ const handlers = {
     if (withOcr) parts.push(await windowWords().catch(error => `No text could be read from pixels: ${error.message}`))
     return [{ type: 'text', text: parts.join('\n') }]
   },
-  async act({ steps, observe = true, save }) {
+  async act({ steps, observe = true }) {
     if (!Array.isArray(steps) || steps.length < 1 || steps.length > 30) throw new Error('steps must hold 1–30 steps')
-    if (save !== undefined) text(save, 'save', 80)
-    // A routine step stands for its saved steps, replayed against the window as it is.
-    const expanded = []
-    for (const s of steps) {
-      if (s && typeof s === 'object' && 'run' in s) {
-        const routine = loadRoutines()[await focusedApp()]?.[s.run]
-        if (!routine) throw new Error(`no routine ${JSON.stringify(s.run)} for this application`)
-        for (const r of routine.steps) expanded.push({ replay: r, texts: s.texts ?? [] })
-      } else expanded.push(s)
-    }
-    steps = expanded
     let windowsBefore = null
     try { windowsBefore = new Set((await seat('windows')).windows.map(w => w.id)) } catch {}
     let done = 0, error
@@ -568,28 +556,13 @@ const handlers = {
           await seat('settle', 'react', ...(actedAt === undefined ? [] : [String(actedAt)]))
         }
         const began = performance.now()
-        const run = s && s.replay ? await replayStep(s.replay, s.texts) : s
-        const note = await step(run); if (note) notes.push(note); done++
-        journalStep(s && s.replay ? { ...s.replay, ...(s.replay.text ? { text: run.text } : {}), ...(s.replay.type ? { type: run.type } : {}) } : s,
-          Math.round(performance.now() - began))
+        const note = await step(s); if (note) notes.push(note); done++
         timing.push(`${Object.keys(s ?? {})[0]}:${Math.round(performance.now() - began)}`)
         after = s && typeof s === 'object' && 'type' in s ? 'type'
           : s && typeof s === 'object' && typeof s.key === 'string' && /(^|\+)(ctrl|alt|super|control|meta)\+/i.test(s.key) ? 'shortcut' : undefined
       } catch (e) { error = e.message; break }
     }
-    let saved = ''
-    if (save !== undefined && done === steps.length) {
-      try {
-        const all = loadRoutines(), app = await focusedApp()
-        const kept = journal.filter(x => !('wait' in x) && !('launch' in x))
-        const used = kept.flatMap(x => [x.text, x.type].filter(t => typeof t === 'string'))
-        all[app] = { ...(all[app] ?? {}), [save]: { steps: asRoutine(journal), texts: used.map(t => t.slice(0, 60)), ms: kept.reduce((n, x) => n + (x.ms ?? 0), 0) + 300 * kept.length } }
-        saveRoutines(all)
-        journal = []
-        saved = ` Saved as routine ${JSON.stringify(save)}.`
-      } catch (e) { saved = ` Not saved: ${e.message}` }
-    }
-    const head = (done === steps.length ? (steps.length > 1 ? `Done ${done} steps.` : 'Done.') : `Did ${done} of ${steps.length}; stopped: ${error}`) + saved
+    const head = done === steps.length ? (steps.length > 1 ? `Done ${done} steps.` : 'Done.') : `Did ${done} of ${steps.length}; stopped: ${error}`
     const content = [head + (notes.length ? ` (${notes.join('; ')})` : '')]
     if (observe) {
       const began = performance.now()
@@ -598,7 +571,7 @@ const handlers = {
         // An application busy building a window (a first file chooser can take seconds) draws
         // nothing until it maps: after a press, key or click that changed nothing, wait a little
         // for a new window before saying so.
-        if (seen === 'No change.' && windowsBefore && done && steps.slice(0, done).some(x => x && typeof x === 'object' && ('press' in x || 'key' in x || 'click' in x || 'replay' in x))) {
+        if (seen === 'No change.' && windowsBefore && done && steps.slice(0, done).some(x => x && typeof x === 'object' && ('press' in x || 'key' in x || 'click' in x))) {
           const deadline = performance.now() + 2500
           while (performance.now() < deadline) {
             await new Promise(resolve => setTimeout(resolve, 100))
@@ -674,7 +647,7 @@ lines.on('line', line => {
   queue = queue.then(() => handle(message))
 })
 
-const close = () => { a11yWorker.close(); seatWorker.close() }
+const close = () => { a11yWorker.close(); seatWorker.close(); directWorker.close() }
 lines.on('close', () => { void queue.finally(close) })
 process.on('SIGTERM', () => { close(); process.exit(0) })
 process.on('SIGINT', () => { close(); process.exit(0) })

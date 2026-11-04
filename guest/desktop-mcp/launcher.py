@@ -9,8 +9,10 @@ Chromium and Electron build their whole accessibility tree only when started wit
 --force-renderer-accessibility, so a program on that runtime gets the switch: recognised by
 the runtime's own files beside its executable (resources.pak, v8_context_snapshot.bin),
 following wrapper scripts (the programs and directories they name), or for `flatpak run` by
-an Electron base application. Java programs get the ATK wrapper, where it is installed. Every
-other program starts as asked."""
+an Electron base application. LibreOffice (recognised by soffice.bin beside its program)
+opens the seat's UNO pipe, through which desktop MCP's direct tools work on its documents.
+Java programs get the ATK wrapper, where it is installed. Every other program starts as
+asked."""
 import os
 import re
 import shlex
@@ -46,6 +48,15 @@ def chromium_runtime(path, depth=0):
     return False
 
 
+UNO_ACCEPT = '--accept=pipe,name=caboose-agent-uno;urp;StarOffice.ComponentContext'
+
+
+def office_runtime(path):
+    """Whether `path` is LibreOffice's launcher (soffice.bin beside it)."""
+    real = os.path.realpath(path)
+    return os.path.isfile(real) and os.path.exists(os.path.join(os.path.dirname(real), 'soffice.bin'))
+
+
 def flatpak_electron(app):
     try:
         info = subprocess.run(['flatpak', 'info', '--show-metadata', app], capture_output=True, text=True, timeout=10).stdout
@@ -76,6 +87,8 @@ def plan(command):
     program = shutil.which(argv[0])
     if program and chromium_runtime(program):
         return [argv[0], SWITCH] + argv[1:]
+    if program and office_runtime(program) and not any(a.startswith('--accept') for a in argv):
+        return [argv[0], UNO_ACCEPT] + argv[1:]
     return argv
 
 
