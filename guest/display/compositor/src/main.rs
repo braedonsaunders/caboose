@@ -18,6 +18,7 @@ mod gpu_grant;
 #[allow(dead_code)] // Control handling is unavailable until the private bridge is connected.
 mod gpu_control;
 mod gpu_peer;
+mod gpu_pending;
 mod gpu_x11;
 mod hints;
 mod icons;
@@ -576,6 +577,9 @@ fn run(config: Config) -> Result<(), String> {
         children: Default::default(),
         gpu_bind_new_child: None,
         gpu_bind_larger: false,
+        gpu_bind_holdable: false,
+        gpu_pending_binds: Default::default(),
+        gpu_pending_sweep: false,
         x11_identity: None,
         ibus: None,
         ibus_shown: None,
