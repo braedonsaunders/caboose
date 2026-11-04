@@ -1,0 +1,70 @@
+From: Caboose <caboose@local>
+Subject: [PATCH 85/85] Count a pool's capacity when its sets' handles are guest-assigned
+
+With guest-assigned descriptor set handles (hello 0x100) an allocation never waits for the
+device's result, and the decoder put sets a full pool could not hold in overflow pools of
+its own, so a full pool never reported VK_ERROR_OUT_OF_POOL_MEMORY. DXVK moves to another
+pool only on that result and recycles a pool as its frames retire: it allocated every set of
+every frame from one pool, never reset it, and the executor's memory grew about 70 MiB a
+frame until it stalled. The guest now counts each pool's sets and descriptors, as the batched
+path does, and returns VK_ERROR_OUT_OF_POOL_MEMORY for an allocation the pool cannot hold.
+---
+diff --git a/src/gfxstream/guest/vulkan_enc/DescriptorSetVirtualization.cpp b/src/gfxstream/guest/vulkan_enc/DescriptorSetVirtualization.cpp
+--- a/src/gfxstream/guest/vulkan_enc/DescriptorSetVirtualization.cpp
++++ b/src/gfxstream/guest/vulkan_enc/DescriptorSetVirtualization.cpp
+@@ -399,7 +399,7 @@ static void freeBindingFeasible(const VkDescriptorSetLayoutBinding& binding,
+     poolState.used -= binding.descriptorCount;
+ }
+ 
+-static VkResult validateDescriptorSetAllocation(const VkDescriptorSetAllocateInfo* pAllocateInfo) {
++VkResult validateDescriptorSetAllocation(const VkDescriptorSetAllocateInfo* pAllocateInfo) {
+     VkDescriptorPool pool = pAllocateInfo->descriptorPool;
+     DescriptorPoolAllocationInfo* poolInfo = as_goldfish_VkDescriptorPool(pool)->allocInfo;
+ 
+diff --git a/src/gfxstream/guest/vulkan_enc/DescriptorSetVirtualization.h b/src/gfxstream/guest/vulkan_enc/DescriptorSetVirtualization.h
+--- a/src/gfxstream/guest/vulkan_enc/DescriptorSetVirtualization.h
++++ b/src/gfxstream/guest/vulkan_enc/DescriptorSetVirtualization.h
+@@ -138,6 +138,8 @@ void doEmulatedDescriptorInlineUniformBlockFromTemplate(VkDescriptorType descTyp
+                                                         const void* pData,
+                                                         ReifiedDescriptorSet* set);
+ 
++// VK_ERROR_OUT_OF_POOL_MEMORY when the pool lacks the sets or descriptors the allocation takes.
++VkResult validateDescriptorSetAllocation(const VkDescriptorSetAllocateInfo* pAllocateInfo);
+ void applyDescriptorSetAllocation(VkDescriptorPool pool, VkDescriptorSetLayout setLayout);
+ void fillDescriptorSetInfoForPool(VkDescriptorPool pool, VkDescriptorSetLayout setLayout,
+                                   VkDescriptorSet set);
+diff --git a/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp b/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp
+--- a/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp
++++ b/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp
+@@ -125,6 +125,14 @@ extern "C" int caboose_gfxstream_batched_descriptor_sets;
+ static inline bool cabooseBatchedSets() {
+     return __atomic_load_n(&caboose_gfxstream_batched_descriptor_sets, __ATOMIC_ACQUIRE) == 1;
+ }
++// Caboose (SocketStream.cpp): 1 while the connected executor registers descriptor sets under
++// the handles the guest assigns (hello 0x100), so their allocation is not waited for.
++extern "C" int caboose_gfxstream_guest_handles;
++extern "C" int caboose_gfxstream_guest_handle_arrays;
++static inline bool cabooseGuestHandleArrays() {
++    return __atomic_load_n(&caboose_gfxstream_guest_handles, __ATOMIC_ACQUIRE) == 1 &&
++           __atomic_load_n(&caboose_gfxstream_guest_handle_arrays, __ATOMIC_ACQUIRE) == 1;
++}
+ 
+ namespace gfxstream {
+ namespace vk {
+@@ -6610,6 +6618,16 @@ VkResult ResourceTracker::on_vkAllocateDescriptorSets(
+             ++dsl->layoutInfo->refcount;
+         }
+     } else {
++        // Caboose: with guest-assigned set handles the allocation never waits for the device's
++        // result, so the pool's capacity is counted here, as a device counts it. Without this
++        // a full pool kept succeeding (the decoder took overflow pools), and an application
++        // that moves to a new pool only when its pool reports out of memory, and recycles the
++        // old one as its frames retire, never did: DXVK allocated from one pool for good and
++        // the executor's memory grew with every set.
++        if (cabooseGuestHandleArrays()) {
++            VkResult capacity = validateDescriptorSetAllocation(ci);
++            if (capacity != VK_SUCCESS) return capacity;
++        }
+         VkResult allocRes = enc->vkAllocateDescriptorSets(device, ci, sets, true /* do lock */);
+ 
+         if (allocRes != VK_SUCCESS) return allocRes;

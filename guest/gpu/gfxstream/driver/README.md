@@ -155,6 +155,7 @@ Each patch is one feature. Several change Mesa's generated encoder
 | 0082 bounded-descriptor-writes | Batched descriptor writes, copies and template updates stop at their layout's last binding instead of writing past the set's table |
 | 0083 atomic-layout-references | Descriptor set layout references are counted atomically (DXVK raises and lowers them from two threads) |
 | 0084 event-status-recheck | A reset event the tracker keeps answering locally is asked about on the device every 250 ms while it is polled |
+| 0085 guest-counted-pool-capacity | With guest-assigned set handles, an allocation a descriptor pool cannot hold returns `VK_ERROR_OUT_OF_POOL_MEMORY` instead of succeeding into the decoder's overflow pools |
 
 The patch messages describe each change. To change the driver, prepare a tree, commit
 the prepared state, edit, and regenerate the affected patch with `git format-patch`

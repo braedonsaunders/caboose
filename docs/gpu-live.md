@@ -278,11 +278,15 @@ views, samplers, shader modules, pipeline caches and layouts, descriptor set lay
 and pools, command pools, render passes, framebuffers and pipelines; with `0x10000`, buffer
 views too. With `0x100` it
 also covers descriptor sets and command buffers: the decoder registers the i-th created
-object under the i-th guest handle. A descriptor set allocation whose handles the guest
-assigned never fails for lack of pool space: when the application's pool reports
-`VK_ERROR_OUT_OF_POOL_MEMORY` or `VK_ERROR_FRAGMENTED_POOL`, the decoder allocates the
-sets from an overflow pool it creates with the same flags and sizes. Overflow pools are
-reset and destroyed with their application pool, and their sets are freed back to them.
+object under the i-th guest handle. The guest counts each descriptor pool's sets and
+descriptors (a layout's full count for each binding, as the batched path does) and returns
+`VK_ERROR_OUT_OF_POOL_MEMORY` for an allocation the pool cannot hold, as a device does:
+applications such as DXVK move to another pool, and recycle a full one, only on that result.
+An allocation the guest counted as fitting does not fail on the phone: when the pool still
+reports `VK_ERROR_OUT_OF_POOL_MEMORY` or `VK_ERROR_FRAGMENTED_POOL` (MoltenVK returns the
+latter for pools that free individual sets), the decoder allocates the sets from an overflow
+pool it creates with the same flags and sizes. Overflow pools are reset and destroyed with
+their application pool, and their sets are freed back to them.
 
 ### Invalid commands
 
