@@ -1,5 +1,5 @@
 From: Caboose <caboose@local>
-Subject: [PATCH 72/84] Batch inline uniform block writes and follow each executor's batched sets
+Subject: [PATCH 72/85] Batch inline uniform block writes and follow each executor's batched sets
 
 A batched commit could not carry inline uniform block writes (the guest aborted
 on them), so batching had to hide inline uniform blocks, which DXVK requires.

@@ -27,7 +27,7 @@ name=caboose-capabilities-$$
 shared=$(mktemp -d)
 chmod 1777 "$shared"
 cpus=${CPUS:-4}
-phone=guest-handles,guest-handle-arrays,completion-feed,ordered-present,guest-images,guest-query-pools,shader-cache,executor-resume,zstd-stream,upload-cache,guest-buffer-views,batched-descriptor-sets-inline
+phone=guest-handles,guest-handle-arrays,completion-feed,ordered-present,guest-images,guest-query-pools,shader-cache,executor-resume,zstd-stream,upload-cache,guest-buffer-views,batched-descriptor-sets-inline,guest-set-ids
 cleanup() {
   docker rm -f "$name-executor" "$name-computer" > /dev/null 2>&1 || true
   rm -rf "$shared"
