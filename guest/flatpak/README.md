@@ -20,12 +20,14 @@ alone. With no depot mounted, an app's runtime installs into the system installa
 Flatpak exports its apps' desktop entries and icons under `/var/lib/flatpak/exports/share`,
 where the host's app listing finds them.
 
-A container computer has no document portal. `xdg-document-portal` serves files a sandboxed
-app is given through a FUSE file system at `/run/user/1000/doc`, and mounting it there needs
-`CAP_SYS_ADMIN`, which the container does not have; `install.sh` diverts its D-Bus service
-file, so nothing starts it. Flatpak apps in a container computer therefore get no document
-export: a file chosen through the file chooser reaches an app only through the folders the
-app may already read. A microVM has the portal.
+A container computer may not mount, so FUSE (the document portal's `/run/user/1000/doc`, through
+which a sandboxed app receives the files chosen for it) goes through the host's FUSE broker
+beside it (docs/architecture.md § FUSE): `install.sh` installs `caboose-fusermount` over
+`fusermount3` (a dpkg diversion keeps the original as `fusermount3.caboose-off`),
+`caboose-fuse-broker` for the host's sidecar to run, and the document portal's D-Bus service
+as `caboose-document-portal`, which gives the agent seat's portal a runtime directory of its
+own so the two seats' mounts do not collide. `python3 -m unittest discover -s guest/flatpak`
+checks the broker's option and mountpoint rules and the fusermount protocol parsing.
 
 `apps/host/scripts/check-flathub.sh` exercises the remote, the depot and an install, run and
 removal in disposable containers (see the host README).
