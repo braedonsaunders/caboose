@@ -66,6 +66,23 @@ class Releases(unittest.TestCase):
         with self.assertRaises(release.Failure):
             release.verify(directory)
 
+    def test_add_tree_adds_every_file_at_its_path_with_its_mode(self):
+        root = Path(self.tmp.name) / "staged"
+        (root / "usr/local/lib/caboose-gpu-live/i386").mkdir(parents=True)
+        (root / "usr/local/lib/caboose-gpu-live/i386/libvulkan_gfxstream.so").write_bytes(b"i386")
+        (root / "usr/local/lib/caboose-gpu-live/i386/libvulkan_gfxstream.so").chmod(0o755)
+        (root / "usr/local/lib/caboose-gpu-live/icd.json").write_text("{}")
+        (root / "usr/local/lib/caboose-gpu-live/icd.json").chmod(0o644)
+        release.main(["new", "r1"])
+        release.main(["add-tree", "r1", str(root)])
+        files = release.ROOT / "r1/files/usr/local/lib/caboose-gpu-live"
+        self.assertEqual((files / "i386/libvulkan_gfxstream.so").read_bytes(), b"i386")
+        self.assertEqual((files / "i386/libvulkan_gfxstream.so").stat().st_mode & 0o7777, 0o755)
+        self.assertEqual((files / "icd.json").stat().st_mode & 0o7777, 0o644)
+        (root / "link").symlink_to("usr")
+        with self.assertRaises(release.Failure):
+            release.main(["add-tree", "r1", str(root)])
+
     def test_sealing_runs_the_executor_check_and_keeps_its_result(self):
         release.main(["new", "r1"])
         release.main(["add", "r1", str(self.source), "/" + release.DRIVER, "755"])

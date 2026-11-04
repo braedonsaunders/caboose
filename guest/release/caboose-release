@@ -3,6 +3,7 @@
 
 usage: caboose-release new ID [--from ID]          start a release, a copy of another
        caboose-release add ID SOURCE PATH [MODE]   a file installed at PATH (octal MODE)
+       caboose-release add-tree ID ROOT            every file under ROOT, at its path below ROOT, with its mode
        caboose-release capture ID COMPUTER PATH... files as COMPUTER has them now
        caboose-release deb ID DEB                  a package installed with dpkg
        caboose-release remove ID PATH              a path deleted on install
@@ -415,6 +416,17 @@ def main(argv):
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(args[1], target)
         target.chmod(int(args[3], 8) if len(args) == 4 else 0o644)
+    elif command == "add-tree" and len(args) == 2:
+        directory, root = writable(args[0]), Path(args[1])
+        if not root.is_dir():
+            raise Failure(f"not a directory: {root}")
+        for source in sorted(p for p in root.rglob("*") if p.is_file() or p.is_symlink()):
+            if source.is_symlink() or not source.is_file():
+                raise Failure(f"{source}: a release carries regular files only")
+            target = placed(directory, "/" + str(source.relative_to(root)))
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, target)
+            target.chmod(source.stat().st_mode & 0o7777)
     elif command == "capture" and len(args) >= 3:
         directory = writable(args[0])
         for path in args[2:]:
