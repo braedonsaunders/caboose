@@ -4048,3 +4048,6 @@ requires native retirement before rebinding; fitting unchanged pixels does not.
 
 Computer selection is available only on Home. Desktop, connection recovery and
 other tabs follow Home’s selected computer without separate switching controls.
+
+The authenticated GPU relay forwards the negotiated `one-way-start` and
+`executor-stats` feature names to the guest. Unknown feature names remain filtered.

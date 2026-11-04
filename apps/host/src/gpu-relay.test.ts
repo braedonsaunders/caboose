@@ -366,3 +366,7 @@ it('settles once the phone side closes after the guest side ended the relay', as
   expect(finished).toBe(true)
   expect(relay.attach(new WebSocket('ws://test'))).toBe(false)
 })
+
+it('forwards the r5.29 startup and executor telemetry features', () => {
+  expect(gpuFeatures('one-way-start,executor-stats,unknown')).toEqual(['executor-stats', 'one-way-start'])
+})
