@@ -476,6 +476,106 @@ static void poolCapacityCase(void) {
     report("pool_capacity", ok, "%s", details);
 }
 
+// Sets bound without any descriptor written since their allocation: a set the shader never
+// reads (DXVK's sets for unused stages, a set of immutable samplers) is still allocated on the
+// device by the submit that binds it, with batched descriptor sets as without. Each round binds
+// such a set alone, beside a written one, and again after a free and a reallocation in a pool
+// that frees sets one by one; a set the device never allocated binds nothing there (the Linux
+// executor faults on it, as lavapipe reads the set) and a later free names a set it never had.
+static void unwrittenSetsCase(void) {
+    VkDescriptorSetLayoutBinding binding = {0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, NULL};
+    VkDescriptorSetLayoutCreateInfo layoutInfo = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+    layoutInfo.bindingCount = 1;
+    layoutInfo.pBindings = &binding;
+    VkDescriptorSetLayout layout;
+    CHECK(vkCreateDescriptorSetLayout(device, &layoutInfo, NULL, &layout));
+    VkDescriptorSetLayout layouts[2] = {layout, layout};
+    VkPipelineLayoutCreateInfo pipelineLayoutInfo = {VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+    pipelineLayoutInfo.setLayoutCount = 2;
+    pipelineLayoutInfo.pSetLayouts = layouts;
+    VkPipelineLayout pipelineLayout;
+    CHECK(vkCreatePipelineLayout(device, &pipelineLayoutInfo, NULL, &pipelineLayout));
+    VkBufferCreateInfo bufferInfo = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    bufferInfo.size = 256;
+    bufferInfo.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+    VkBuffer buffer;
+    CHECK(vkCreateBuffer(device, &bufferInfo, NULL, &buffer));
+    VkMemoryRequirements req;
+    vkGetBufferMemoryRequirements(device, buffer, &req);
+    VkMemoryAllocateInfo memoryInfo = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    memoryInfo.allocationSize = req.size;
+    memoryInfo.memoryTypeIndex = memoryType(req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    VkDeviceMemory memory;
+    CHECK(vkAllocateMemory(device, &memoryInfo, NULL, &memory));
+    CHECK(vkBindBufferMemory(device, buffer, memory, 0));
+    VkDescriptorPoolSize size = {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 64};
+    int ok = 1, rounds = 0;
+    VkResult last = VK_SUCCESS;
+    char first[160] = "";
+    for (int freeing = 0; freeing < 2 && ok; ++freeing) {
+        VkDescriptorPoolCreateInfo poolInfo = {VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+        poolInfo.flags = freeing ? VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT : 0;
+        poolInfo.maxSets = 64;
+        poolInfo.poolSizeCount = 1;
+        poolInfo.pPoolSizes = &size;
+        VkDescriptorPool pool;
+        CHECK(vkCreateDescriptorPool(device, &poolInfo, NULL, &pool));
+        for (int round = 0; round < 8 && ok; ++round) {
+            // Round 0 of each pool: an unwritten set alone; then beside a written one; in the
+            // freeing pool, the written set is freed after its submit and the next round's
+            // allocation takes its id again.
+            VkDescriptorSetAllocateInfo setInfo = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+            setInfo.descriptorPool = pool;
+            setInfo.descriptorSetCount = 2;
+            setInfo.pSetLayouts = layouts;
+            VkDescriptorSet sets[2];
+            if ((last = vkAllocateDescriptorSets(device, &setInfo, sets)) != VK_SUCCESS) {
+                ok = 0;
+                snprintf(first, sizeof(first), "allocate pool=%d round=%d", freeing, round);
+                break;
+            }
+            if (round > 0) {
+                VkDescriptorBufferInfo described = {buffer, 0, 256};
+                VkWriteDescriptorSet write = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+                write.dstSet = sets[0];
+                write.descriptorCount = 1;
+                write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+                write.pBufferInfo = &described;
+                vkUpdateDescriptorSets(device, 1, &write, 0, NULL);
+            }
+            begin();
+            if (round > 0) vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, 2, sets, 0, NULL);
+            else vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 1, 1, &sets[1], 0, NULL);
+            const uint64_t value = submit2(1);
+            VkSemaphoreWaitInfo wait = {VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};
+            wait.semaphoreCount = 1;
+            wait.pSemaphores = &timeline;
+            wait.pValues = &value;
+            if ((last = vkWaitSemaphores(device, &wait, 5000000000ull)) != VK_SUCCESS) {
+                ok = 0;
+                snprintf(first, sizeof(first), "wait pool=%d round=%d", freeing, round);
+                break;
+            }
+            if (freeing && (last = vkFreeDescriptorSets(device, pool, 2, sets)) != VK_SUCCESS) {
+                ok = 0;
+                snprintf(first, sizeof(first), "free pool=%d round=%d", freeing, round);
+                break;
+            }
+            ++rounds;
+        }
+        if (ok && (last = vkDeviceWaitIdle(device)) != VK_SUCCESS) {
+            ok = 0;
+            snprintf(first, sizeof(first), "idle pool=%d", freeing);
+        }
+        vkDestroyDescriptorPool(device, pool, NULL);
+    }
+    vkDestroyBuffer(device, buffer, NULL);
+    vkFreeMemory(device, memory, NULL);
+    vkDestroyPipelineLayout(device, pipelineLayout, NULL);
+    vkDestroyDescriptorSetLayout(device, layout, NULL);
+    report("unwritten_sets", ok, "rounds=%d of 16 result=%d%s%s", rounds, last, ok ? "" : " at ", first);
+}
+
 // Calls that must not wait for the phone: each is timed; a round trip takes milliseconds.
 static void callsCase(void) {
     const int n = 40;
@@ -1344,6 +1444,7 @@ int main(int argc, char** argv) {
     RUN("free_after_wait", freeCase());
     RUN("completion_after_gpu", completionCase());
     RUN("pool_capacity", poolCapacityCase());
+    RUN("unwritten_sets", unwrittenSetsCase());
     RUN("calls", callsCase());
     RUN("pipeline_cache", pipelineCacheCase(&props));
     RUN("child_windows", childWindowsCase());

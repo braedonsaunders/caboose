@@ -24,9 +24,12 @@
 # 14660) and DISPLAY_ENV (default /run/caboose/display.env) pick the broker port and the display,
 # and CASES a subset of the cases. Only the triangle started from BENCH_DIR is ended, so checks
 # with separate BENCH_DIRs can share a computer.
-# SOCKETS puts the GPU sockets elsewhere when BENCH_DIR's path is too long for one.
+# SOCKETS puts the GPU sockets elsewhere when BENCH_DIR's path is too long for one. APP (default
+# triangle.exe) runs another program from BENCH_DIR instead, such as d3d11_stress.exe built from
+# d3d11-stress.cpp beside this script, with APP_ARGS; APP_ENV adds environment to its process
+# (for example CABOOSE_LOCK_ORDER=1, whose reports fail the case).
 set -eu
-[ $# -ge 4 ] && [ $# -le 5 ] || { sed -n '4,25p' "$0" >&2; exit 2; }
+[ $# -ge 4 ] && [ $# -le 5 ] || { sed -n '4,29p' "$0" >&2; exit 2; }
 computer=$1
 work=$(cd "$2" && pwd)
 driver=$(realpath "$3")
@@ -46,6 +49,10 @@ dir=$bench/.check-$$
 # path is at most 107 bytes, which a BENCH_DIR deep in a seat's home exceeds.
 sockets=${SOCKETS:-$dir}
 port=${PORT:-14660}
+app=${APP:-triangle.exe}
+app_args=${APP_ARGS:-}
+app_env=""
+for e in ${APP_ENV:-}; do app_env="$app_env --env=$e"; done
 # The display the triangle presents on (DISPLAY_ENV, the owner seat's by default).
 display=${DISPLAY_ENV:-/run/caboose/display.env}
 # This check's own triangle: the one started from BENCH_DIR. Proton's waitforexitandrun keeps
@@ -53,7 +60,7 @@ display=${DISPLAY_ENV:-/run/caboose/display.env}
 # for the sandbox waits for the rest of this check's Wine; nothing else on the computer (other
 # checks, the owner's games) is waited for or ended.
 ours() {
-  docker exec "$computer" pgrep -u caboose -f "$bench/triangle.exe" 2>/dev/null || true
+  docker exec "$computer" pgrep -u caboose -f "$bench/$app" 2>/dev/null || true
 }
 cleanup() {
   docker rm -f "$name" > /dev/null 2>&1 || true
@@ -90,10 +97,10 @@ for case in ${CASES:-phone setids poolids unbatched older}; do
   docker exec -u caboose "$computer" sh -c "set -a; . $display; set +a
     CABOOSE_GFXSTREAM_SOCKET=$sockets/gpu-$case/gpu.sock CABOOSE_GFXSTREAM_SURFACE_SOCKET=$sockets/gpu-$case/surface.sock \
     CABOOSE_READ_PROFILE=1 DXVK_LOG_LEVEL=info DXVK_LOG_PATH=none timeout $((seconds + 300)) flatpak run --filesystem=$sockets --filesystem=${proton%/*}:ro --env=VK_DRIVER_FILES=$dir/icd.json \
-    --env=VK_ICD_FILENAMES=$dir/icd.json '--env=VK_LOADER_LAYERS_DISABLE=*' --command=sh com.valvesoftware.Steam -c '
+    --env=VK_ICD_FILENAMES=$dir/icd.json '--env=VK_LOADER_LAYERS_DISABLE=*'$app_env --command=sh com.valvesoftware.Steam -c '
     export STEAM_COMPAT_DATA_PATH=$bench/compat/0 STEAM_COMPAT_CLIENT_INSTALL_PATH=$steam
     mkdir -p $bench/compat/0
-    exec $proton waitforexitandrun $bench/triangle.exe'" > "$out/$case.log" 2>&1 &
+    exec $proton waitforexitandrun $bench/$app $app_args'" > "$out/$case.log" 2>&1 &
   # The run is timed from the first frames the broker reports (Wine's start varies), at most
   # 4 minutes after the triangle starts.
   i=0; until docker exec "$computer" grep -a -q 'CABOOSE_GPU_SURFACE_STATS' "$dir/broker-$case.log" 2>/dev/null; do
@@ -114,6 +121,8 @@ for case in ${CASES:-phone setids poolids unbatched older}; do
   grep -a -q 'D3D11InternalCreateDevice: Using feature level' "$log" || fail "$case: no D3D11 device ($log)"
   grep -a -q 'Presenter: Actual swapchain properties' "$log" || fail "$case: no swapchain ($log)"
   ! grep -a -q -E 'CABOOSE_GUEST_HANDLE_FAILED|CABOOSE_GPU_EXECUTOR_LOST' "$log" || fail "$case: $(grep -a -m1 -E 'CABOOSE_GUEST_HANDLE_FAILED|CABOOSE_GPU_EXECUTOR_LOST' "$log")"
+  ! grep -a -q -E '^FAIL ' "$log" || fail "$case: $app: $(grep -a -m1 -E '^FAIL ' "$log")"
+  ! grep -a -q 'CABOOSE_LOCK_ORDER took=' "$log" || fail "$case: lock order: $(grep -a 'CABOOSE_LOCK_ORDER took=' "$log" | sort -u | tr '\n' ';')"
   ! grep -a -q -E 'GUEST_FAULT|Segmentation fault' "$out/executor-$case.log" || fail "$case: the executor faulted ($out/executor-$case.log)"
   frames=$(grep -a -o 'presented=[0-9]*' "$out/broker-$case.log" | awk -F= '{n+=$2} END {print n+0}')
   [ "$frames" -gt 0 ] || fail "$case: the triangle never presented ($log)"

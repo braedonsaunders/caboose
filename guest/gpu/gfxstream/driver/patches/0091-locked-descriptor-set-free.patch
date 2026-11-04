@@ -1,0 +1,48 @@
+From: Caboose <caboose@local>
+Subject: [PATCH 91/91] Free batched descriptor sets under the encoder lock and allocate unwritten ones
+
+With batched descriptor sets, freeing a set the device already allocated sends
+vkFreeDescriptorSets from the tracker, where no encoder lock is held, and the call was
+encoded without taking it. It wrote the device stream while other threads might be writing
+it, and it skipped what the lock sends first: WAIT_SERIAL for speculated waits (patch 0089).
+A process that waited for a batch (answered at once) and then freed the batch's sets had the
+phone free them before the batch ran; lavapipe then read a freed set in
+handle_descriptor_sets and the Linux executor faulted. The free now takes the lock like any
+command.
+
+A submit whose bound sets had nothing written since the last commit sent no commit at all,
+also when one of them was newly allocated: a set bound with no descriptor written (one a
+shader never reads, one of immutable samplers) was never allocated on the device, which
+bound a set it did not have. The commit now goes out whenever an allocation is pending.
+---
+diff --git a/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp b/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp
+--- a/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp
++++ b/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp
+@@ -1030,8 +1030,12 @@
+         }
+     }
+ 
+-    // Skip out if there's nothing to VkWriteDescriptorSet home about.
+-    if (writesForHost.empty()) {
++    // Skip out if there's nothing to VkWriteDescriptorSet home about. Caboose: a set bound
++    // with nothing written since its allocation (a set a shader never reads, one of immutable
++    // samplers) is still allocated on the device here; skipping it left the device binding a
++    // set it never had.
++    if (writesForHost.empty() &&
++        std::find(pendingAllocations.begin(), pendingAllocations.end(), 1u) == pendingAllocations.end()) {
+         return;
+     }
+ 
+@@ -1342,7 +1346,11 @@
+             unregister_VkDescriptorSet(sets[i]);
+             delete_goldfish_VkDescriptorSet(sets[i]);
+         } else {
+-            enc->vkFreeDescriptorSets(device, ds->reified->pool, 1, &sets[i], false /* no lock */);
++            // Caboose: no encoder lock is held here (vkFreeDescriptorSets reaches the tracker
++            // directly), so the free takes it like any command: other threads share the
++            // device stream, and the lock sends WAIT_SERIAL for speculated waits first, so
++            // the phone frees no set a batch the process waited for may still use.
++            enc->vkFreeDescriptorSets(device, ds->reified->pool, 1, &sets[i], true /* do lock */);
+         }
+     }
+ }
