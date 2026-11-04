@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Stage the supervised broker and Mesa's driver for the vgem render node, and with --driver the phone's Vulkan driver (with
---executor-switch and --routing-layer its implicit layers); starts nothing.
+--executor-switch and --routing-layer its implicit layers) and with --gbm the vgem GBM backend for Flatpak applications;
+starts nothing.
 
 The driver goes to /usr/local/lib/caboose-gpu-live with its loader manifest, icd.json,
 which no loader finds by itself: caboose-display names it to the applications of the
@@ -63,6 +64,10 @@ SOCKET_FILESYSTEM = "xdg-run/caboose-gpu"
 # in each "host" GL extension for Flatpak applications.
 DRIRC = "caboose-vgem.conf"
 DRIRC_DIR = Path("usr/share/drirc.d")
+# The vgem GBM backend (guest/gpu/gbm). The runtime's libgbm searches only its own backend
+# directory, where Mesa's generic backend cannot allocate on vgem, so Flatpak applications get
+# the backend in each "host" GL extension and GBM_BACKENDS_PATH naming it.
+GBM = "vgem_gbm.so"
 
 
 def drirc_configdir(triplet: str) -> str:
@@ -74,6 +79,20 @@ def drirc_configdir(triplet: str) -> str:
     gl = f"/usr/lib/{triplet}/GL"
     return ":".join((f"{gl}/default/share/drirc.d", f"{gl}/host/share/drirc.d",
                      f"/run/parent{gl}/host/share/drirc.d"))
+
+
+def gbm_backends_path(triplets) -> str:
+    """GBM_BACKENDS_PATH for Flatpak applications, for the host GL extensions of `triplets`
+    that have the backend: the extension's backend directory at its sandbox path and at
+    Steam's container runtime's, then the directories the runtime's libgbm and the container
+    runtime's search by themselves, so that every other device keeps its backend."""
+    paths = []
+    for triplet in triplets:
+        gl = f"/usr/lib/{triplet}/GL"
+        paths += [f"{gl}/host/lib/gbm", f"/run/parent{gl}/host/lib/gbm"]
+    for triplet in triplets:
+        paths += [f"/usr/lib/{triplet}/GL/default/lib/gbm", f"/usr/lib/pressure-vessel/overrides/lib/{triplet}/gbm"]
+    return ":".join(paths)
 
 
 def flatpak_extension(target: str) -> tuple:
@@ -240,6 +259,27 @@ def install_layer(layer: str, library: Path, destination: Path, machine: str = o
                      layer_manifest(layer, sandbox / "lib" / file_name, suffix), 0o644)
 
 
+def install_gbm(library: Path, destination: Path, machine: str = os.uname().machine):
+    """Installs a built vgem GBM backend in the host GL extension of its architecture, for
+    Flatpak applications (the computer's own is installed with the image), and names every
+    extension that has one in the system-wide override's GBM_BACKENDS_PATH."""
+    data = library.read_bytes()
+    target = library_target(data, machine)
+    directory = destination / flatpak_extension(target)[0] / "lib/gbm"
+    if directory.is_symlink():
+        raise ValueError("GBM install directories must not be symlinks")
+    directory.mkdir(mode=0o755, parents=True, exist_ok=True)
+    write_atomically(directory / GBM, data, 0o644)
+    triplets = [TARGETS[t][2] for t in TARGETS
+                if (destination / flatpak_extension(t)[0] / "lib/gbm" / GBM).is_file()]
+    override = destination / FLATPAK_OVERRIDE
+    override.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+    current = override.read_text() if override.exists() else ""
+    updated = with_environment(current, "GBM_BACKENDS_PATH", gbm_backends_path(triplets))
+    if updated != current:
+        write_atomically(override, updated.encode(), 0o644)
+
+
 def install(source: Path, destination: Path, machine: str = os.uname().machine):
     libexec = destination / "usr/local/libexec"
     private = libexec / "caboose-gpu"
@@ -271,8 +311,12 @@ if __name__ == "__main__":
                         help="a built libVkLayer_caboose_executor_switch.so to install as an implicit layer")
     parser.add_argument("--routing-layer", type=Path, action="append", default=[],
                         help="a built libVkLayer_caboose_gpu_routing.so to install as an implicit layer")
+    parser.add_argument("--gbm", type=Path, action="append", default=[],
+                        help="a built vgem_gbm.so to install for Flatpak applications")
     args = parser.parse_args()
     install(args.source_root, args.destdir)
+    for backend in args.gbm:
+        install_gbm(backend, args.destdir)
     for driver in args.driver:
         install_driver(driver, args.destdir)
     for layer in args.executor_switch:

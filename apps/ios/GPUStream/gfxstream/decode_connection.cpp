@@ -2,6 +2,7 @@
 #include "decode_connection.h"
 #include "media_latch.h"
 #include "media_session.h"
+#include "silent_replies.h"
 #include "socket_stream.h"
 #include "packet_framing.h"
 #include "completion_feed.h"
@@ -201,6 +202,7 @@ int decodeConnection(int fd, size_t max_packet, size_t max_reply_buffer,
         const bool sequenced = gfxstream::host::FrameBuffer::getFB()->getFeatures()
                                    .VulkanQueueSubmitWithCommands.enabled();
         bool decodedAny = false;
+        bool silentReplies = false;  // REPLY_MODE(1): listed commands answer only on failure
         while (!stop.load()) {
             snapshot();
             if (diagnostic) { diagnostic->frameSize = 0; diagnostic->consumed = 0; diagnostic->frame = {}; }
@@ -273,9 +275,36 @@ int decodeConnection(int fd, size_t max_packet, size_t max_reply_buffer,
                     decodedAny = true;
                     continue;
                 }
+                if (opcode == silent_replies::kReplyModeOpcode) {
+                    // Silent-success replies on this stream; FAULTs go on the process's feed.
+                    if (declared != silent_replies::kReplyModePacketSize || !completions)
+                        return finish(DecodeStage::framing, EPROTO);
+                    if (pending.size() < declared) {
+                        if (!readMore(declared - pending.size())) {
+                            if (stop) return finish(DecodeStage::stopped, 0);
+                            if (stream.error()) return finish(DecodeStage::input, stream.error());
+                            return finish(DecodeStage::eof, EPROTO);
+                        }
+                        continue;
+                    }
+                    if (!silent_replies::parseReplyMode(pending.data(), declared))
+                        return finish(DecodeStage::framing, EPROTO);
+                    silentReplies = true;
+                    pending.erase(pending.begin(), pending.begin() + declared);
+                    decodedAny = true;
+                    continue;
+                }
                 if (CompletionFeed::isFeedOpcode(opcode)) {
                     if (!completions || sequenced) return finish(DecodeStage::profile, ENOTSUP);
-                    const size_t size = CompletionFeed::packetSize(opcode);
+                    // WATCH2 carries its captures: its size is in its header.
+                    const size_t size = opcode == CompletionFeed::kWatch2Opcode ? declared
+                                                                               : CompletionFeed::packetSize(opcode);
+                    if (opcode == CompletionFeed::kWatch2Opcode &&
+                        (declared < CompletionFeed::kWatch2HeaderSize ||
+                         declared > CompletionFeed::kWatch2HeaderSize +
+                                        size_t(CompletionFeed::kMaxCaptures) * CompletionFeed::kCaptureEntrySize ||
+                         (declared - CompletionFeed::kWatch2HeaderSize) % CompletionFeed::kCaptureEntrySize))
+                        return finish(DecodeStage::framing, EPROTO);
                     if (declared != size) return finish(DecodeStage::framing, EPROTO);
                     if (pending.size() < size) {
                         if (!readMore(size - pending.size())) {
@@ -292,6 +321,32 @@ int decodeConnection(int fd, size_t max_packet, size_t max_reply_buffer,
                         if (!CompletionFeed::parseOrder(pending.data(), size, &serial))
                             return finish(DecodeStage::framing, EPROTO);
                         completions->ordered(serial);
+                        pending.erase(pending.begin(), pending.begin() + size);
+                        decodedAny = true;
+                        continue;
+                    }
+                    if (opcode == CompletionFeed::kWaitSerialOpcode) {
+                        uint64_t serial = 0;
+                        if (!CompletionFeed::parseWaitSerial(pending.data(), size, &serial))
+                            return finish(DecodeStage::framing, EPROTO);
+                        {
+                            // Waiting for the GPU runs no command: a suspension need not wait.
+                            ExecutorGate::Idle barrierIdle(gate);
+                            const int waited = completions->waitSerial(serial);
+                            if (waited == EPROTO) return finish(DecodeStage::framing, EPROTO);
+                            if (waited != 0) return finish(DecodeStage::stopped, 0);
+                        }
+                        if (!passGate()) return finish(DecodeStage::stopped, 0);
+                        pending.erase(pending.begin(), pending.begin() + size);
+                        decodedAny = true;
+                        continue;
+                    }
+                    if (opcode == CompletionFeed::kWatch2Opcode) {
+                        uint64_t queue = 0, serial = 0;
+                        std::vector<CompletionFeed::Capture> captures;
+                        if (!CompletionFeed::parseWatch2(pending.data(), size, &queue, &serial, &captures))
+                            return finish(DecodeStage::framing, EPROTO);
+                        completions->watch(queue, serial, std::move(captures));
                         pending.erase(pending.begin(), pending.begin() + size);
                         decodedAny = true;
                         continue;
@@ -350,8 +405,19 @@ int decodeConnection(int fd, size_t max_packet, size_t max_reply_buffer,
                 progress->opcode = op;
                 progress->stage = 1;
             }
+            uint32_t replyOpcode = 0;
+            if (frame.size >= 4) std::memcpy(&replyOpcode, pending.data(), 4);
+            const bool silent = silentReplies && silent_replies::listed(replyOpcode);
+            if (silent) { stream.held().clear(); stream.hold(true); }
             const size_t consumed = thread_info.m_vkInfo->m_vkDec.decode(
                 pending.data(), frame.size, &stream, thread_info.getProcessResources().get(), context);
+            if (silent) {
+                stream.hold(false);
+                // The guest reads no reply: success writes nothing, failure is a FAULT record.
+                const int32_t result = silent_replies::resultOf(replyOpcode, stream.held());
+                if (result != 0) completions->fault(replyOpcode, result);
+                stream.held().clear();
+            }
 #ifdef CABOOSE_GPU_MEMORY_AUDIT
             if (auditTiming) {
                 const auto decodeEnd = std::chrono::steady_clock::now();

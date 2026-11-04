@@ -126,6 +126,17 @@ c++ -std=c++17 -Wall -Wextra -Werror -pthread -I apps/ios/GPUStream/gfxstream \
 /tmp/caboose-completion-feed-test
 ```
 
+The fixture also covers per-queue lanes, `WAIT_SERIAL`, `COMPLETION_WATCH2` captures and their
+bounds, FAULT records and `REPLY_MODE` (`silent_replies.h`). The phone's records against the
+guest's own encoder and parser (`guest/gpu/gfxstream/bounded-memory/completion_payloads.h`):
+
+```sh
+c++ -std=c++17 -Wall -Wextra -Werror -pthread -I apps/ios/GPUStream/gfxstream \
+  -I guest/gpu/gfxstream/bounded-memory apps/ios/GPUStream/gfxstream/tests/completion_payloads_cross_test.cpp \
+  apps/ios/GPUStream/gfxstream/completion_feed.cpp -o /tmp/caboose-completion-payloads-cross-test
+/tmp/caboose-completion-payloads-cross-test
+```
+
 ## Suspension
 
 `executor_gate.*` lets the phone suspend its executor before the app leaves the foreground

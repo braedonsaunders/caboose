@@ -40,10 +40,8 @@ from surfaces import FrameLog, NativeError, ProtocolViolation, SerialQueue, Surf
 PROTOCOL = 'caboose.gpu.live.v1'
 # The phone's capabilities (LiveGPUConnection.features).
 FEATURES = ('guest-handles,guest-handle-arrays,completion-feed,ordered-present,guest-images,guest-query-pools,'
-            'shader-cache,executor-resume,zstd-stream,upload-cache,guest-buffer-views,batched-descriptor-sets-inline,guest-set-ids')
-# Silent success (docs/gpu-live.md, "Silent success"): FEATURES does not name it while the
-# phone's decoder writes every reply.
-SILENT_SUCCESS = 'silent-success'
+            'shader-cache,executor-resume,zstd-stream,upload-cache,guest-buffer-views,batched-descriptor-sets-inline,guest-set-ids,'
+            'completion-payloads,wait-serial,silent-success')
 HELLO = (b'CBGLREF1' + struct.pack('<II', 4, 0x70) +
          bytes.fromhex('20d3bb2e30337cabf0febb006ed102ab25ccf6d9ddbfaf624c7e68f9040969c0'))
 MAX_MESSAGE = 256 * 1024

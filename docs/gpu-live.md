@@ -278,7 +278,7 @@ only known names, lowercased and sorted: `guest-handles`, `guest-handle-arrays`,
 ([Batched descriptor sets](#batched-descriptor-sets)), `guest-set-ids`
 ([Guest-chosen set ids](#guest-chosen-set-ids)), `completion-payloads`
 ([Completion payloads](#completion-payloads)) and `silent-success`
-([Silent success](#silent-success)). The phone app does not declare `silent-success`.
+([Silent success](#silent-success)).
 The broker reads them from the authenticated upgrade request.
 
 A local process on the indexed v4 path may offer optional features in its 48-byte
@@ -393,7 +393,9 @@ completion commands use the ordinary 8-byte packet header, little-endian:
 | COMPLETION_FEED | `0x4342FE01` | 16 | version u32 = 1, reserved u32 = 0 |
 | COMPLETION_WATCH | `0x4342FE02` | 24 | boxed queue u64, serial u64 (both nonzero) |
 | COMPLETION_ORDER | `0x4342FE03` | 16 | order serial u64 (nonzero) |
+| WAIT_SERIAL | `0x4342FE04` | 16 | watch serial u64 (nonzero) |
 | COMPLETION_WATCH2 | `0x4342FE05` | 32 + 32 × count | boxed queue u64, serial u64, count u32, flags u32 = 0, then the entries ([Completion payloads](#completion-payloads)) |
+| REPLY_MODE | `0x4342FE06` | 16 | mode u32 = 1 (silent success), reserved u32 = 0 |
 
 After each queue submission that signals a fence or timeline semaphore, sets or resets an
 event, ends or resets a query or writes coherent memory, the process sends
@@ -415,6 +417,21 @@ included. Watches made before the feed stream
 attaches are kept for it. Further bytes from the process on the feed stream are a
 protocol error; its end, or process stop, ends the feed. Watches still outstanding are
 waited for, and their records discarded.
+
+With `0x400000` a process may send `WAIT_SERIAL` on a device stream, with no reply: the
+decoder decodes nothing more from that stream until the watch with that serial has its
+record (its marker completed, its device was lost, or its queue cannot be watched), so
+work the process sends after it reaches the GPU after the work the watch names, without the
+process waiting for the feed. A serial above the process's last watch is a protocol error
+that ends the stream; process stop ends the wait.
+
+With `0x800000` a process may send `REPLY_MODE(1)` once on a device stream, which needs the
+process's completion feed (without one the stream ends). From then on the commands listed in
+`apps/ios/GPUStream/gfxstream/silent-success-opcodes.inc` (the commands whose replies the
+guest defers: guest-assigned creates and allocates, submits, binds, event sets) write no
+reply on that stream. One that fails writes a FAULT record on the feed instead: serial 0,
+status `0x7FFF0001`, 8 payload bytes of opcode u32 and result i32; the process treats it as
+loss of its devices.
 
 The process then knows the state of every fence and timeline semaphore whose signal
 operations it has seen, of its events, and whether each query's result is available.
@@ -449,7 +466,7 @@ payload holds, per entry in order, a 32-byte head (kind u32, status i32, the cap
 `VkResult`, handle u64, a u64, b u64) and its data, padded to 8 bytes. A reader stops at a kind
 it does not know. A record carries at most 1 MiB of payload, and a process at most 16 MiB of
 records not yet written; past either, the record's payload bytes are 0 and nothing was
-captured. A capture whose status is neither `VK_SUCCESS` nor, for queries, `VK_NOT_READY` holds
+captured; a lost device's record carries none either. A capture whose status is neither `VK_SUCCESS` nor, for queries, `VK_NOT_READY` holds
 nothing usable.
 
 The process names only what the phone can capture safely. A query range names a pool of the
@@ -1512,7 +1529,10 @@ and the i386 builds as `org.freedesktop.Platform.GL32.host`, for the runtime's 3
 compatibility libraries,
 and adds `xdg-run/caboose-gpu`, the broker's socket directory, to the system-wide Flatpak
 override. Mesa in the sandbox opens the render node with Zink as Mesa on the computer does
-([gpu-buffers.md](gpu-buffers.md#opengl-on-the-render-node)). The launch environment's variables pass into the sandbox unchanged;
+([gpu-buffers.md](gpu-buffers.md#opengl-on-the-render-node)). `install-live.py --gbm` puts the
+vgem GBM backend in each extension's `lib/gbm` and sets `GBM_BACKENDS_PATH` in that override,
+so GBM in the sandbox allocates and exports buffers as on the computer
+([gpu-buffers.md](gpu-buffers.md)). The launch environment's variables pass into the sandbox unchanged;
 `PRESSURE_VESSEL_FILESYSTEMS_RW` names the socket directory to Steam's container runtime,
 which shares no other part of the runtime directory with games.
 
