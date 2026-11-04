@@ -4,18 +4,24 @@ import { cgroupRemountArgs, cgroupWritable, containerPlacement, createContainerC
 import { DISPLAY_ENV } from './display.test.js'
 
 /** `published` are the container ports Docker reports as mapped; the bridge address is 172.18.0.2. */
+const isBroker = (args: string[]) => args.some(arg => arg.includes('caboose.fuse-broker-for'))
+/** The computer's own `docker run` calls, without its FUSE broker's. */
+const computerRuns = (calls: string[][]) => calls.filter(call => call[0] === 'run' && !isBroker(call))
+
 function fakeDocker(initial: 'missing' | 'running' | 'paused' | 'exited', published = ['14700', '14701']) {
   let status = initial
+  let broker = false
   const calls: string[][] = []
   const docker: Docker = async args => {
     calls.push(args)
     switch (args[0]) {
       case 'inspect':
+        if (isBroker(args)) { if (!broker || status !== 'running') throw new Error('No such object'); return `running ${args.at(-1)!.replace(/-fuse$/, '')}\n` }
         if (status === 'missing') throw new Error('No such object')
         if (args.includes('{{json .HostConfig}}')) return '{"Memory":4294967296,"NanoCpus":2000000000}'
         if (args.some(arg => arg.includes('.IPAddress'))) return '172.18.0.2\n'
         return `${status}\n`
-      case 'run': status = 'running'; return 'id\n'
+      case 'run': if (isBroker(args)) broker = true; else status = 'running'; return 'id\n'
       case 'start': case 'unpause': status = 'running'; return ''
       case 'pause': status = 'paused'; return ''
       case 'stop': status = 'exited'; return ''
@@ -69,6 +75,19 @@ describe('createContainerController', () => {
     expect(execs).toEqual(expect.arrayContaining(['/usr/local/bin/caboose-session start', '/usr/local/bin/caboose-session ready']))
     expect(controller.guest()).toBeDefined()
     expect(controller.terminalService?.()).toEqual({ url: 'http://127.0.0.1:14701', token: session.display.token })
+  })
+
+  it('starts the FUSE broker beside the computer, in its process namespace, from its own files', async () => {
+    const fake = fakeDocker('missing')
+    const controller = createContainerController(settings, { fence: async () => {}, docker: fake.docker, exists: () => false })
+    await controller.wake('headless')
+    const runs = fake.calls.filter(call => call[0] === 'run')
+    expect(runs).toHaveLength(2)
+    const broker = runs[1]!
+    const name = runs[0]![runs[0]!.indexOf('--name') + 1]!
+    expect(broker).toEqual(expect.arrayContaining(['--rm', '--name', `${name}-fuse`, '--privileged', `--pid=container:${name}`, '--network', 'none',
+      '--label', `caboose.fuse-broker-for=${name}`, '--entrypoint', 'python3']))
+    expect(broker.at(-1)).toBe('/proc/1/root/opt/caboose/flatpak/caboose-fuse-broker')
   })
 
   it('creates a computer with its own image, folders, devices and options, without repeating the host’s', async () => {
@@ -135,7 +154,7 @@ describe('createContainerController', () => {
     const second = await controller.wake()
     expect(fake.calls.some(call => call[0] === 'unpause')).toBe(true)
     expect(second.display.token).toBe(first.display.token)
-    expect(fake.calls.filter(call => call[0] === 'run')).toHaveLength(1)
+    expect(computerRuns(fake.calls)).toHaveLength(1)
   })
 
   it('brings up its tailnet companion after a wake without holding the wake, and removes it with the computer', async () => {
@@ -162,13 +181,13 @@ describe('createContainerController', () => {
     const docker: Docker = async (args, timeout) => {
       if (args[0] === 'exec' && args.includes('/proc/self/mounts')) return mounts
       if (args[0] === 'inspect' && args.includes('{{.Image}}')) return 'sha256:abc\n'
-      if (args[0] === 'run' && args.includes('--privileged')) { helpers.push(args); mounts = mounts.replace(' ro,', ' rw,'); return '' }
+      if (args[0] === 'run' && args.includes('/usr/bin/nsenter')) { helpers.push(args); mounts = mounts.replace(' ro,', ' rw,'); return '' }
       return fake.docker(args, timeout)
     }
     const controller = createContainerController(settings, { fence: async () => {}, docker, exists: () => false })
     await controller.wake()
     expect(helpers).toEqual([cgroupRemountArgs('caboose-owner', 'sha256:abc')])
-    expect(fake.calls.some(call => call[0] === 'run')).toBe(false)
+    expect(computerRuns(fake.calls)).toHaveLength(0)
     await controller.park()
     await controller.wake()
     expect(helpers).toHaveLength(1)
@@ -197,7 +216,7 @@ describe('createContainerController', () => {
     const controller = createContainerController(settings, { fence: async () => {}, docker: fake.docker, exists: () => false })
     await controller.wake()
     expect(fake.calls.some(call => call[0] === 'start')).toBe(true)
-    expect(fake.calls.some(call => call[0] === 'run')).toBe(false)
+    expect(computerRuns(fake.calls)).toHaveLength(0)
   })
 
   it('runs the agent seat and app commands inside the container', async () => {
@@ -419,7 +438,7 @@ it('removes only its failed bind attempt and retries with new ports', async () =
   const docker: Docker = async (args, timeout) => {
     calls.push(args)
     if (args[0] === 'ps') return ''
-    if (args[0] === 'run') {
+    if (args[0] === 'run' && !isBroker(args)) {
       runs++
       if (runs === 1) {
         attempt = args.find(arg => arg.startsWith('caboose.port-attempt='))!.split('=')[1]!
@@ -435,7 +454,7 @@ it('removes only its failed bind attempt and retries with new ports', async () =
   await controller.wake()
   expect(runs).toBe(2)
   expect(calls.filter(call => call[0] === 'rm')).toEqual([['rm', id]])
-  expect(calls.filter(call => call[0] === 'run')[1]).toContain('127.0.0.1:21004:14600')
+  expect(computerRuns(calls)[1]).toContain('127.0.0.1:21004:14600')
   expect(calls.some(call => call[0] === 'volume' || (call[0] === 'network' && call[1] === 'rm'))).toBe(false)
 })
 

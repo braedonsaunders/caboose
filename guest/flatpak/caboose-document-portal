@@ -1,0 +1,13 @@
+#!/bin/sh
+# The document portal (xdg-document-portal) for a container computer's seat. Each seat runs
+# its own session bus and so its own portal, and the portal mounts its FUSE file system in
+# $XDG_RUNTIME_DIR/doc: the agent seat's gets a runtime directory of its own, so the two
+# seats' mounts do not collide. Flatpak finds the mount from the portal (GetMountPoint).
+# Mounting goes through fusermount3, which here is caboose-fusermount (the host's FUSE broker).
+set -eu
+if [ "${CABOOSE_SEAT:-}" = agent ]; then
+  XDG_RUNTIME_DIR="/run/user/$(id -u)/caboose-agent"
+  mkdir -p -m 0700 "$XDG_RUNTIME_DIR"
+  export XDG_RUNTIME_DIR
+fi
+exec /usr/libexec/xdg-document-portal "$@"

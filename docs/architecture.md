@@ -704,6 +704,20 @@ each wake the host bind-remounts an older container's read-only `/sys/fs/cgroup`
 that container's mount namespace with a one-shot privileged helper. A microVM computer has
 no app scopes. See [guest/scopes](../guest/scopes/README.md).
 
+**FUSE.** A container computer has no `/dev/fuse` and may not mount, so its FUSE mounts (the
+Flatpak document portal's) are made from outside it: at each wake the host starts
+`<computer>-fuse`, a privileged sidecar in the computer's process namespace that runs
+`caboose-fuse-broker` from the computer's own files and ends with it. The computer's
+`fusermount3` is `caboose-fusermount`, which asks the broker over `/run/caboose/fuse.sock`;
+the broker mounts a FUSE file system only on a directory the caller owns under
+`/run/user/<uid>`, owned by the caller, `nosuid` and `nodev`, with the options `fusermount3`
+gives a user, and hands back the open `/dev/fuse`; it unmounts only the caller's own FUSE
+mounts. The tradeoff: a privileged process sits beside every container computer, so the
+broker's checks, not the container's confinement, stand between the computer's users and
+the kernel's FUSE mount path; the computer itself gains no device or capability, and an
+existing computer gets FUSE without being created again. Each seat's document portal mounts
+in a runtime directory of its own (the agent seat's in `/run/user/<uid>/caboose-agent`).
+
 **Services.** The same daemon is the container computer's service manager. A service is
 declared in a unit file, a subset of systemd's: root's in `/etc/caboose/services/<name>.service`
 (may set `User=`) and the owner's in `~/.config/caboose/services/<name>.service` (run as the
