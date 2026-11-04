@@ -833,10 +833,12 @@ it after the client-flags word like any command:
 | --- | --- | --- | --- |
 | REPLY_MODE | `0x4342FE06` | 16 | mode u32 = 1 (silent success) or 3 ([one-way start](#one-way-start)), reserved u32 = 0 |
 
-It has no reply, and it holds for that stream from then on. The process sends it once on each
-device stream, including a stream it connects again after its executor changed, only while its
-completion feed runs, and before the first command whose reply it will not read; a stream
-without the switch is answered as before. The decoder ends the stream of a process without a
+It has no reply, and it holds for that stream until the stream's next REPLY_MODE. The process
+sends `REPLY_MODE(1)` once on each device stream, including a stream it connects again after its
+executor changed, only while its completion feed runs, and before the first command whose reply
+it will not read; with [one-way start](#one-way-start) it switches to `REPLY_MODE(3)` for a
+start command and back to `REPLY_MODE(1)` after it. A stream without the switch is answered as
+before. The decoder ends the stream of a process without a
 feed that sends it (`EPROTO`). The decoder does not see the hello, so the switch is the only
 signal.
 
@@ -898,7 +900,7 @@ commands that start a process's Vulkan, whose handles the process chooses itself
 | Command | Opcode | A failure |
 | --- | --- | --- |
 | `vkCreateInstance` | 20000 | its result |
-| `vkEnumeratePhysicalDevices` | 20002 | its result, `VK_INCOMPLETE` included |
+| `vkEnumeratePhysicalDevices` | 20002 | its result, `VK_INCOMPLETE` included; `VK_ERROR_INITIALIZATION_FAILED` when it found fewer than the process named |
 | `vkCreateDevice` | 20011 | its result; `VK_ERROR_INITIALIZATION_FAILED`, without reaching the driver, for queues the physical device does not have |
 | `vkGetDeviceQueue` | 20017 | `VK_ERROR_INITIALIZATION_FAILED` when no queue matches |
 | `vkGetDeviceQueue2` | 20155 | `VK_ERROR_INITIALIZATION_FAILED` when no queue matches |

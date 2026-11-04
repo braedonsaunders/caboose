@@ -413,7 +413,8 @@ int decodeConnection(int fd, size_t max_packet, size_t max_reply_buffer,
             if (silent) {
                 stream.hold(false);
                 // The guest reads no reply: success writes nothing, failure is a FAULT record.
-                const int32_t result = silent_replies::resultOf(replyOpcode, stream.held());
+                const int32_t result =
+                    silent_replies::resultOf(replyOpcode, stream.held(), pending.data(), frame.size);
                 if (result != 0) completions->fault(replyOpcode, result);
                 stream.held().clear();
             }

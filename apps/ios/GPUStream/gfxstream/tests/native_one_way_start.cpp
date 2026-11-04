@@ -7,10 +7,12 @@
 // A process's device stream sends REPLY_MODE(3) and then, without reading anything:
 //   1. vkCreateInstance with an extension no driver has, under a guest-assigned handle: it fails,
 //      and the process's completion feed carries a FAULT record (opcode 20000, its VkResult);
-//   2. vkCreateInstance, vkEnumeratePhysicalDevices, then a vkCreateDevice asking family 0 for
-//      one queue more than it has, which fails without reaching the driver (a FAULT, opcode
-//      20011, VK_ERROR_INITIALIZATION_FAILED), then vkCreateDevice and vkGetDeviceQueue2, every
-//      handle the guest's own: the rest succeed and write nothing;
+//   2. vkCreateInstance; a vkEnumeratePhysicalDevices naming two physical devices where there is
+//      one (a FAULT, opcode 20002, VK_ERROR_INITIALIZATION_FAILED) and one naming the one; a
+//      vkCreateDevice asking family 0 for one queue more than it has, which fails without
+//      reaching the driver (a FAULT, opcode 20011, VK_ERROR_INITIALIZATION_FAILED); then
+//      vkCreateDevice and vkGetDeviceQueue2, every handle the guest's own: the rest succeed and
+//      write nothing;
 //   3. vkQueueWaitIdle on the guest's queue and vkEnumerateInstanceVersion, whose replies are the
 //      only bytes the stream reads back, then vkDestroyDevice and vkDestroyInstance by the guest's
 //      handles. A handle the decoder did not take would end the stream as invalid guest input.
@@ -177,7 +179,9 @@ int main(int argc, char** argv) {
     stream.insert(stream.end(), (const unsigned char*)mode, (const unsigned char*)mode + sizeof(mode));
     add(createInstance(failed, {"VK_CABOOSE_no_such_extension"}));
     add(createInstance(instance, {}));
+    // lavapipe has one physical device: naming two is a wrong prediction.
     add(enumeratePhysicalDevices(instance, {physical, other}));
+    add(enumeratePhysicalDevices(instance, {physical}));
     // Family 0 of lavapipe's one physical device has one queue: two is a wrong prediction.
     add(createDevice(physical, wrong, 2));
     add(createDevice(physical, logical));
@@ -199,7 +203,7 @@ int main(int argc, char** argv) {
 
     // The failed creates' FAULTs, in order: serial 0, the fault status, the opcode and result.
     struct Fault { uint64_t serial = 1; int32_t status = 0; uint32_t opcode = 0; int32_t result = 0; };
-    Fault faults[2];
+    Fault faults[3];
     for (Fault& fault : faults) {
         unsigned char record[CompletionFeed::kRecordSize] = {};
         uint32_t payload = 0;
@@ -221,13 +225,15 @@ int main(int argc, char** argv) {
     };
     const bool pass = ok && nothingElse && deviceResult == 0 && idle == 0 && versionReply[0] >= (1u << 22) &&
                       versionReply[1] == 0 && faulted(faults[0], sr::kCreateInstance, -7) &&
-                      faulted(faults[1], sr::kCreateDevice, -3) && !finish;
+                      faulted(faults[1], sr::kEnumeratePhysicalDevices, -3) &&
+                      faulted(faults[2], sr::kCreateDevice, -3) && !finish;
     std::printf("%s one-way start: device stream %d, idle %d, version 0x%x result %d, nothing else %d; "
                 "feed records serial %llu status 0x%x opcode %u result %d, serial %llu status 0x%x opcode %u "
-                "result %d; cleanup %d\n",
+                "result %d, serial %llu status 0x%x opcode %u result %d; cleanup %d\n",
                 pass ? "PASS" : "FAIL", deviceResult, idle, versionReply[0], (int)versionReply[1], nothingElse,
                 (unsigned long long)faults[0].serial, (unsigned)faults[0].status, faults[0].opcode, faults[0].result,
                 (unsigned long long)faults[1].serial, (unsigned)faults[1].status, faults[1].opcode, faults[1].result,
+                (unsigned long long)faults[2].serial, (unsigned)faults[2].status, faults[2].opcode, faults[2].result,
                 finish);
     return pass ? 0 : 1;
 }

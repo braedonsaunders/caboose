@@ -10,7 +10,8 @@
 // process's Vulkan, whose handles the guest chooses itself (the fork's
 // caboose_guest_dispatchable.h): vkCreateInstance, vkEnumeratePhysicalDevices, vkCreateDevice
 // and vkGetDeviceQueue(2). Those return no VkResult of their own a queue could fail with: a
-// queue lookup failed when its reply names no queue.
+// queue lookup failed when its reply names no queue, and a list of physical devices when it
+// found fewer than the process named.
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -56,6 +57,31 @@ inline int32_t resultOf(uint32_t opcode, const std::vector<unsigned char>& reply
     int32_t result;
     std::memcpy(&result, reply.data() + reply.size() - 4, 4);
     return result;
+}
+
+// A big-endian 64-bit pointer marker and, after it when it is set, a u32: the count of a
+// vkEnumeratePhysicalDevices request or reply. 0 when absent or truncated.
+inline uint32_t markedCount(const unsigned char* bytes, size_t size) {
+    if (size < 12) return 0;
+    bool present = false;
+    for (int i = 0; i < 8; ++i) present |= bytes[i] != 0;
+    uint32_t count = 0;
+    if (present) std::memcpy(&count, bytes + 8, 4);
+    return count;
+}
+
+// The VkResult a listed command's held reply stands for, given its whole packet (`request`,
+// header included). A process that lists its physical devices one-way names as many as it
+// predicts: a reply that found fewer is a failure too (VK_ERROR_INITIALIZATION_FAILED), since
+// the ones past it were never named.
+inline int32_t resultOf(uint32_t opcode, const std::vector<unsigned char>& reply, const unsigned char* request,
+                        size_t requestSize) {
+    const int32_t result = resultOf(opcode, reply);
+    if (result != 0 || opcode != kEnumeratePhysicalDevices || requestSize < 16) return result;
+    // The request: header, instance u64, then the count; the reply starts with the count.
+    const uint32_t asked = markedCount(request + 16, requestSize - 16);
+    const uint32_t found = markedCount(reply.data(), reply.size());
+    return found < asked ? -3 : 0;
 }
 
 // Parses a complete REPLY_MODE packet: its mode, or 0 if malformed.

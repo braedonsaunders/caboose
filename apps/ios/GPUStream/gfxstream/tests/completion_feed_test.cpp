@@ -387,6 +387,28 @@ int main() {
         const int32_t missing = -7;  // VK_ERROR_EXTENSION_NOT_PRESENT
         std::memcpy(instance.data() + 8, &missing, 4);
         assert(sr::resultOf(20000u, instance) == -7);
+        // A list of physical devices that found fewer than the process named failed.
+        auto be64 = [](std::vector<unsigned char>& out, uint64_t v) { for (int i = 7; i >= 0; --i) out.push_back(uint8_t(v >> (8 * i))); };
+        auto u32 = [](std::vector<unsigned char>& out, uint32_t v) { out.insert(out.end(), (unsigned char*)&v, (unsigned char*)&v + 4); };
+        auto list = [&](uint32_t asked) {
+            std::vector<unsigned char> request(16, 0);  // header and instance
+            be64(request, 1); u32(request, asked); be64(request, 1);
+            request.resize(request.size() + 8 * asked, 0xCA);
+            return request;
+        };
+        auto found = [&](uint32_t count, int32_t result) {
+            std::vector<unsigned char> reply;
+            be64(reply, 1); u32(reply, count); be64(reply, 1);
+            reply.resize(reply.size() + 8 * count, 0x11);
+            u32(reply, uint32_t(result));
+            return reply;
+        };
+        const auto two = list(2), single = list(1);
+        assert(sr::resultOf(20002u, found(2, 0), two.data(), two.size()) == 0);
+        assert(sr::resultOf(20002u, found(1, 0), two.data(), two.size()) == -3);
+        assert(sr::resultOf(20002u, found(1, 5), single.data(), single.size()) == 5);  // VK_INCOMPLETE as it was
+        assert(sr::resultOf(20002u, found(1, 0), single.data(), single.size()) == 0);
+        assert(sr::resultOf(20021u, found(0, 0), two.data(), two.size()) == 0);  // other commands as before
     }
     // Process stop: the socket is shut down and run returns 0.
     {
