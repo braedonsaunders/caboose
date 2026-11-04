@@ -66,6 +66,9 @@ for spec in 'WhiteSur-gtk-theme d5782652d412137e26fb8ff55b55a5572e4c6995' 'White
  git -C "/tmp/themes/$1" checkout -q "$2"
 done
 /tmp/themes/WhiteSur-gtk-theme/install.sh -d /usr/share/themes -c light -c dark
+# The theme's installer also leaves a theme-switcher app that needs GTK 4 Python bindings the
+# image does not have, so it cannot open: only the themes are kept.
+rm -f /usr/bin/gnome-theme-switcher /usr/share/applications/org.gnome.GTK4ThemeSwitcher.desktop
 /tmp/themes/WhiteSur-icon-theme/install.sh -d /usr/share/icons
 (cd /tmp/themes/WhiteSur-cursors && ./install.sh)
 mkdir -p /home/caboose/.cache /home/caboose/.config/gtk-3.0 /home/caboose/.config/gtk-4.0 /home/caboose/.config/xfce4/terminal
