@@ -45,10 +45,12 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.abspath(os.path.join(HERE, '../../../../..'))
 PHONE = ('guest-handles,guest-handle-arrays,completion-feed,ordered-present,guest-images,guest-query-pools,'
-         'executor-resume,zstd-stream,guest-buffer-views,batched-descriptor-sets-inline')
+         'executor-resume,zstd-stream,guest-buffer-views,batched-descriptor-sets-inline,guest-set-ids,completion-payloads,'
+         'wait-serial,silent-success')
 PICTURE = re.compile(r'^(\S+) CABOOSE_LINUX_EXECUTOR picture window=(\S+) serial=\d+ (\d+)x(\d+) format=\d+ '
                      r'content=([0-9.]+) colours=(\d+)')
-PORT, XDISPLAY = 14695, 181
+# The seat's port and X display (CHAOS_PORT, CHAOS_X_DISPLAY), so two checks can share a computer.
+PORT, XDISPLAY = int(os.environ.get('CHAOS_PORT', '14695')), int(os.environ.get('CHAOS_X_DISPLAY', '181'))
 FRESH_CHROMIUM = (608, 378)
 # The Flatpak runtime's CPU Vulkan drivers, which the computer's own launch environment keeps
 # beside its GPU driver: without them a 32-bit Steam client with no device fell back to

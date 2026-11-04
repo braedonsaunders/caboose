@@ -193,13 +193,17 @@ sh apps/ios/GPUStream/gfxstream/linux-executor/check-dxvk.sh COMPUTER WORK DRIVE
 
 Runs DXVK's d3d11 triangle (`BENCH_DIR/triangle.exe`, in the Steam Flatpak's data) through Proton
 in a running computer, with `DRIVER` loaded for that process only, on the real Linux executor
-under the phone's feature list, the same without guest-chosen set ids, without batched descriptor
-sets, and an older phone's. The broker is this checkout's (`broker_host.py`, every bind granted)
+under the phone's feature list (batched descriptor sets, guest-chosen set ids, completion
+payloads, ordering barriers and silent success), the same with only the set ids, without the set
+ids, without batched descriptor sets, and an older phone's. The broker is this checkout's (`broker_host.py`, every bind granted)
 on a port of its own, so the computer's own executor and displays are untouched. Each case
 requires DXVK to report the device without skipping it, a D3D11 device, a swapchain and presented
 frames, and no executor fault. The triangle runs with `CABOOSE_READ_PROFILE=1`; each case prints
 the time descriptor set allocations spent waiting for earlier replies (`drain20077`), and the
-phone's case requires guest-chosen set ids granted and no such wait.
+phone's case requires guest-chosen set ids, completion payloads and silent success granted and no
+such wait. `PORT`, `DISPLAY_ENV` (the display the triangle presents on), `SOCKETS` (a shorter
+directory for the GPU sockets) and `CASES` (a subset) let it run beside other checks on one
+computer; it ends only the triangle started from `BENCH_DIR`.
 The release seal runs it.
 
 ## Bind of an unmapped popup
@@ -257,5 +261,7 @@ Then the long-lived apps must present real pictures again, and so must a freshly
 Chromium, glxgears (shown in the compositor's own images) and, with `--triangle` (DXVK's
 d3d11 triangle in that home's Flatpak data), DXVK through Proton, each judged at its own
 window size. The check prints one line per cycle and fails on the first cycle whose apps did
-not all present; `--seed` repeats a run. The release seal runs it with 50 cycles.
+not all present; `--seed` repeats a run. The executor declares the phone's features. The seat
+listens on port 14695 with X display :181; `CHAOS_PORT` and `CHAOS_X_DISPLAY` move it, so two
+checks can run on one computer. The release seal runs it with 50 cycles.
 
