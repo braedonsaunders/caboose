@@ -446,8 +446,10 @@ static void lazyQueryResultsCase(void) {
            wrongCache, zeroTimestamps, waitUs / 1000.0 / rounds, callUs / 1000.0 / rounds, touchUs / 1000.0 / rounds);
 // Memory nothing was sent since its allocation could have written is invalidated without
 // reading (device_work.h): what the process wrote stays. Once a fill was sent, the invalidate
-// after vkQueueWaitIdle (which must wait for that fill) reads the device's bytes.
-static void unwrittenMemoryCase(void) {
+// after vkQueueWaitIdle (which must wait for that fill) reads the device's bytes, at once or,
+// in coherent memory, lazily on first use (lazy readback): a lazy or GPU-marked block is never
+// taken for unwritten.
+static void unwrittenMemoryCase(VkMemoryPropertyFlags want, const char* name) {
     VkBufferCreateInfo bufferInfo = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
     bufferInfo.size = 65536;
     bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
@@ -457,7 +459,7 @@ static void unwrittenMemoryCase(void) {
     vkGetBufferMemoryRequirements(device, buffer, &req);
     VkMemoryAllocateInfo alloc = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
     alloc.allocationSize = req.size;
-    alloc.memoryTypeIndex = memoryType(req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+    alloc.memoryTypeIndex = memoryType(req.memoryTypeBits, want);
     VkDeviceMemory memory;
     CHECK(vkAllocateMemory(device, &alloc, NULL, &memory));
     CHECK(vkBindBufferMemory(device, buffer, memory, 0));
@@ -487,7 +489,7 @@ static void unwrittenMemoryCase(void) {
     vkUnmapMemory(device, memory);
     vkDestroyBuffer(device, buffer, NULL);
     vkFreeMemory(device, memory, NULL);
-    report("unwritten_memory", kept && filled, "kept=%d filled=%d unwritten_invalidates_us=%llu", kept, filled,
+    report(name, kept && filled, "kept=%d filled=%d unwritten_invalidates_us=%llu", kept, filled,
            (unsigned long long)unwrittenUs);
 }
 
@@ -1703,7 +1705,10 @@ int main(int argc, char** argv) {
     RUN("free_after_wait", freeCase());
     RUN("completion_after_gpu", completionCase());
     RUN("lazy_query_results", lazyQueryResultsCase());
-    RUN("unwritten_memory", unwrittenMemoryCase());
+    RUN("unwritten_memory_coherent", unwrittenMemoryCase(VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                                                         "unwritten_memory_coherent"));
+    RUN("unwritten_memory_cached", unwrittenMemoryCase(VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT,
+                                                      "unwritten_memory_cached"));
     RUN("pool_capacity", poolCapacityCase());
     RUN("unwritten_sets", unwrittenSetsCase());
     RUN("threaded_set_frees", threadedSetFreesCase());

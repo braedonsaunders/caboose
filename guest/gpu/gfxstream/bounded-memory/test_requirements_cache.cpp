@@ -3,6 +3,7 @@
 #include <cassert>
 #include <cstdio>
 #include <cstdlib>
+#include <sys/wait.h>
 #include <unistd.h>
 #include <string>
 using caboose::memory::RequirementsCache;
@@ -132,6 +133,47 @@ int main() {
         RequirementsCache fifth;
         fifth.deviceCreated(0x6000, identity, foreign);
         assert(fifth.size() == 0);
+        // Two processes that began an empty file at once each wrote a header: the records after
+        // the second are read too. And processes appending to one file at once (a warm-up beside
+        // the first GL process) write one header between them.
+        {
+            const std::string twice = std::string(directory) + "/twice.bin";
+            RequirementsCache a, b;
+            a.deviceCreated(0x7000, identity, twice + ".a");
+            b.deviceCreated(0x7001, identity, twice + ".b");
+            assert(RequirementsCache::imageKey(0x7000, &image, &key)); a.created(0x70, key); a.store(0x70, value);
+            assert(RequirementsCache::bufferKey(0x7001, &buffer, &key)); b.created(0x71, key); b.store(0x71, other);
+            FILE* joined = std::fopen(twice.c_str(), "wb");
+            for (const char* part : {".a", ".b"}) {
+                FILE* in = std::fopen((twice + part).c_str(), "rb");
+                char chunk[4096]; size_t n = std::fread(chunk, 1, sizeof(chunk), in);
+                std::fwrite(chunk, 1, n, joined); std::fclose(in); std::remove((twice + part).c_str());
+            }
+            std::fclose(joined);
+            RequirementsCache sixth;
+            sixth.deviceCreated(0x8000, identity, twice);
+            assert(sixth.size() == 2);
+            std::remove(twice.c_str());
+            const std::string shared = std::string(directory) + "/shared.bin";
+            const pid_t child = fork();
+            if (!child) {
+                RequirementsCache writer; writer.deviceCreated(0x9000, identity, shared);
+                for (uint32_t i = 0; i < 64; ++i) {
+                    buffer.size = 8192 + i; assert(RequirementsCache::bufferKey(0x9000, &buffer, &key));
+                    writer.created(0x900 + i, key); writer.store(0x900 + i, value);
+                }
+                _exit(0);
+            }
+            RequirementsCache writer; writer.deviceCreated(0x9100, identity, shared);
+            for (uint32_t i = 0; i < 64; ++i) {
+                buffer.size = 16384 + i; assert(RequirementsCache::bufferKey(0x9100, &buffer, &key));
+                writer.created(0xA00 + i, key); writer.store(0xA00 + i, value);
+            }
+            int status = 0; assert(waitpid(child, &status, 0) == child && status == 0);
+            RequirementsCache reader; reader.deviceCreated(0x9200, identity, shared);
+            assert(reader.size() == 128);
+            std::remove(shared.c_str());
+        }
         std::remove(path.c_str());
         std::remove(foreign.c_str());
         rmdir(directory);

@@ -14,12 +14,20 @@ namespace caboose::memory {
 using ChainSize = size_t (*)(VkStructureType root, const void* extension);
 
 // Structures extending VkPhysicalDeviceProperties2 whose members point into application
-// memory (from the Vulkan registry the driver is built from). A chain holding one is always asked.
-inline bool chainPointerFree(VkStructureType type) {
-    switch (type) {
+// memory (from the Vulkan registry the driver is built from). A chain holding one is always
+// asked, except a layout list whose arrays are not given: that asks only their counts, which
+// are members like any other.
+inline bool chainPointerFree(const VkBaseInStructure* structure) {
+    switch (structure->sType) {
+    case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_4_PROPERTIES: {
+        auto* properties = reinterpret_cast<const VkPhysicalDeviceVulkan14Properties*>(structure);
+        return !properties->pCopySrcLayouts && !properties->pCopyDstLayouts;
+    }
+    case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_HOST_IMAGE_COPY_PROPERTIES: {
+        auto* properties = reinterpret_cast<const VkPhysicalDeviceHostImageCopyProperties*>(structure);
+        return !properties->pCopySrcLayouts && !properties->pCopyDstLayouts;
+    }
     case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_LAYERED_API_PROPERTIES_LIST_KHR:
-    case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_4_PROPERTIES:
-    case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_HOST_IMAGE_COPY_PROPERTIES:
     case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_GPA_PROPERTIES_AMD:
         return false;
     default:
@@ -39,7 +47,7 @@ inline bool chainShape(VkStructureType rootType, const void* root, size_t rootSi
     size_t count = 0;
     for (auto* next = static_cast<const VkBaseInStructure*>(root)->pNext; next; next = next->pNext) {
         const size_t bytes = size(rootType, next);
-        if (++count > kMaxChainStructures || !chainPointerFree(next->sType) || bytes < sizeof(VkBaseOutStructure))
+        if (++count > kMaxChainStructures || !chainPointerFree(next) || bytes < sizeof(VkBaseOutStructure))
             return false;
         put(uint32_t(next->sType)); put(uint32_t(bytes));
     }
