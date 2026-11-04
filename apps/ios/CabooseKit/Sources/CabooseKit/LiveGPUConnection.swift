@@ -195,7 +195,7 @@ public final class LiveGPUConnection: NSObject, LiveGPUResumeSocket, URLSessionW
     /// ("Guest-chosen set ids"), brings watched queries and memory back in completion records
     /// ("Completion payloads"), takes WAIT_SERIAL ordering marks, and leaves out the replies of
     /// the commands a guest does not wait for ("Silent success").
-    static let features = "guest-handles,guest-handle-arrays,completion-feed,ordered-present,guest-images,guest-query-pools,shader-cache,executor-resume,zstd-stream,upload-cache,guest-buffer-views,batched-descriptor-sets-inline,guest-set-ids,completion-payloads,wait-serial,silent-success"
+    static let features = "guest-handles,guest-handle-arrays,completion-feed,ordered-present,guest-images,guest-query-pools,shader-cache,executor-resume,zstd-stream,upload-cache,guest-buffer-views,batched-descriptor-sets-inline,guest-set-ids,completion-payloads,wait-serial,silent-success,one-way-start"
     static let resumeHeader = "X-Caboose-GPU-Resume"
     /// A resume attempt waits this long for its upgrade; the next follows at once.
     static let resumeTimeout: TimeInterval = 3
