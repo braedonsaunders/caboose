@@ -31,6 +31,10 @@ if command -v i686-linux-gnu-g++ >/dev/null; then
     done
     cxx=
 fi
+cc -std=c11 -Wall -Wextra -Werror -Wno-missing-field-initializers -I"${CABOOSE_VULKAN_INCLUDE:-/work/mesa/include}" \
+    "$gfxstream/warmup/test_warmup.c" -o "$scratch/test_warmup" -ldl
+"$scratch/test_warmup" >"$scratch/test_warmup.log" 2>&1 || { cat "$scratch/test_warmup.log" >&2; echo "FAIL test_warmup" >&2; exit 1; }
+echo "pass test_warmup"
 run test_client "$gfxstream/virtual-wsi/test_client.cpp" "$gfxstream/virtual-wsi/client.cpp"
 run test_indexed "$gfxstream/virtual-wsi/test_indexed.cpp" "$gfxstream/virtual-wsi/client.cpp"
 run test_socket_stream $config -I"$gfxstream/fixtures/iostream" -I"$scratch/include" \

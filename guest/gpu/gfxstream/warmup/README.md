@@ -24,7 +24,11 @@ pay one round trip per capability question.
   Eight processes ask the new executor all of them, each taking a share; the executor
   answers separate processes side by side. Answers are never carried over from an earlier
   session, only which questions were asked. It asks only devices whose name appears in a
-  log's identity, or every device when none matches.
+  log's identity, or every device when none matches. It reads only logs of processes of
+  its own pointer width: a question's chain was laid out for that width, and its answers
+  belong to that width's scope. Its line reports the width (`bits`), the questions asked,
+  the logs of another width it left (`skipped_logs`) and `incomplete` when a process of it
+  failed, with the reason before it.
 
 The broker moves the previous sessions' logs into `capabilities/history/` when a session
 starts, and keeps the newest four. An application that asks while the warm-up is still
@@ -62,10 +66,16 @@ CABOOSE_CAPABILITY_CACHE_DIAGNOSTICS=1 caboose-gpu-warmup
 The `CABOOSE_CAPABILITY_CACHE` line shows hits, misses, claims and joined answers. The
 broker's log shows each warm-up's `CABOOSE_GPU_WARMUP` line.
 
+`../driver/test.sh` builds and runs `test_warmup.c`, which checks that the replay reads
+only logs of its own pointer width.
+
 ## Limitation
 
 A GL start still makes the round trips the cache cannot cover: instance creation and
 enumeration, its first physical-device properties query (which identifies the device),
-features and memory properties (which the driver adjusts per process), device creation and
-descriptor-layout support. A short-lived process that starts GL just
-before it exits still pays them.
+features and memory properties (which the driver adjusts per process) and device creation.
+A short-lived process that starts GL just before it exits still pays them.
+
+The warm-up runs as a 64-bit process on the computer, so 32-bit applications' questions
+(Steam's client is one) are not asked again: the first 32-bit process of a session asks
+them, and later ones share its answers.
