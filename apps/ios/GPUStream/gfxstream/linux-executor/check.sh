@@ -29,7 +29,9 @@ here=$(cd "$(dirname "$0")" && pwd)
 repo=$(cd "$here/../../../../.." && pwd)
 name=caboose-lexec-$$
 shared=$(mktemp -d)
-chmod 0777 "$shared"
+# Sticky, as /tmp is: the driver keeps capability logs only under directories nobody else can
+# replace (static_query_cache.h), and one-way start predicts from those logs.
+chmod 1777 "$shared"
 cpus=${CPUS:-4}
 phone=guest-handles,guest-handle-arrays,completion-feed,ordered-present,guest-images,guest-query-pools,shader-cache,executor-resume,zstd-stream,upload-cache,guest-buffer-views,batched-descriptor-sets-inline,guest-set-ids,completion-payloads,wait-serial,silent-success,one-way-start,executor-stats
 cleanup() {

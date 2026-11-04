@@ -1858,6 +1858,8 @@ static int lostReplyChild(void) {
 }
 
 static char oneWayChildLine[256];
+static size_t oneWayChildBytes;  // what the last one-way child wrote to its diagnostics
+static char oneWayChildHead[2048];  // its first lines, printed when a one-way case fails
 static int lostReplyLostCalls;
 // Runs oneWayChild in a new process with the driver's diagnostics, and returns its exit status
 // (-1 when it did not exit within 40 s, and was killed), how many commands it sent one-way, and
@@ -1881,26 +1883,45 @@ static int runOneWayChild(int mispredict, int* oneWay, int* granted) {
         _exit(4);
     }
     close(pipefd[1]);
-    char output[65536];
+    // The child's diagnostics are read line by line as they come, so a child that writes a lot
+    // (traffic and launch lines) cannot push the lines counted here out of a fixed buffer.
+    char line[4096];
     size_t used = 0;
+    int oneWayLines = 0, grantedBit = 0, sawHello = 0;
+    oneWayChildLine[0] = 0;
+    oneWayChildBytes = 0;
+    oneWayChildHead[0] = 0;
+    lostReplyLostCalls = 0;
     const uint64_t start = nowUs();
     for (;;) {
         const int64_t left = 40000 - (int64_t)((nowUs() - start) / 1000);
         if (left <= 0) break;
         struct pollfd ready = {pipefd[0], POLLIN, 0};
         if (poll(&ready, 1, (int)left) != 1) break;
-        const ssize_t n = read(pipefd[0], output + used, sizeof(output) - 1 - used);
+        char chunk[8192];
+        const ssize_t n = read(pipefd[0], chunk, sizeof(chunk));
         if (n <= 0) break;
-        used += (size_t)n;
-        if (used == sizeof(output) - 1) used = 0;  // only the counts matter
+        const size_t kept = strlen(oneWayChildHead);
+        if (kept < sizeof(oneWayChildHead) - 1)
+            snprintf(oneWayChildHead + kept, sizeof(oneWayChildHead) - kept, "%.*s", (int)n, chunk);
+        oneWayChildBytes += (size_t)n;
+        for (ssize_t i = 0; i < n; ++i) {
+            if (chunk[i] != '\n' && used < sizeof(line) - 1) { line[used++] = chunk[i]; continue; }
+            if (chunk[i] != '\n') continue;  // an over-long line: its start is kept
+            line[used] = 0;
+            used = 0;
+            if (strstr(line, "CABOOSE_ONE_WAY_START opcode=")) ++oneWayLines;
+            if (strstr(line, "CABOOSE_GPU_LOST_CALL")) ++lostReplyLostCalls;
+            const char* lost = strstr(line, "CABOOSE_SYNC_CHECK_LOST_REPLY ");
+            if (lost) snprintf(oneWayChildLine, sizeof(oneWayChildLine), "%s", lost + 30);
+            const char* hello = strstr(line, "CABOOSE_GPU_HELLO features=0x");
+            if (hello && !sawHello) {
+                sawHello = 1;
+                grantedBit = (strtoul(hello + strlen("CABOOSE_GPU_HELLO features=0x"), NULL, 16) & 0x1000000u) != 0;
+            }
+        }
     }
-    output[used] = 0;
     close(pipefd[0]);
-    const char* line = strstr(output, "CABOOSE_SYNC_CHECK_LOST_REPLY ");
-    snprintf(oneWayChildLine, sizeof(oneWayChildLine), "%.*s", line ? (int)strcspn(line + 30, "\n") : 0,
-             line ? line + 30 : "");
-    lostReplyLostCalls = 0;
-    for (const char* p = strstr(output, "CABOOSE_GPU_LOST_CALL"); p; p = strstr(p + 1, "CABOOSE_GPU_LOST_CALL")) ++lostReplyLostCalls;
     int status = 0, exited = 0;
     while (nowUs() - start < 41000000u) {
         if (waitpid(child, &status, WNOHANG) == child) { exited = 1; break; }
@@ -1911,13 +1932,8 @@ static int runOneWayChild(int mispredict, int* oneWay, int* granted) {
         kill(child, SIGKILL);
         waitpid(child, &status, 0);
     }
-    *oneWay = 0;
-    for (const char* line = strstr(output, "CABOOSE_ONE_WAY_START opcode="); line;
-         line = strstr(line + 1, "CABOOSE_ONE_WAY_START opcode="))
-        ++*oneWay;
-    *granted = 0;
-    const char* hello = strstr(output, "CABOOSE_GPU_HELLO features=0x");
-    if (hello) *granted = (strtoul(hello + strlen("CABOOSE_GPU_HELLO features=0x"), NULL, 16) & 0x1000000u) != 0;
+    *oneWay = oneWayLines;
+    *granted = grantedBit;
     return exited && WIFEXITED(status) ? WEXITSTATUS(status) : -1;
 }
 
@@ -1928,11 +1944,13 @@ static void oneWayCases(const char* only) {
     int firstSent = 0, secondSent = 0, granted = 0, grantedAgain = 0;
     if (!only || strstr("one_way_start", only)) {
         const int first = runOneWayChild(0, &firstSent, &granted);
+        const size_t firstBytes = oneWayChildBytes;
         const int second = runOneWayChild(0, &secondSent, &grantedAgain);
         // Instance, device and queue at least; the list too once the session knows its count.
         const int ok = first == 0 && second == 0 && (!granted || secondSent >= 3);
-        report("one_way_start", ok, "granted=%d first=%d second=%d sent_one_way=%d/%d", granted, first, second,
-               firstSent, secondSent);
+        report("one_way_start", ok, "granted=%d first=%d second=%d sent_one_way=%d/%d diagnostics_bytes=%zu/%zu", granted,
+               first, second, firstSent, secondSent, firstBytes, oneWayChildBytes);
+        if (!ok) printf("CABOOSE_SYNC_CHECK one_way_start second child wrote:\n%s\n", oneWayChildHead);
     }
     if (!only || strstr("one_way_misprediction", only)) {
         int sent = 0;

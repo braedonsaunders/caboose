@@ -7,7 +7,7 @@ image=$1; work=$(realpath "$2"); release=$(realpath "$3"); driver=$(realpath "$4
 mkdir -p "$6"; out=$(realpath "$6")
 here=$(cd "$(dirname "$0")" && pwd); repo=$(cd "$here/../../../../.." && pwd)
 name=caboose-wayland-check-$$
-shared=$(mktemp -d); chmod 0777 "$shared"
+shared=$(mktemp -d); chmod 1777 "$shared"
 cleanup() {
   docker logs "$name-executor" > "$out/executor.log" 2>&1 || true
   docker exec "$name-computer" cat /home/caboose/.cache/caboose-display.log > "$out/display.log" 2>&1 || true
