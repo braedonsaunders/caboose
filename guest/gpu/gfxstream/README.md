@@ -13,6 +13,8 @@ broker that relays its command streams to the phone. The protocol is in
 | `caboose-gpu-broker` and its modules | The broker (below) |
 | `make_manifest.py` | Writes a Vulkan loader manifest for a built library after checking its hash |
 | `check_opcodes.py` | Compares the guest and decoder opcode tables of the pinned revisions |
+| `gpu-features.json`, `gpu_features.py` | The GPU feature names and bits every component must agree on, the check that they do, and the release's expected session ([Feature negotiation](../../../docs/gpu-live.md#feature-negotiation)) |
+| `check_session_features.py COMPUTER` | Exits 1 when the phone's last session on COMPUTER negotiated fewer features than the installed release expects, naming the stage that dropped each |
 | `check_live_broker.py`, `phone_guest_oracle.py` | Broker transport check with a fake executor; feedback renderer run against a broker |
 | [`coherent/`](coherent/README.md) | A standalone exact-byte publication library; the driver does not use it |
 

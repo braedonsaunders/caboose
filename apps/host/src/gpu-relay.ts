@@ -27,9 +27,25 @@ export const GPU_FEATURES = ['guest-handles', 'guest-handle-arrays', 'completion
 
 /** The known features named in a phone's `X-Caboose-GPU-Features` header, sorted. */
 export function gpuFeatures(header: string | string[] | undefined): string[] {
-  const values = (Array.isArray(header) ? header.join(',') : header ?? '').split(',')
   const known = new Set<string>(GPU_FEATURES)
-  return [...new Set(values.map(value => value.trim().toLowerCase()).filter(value => known.has(value)))].sort()
+  return declaredGPUFeatures(header).filter(value => known.has(value))
+}
+
+/** Every feature name a phone declared, known or not, sorted: at most 64 names of the
+ * feature-name form, so the guest can log what the relay dropped (docs/gpu-live.md,
+ * "Feature negotiation"). */
+export function declaredGPUFeatures(header: string | string[] | undefined): string[] {
+  const values = (Array.isArray(header) ? header.join(',') : header ?? '').split(',')
+  const names = values.map(value => value.trim().toLowerCase()).filter(value => /^[a-z0-9][a-z0-9-]{0,63}$/.test(value))
+  return [...new Set(names)].sort().slice(0, 64)
+}
+
+/** One line for the host's log naming the declared features this relay does not forward;
+ * empty when it forwards them all. */
+export function droppedGPUFeaturesLine(declared: readonly string[]): string {
+  const known = new Set<string>(GPU_FEATURES)
+  const dropped = declared.filter(name => !known.has(name))
+  return dropped.length ? `CABOOSE_GPU_RELAY_FEATURES dropped=${dropped.join(',')} forwarded=${declared.filter(name => known.has(name)).join(',')}` : ''
 }
 
 /** The owner's existing guest service; never a client-supplied destination. */
@@ -88,6 +104,7 @@ export function relayGPU(client: WebSocket, options: {
   computer: string
   executor: string
   features?: readonly string[]
+  declared?: readonly string[]
 }): Promise<void> {
   return startGPURelay(client, options).done
 }
@@ -103,6 +120,9 @@ export function startGPURelay(first: WebSocket, options: {
   computer: string
   executor: string
   features?: readonly string[]
+  /** Every name the phone declared (declaredGPUFeatures), told to the guest beside the
+   * forwarded ones so a feature this relay drops is visible there. */
+  declared?: readonly string[]
   resumable?: boolean
 }): GPURelay {
   if (first.readyState !== WebSocket.OPEN) return { done: Promise.resolve(), attach: () => false, end: () => {}, ended: true }
@@ -117,6 +137,7 @@ export function startGPURelay(first: WebSocket, options: {
       'x-caboose-gpu-computer': options.computer,
       'x-caboose-gpu-executor': options.executor,
       ...(options.features?.length ? { 'x-caboose-gpu-features': options.features.join(',') } : {}),
+      ...(options.declared?.length ? { 'x-caboose-gpu-declared': options.declared.join(',') } : {}),
     },
   })
   let attachPhone: (client: WebSocket) => boolean = () => false

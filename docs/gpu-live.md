@@ -304,6 +304,35 @@ the phone declared (`guest-handles`, `guest-handle-arrays`, `completion-feed`,
 `0x200000`, `0x400000` or `0x800000` without `0x200`, or any other difference from the v4 hello
 closes the local connection. A process falls back to offering fewer features.
 
+### Feature negotiation
+
+Every name above and its hello bit are listed once, in
+[`guest/gpu/gfxstream/gpu-features.json`](../guest/gpu/gfxstream/gpu-features.json), with the
+features each requires and whether the phone app declares it. A name a component does not
+know is dropped there without an error, and the phone then runs without it, so
+`gpu_features.py check REPO` (run by `test_feature_lists.py`, by the host's
+`gpu-relay.test.ts` and by `guest/release/stage-gpu-stack.sh`) fails when the phone app's list,
+the Linux executor's, the DXVK check's, the host relay's, the broker's admission and
+`HELLO_FEATURES` (with its requirements) or the driver's first offer differ from it.
+
+At run time each stage says what it passed on:
+
+- The host relay forwards the phone's whole well-formed list beside the known names, as
+  `X-Caboose-GPU-Declared`, and logs `CABOOSE_GPU_RELAY_FEATURES dropped=… forwarded=…` when it
+  drops a name.
+- The broker logs one line per executor session:
+  `CABOOSE_GPU_SESSION_FEATURES source=relay|direct declared=… forwarded=… received=… bits=…`
+  (`declared` is `-` from a relay that does not report it; `source=direct` is a session that
+  did not come through the relay, such as a seat check's executor).
+- Each process logs the hello it was granted, `CABOOSE_GPU_HELLO features=0x…`.
+
+A release carries `/usr/local/libexec/caboose-gpu/expected-features.json`, written by
+`gpu_features.py expected`: the phone's declared names and the hello a process of this release
+is granted with them. `check_session_features.py COMPUTER` compares the last relayed session
+in the owner display's log with it, and names the stage that dropped each missing feature:
+the phone app, the host relay, the broker's admission, or the hello. It exits 1 on a
+mismatch, 2 when there is no relayed session yet.
+
 ### Batched descriptor sets
 
 With `0x80000` the process allocates and writes descriptor sets itself, inline uniform blocks

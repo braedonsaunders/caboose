@@ -444,6 +444,14 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
         session = broker.Session(None, b'a' * 16, 1, None, Writer(), features=frozenset({'guest-handles'}))
         self.assertFalse(session.features)
 
+    def test_session_features_line_names_each_stage(self):
+        line = broker.session_features_line(frozenset({'guest-handles', 'future-thing', 'other'}),
+                                            frozenset({'guest-handles', 'other'}), frozenset({'guest-handles'}))
+        self.assertEqual(line, 'CABOOSE_GPU_SESSION_FEATURES source=relay declared=future-thing,guest-handles,other '
+                               'forwarded=guest-handles,other received=guest-handles bits=0x80')
+        self.assertEqual(broker.session_features_line(None, frozenset(), frozenset()),
+                         'CABOOSE_GPU_SESSION_FEATURES source=direct declared=- forwarded=- received=- bits=0x0')
+
     def test_hello_negotiation_grants_offered_phone_features(self):
         everything = frozenset(broker.HELLO_FEATURES)
         negotiate = broker.negotiate_hello

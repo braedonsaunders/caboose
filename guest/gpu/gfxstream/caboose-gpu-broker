@@ -23,7 +23,7 @@ import time
 
 import buffer_presentation as buffers
 from executor_lease import ExecutorLease, MAX_QUEUED_BYTES, MAX_QUEUED_FRAMES, MAX_QUEUED_MESSAGES
-from gpu_admission import MAX_REQUEST, MAX_TOKEN, admit, features as admission_features
+from gpu_admission import MAX_REQUEST, MAX_TOKEN, admit, declared as admission_declared, features as admission_features, forwarded as admission_forwarded
 from gpu_websocket import Decoder as WebSocketDecoder, server_frame
 from ipc_handoff import receive_record
 import control_protocol
@@ -70,6 +70,18 @@ NEEDS_GUEST_HANDLES = 0x100 | 0x1000 | 0x10000 | 0x100000 | 0x800000
 # Features that need the completion feed (0x200) granted with them.
 NEEDS_COMPLETION_FEED = 0x200000 | 0x400000 | 0x800000
 HELLO_V4_GUEST_HANDLES = HELLO[:8] + struct.pack('<II', 4, 0xF0) + HELLO[16:]
+
+
+def session_features_line(declared, forwarded, received):
+    """The executor session's features, one line per session (docs/gpu-live.md, "Feature
+    negotiation"): what the phone declared, as the host relay reports it ("-" from a relay that
+    does not), what the relay forwarded, what the broker admitted, and the hello bits that
+    leaves the phone supporting. check_session_features.py compares it with the release."""
+    bits = sum(HELLO_FEATURES.get(name, 0) for name in received)
+    names = lambda values: ','.join(sorted(values)) or '-'
+    return (f'CABOOSE_GPU_SESSION_FEATURES source={"relay" if declared is not None else "direct"} '
+            f'declared={names(declared) if declared is not None else "-"} forwarded={names(forwarded)} '
+            f'received={names(received)} bits={bits:#x}')
 
 
 def negotiate_hello(offered, phone_features):
@@ -2223,6 +2235,7 @@ class Broker:
                 raise ValueError('token file too large')
             _computer, executor, response = admit(raw, token.strip())
             phone_features = admission_features(raw)
+            print(session_features_line(admission_declared(raw), admission_forwarded(raw), phone_features), file=sys.stderr, flush=True)
             # A reconnect can arrive while the lost session is still ending its local clients.
             for _ in range(50):
                 if self.lease.idle: break

@@ -22,6 +22,7 @@ LIBRARIES = ("libvulkan_gfxstream.so", "libVkLayer_caboose_executor_switch.so", 
 LAYERS = ("caboose_executor_switch", "caboose_gpu_routing")
 FILES = ("usr/local/libexec/caboose-gpu-broker", "usr/local/libexec/caboose-gpu/broker.py",
          "usr/local/libexec/caboose-gpu/caboose-gpu-warmup", "usr/local/libexec/caboose-gpu/caboose-gpu-warmup-session",
+         "usr/local/libexec/caboose-gpu/expected-features.json",
          "usr/lib/x86_64-linux-gnu/gbm/vgem_gbm.so", "usr/share/drirc.d/caboose-vgem.conf",
          str(LIVE / "caboose-driver.json"),
          str(HOSTS[0][0] / "lib/gbm/vgem_gbm.so"), str(HOSTS[0][0] / "lib/caboose-gpu-warmup"),

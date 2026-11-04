@@ -88,6 +88,28 @@ def admit(request, per_wake_token):
     return computer, executor, response
 
 
+def _named(request, header):
+    try:
+        value = _headers(request).get(header)
+        if value is None:
+            return None
+        names = {name.strip().lower() for name in value.decode('ascii').split(',')}
+    except (AdmissionError, UnicodeError):
+        return None
+    return frozenset(name for name in names if re.fullmatch(r'[a-z0-9][a-z0-9-]{0,63}', name))
+
+
+def declared(request):
+    """Every feature name the phone declared, as the host relay reports it beside the ones it
+    forwards (X-Caboose-GPU-Declared), or None from a relay that does not report them."""
+    return _named(request, b'x-caboose-gpu-declared')
+
+
+def forwarded(request):
+    """Every well-formed name in X-Caboose-GPU-Features, known here or not."""
+    return _named(request, b'x-caboose-gpu-features') or frozenset()
+
+
 def features(request):
     """The known phone capabilities in an already admitted request; unknown names are ignored."""
     try:
