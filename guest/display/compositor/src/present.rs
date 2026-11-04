@@ -37,7 +37,8 @@ const RECOVERY_INTERVAL: Duration = Duration::from_secs(10);
 /// How long after the executor leaves the next renderer is made (`rebuild_gpu_after_loss`).
 const LOSS_SETTLE: Duration = Duration::from_secs(3);
 /// A renderer made for a ready executor that landed on the computer's device (the executor's
-/// socket was replaced in between) is made again after this, at most `READY_RETRIES` times.
+/// socket was replaced in between), or one that could not be made (its executor left while it
+/// was being made), is made again after this, at most `READY_RETRIES` times.
 const READY_RETRY: Duration = Duration::from_secs(1);
 const READY_RETRIES: u32 = 10;
 /// The routing layer's name for the computer's CPU device presented as a GPU
@@ -114,18 +115,29 @@ impl State {
                 let on_computer = gpu.name.contains(COMPUTER_DEVICE);
                 self.gpu = Some(gpu);
                 let ready = self.gpu_grants.as_ref().is_some_and(|g| g.epoch_if_ready().is_some());
-                if ready && on_computer && attempt < READY_RETRIES {
-                    let generation = self.gpu_generation;
-                    let _ = self.handle.insert_source(Timer::from_duration(READY_RETRY), move |_, _, state: &mut State| {
-                        if state.gpu_generation == generation {
-                            state.rebuild_gpu_attempt(attempt + 1);
-                        }
-                        TimeoutAction::Drop
-                    });
+                if ready && on_computer {
+                    self.retry_gpu(attempt);
                 }
             }
-            Err(e) => tracing::error!("no renderer: {e}"),
+            Err(e) => {
+                tracing::error!("no renderer: {e}");
+                self.retry_gpu(attempt);
+            }
         }
+    }
+
+    /// Makes the renderer again after `READY_RETRY`, unless another was made meanwhile.
+    fn retry_gpu(&mut self, attempt: u32) {
+        if attempt >= READY_RETRIES {
+            return;
+        }
+        let generation = self.gpu_generation;
+        let _ = self.handle.insert_source(Timer::from_duration(READY_RETRY), move |_, _, state: &mut State| {
+            if state.gpu_generation == generation {
+                state.rebuild_gpu_attempt(attempt + 1);
+            }
+            TimeoutAction::Drop
+        });
     }
 
     /// The window's content changed in a way its damage does not say: draw it whole.

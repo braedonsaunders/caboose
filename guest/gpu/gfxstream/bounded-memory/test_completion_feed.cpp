@@ -1,6 +1,12 @@
 // SPDX-License-Identifier: MIT
 #include "completion_feed.h"
 #include <cassert>
+#include <cstdlib>
+#include <cstring>
+#include <string>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <unistd.h>
 #include <thread>
 using namespace caboose::completion;
 using Answer = Tracker::Answer;
@@ -301,6 +307,46 @@ int main() {
         for (int i = 0; i < 5000; ++i) q.commandBufferQueries(0xc4, pool, 0, 1, true);
         q.complete(q.submitted(0, {}, 0x9, 0x1, {0xc4}), kCompleted);
         assert(q.queries(pool, 1, 1) == Q::AskDevice);
+    }
+    {
+        // Executor generations: a loss and a reconnect advance the generation once; a
+        // connection that reaches another executor's socket does so with no loss seen first.
+        namespace c = caboose::completion;
+        // The broker's socket of each executor session.
+        auto listen = [](const char* path) {
+            unlink(path);
+            sockaddr_un address{};
+            address.sun_family = AF_UNIX;
+            std::strncpy(address.sun_path, path, sizeof(address.sun_path) - 1);
+            const int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+            assert(fd >= 0 && bind(fd, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == 0);
+            return fd;
+        };
+        const std::string a = "/tmp/caboose-generation-a-" + std::to_string(getpid());
+        const std::string b = "/tmp/caboose-generation-b-" + std::to_string(getpid());
+        const int fa = listen(a.c_str()), fb = listen(b.c_str());
+        setenv("CABOOSE_GFXSTREAM_SOCKET", a.c_str(), 1);
+        c::executorConnected();
+        c::noteExecutorSocket();
+        const uint64_t first = c::connectionGeneration.load();
+        c::executorConnected();
+        assert(c::connectionGeneration.load() == first);
+        c::markExecutorLost();
+        assert(c::lostCall(first));
+        c::executorConnected();
+        c::noteExecutorSocket();
+        assert(c::connectionGeneration.load() == first + 1 && !c::executorLost.load());
+        assert(c::lostCall(first) && !c::lostCall(first + 1));
+        setenv("CABOOSE_GFXSTREAM_SOCKET", b.c_str(), 1);
+        c::executorConnected();
+        c::noteExecutorSocket();
+        assert(c::connectionGeneration.load() == first + 2 && !c::executorLost.load());
+        assert(c::lostCall(first + 1) && !c::lostCall(first + 2));
+        close(fa);
+        close(fb);
+        unlink(a.c_str());
+        unlink(b.c_str());
+        unsetenv("CABOOSE_GFXSTREAM_SOCKET");
     }
     return 0;
 }

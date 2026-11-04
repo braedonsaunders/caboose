@@ -701,24 +701,6 @@ inline bool onNewGeneration(GenerationHook hook) {
     generationHooks().push_back(hook);
     return true;
 }
-// A device stream connected to a (new) executor.
-inline void executorConnected() {
-    lostSocketInode.store(0, std::memory_order_release);
-    if (executorLost.exchange(false, std::memory_order_acq_rel)) {
-        connectionGeneration.fetch_add(1, std::memory_order_acq_rel);
-        std::vector<GenerationHook> hooks;
-        {
-            std::lock_guard<std::mutex> lock(generationHooksMutex());
-            hooks = generationHooks();
-        }
-        for (GenerationHook hook : hooks) hook();
-        {
-            std::lock_guard<std::mutex> lock(lostCallsMutex());
-            lostCallsTold().clear();
-        }
-        tracker().revive();
-    }
-}
 // CABOOSE_GPU_ON_LOSS=pause: the process must not restart while the phone is away. Its
 // devices cannot survive the executor (their objects lived there), so every call that would
 // report the loss first waits until a new executor is available, then reports it; the
@@ -836,6 +818,32 @@ inline void markExecutorLost() {
     lostSocketInode.store(socketInode());
     std::fprintf(stderr, "CABOOSE_GPU_EXECUTOR_LOST\n");
     tracker().loseAll();
+}
+// A device stream connected to a (new) executor. A connection to another executor than the
+// one the process last connected to is a new generation even when none of the process's
+// streams had ended yet: an idle process learns of the change only by connecting.
+inline void executorConnected() {
+    static std::mutex* serial = new std::mutex;
+    std::lock_guard<std::mutex> lock(*serial);
+    const uint64_t socket = socketInode(), previous = connectedSocketId.load();
+    if (previous && socket && socket != previous) markExecutorLost();
+    lostSocketInode.store(0, std::memory_order_release);
+    if (!executorLost.load(std::memory_order_acquire)) return;
+    // The generation advances before the loss is cleared: a thread checking an object of the
+    // lost generation meanwhile sees the loss or the newer generation, never neither.
+    connectionGeneration.fetch_add(1, std::memory_order_acq_rel);
+    std::vector<GenerationHook> hooks;
+    {
+        std::lock_guard<std::mutex> hooksLock(generationHooksMutex());
+        hooks = generationHooks();
+    }
+    for (GenerationHook hook : hooks) hook();
+    {
+        std::lock_guard<std::mutex> toldLock(lostCallsMutex());
+        lostCallsTold().clear();
+    }
+    tracker().revive();
+    executorLost.store(false, std::memory_order_release);
 }
 // A result the executor returned. VK_ERROR_DEVICE_LOST from a phone whose app is closing
 // arrives before its streams end; for a paused application it is held like the executor's
