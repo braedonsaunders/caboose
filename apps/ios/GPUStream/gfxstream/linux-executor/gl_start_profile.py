@@ -10,10 +10,14 @@ sockets on COMPUTER; nothing of the computer's own session is used), served by t
 in WORK/build with no caches, so every start is a first start. Steam starts on --steam-home, a
 home of the check's own, with the guest's read profile on (CABOOSE_READ_PROFILE=1).
 
-The report (OUT/report.txt) gives, for each GPU process of the start in order: when it connected
-and when its first real picture arrived, relative to Steam's start; the commands the executor took
-longest on (CABOOSE_GPU_DECODE_TIMING, 50 ms or more); and from the guest, per Vulkan command, the
-synchronous round trips it waited for (CABOOSE_READ_PROFILE). The executor here answers in
+The report (OUT/report.txt) gives, relative to Steam's start: when its first real picture
+arrived; when each Vulkan instance was made, by which application; Steam's own milestones from
+its logs (each steamwebhelper start, and each of its GPU processes that exits during
+initialization, which Chromium answers by starting another, and after three by ending the
+webhelper, which Steam starts again); the commands the executor took longest on
+(CABOOSE_GPU_DECODE_TIMING, 50 ms or more); and from the guest, per Vulkan command, the
+synchronous round trips it waited for (CABOOSE_READ_PROFILE, which Steam's processes print to
+its console-linux.txt and webhelper-linux.txt when they exit). The executor here answers in
 microseconds, so a phone's start is about this start's time plus its round trips times the phone's
 round-trip time.
 """
@@ -26,6 +30,11 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import check_chaos  # noqa: E402
 
+INSTANCE = re.compile(r"^(\S+) .*Created VkInstance:\S+ for application:'([^']*)'")
+STEAM_LOG = re.compile(r'^\[(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)[^\]]*\] (.*)')
+MILESTONES = (('webhelper start', re.compile(r'^exec \./steamwebhelper')),
+              ('GPU process failed to initialize', re.compile(r'Exiting GPU process due to errors during initialization')),
+              ('surface bind refused', re.compile(r'CABOOSE_GPU_SURFACE_BIND .* attempt=1 refused')))
 DECODE = re.compile(r'^(\S+) CABOOSE_GPU_DECODE_TIMING stream=(\d+) opcode=(\d+) elapsed_us=(\d+)')
 READ = re.compile(r'CABOOSE_READ_PROFILE (.*)')
 
@@ -83,9 +92,25 @@ def main():
         seat.sh(f'pkill -TERM -f steamwebhelper; pkill -TERM -f "{o.steam_home}"', check=False)
         time.sleep(10)
         steam = seat.sh(f'cat {seat.dir}/steam.log', check=False)
+        logs = f'{o.steam_home}/.var/app/com.valvesoftware.Steam/.local/share/Steam/logs'
+        steam += seat.sh(f'cat {logs}/console-linux.txt {logs}/webhelper-linux.txt', check=False)
     finally:
         seat.cleanup()
     t0 = stamp(mark)
+    for line in log.splitlines():
+        m = INSTANCE.match(line)
+        if m and stamp(m.group(1)) >= t0:
+            report.append(f'  {stamp(m.group(1)) - t0:6.1f} s Vulkan instance of {m.group(2) or "(unnamed)"}')
+    for line in steam.splitlines():
+        m = STEAM_LOG.match(line)
+        if not m:
+            continue
+        at = time.mktime(time.strptime(m.group(1), '%Y-%m-%d %H:%M:%S')) - time.timezone - t0
+        if at < -1:
+            continue
+        for what, pattern in MILESTONES:
+            if pattern.search(m.group(2)):
+                report.append(f'  {at:6.0f} s {what}: {m.group(2)[:120]}')
     slow = []
     for line in log.splitlines():
         m = DECODE.match(line)
@@ -96,7 +121,9 @@ def main():
         report.append(f'  at {at:6.1f} s stream {stream} opcode {opcode}: {ms:.0f} ms')
     periods = [l for l in log.splitlines() if 'CABOOSE_GPU_DECODE_PERIOD' in l or 'connected' in l.lower()]
     report.append(f'executor period lines: {len(periods)} (in executor.log)')
-    profiles = [m.group(1) for m in map(READ.search, steam.splitlines()) if m]
+    profiles = [m.group(1) for line in steam.splitlines() for m in [READ.search(line)]
+                if m and (not STEAM_LOG.match(line) or
+                          time.mktime(time.strptime(STEAM_LOG.match(line).group(1), '%Y-%m-%d %H:%M:%S')) - time.timezone >= t0 - 1)]
     report.append(f'guest read profiles: {len(profiles)}')
     report.extend('  ' + p[:400] for p in profiles)
     with open(os.path.join(o.out, 'executor.log'), 'w') as f:
