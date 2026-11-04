@@ -7,6 +7,7 @@
 #include "packet_framing.h"
 #include "completion_feed.h"
 #include "executor_gate.h"
+#include "executor_stats.h"
 #include "shader_store.h"
 #include "upload_store.h"
 #include "frame_buffer.h"
@@ -186,7 +187,9 @@ int decodeConnection(int fd, size_t max_packet, size_t max_reply_buffer,
 #ifdef CABOOSE_GPU_MEMORY_AUDIT
             const uint64_t readStartUs = auditTiming ? steadyNowMicroseconds() : 0;
 #endif
+            const uint64_t statsReadUs = stats::nowUs();
             const size_t got = stream.read(pending.data() + old, request);
+            stats::noteRead(got, stats::nowUs() - statsReadUs);
 #ifdef CABOOSE_GPU_MEMORY_AUDIT
             if (auditTiming) {
                 const uint64_t readEndUs = steadyNowMicroseconds();
@@ -408,8 +411,10 @@ int decodeConnection(int fd, size_t max_packet, size_t max_reply_buffer,
             if (frame.size >= 4) std::memcpy(&replyOpcode, pending.data(), 4);
             const bool silent = silentReplies && silent_replies::listed(replyOpcode, silentReplies);
             if (silent) { stream.held().clear(); stream.hold(true); }
+            const uint64_t statsDecodeUs = stats::nowUs();
             const size_t consumed = thread_info.m_vkInfo->m_vkDec.decode(
                 pending.data(), frame.size, &stream, thread_info.getProcessResources().get(), context);
+            stats::noteDecode(stats::nowUs() - statsDecodeUs);
             if (silent) {
                 stream.hold(false);
                 // The guest reads no reply: success writes nothing, failure is a FAULT record.
@@ -456,7 +461,9 @@ int decodeConnection(int fd, size_t max_packet, size_t max_reply_buffer,
             const uint64_t flushStartUs = auditTiming ? steadyNowMicroseconds() : 0;
 #endif
             if (progress) progress->stage = 2;
+            const uint64_t statsFlushUs = stats::nowUs();
             const int flushResult = stream.flush();
+            stats::noteFlush(stats::nowUs() - statsFlushUs);
 #ifdef CABOOSE_GPU_MEMORY_AUDIT
             if (auditTiming) {
                 const uint64_t flushEndUs = steadyNowMicroseconds();

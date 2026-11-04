@@ -96,6 +96,7 @@ _SIGNATURES = {
     'caboose_gpu_runtime_finish': (c_int, [c_uint64]),
     'caboose_gpu_runtime_set_memory_limit': (c_int, [c_uint64]),
     'caboose_gpu_runtime_report_teardown': (None, []),
+    'caboose_gpu_runtime_executor_stats': (c_int, [c_void_p]),
     'caboose_gpu_surface_prepare': (c_int, [POINTER(BindInfo), POINTER(c_void_p)]),
     'caboose_gpu_surface_attach_headless': (c_int, [c_void_p]),
     'caboose_gpu_surface_detach_headless': (c_int, [POINTER(c_void_p)]),
@@ -131,6 +132,19 @@ class Runtime:
             function = getattr(library, name)
             function.restype, function.argtypes = restype, argtypes
             setattr(self, name[len('caboose_gpu_'):], function)
+
+
+EXECUTOR_STATS_SIZE = 96
+
+
+def executor_stats(runtime):
+    """caboose_gpu_executor_stats as EXECUTOR_STATS carries it (twelve little-endian u64, the
+    first its size), or None."""
+    buffer = (ctypes.c_uint64 * (EXECUTOR_STATS_SIZE // 8))()
+    buffer[0] = EXECUTOR_STATS_SIZE
+    if runtime.runtime_executor_stats(ctypes.cast(buffer, c_void_p)) != 0:
+        return None
+    return b''.join(int(value).to_bytes(8, 'little') for value in buffer)
 
 
 def u64_array(values):

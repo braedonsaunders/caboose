@@ -41,7 +41,7 @@ PROTOCOL = 'caboose.gpu.live.v1'
 # The phone's capabilities (LiveGPUConnection.features).
 FEATURES = ('guest-handles,guest-handle-arrays,completion-feed,ordered-present,guest-images,guest-query-pools,'
             'shader-cache,executor-resume,zstd-stream,upload-cache,guest-buffer-views,batched-descriptor-sets-inline,guest-set-ids,'
-            'completion-payloads,wait-serial,silent-success,one-way-start')
+            'completion-payloads,wait-serial,silent-success,one-way-start,executor-stats')
 HELLO = (b'CBGLREF1' + struct.pack('<II', 4, 0x70) +
          bytes.fromhex('20d3bb2e30337cabf0febb006ed102ab25ccf6d9ddbfaf624c7e68f9040969c0'))
 MAX_MESSAGE = 256 * 1024
@@ -274,6 +274,7 @@ class Executor:
         self.failure = None
         self.cancelled = False
         self.inbox = queue.Queue(maxsize=2048)
+        self.stats_stop = None
 
     # Output ---------------------------------------------------------------------------
     def send(self, kind, process=0, stream=0, payload=b''):
@@ -517,6 +518,11 @@ class Executor:
                 self._retire(ident, process)
                 self.send(Kind.PROCESS_RETIRED, process=ident)
             self.retirements.submit(retire)
+        elif kind == Kind.STATS_REQUEST:
+            interval = struct.unpack_from('<I', frame.payload)[0]
+            if not 100 <= interval <= 60_000 or self.stats_stop is not None:
+                raise ProtocolViolation('unexpected stats request')
+            self._start_stats(interval)
         elif kind == Kind.REVOKE:
             self.peer_revoked = True
             self.retirements.sync(lambda: None)
@@ -636,8 +642,26 @@ class Executor:
             raise process.cleanup_error
         log(f'process retired id={ident} token={process.token}')
 
+    def _start_stats(self, interval):
+        """EXECUTOR_STATS every `interval` ms, as the phone sends them (docs/gpu-live.md,
+        "Executor stats"), until the session ends."""
+        stop = self.stats_stop = threading.Event()
+
+        def run():
+            while not stop.wait(interval / 1000):
+                payload = native.executor_stats(self.rt)
+                if payload is None or self.cancelled:
+                    continue
+                try:
+                    self.send(Kind.EXECUTOR_STATS, payload=payload)
+                except Exception:
+                    return
+        threading.Thread(target=run, name='caboose-stats', daemon=True).start()
+
     # Teardown -------------------------------------------------------------------------
     def revoke(self):
+        if self.stats_stop is not None:
+            self.stats_stop.set()
         with self.lock:
             self.cancelled = True
             snapshot = list(self.processes.values())

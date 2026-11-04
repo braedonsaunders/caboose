@@ -42,7 +42,7 @@ class FeatureListsTest(unittest.TestCase):
         self.edit(root, gpu_features.ADMISSION, "'wait-serial', ", '')
         self.edit(root, gpu_features.BROKER, "'guest-set-ids': 0x100000, ", '')
         self.edit(root, gpu_features.SWIFT, ',completion-payloads', '')
-        self.edit(root, gpu_features.DRIVER, ' | kSilentSuccess,', ',')
+        self.edit(root, gpu_features.DRIVER, 'kWaitSerial | kSilentSuccess |', 'kWaitSerial |')
         found = '\n'.join(gpu_features.problems(root))
         self.assertIn('broker admission', found)
         self.assertIn('lacks wait-serial', found)

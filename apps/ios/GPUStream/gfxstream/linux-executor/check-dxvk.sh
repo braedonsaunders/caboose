@@ -82,8 +82,8 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 fail() { echo "FAIL: $*" >&2; exit 1; }
-phone=guest-handles,guest-handle-arrays,completion-feed,ordered-present,guest-images,guest-query-pools,shader-cache,executor-resume,zstd-stream,upload-cache,guest-buffer-views,batched-descriptor-sets-inline,guest-set-ids,completion-payloads,wait-serial,silent-success,one-way-start
-setids=${phone%,completion-payloads,wait-serial,silent-success,one-way-start}
+phone=guest-handles,guest-handle-arrays,completion-feed,ordered-present,guest-images,guest-query-pools,shader-cache,executor-resume,zstd-stream,upload-cache,guest-buffer-views,batched-descriptor-sets-inline,guest-set-ids,completion-payloads,wait-serial,silent-success,one-way-start,executor-stats
+setids=${phone%,completion-payloads,wait-serial,silent-success,one-way-start,executor-stats}
 poolids=${setids%,guest-set-ids}
 unbatched=${poolids%,batched-descriptor-sets-inline}
 older=guest-handles,guest-handle-arrays,completion-feed,ordered-present,guest-images,guest-query-pools,executor-resume

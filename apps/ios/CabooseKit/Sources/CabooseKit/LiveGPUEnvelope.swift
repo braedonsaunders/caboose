@@ -14,6 +14,8 @@ struct LiveGPUEnvelope: Equatable {
         case swapchainPresentOrdered = 39
         // 40 ACK and 41 RESUME belong to the resumable transport and never reach this codec.
         case executorSuspend = 42, quiesce, quiesced, executorResume
+        // 46 SNAPSHOT_REFUSED is the broker's alone. Executor stats (feature executor-stats).
+        case executorStats = 47, statsRequest
         var isSurface: Bool { (rawValue >= 16 && rawValue <= 36) || self == .swapchainPresentOrdered }
         var isIndexed: Bool { (rawValue >= 25 && rawValue <= 36) || self == .swapchainPresentOrdered }
     }
@@ -41,7 +43,8 @@ struct LiveGPUEnvelope: Equatable {
         }
         switch kind {
         case .session, .sessionReady, .revoke, .revoked, .executorDrain, .transportConfig, .transportReady,
-             .executorSuspend, .quiesce, .quiesced, .executorResume: try require(process == 0 && stream == 0)
+             .executorSuspend, .quiesce, .quiesced, .executorResume, .executorStats, .statsRequest:
+            try require(process == 0 && stream == 0)
         case .processOpen, .processReady, .processStop, .processRetired, .surfaceBind, .surfaceBound, .surfaceQuery, .surfaceCaps, .present, .presentResult, .sourceReleased, .surfaceRetire, .surfaceRetired: try require(process > 0 && stream == 0)
         default: try require(process > 0 && stream > 0)
         }
@@ -50,6 +53,8 @@ struct LiveGPUEnvelope: Equatable {
         case .session, .sessionReady: try require(length == 48)
         case .transportConfig, .transportReady: try require(length == 8 || length == 16)
         case .executorResume: try require(length == 8)
+        case .executorStats: try require(length == LiveGPUExecutorStats.size)
+        case .statsRequest: try require(length == 8)
         case .data: try require(length > 0)
         default: try require(length == 0)
         }

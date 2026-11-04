@@ -26,12 +26,15 @@ protocol LiveGPURuntimeBackend: Sendable {
     func resume() -> Int32
     /// Prints the native teardown report (caboose_gpu_runtime_report_teardown).
     func reportTeardown()
+    /// The executor's counters (caboose_gpu_runtime_executor_stats), or nil.
+    func executorStats() -> LiveGPUExecutorStats?
 }
 
 extension LiveGPURuntimeBackend {
     func suspend(timeoutMilliseconds: UInt32) -> Int32 { ENOTSUP }
     func resume() -> Int32 { ENOTSUP }
     func reportTeardown() {}
+    func executorStats() -> LiveGPUExecutorStats? { nil }
 }
 
 /// Suspend in place (docs/gpu-live.md, "Suspending an executor"). Serial worker calls.
@@ -105,6 +108,19 @@ private struct LinkedLiveGPURuntime: LiveGPURuntimeBackend {
     func reportTeardown() {
         #if canImport(CabooseGPULive)
         caboose_gpu_runtime_report_teardown()
+        #endif
+    }
+    func executorStats() -> LiveGPUExecutorStats? {
+        #if canImport(CabooseGPULive)
+        var raw = caboose_gpu_executor_stats()
+        raw.size = UInt64(MemoryLayout<caboose_gpu_executor_stats>.size)
+        guard caboose_gpu_runtime_executor_stats(&raw) == 0 else { return nil }
+        return LiveGPUExecutorStats(commands: raw.commands, decodeMicroseconds: raw.decode_us,
+            readBytes: raw.read_bytes, readWaitMicroseconds: raw.read_wait_us, flushMicroseconds: raw.flush_us,
+            submitted: raw.submitted, completed: raw.completed, completionMicroseconds: raw.completion_us,
+            gpuBusyMicroseconds: raw.gpu_busy_us, outstanding: raw.outstanding, outstandingMax: raw.outstanding_max)
+        #else
+        return nil
         #endif
     }
     func suspend(timeoutMilliseconds: UInt32) -> Int32 {
@@ -476,6 +492,8 @@ public final class LiveGPUNativeBinding: LiveGPUByteConsumer, LiveGPURetirementR
     private var onQuiesced: (@Sendable () -> Void)?
     /// The native suspension did not reach an idle GPU in time (a command still ran).
     private(set) var quiesceIncomplete = false
+    /// Sends EXECUTOR_STATS at the interval STATS_REQUEST asked for (guarded by lock).
+    private var statsTimer: DispatchSourceTimer?
 
     /// Opens the process-wide native gate: an app in the foreground with no suspended executor
     /// must always decode, whatever an ended executor left behind.
@@ -643,6 +661,24 @@ public final class LiveGPUNativeBinding: LiveGPUByteConsumer, LiveGPURetirementR
             if quietChecks < 2 { Thread.sleep(forTimeInterval: 0.01) }
         }
     }
+    /// Every `interval` ms, the executor's counters to the computer; none while suspended,
+    /// and they end with the binding.
+    private func startStats(every interval: UInt32) {
+        let timer = DispatchSource.makeTimerSource(queue: DispatchQueue(label: "caboose.gpu.stats"))
+        timer.schedule(deadline: .now() + .milliseconds(Int(interval)), repeating: .milliseconds(Int(interval)),
+                       leeway: .milliseconds(Int(interval / 10)))
+        timer.setEventHandler { [weak self] in
+            guard let self, !self.lock.withLock({ self.cancelled || self.nativeSuspended }),
+                  let stats = self.backend.executorStats() else { return }
+            do { try self.send(.executorStats, payload: stats.payload) } catch { timer.cancel() }
+        }
+        let ended = lock.withLock { () -> Bool in
+            if cancelled { return true }
+            statsTimer = timer
+            return false
+        }
+        if !ended { timer.resume() }
+    }
     private func sendDrainIfReady() throws {
         guard negotiated, drainRequested, !drainSent, !peerRevoked else { return }
         try send(.executorDrain)
@@ -681,6 +717,12 @@ public final class LiveGPUNativeBinding: LiveGPUByteConsumer, LiveGPURetirementR
             held.append(frame); return
         }
         switch frame.kind {
+        case .statsRequest:
+            guard let interval = LiveGPUExecutorStats.requestedInterval(frame.payload),
+                  lock.withLock({ statsTimer == nil }) else {
+                throw LiveGPUBindingError.protocolViolation("unexpected stats request")
+            }
+            startStats(every: interval)
         case .quiesce:
             guard suspendSent, !quiesceReceived else {
                 throw LiveGPUBindingError.protocolViolation("unexpected QUIESCE")
@@ -943,11 +985,12 @@ public final class LiveGPUNativeBinding: LiveGPUByteConsumer, LiveGPURetirementR
     public func revoke() throws {
         // A suspended gate would hold stopping decoders only until they see the stop; open it.
         // Cancelled first, so a suspension still closing the gate opens it again itself.
-        let (suspended, snapshot) = lock.withLock { () -> (Bool, [LiveGPUProcess]) in
+        let (suspended, snapshot, timer) = lock.withLock { () -> (Bool, [LiveGPUProcess], DispatchSourceTimer?) in
             cancelled = true
-            defer { nativeSuspended = false }
-            return (nativeSuspended, Array(processes.values))
+            defer { nativeSuspended = false; statsTimer = nil }
+            return (nativeSuspended, Array(processes.values), statsTimer)
         }
+        timer?.cancel()
         if suspended { _ = backend.resume() }
         for process in snapshot { process.stop(backend) }
         if let error = snapshot.compactMap({ p in p.lock.withLock { p.cleanupError } }).first { throw error }

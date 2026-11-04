@@ -138,6 +138,40 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
             session.surface_progress('received_from_guest', Kind.SWAPCHAIN_PRESENT_ORDERED)
             rate.assert_called_once_with('received_from_guest', int(Kind.SWAPCHAIN_PRESENT_ORDERED))
 
+    def test_executor_stats_report_the_phones_counters_every_five_seconds(self):
+        import struct as _struct
+        def record(**values):
+            fields = dict.fromkeys(broker.ExecutorStats.FIELDS, 0)
+            fields.update(values, size=96)
+            return _struct.pack('<12Q', *(fields[k] for k in broker.ExecutorStats.FIELDS))
+        stats = broker.ExecutorStats()
+        with mock.patch('builtins.print') as output:
+            # The first record is the baseline: totals since the phone's runtime started.
+            self.assertIsNone(stats.receive(record(commands=500, decode_us=9_000), 0))
+            self.assertIsNone(stats.receive(record(commands=600, outstanding=3, outstanding_max=7), 1_000_000_000))
+            output.assert_not_called()
+            line = stats.receive(record(commands=1500, decode_us=1_009_000, read_bytes=4096, read_wait_us=2_500_000,
+                                        flush_us=40_000, submitted=300, completed=298, completion_us=2_980_000,
+                                        gpu_busy_us=2_500_000, outstanding=2, outstanding_max=4), 5_000_000_000)
+            self.assertRegex(line, r'^CABOOSE_GPU_EXECUTOR_STATS elapsed_ms=5000 commands=1000 decode_ms=1000 '
+                                   r'read_bytes=4096 read_wait_ms=2500 flush_ms=40 submitted=300 completed=298 '
+                                   r'completion_mean_us=10000 gpu_busy_pct=50\.0 outstanding=2 outstanding_max=7 '
+                                   r'at=\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$')
+            self.assertEqual(output.call_args.args[0], line)
+        with self.assertRaises(ValueError):
+            stats.receive(b'\0' * 95)
+
+    def test_stats_request_goes_only_to_a_phone_that_declared_executor_stats(self):
+        for features, expected in ((frozenset({'executor-stats'}), True), (frozenset(), False)):
+            session = mock.Mock(features=features, stats_requested=False)
+            broker.Session.request_stats(session)
+            broker.Session.request_stats(session)
+            if expected:
+                session.send.assert_called_once_with(broker.Kind.STATS_REQUEST, payload=bytes([0xe8, 3, 0, 0, 0, 0, 0, 0]))
+            else:
+                session.send.assert_not_called()
+            self.assertEqual(session.stats_requested, expected)
+
     def test_surface_stats_report_fps_and_bytes_every_five_seconds_without_opt_in(self):
         owner = {'to_phone': 1000, 'from_phone': 50}
         stats = broker.SurfaceStats(2, owner)

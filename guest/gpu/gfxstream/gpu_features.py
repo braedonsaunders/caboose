@@ -87,23 +87,24 @@ def broker(repo):
     bits = {n: int(b, 16) for n, b in re.findall(r"'([a-z0-9-]+)':\s*(0x[0-9a-fA-F]+)",
                                                   _block(text, 'HELLO_FEATURES = {', '}', BROKER))}
     needs = {}
-    for name, needed in (('NEEDS_GUEST_HANDLES', 0x80), ('NEEDS_COMPLETION_FEED', 0x200)):
-        match = re.search(rf'^{name} = ([0x0-9a-fA-F |]+)', text, re.M)
-        if match:
-            for bit in range(32):
-                if _value(match.group(1), {}) >> bit & 1: needs[1 << bit] = needs.get(1 << bit, 0) | needed
+    # NEEDS_<FEATURE> = bits: each of those bits is granted only with <feature>'s bit.
+    for feature, expression in re.findall(r'^NEEDS_([A-Z_]+) = ([0x0-9a-fA-F |]+)', text, re.M):
+        needed = bits.get(feature.lower().replace('_', '-'))
+        if needed is None: continue
+        for bit in range(32):
+            if _value(expression, {}) >> bit & 1: needs[1 << bit] = needs.get(1 << bit, 0) | needed
     return bits, needs
 
 
 def driver_offer(repo):
     """The driver's first (fullest) hello offer."""
     text = (Path(repo) / DRIVER).read_text()
-    names = {'caboose::silent::kHelloBit': None}
+    names = {}
     silent = Path(repo) / SILENT
     if silent.exists():
-        match = re.search(r'kHelloBit = (0x[0-9a-fA-F]+)', silent.read_text())
-        if match: names['caboose::silent::kHelloBit'] = int(match.group(1), 16)
-    for name, value in re.findall(r'\b(k[A-Z][A-Za-z]*) = (0x[0-9a-fA-F]+|caboose::silent::kHelloBit)', text):
+        for name, value in re.findall(r'\b(k[A-Z][A-Za-z]*) = (0x[0-9a-fA-F]+)', silent.read_text()):
+            names[f'caboose::silent::{name}'] = int(value, 16)
+    for name, value in re.findall(r'\b(k[A-Z][A-Za-z]*) = (0x[0-9a-fA-F]+|caboose::silent::k[A-Za-z]+)', text):
         names[name] = names[value] if value.startswith('caboose') else int(value, 16)
     first = _block(text, 'static const uint32_t kOffers[] = {', ',', DRIVER)
     return _value(first, names)

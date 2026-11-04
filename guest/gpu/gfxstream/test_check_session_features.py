@@ -36,7 +36,7 @@ class CheckSessionFeaturesTest(unittest.TestCase):
     def test_a_short_hello_is_named(self):
         problems = check.findings([session(), 'CABOOSE_GPU_HELLO features=0xbff80'], EXPECTED)[0]
         self.assertEqual(len(problems), 1)
-        self.assertIn('lacks completion-payloads, guest-set-ids, silent-success, wait-serial', problems[0])
+        self.assertIn('lacks completion-payloads, guest-set-ids, one-way-start, silent-success, wait-serial', problems[0])
 
     def test_the_last_relay_session_counts_and_direct_ones_are_ignored(self):
         lines = [session(received=without(ALL, 'wait-serial')), FULL, session(), FULL, session(source='direct', received='-')]

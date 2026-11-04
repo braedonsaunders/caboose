@@ -570,6 +570,50 @@ class SurfaceStats:
         self.restart(now)
 
 
+class ExecutorStats:
+    """Always on (feature executor-stats): the phone's executor counters (EXECUTOR_STATS, the
+    totals of caboose_gpu_executor_stats), and every 5 s one CABOOSE_GPU_EXECUTOR_STATS line
+    with what changed in that window: commands decoded and time in the decoder, bytes read
+    and time waiting for them, time writing replies, completion watches submitted and
+    completed, their mean submit-to-completion time, the share of the window the GPU had
+    watched work in flight, the watches waiting at the end and the most waiting at once, and
+    when the window ended (UTC). Counters only; no payloads, handles or identities."""
+    REQUEST_MS = 1000
+    INTERVAL_NS = 5_000_000_000
+    RECORD = struct.Struct('<12Q')
+    FIELDS = ('size', 'commands', 'decode_us', 'read_bytes', 'read_wait_us', 'flush_us', 'submitted',
+              'completed', 'completion_us', 'gpu_busy_us', 'outstanding', 'outstanding_max')
+
+    def __init__(self):
+        self.start = self.first = None
+        self.deepest = 0
+
+    def receive(self, payload, now=None):
+        if len(payload) != self.RECORD.size: raise ValueError('bad executor stats')
+        record = dict(zip(self.FIELDS, self.RECORD.unpack(payload)))
+        if record['size'] != self.RECORD.size: raise ValueError('bad executor stats')
+        now = time.monotonic_ns() if now is None else now
+        self.deepest = max(self.deepest, record['outstanding_max'])
+        if self.start is None:
+            self.start, self.first, self.deepest = now, record, record['outstanding']
+            return None
+        elapsed = now - self.start
+        if elapsed < self.INTERVAL_NS: return None
+        d = {k: max(0, record[k] - self.first[k]) for k in self.FIELDS[1:10]}
+        mean = d['completion_us'] // d['completed'] if d['completed'] else 0
+        line = (f'CABOOSE_GPU_EXECUTOR_STATS elapsed_ms={elapsed // 1_000_000} commands={d["commands"]} '
+                f'decode_ms={d["decode_us"] // 1000} read_bytes={d["read_bytes"]} '
+                f'read_wait_ms={d["read_wait_us"] // 1000} flush_ms={d["flush_us"] // 1000} '
+                f'submitted={d["submitted"]} completed={d["completed"]} completion_mean_us={mean} '
+                f'gpu_busy_pct={min(100.0, d["gpu_busy_us"] * 100_000 / elapsed):.1f} '
+                f'outstanding={record["outstanding"]} outstanding_max={self.deepest} '
+                f'at={time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}')
+        with contextlib.suppress(OSError):
+            print(line, file=sys.stderr, flush=True)
+        self.start, self.first, self.deepest = now, record, record['outstanding']
+        return line
+
+
 HISTORY_LOGS = 4
 
 
@@ -695,6 +739,8 @@ class Session:
         self.stream_compressor = None
         # Executor resume: the phone's splices are invisible here but for its RESUME.
         self.resumable = 'executor-resume' in self.features
+        self.stats_requested = False
+        self.executor_stats = ExecutorStats()
         self.decoder = EnvelopeDecoder(executor, generation, replay=self.resumable)
         self.retained = deque()  # (sequence, frame) written and not yet acknowledged
         self.retained_bytes = 0
@@ -948,6 +994,12 @@ class Session:
             self.sender_stopped = True
             self.capacity_changed.set()
 
+    def request_stats(self):
+        """Asks a phone that declared executor-stats for its counters every second."""
+        if 'executor-stats' not in self.features or self.stats_requested: return
+        self.stats_requested = True
+        self.send(Kind.STATS_REQUEST, payload=struct.pack('<II', ExecutorStats.REQUEST_MS, 0))
+
     def acknowledge(self, value):
         """The phone has every sequenced envelope up to `value`."""
         if value < self.acknowledged or value >= self.sequence:
@@ -1082,6 +1134,7 @@ class Session:
                 self.send(Kind.TRANSPORT_CONFIG, payload=self.transport_config)
             else:
                 self.session_ready.set()
+                self.request_stats()
             return
         if frame.kind == Kind.TRANSPORT_READY:
             # Algorithm 2's READY names the window the phone takes, no larger than offered;
@@ -1103,8 +1156,13 @@ class Session:
                     with contextlib.suppress(OSError):
                         print('CABOOSE_GPU_TRANSPORT deflate=1 max_decoded=65600', file=sys.stderr, flush=True)
             self.session_ready.set()
+            self.request_stats()
             return
         if not self.session_ready.is_set(): raise ValueError('session not ready')
+        if frame.kind == Kind.EXECUTOR_STATS:
+            if not self.stats_requested or frame.process or frame.stream: raise ValueError('unexpected executor stats')
+            self.executor_stats.receive(frame.payload)
+            return
         if frame.kind == Kind.EXECUTOR_DRAIN:
             if self.draining: raise ValueError('duplicate drain')
             self.draining = True
