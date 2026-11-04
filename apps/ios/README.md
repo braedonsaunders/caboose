@@ -926,7 +926,7 @@ labels, service names and the command splitting are unit-tested:
 Task Manager check on a device: open Steam, close its window (it stays in the tray) and
 confirm Steam stays in the dock with a running dot and is listed as Background. Hold it in
 the dock, choose Force Quit, confirm, and check that it leaves the list and the dock. Open
-Firefox, choose Quit from its row and confirm it ends; open a dialog that blocks closing,
+Chromium, choose Quit from its row and confirm it ends; open a dialog that blocks closing,
 Quit again, and confirm Force Quit is offered after five seconds. Confirm Caboose's row has
 no actions, and that a microVM computer shows no Task Manager anywhere. Create a service
 running `python3 -m http.server 8080` with Start Now, confirm it shows Running with

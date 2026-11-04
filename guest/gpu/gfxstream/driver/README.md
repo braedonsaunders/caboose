@@ -133,6 +133,12 @@ Each patch is one feature. Several change Mesa's generated encoder
 | 0061 empty-application-pipeline-caches | An application's pipeline cache is empty in the guest: created without its saved data, and `vkGetPipelineCacheData` answers the device's header without a round trip, since the phone's own cache, which it seeds into every application cache, holds the pipelines |
 | 0062 traffic-detail | The traffic report also splits the coherent upkeep (written blocks or whole mappings), staging uploads, upload-cache pieces and what each kind of shadow considered and sent |
 
+| 0063 presentation-retirement | Retains pending frames asynchronously and retires native IDs after ordered presentation, while completing guest allocator cleanup synchronously |
+| 0064 persistent-physical-capabilities | Exact format/image-format answers shared across processes, scoped to the current backend, driver, protocol and guest source identity; unsafe or corrupt files fall back to real queries |
+| 0065 external-semaphore-capabilities | A device's external-semaphore answers (empty chain, or exactly a semaphore type) join the same per-session capability cache; the tracker's adjustment applies to cached and asked answers alike |
+| 0066 device-constant-capabilities | Physical-device properties (with chains of known, pointer-free structures), queue families and the device's extension list join the per-session capability cache (`../bounded-memory/capability_chains.h`); the first properties query in a process is still asked. Features and memory properties are not shared: the encoder adjusts them per process |
+| 0067 batched-descriptor-sets | With hello `0x40000`, descriptor sets are allocated and written in the guest (a pool asks for its set ids once) and the sets a submit binds go just before it in one `vkQueueCommitDescriptorSetUpdatesGOOGLE` |
+
 The patch messages describe each change. To change the driver, prepare a tree, commit
 the prepared state, edit, and regenerate the affected patch with `git format-patch`
 against the commit before it; then rebuild and run the tests below.
@@ -141,11 +147,11 @@ against the commit before it; then rebuild and run the tests below.
 
 Before Mesa's first command, `SocketStream.cpp` sends a 48-byte hello: `CBGLREF1`, a
 little-endian version (4) and feature mask, and the source fingerprint documented in
-[docs/gpu-live.md](../../../../docs/gpu-live.md). The driver offers mask `0x1FFF0`; the
+[docs/gpu-live.md](../../../../docs/gpu-live.md). The driver offers mask `0x3FFF0`; the
 broker answers with the required `0x70` plus the offered bits the connected phone
 supports, and the driver prints `CABOOSE_GPU_HELLO features=0x…` with what it was granted. A
 broker that predates a bit closes the connection, and the driver reconnects offering fewer:
-`0xFFF0`, `0x7FF0`, `0x3FF0`, `0x1FF0`, `0xFF0`, `0x7F0`, `0xF0`, then `0x70`. An answer with bits the driver did not offer, or
+`0x1FFF0`, `0xFFF0`, `0x7FF0`, `0x3FF0`, `0x1FF0`, `0xFF0`, `0x7F0`, `0xF0`, then `0x70`. An answer with bits the driver did not offer, or
 any other difference, fails the connection, and with it Vulkan instance creation.
 `CABOOSE_GFXSTREAM_GUEST_HANDLES=0` offers `0x70` only. Patches 0013 and 0014, the
 creates and allocations of 0016 and the fence, semaphore and pipeline handles of 0018
@@ -168,6 +174,7 @@ hello for the completion feed. The rest of the series requires the `0x70` contra
 | 14 (`0x4000`) | The executor resumes across a lost socket and suspends in the background: surface waits have no 10 s deadline (`../virtual-wsi/mesa_surface.inc`) |
 | 15 (`0x8000`) | Flushed memory goes as pieces the phone's upload store holds (patch 0047) |
 | 16 (`0x10000`) | Buffer views use guest-assigned handles (requires bit 7; patch 0057) |
+| 18 (`0x40000`) | Descriptor sets allocated and written in the guest and committed with the next submit (patch 0067) |
 
 ## Runtime switches
 

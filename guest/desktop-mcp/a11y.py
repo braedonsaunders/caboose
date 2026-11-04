@@ -16,7 +16,8 @@ by id. Wayland and X11 applications are read alike. It always prints one JSON ob
         optionally of one role ("button" matches "push button" and "toggle button").
     a11y.py act --display :101 --element ID --action press|focus|set-text [--text T]
         {"ok": true}. press uses the element's own action (click, press, activate, jump),
-        else a pointer click at its centre; set-text replaces an editable text's contents.
+        else a pointer click at its centre; a menu on screen is always clicked, since its own
+        action can open another menu of its bar. set-text replaces an editable text's contents.
         An unknown, stale or vanished element exits 3 with {"ok": false, "error": "element
         not found"}.
     a11y.py text --display :101
@@ -46,6 +47,7 @@ the element at that path still has that role and name.
 from __future__ import annotations
 
 import argparse
+import itertools
 import ctypes
 import ctypes.util
 import hashlib
@@ -412,6 +414,12 @@ class XScreen:
     def origin(self, xid):
         return None
 
+    def x11(self, xid):
+        return False
+
+    def window_count(self, pid):
+        return 1
+
     def popup_origin(self, pid, size):
         return None
 
@@ -435,13 +443,19 @@ class XScreen:
                        env=dict(os.environ, DISPLAY=self.display.name), check=True, timeout=15,
                        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
 
-    def replace_text(self, xid, text):
-        """Select all, delete, and type `text`, into that X window alone (xdotool --window)."""
+    def _xdotool(self, *args, timeout=15):
         env = dict(os.environ, DISPLAY=self.display.name)
-        quiet = {"env": env, "check": True, "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
-        subprocess.run(["xdotool", "key", "--window", str(xid), "ctrl+a", "BackSpace"], timeout=15, **quiet)
-        if text:
-            subprocess.run(["xdotool", "type", "--window", str(xid), "--delay", "4", "--", text], timeout=120, **quiet)
+        subprocess.run(["xdotool", *args], timeout=timeout, env=env, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    def clear_text(self, xid):
+        """Select all and delete, in that X window alone (xdotool --window)."""
+        self._xdotool("key", "--window", str(xid), "ctrl+a", "BackSpace")
+
+    def type_text(self, xid, text):
+        self._xdotool("type", "--window", str(xid), "--delay", "4", "--", text, timeout=120)
+
+    def let_draw(self):
+        pass
 
 
 class SeatScreen:
@@ -524,9 +538,17 @@ class SeatScreen:
 
     def origin(self, wid):
         record = self.records.get(wid)
-        if record is None or record.get("x11"):
+        if record is None:
+            return None
+        if record.get("x11"):
             return None
         return (record["surface"][0], record["surface"][1])
+
+    def x11(self, wid):
+        return bool((self.records.get(wid) or {}).get("x11"))
+
+    def window_count(self, pid):
+        return sum(1 for r in self.records.values() if r.get("pid") == pid and r.get("kind") != "popup")
 
     def popup_origin(self, pid, size):
         """The surface origin of the Wayland popup of `pid` whose surface is `size` (w, h)."""
@@ -554,18 +576,55 @@ class SeatScreen:
         except self.SeatError as error:
             raise Failure(str(error)) from None
 
+    def covering(self, wid, x, y):
+        """The window over (x, y) when it is neither `wid` nor another window of its process
+        (its dialogs and menus), else None: input there would land on that window."""
+        own = (self.records.get(wid) or {}).get("pid")
+        for other in reversed(self.clients):  # bottom to top: the last one holding the point wins
+            record = self.records[other]
+            rx, ry, rw, rh = record["rect"]
+            if not (rx <= x < rx + rw and ry <= y < ry + rh):
+                continue
+            if own is not None and record.get("pid") == own:
+                return None
+            chain, seen = other, set()
+            while chain is not None and chain not in seen:
+                if chain == wid:
+                    return None
+                seen.add(chain)
+                chain = (self.records.get(chain) or {}).get("parent")
+            return record
+        return {"id": None, "title": "", "kind": "nothing"}
+
     def click(self, wid, x, y):
+        covered = self.covering(wid, x, y)
+        if covered is not None:
+            raise Failure(f"the control is covered by {covered['kind']} {covered['id']} {json.dumps(covered.get('title') or '')} "
+                          "at its position; bring its window forward (focus) or close what covers it, then look again")
         try:
             self.seat.click(x, y)
         except self.SeatError as error:
             raise Failure(str(error)) from None
 
-    def replace_text(self, wid, text):
+    def clear_text(self, wid):
         try:
             self.seat.key("ctrl+a", "BackSpace")
+        except self.SeatError as error:
+            raise Failure(str(error)) from None
+
+    def type_text(self, wid, text):
+        try:
             self.seat.type(text)
         except self.SeatError as error:
             raise Failure(str(error)) from None
+
+    def let_draw(self):
+        """Let applications draw now: a seat nobody watches paces them at once a second, and
+        some (Firefox) update what they expose only as they draw."""
+        try:
+            self.seat.request("settle")
+        except self.SeatError:
+            pass
 
 
 def make_screen(name):
@@ -698,8 +757,9 @@ def resolve_bus(display, start=0, tried=()):
 class Bus:
     """The accessibility registry, bound to one bus for the life of this process.
 
-    libatspi connects once, so a different bus means a fresh process: `retry` re-executes
-    this command against the next source when the wanted application is not on this one.
+    libatspi connects once, so a different bus means a different process: `retry` runs this
+    request against the next source when the wanted application is not on this one, through
+    one long-lived helper per bus when serving (see `BusWorker`).
     """
 
     def __init__(self, display):
@@ -732,13 +792,12 @@ class Bus:
         env.pop("AT_SPI_BUS_ADDRESS", None)
         if SERVING:
             args = ACTIVE_ARGS
-            command = [sys.executable, os.path.abspath(__file__), args.command, f"--display={args.display}"]
+            request = {"op": args.command, "display": args.display}
             for key in ("element", "action", "text", "query", "role"):
                 value = getattr(args, key, None)
                 if value is not None:
-                    command.append(f"--{key}={value}")
-            result = subprocess.run(command, env=env, capture_output=True, text=True, timeout=30)
-            raise ServedResult(json.loads(result.stdout))
+                    request[key] = value
+            raise ServedResult(BusWorker.ask(json.dumps(self.state, sort_keys=True), env, args.display, request))
         sys.stdout.flush()
         os.execve(sys.executable, [sys.executable, os.path.abspath(__file__)] + sys.argv[1:], env)
         return True  # not reached
@@ -746,19 +805,179 @@ class Bus:
     def application(self, pid):
         if not self.address:
             return None
+        found = self._application(pid)
+        if found is None:
+            proxy = sandbox_bus_proxy(pid)
+            if proxy is not None:
+                found = self._application(proxy)
+        return found
+
+    def _application(self, pid):
+        # A process can register more than once (Qt's bridge beside another toolkit's, one of
+        # them empty): the registration with windows is the application.
+        best, most = None, -1
         for index in range(self.desktop.get_child_count()):
             try:
                 app = self.desktop.get_child_at_index(index)
                 if app is not None and app.get_process_id() == pid:
-                    return app
+                    count = app.get_child_count()
+                    if count > most:
+                        best, most = app, count
             except Exception:
                 continue
+        return best
+
+
+# Windows programs under Wine: Wine has no AT-SPI bridge, so caboose-msaa.exe, run in the
+# program's own prefix, reads its Win32 controls (wine/caboose-msaa.c). Their element paths
+# start with WINE_CONTROL (a child window) or WINE_MENU.
+WINE_CONTROL, WINE_MENU = 9000, 9001
+MSAA = [os.path.join(os.path.dirname(os.path.abspath(__file__)), "wine", "caboose-msaa.exe"),
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "caboose-msaa.exe")]
+
+
+def wine_prefix(pid):
+    """The Wine prefix of a Windows program's process, or None for any other process."""
+    try:
+        with open(f"/proc/{pid}/maps") as maps:
+            if not any(line.rstrip().endswith(("/ntdll.so", "wine64-preloader", "wine-preloader")) for line in maps):
+                return None
+        with open(f"/proc/{pid}/environ", "rb") as env:
+            values = dict(item.split(b"=", 1) for item in env.read().split(b"\0") if b"=" in item)
+    except OSError:
         return None
+    prefix = values.get(b"WINEPREFIX") or (values.get(b"HOME", b"") + b"/.wine")
+    return prefix.decode(errors="replace")
+
+
+def wine_bridge(prefix, *fields):
+    helper = next((path for path in MSAA if os.path.exists(path)), None)
+    if helper is None:
+        return None
+    request = "\t".join(f.replace("\t", " ").replace("\n", " ") for f in fields) + "\n"
+    try:
+        done = subprocess.run(["wine", helper], input=request, capture_output=True, text=True, timeout=15,
+                              env=dict(os.environ, WINEPREFIX=prefix, WINEDEBUG="-all"))
+        return json.loads(done.stdout.splitlines()[0]) if done.stdout.strip() else None
+    except (OSError, subprocess.TimeoutExpired, ValueError, IndexError):
+        return None
+
+
+def wine_path(path):
+    kind, *rest = path.split(".")
+    return [WINE_CONTROL if kind == "w" else WINE_MENU] + [int(i) for i in rest]
+
+
+def wine_elements(target, prefix):
+    """The Win32 controls of the focused window of a program under Wine, as elements."""
+    title = target.screen.title(target.xid)
+    answer = wine_bridge(prefix, "list", title)
+    if not answer or not answer.get("ok"):
+        return None
+    rect = target.screen.rect(target.xid) or {}
+    wx, wy, ww, wh = answer.get("window") or [0, 0, 0, 0]
+    sx = (ww / rect["width"]) if rect.get("width") and ww else 1
+    sy = (wh / rect["height"]) if rect.get("height") and wh else 1
+    found = []
+    for e in answer.get("elements", []):
+        name = e.get("name") or ""
+        fingerprint = hashlib.sha1(f"wine|{e['role']}|{name[:100]}".encode()).hexdigest()[:6]
+        element = {"id": element_id(target.xid, target.pid, wine_path(e["path"]), fingerprint), "role": e["role"], "name": name,
+                   "states": [st for st in e.get("states", []) if st != "focusable"]}
+        x, y, w, h = e.get("bounds") or [0, 0, 0, 0]
+        if w and h:
+            element["bounds"] = {"x": round(rect.get("x", 0) + (x - wx) / sx), "y": round(rect.get("y", 0) + (y - wy) / sy),
+                                 "width": max(1, round(w / sx)), "height": max(1, round(h / sy))}
+        actions = ["press"] if e["role"] not in ("label", "panel", "status bar", "tool bar", "page tab list", "menu") and "disabled" not in e.get("states", []) else []
+        if "editable" in e.get("states", []):
+            actions.append("set-text")
+        element["actions"] = actions
+        if e.get("value"):
+            element["value"] = e["value"][:MAX_NAME]
+        found.append(element)
+    return found
+
+
+def titled_pid(bus, title):
+    """The process of the one application on the bus with a showing window of this title."""
+    if not title or not getattr(bus, "address", None):
+        return None
+    wanted, found = _norm(title), set()
+    for index in range(bus.desktop.get_child_count()):
+        try:
+            app = bus.desktop.get_child_at_index(index)
+            for k in range(min(app.get_child_count(), 20)):
+                top = app.get_child_at_index(k)
+                if top is not None and _norm(top.get_name()) == wanted:
+                    found.add(app.get_process_id())
+        except Exception:
+            continue
+    return found.pop() if len(found) == 1 else None
+
+
+def sandbox_bus_proxy(pid):
+    """A sandboxed process (Flatpak) reaches the accessibility bus through a proxy, so the
+    registry knows it by the proxy's process: the one listening on the socket bound into the
+    sandbox at /run/flatpak/at-spi-bus. None for a process outside a sandbox."""
+    try:
+        with open(f"/proc/{pid}/mountinfo") as mounts:
+            source = next((line.split()[3] for line in mounts if line.split()[4:5] == ["/run/flatpak/at-spi-bus"]), None)
+        if source is None:
+            return None
+        with open("/proc/net/unix") as sockets:
+            inodes = {line.split()[6] for line in sockets if line.split()[-1] == source and line.split()[5] == "01"}
+        if not inodes:
+            return None
+        wanted = {f"socket:[{inode}]" for inode in inodes}
+        for candidate in os.listdir("/proc"):
+            if not candidate.isdigit():
+                continue
+            try:
+                for fd in os.listdir(f"/proc/{candidate}/fd"):
+                    if os.readlink(f"/proc/{candidate}/fd/{fd}") in wanted:
+                        return int(candidate)
+            except OSError:
+                continue
+    except (OSError, ValueError, IndexError):
+        return None
+    return None
 
 
 class ServedResult(Exception):
     def __init__(self, result):
         self.result = result
+
+
+class BusWorker:
+    """A long-lived helper serving one further accessibility bus, kept for this helper's life.
+
+    Every new AT-SPI client costs each GTK 3 application on its bus three descriptors that
+    at-spi2-atk before 2.62 keeps until the application exits, so a reader asks the same
+    client again rather than starting a new one per request."""
+    workers = {}  # bus state -> Popen
+
+    @classmethod
+    def ask(cls, key, env, display, request, timeout=30):
+        import selectors
+        worker = cls.workers.get(key)
+        if worker is None or worker.poll() is not None:
+            worker = subprocess.Popen([sys.executable, os.path.abspath(__file__), "serve", f"--display={display}"],
+                                      env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1)
+            cls.workers[key] = worker
+        try:
+            worker.stdin.write(json.dumps(request, ensure_ascii=False) + "\n")
+            worker.stdin.flush()
+            with selectors.DefaultSelector() as selector:
+                selector.register(worker.stdout, selectors.EVENT_READ)
+                line = worker.stdout.readline() if selector.select(timeout) else ""
+            if not line:
+                raise OSError("no answer")
+            return json.loads(line)
+        except (OSError, ValueError):
+            worker.kill()
+            worker.wait()
+            cls.workers.pop(key, None)
+            raise Failure("the accessibility helper for another bus did not answer")
 
 
 def get_bus(display):
@@ -767,7 +986,42 @@ def get_bus(display):
         return Bus(display)
     if WARM_BUS is None:
         WARM_BUS = Bus(display)
+        global KNOWN_WINDOWS
+        KNOWN_WINDOWS = seat_windows()
     return WARM_BUS
+
+
+# The seat's windows when this helper registered with the accessibility bus (None off a
+# Caboose Display seat). libatspi's cache does not learn of top-level windows created later.
+KNOWN_WINDOWS = None
+
+
+def seat_windows():
+    if not os.environ.get("CABOOSE_DISPLAY_CONTROL"):
+        return None
+    try:
+        from seat import Seat
+        return {w["id"]: w.get("kind") for w in Seat().windows().get("windows", [])}
+    except Exception:
+        return None
+
+
+def needs_registration(op, request):
+    """Whether the window a request reads or acts in is a top-level or dialog that appeared
+    after this helper last read the registry afresh, so its cache may not hold it."""
+    if KNOWN_WINDOWS is None:
+        return False
+    now = seat_windows() or {}
+    if op == "act":
+        match = ID_PATTERN.fullmatch(request.get("element") or "")
+        target = int(match.group(1), 16) if match else None
+    else:
+        try:
+            from seat import Seat
+            target = Seat().windows().get("focused")
+        except Exception:
+            target = None
+    return target is not None and target not in KNOWN_WINDOWS and now.get(target) in ("toplevel", "dialog")
 
 
 # --- The tree --------------------------------------------------------------------------
@@ -794,19 +1048,28 @@ class Tree:
         self.top_roles = _roles(Atspi, "FRAME", "DIALOG", "WINDOW", "FILE_CHOOSER", "ALERT", "COLOR_CHOOSER",
                                 "FONT_CHOOSER", "DOCUMENT_FRAME")
         self.popup_roles = _roles(Atspi, "WINDOW", "MENU", "POPUP_MENU", "TOOL_TIP")
+        # Content read as text (look's text) rather than as controls, and containers that list
+        # their items: a scrolled area holding one is not unexposed.
+        self.text_content_roles = _roles(Atspi, "DOCUMENT_FRAME", "DOCUMENT_WEB", "DOCUMENT_TEXT", "DOCUMENT_SPREADSHEET",
+                                         "DOCUMENT_PRESENTATION", "DOCUMENT_EMAIL", "TERMINAL", "TEXT", "PARAGRAPH", "EMBEDDED")
+        self.content_roles = self.text_content_roles | _roles(Atspi, "TABLE", "TREE_TABLE", "TREE", "LIST", "LIST_BOX")
         self.block_roles = _roles(
             Atspi, "PARAGRAPH", "HEADING", "SECTION", "LIST", "LIST_ITEM", "TABLE", "TABLE_ROW", "FORM",
             "BLOCK_QUOTE", "ARTICLE", "FOOTER", "HEADER", "LANDMARK", "PANEL", "SEPARATOR", "DOCUMENT_WEB",
             "DOCUMENT_FRAME", "DOCUMENT_TEXT", "FILLER", "TOOL_BAR", "MENU_BAR", "PAGE_TAB_LIST", "GROUPING",
             "DESCRIPTION_LIST", "DESCRIPTION_TERM", "DESCRIPTION_VALUE", "CAPTION", "COMMENT", "FOOTNOTE")
-        self.press_actions = ("click", "press", "activate", "jump", "toggle", "open")
+        self.press_actions = ("click", "press", "activate", "jump", "toggle", "open", "check", "uncheck", "showmenu")
+        # Selectable items a toolkit gives no action (GTK 3 notebook tabs): on screen, a press is
+        # the seat's pointer at their coordinates.
+        self.pointer_roles = _roles(Atspi, "PAGE_TAB", "LIST_ITEM", "TREE_ITEM")
         self.state_labels = [
             ("FOCUSED", "focused"), ("CHECKED", "checked"), ("PRESSED", "pressed"), ("SELECTED", "selected"),
             ("EXPANDED", "expanded"), ("EDITABLE", "editable"), ("INDETERMINATE", "mixed"),
             ("REQUIRED", "required"), ("INVALID_ENTRY", "invalid"), ("READ_ONLY", "read-only"),
-            ("MULTI_LINE", "multi-line"), ("VISITED", "visited")]
+            ("MULTI_LINE", "multi-line"), ("VISITED", "visited"), ("BUSY", "busy")]
         self.started = time.monotonic()
         self.visited = 0
+        self.partial = []  # child counts of containers read in part
 
     def exhausted(self):
         return self.visited >= MAX_NODES or time.monotonic() - self.started > BUDGET_SECONDS
@@ -816,6 +1079,13 @@ class Tree:
             return node.get_state_set()
         except Exception:
             return None
+
+    def fresh_states(self, node):
+        try:
+            node.clear_cache()
+        except Exception:
+            pass
+        return self.states(node)
 
     def has(self, states, name):
         state = getattr(self.S, name, None)
@@ -829,18 +1099,72 @@ class Tree:
             names.append("disabled")
         return names
 
+    # A container this large (a spreadsheet's cells, a long list) is read in part: its
+    # selected children and the first few, instead of thousands of round trips.
+    LARGE = 512
+    SAMPLE = 32
+
+    def child_count(self, node):
+        try:
+            return node.get_child_count()
+        except Exception:
+            return 0
+
     def children(self, node):
         try:
             count = node.get_child_count()
         except Exception:
             return []
+        indices = range(count)
+        if count > self.LARGE:
+            chosen, active = set(), None
+            try:
+                if node.get_selection_iface() is not None:
+                    for k in range(min(self.Atspi.Selection.get_n_selected_children(node), self.SAMPLE)):
+                        child = self.Atspi.Selection.get_selected_child(node, k)
+                        if child is not None:
+                            chosen.add(child.get_index_in_parent())
+                            active = active or child
+            except Exception:
+                pass
+            # A table (a spreadsheet) is read around its selected cell: the rows and columns a
+            # person sees next to it, so values entered nearby show.
+            region = self.table_region(node, active)
+            chosen |= region if region else set(range(self.SAMPLE))
+            indices = sorted(i for i in chosen if 0 <= i < count)
+            self.partial.append(count)
         result = []
-        for index in range(min(count, 4000)):
+        for index in indices:
             try:
                 result.append((index, node.get_child_at_index(index)))
             except Exception:
                 continue
         return result
+
+    def table_region(self, table, active, rows=12, cols=6):
+        """Child indices of the cells around `active` (or the top left) of a table."""
+        try:
+            if table.get_table_iface() is None:
+                return set()
+            Table = self.Atspi.Table
+            row = col = 0
+            if active is not None:
+                index = active.get_index_in_parent()
+                row, col = Table.get_row_at_index(table, index), Table.get_column_at_index(table, index)
+            cells, filled = {}, set()
+            for r in range(max(0, row - 2), row + rows):
+                for c in range(max(0, col - 1), col + cols):
+                    cell = Table.get_accessible_at(table, r, c)
+                    if cell is not None:
+                        cells[(r, c)] = cell.get_index_in_parent()
+                        if self.text(cell, 1):
+                            filled.add((r, c))
+            # The cells holding something, the selected one, and the empty ones next to them
+            # (where the next value goes); not every blank cell of the region.
+            keep = filled | {(row, col)} | {(r + dr, c + dc) for r, c in filled for dr, dc in ((1, 0), (0, 1), (-1, 0), (0, -1))}
+            return {index for at, index in cells.items() if at in keep}
+        except Exception:
+            return set()
 
     def text(self, node, limit=None):
         try:
@@ -859,6 +1183,8 @@ class Tree:
             name = ""
         if not name.strip():
             name = self.label(node)
+        if not name.strip() and self.has(states, "EDITABLE"):
+            name = self.context_name(node)
         if not name.strip():
             try:
                 name = node.get_description() or ""
@@ -898,6 +1224,26 @@ class Tree:
                 pass
         return None
 
+    def context_name(self, node):
+        """An unnamed field's name from where it sits: the combo box it is the entry of (GTK's
+        combo box with entry names the box, not the field), else the label just before it among
+        its siblings."""
+        try:
+            parent = node.get_parent()
+            if parent is not None and parent.get_role() in _roles(self.Atspi, "COMBO_BOX"):
+                named = parent.get_name() or self.label(parent)
+                if named and named.strip():
+                    return named
+            if parent is not None:
+                index = node.get_index_in_parent()
+                for i in range(index - 1, max(-1, index - 3), -1):
+                    sibling = parent.get_child_at_index(i)
+                    if sibling is not None and sibling.get_role() in _roles(self.Atspi, "LABEL"):
+                        return sibling.get_name() or ""
+        except Exception:
+            pass
+        return ""
+
     def label(self, node):
         """The name of the element that labels this one (a GTK entry's mnemonic label)."""
         try:
@@ -909,17 +1255,20 @@ class Tree:
         return ""
 
     def bounds(self, node, origin=None):
-        """The element's rectangle: screen coordinates, or with `origin` (a Wayland surface's
-        position) its window coordinates moved there."""
+        """The element's rectangle: screen coordinates (divided by a `Scale` origin), or with
+        `origin` (a Wayland surface's position) its window coordinates moved there."""
         try:
             if node.get_component_iface() is None:
                 return None
-            kind = self.Atspi.CoordType.SCREEN if origin is None else self.Atspi.CoordType.WINDOW
-            rect = self.Atspi.Component.get_extents(node, kind)
+            screen = origin is None or isinstance(origin, Scale)
+            rect = self.Atspi.Component.get_extents(node, self.Atspi.CoordType.SCREEN if screen else self.Atspi.CoordType.WINDOW)
         except Exception:
             return None
         if rect.width <= 0 or rect.height <= 0:
             return None
+        if isinstance(origin, Scale):
+            x, y = round(rect.x / origin), round(rect.y / origin)
+            return {"x": x, "y": y, "width": max(1, round((rect.x + rect.width) / origin) - x), "height": max(1, round((rect.y + rect.height) / origin) - y)}
         dx, dy = origin or (0, 0)
         return {"x": rect.x + dx, "y": rect.y + dy, "width": rect.width, "height": rect.height}
 
@@ -990,6 +1339,20 @@ def _norm(text):
     return " ".join((text or "").split()).casefold()
 
 
+def frame_origin(size, rect, surface, origin):
+    """Where a Wayland window's accessible coordinates start. Toolkits measure from different
+    corners of a window drawn with its own shadow: GTK 3 from the surface (shadow included),
+    GTK 4 from the window's geometry inside it. The top-level accessible's own size says which:
+    the geometry's size means the geometry's corner."""
+    if not size or not surface:
+        return origin
+    width, height = size
+    near = lambda box: abs(width - box["width"]) <= 2 and abs(height - box["height"]) <= 2
+    if near(rect) and not near(surface):
+        return (rect["x"], rect["y"])
+    return origin
+
+
 def match_frame(tree, app, screen, wid, active):
     """The application's top-level accessible for window `wid`, and the app's open popups:
     ((index, accessible, origin) or None, [(index, accessible, bounds, origin)], rect)."""
@@ -998,6 +1361,9 @@ def match_frame(tree, app, screen, wid, active):
     origin = screen.origin(wid)
     pid = screen.pid(wid)
     title = _norm(screen.title(wid))
+    # Titles of the application's other windows: a top-level named like one of them is that
+    # window, not this one.
+    others = {_norm(screen.title(w)) for w in screen.clients if w != wid and screen.pid(w) == pid} - {title}
     best, best_score, popups, showing = None, 0, [], []
     for index, top in tree.children(app):
         if top is None:
@@ -1020,6 +1386,8 @@ def match_frame(tree, app, screen, wid, active):
                     popups.append((index, top, tree.bounds(top, at), at))
         if role not in tree.top_roles:
             continue
+        if name and name in others:
+            continue
         showing.append((index, top))
         bounds = tree.bounds(top, origin)
         score = 0
@@ -1034,21 +1402,50 @@ def match_frame(tree, app, screen, wid, active):
             score += 2
         if score > best_score:
             best, best_score = (index, top), score
-    if best is None and len(showing) == 1:
+    # The one top-level shown stands for the window only when it is the application's only
+    # window: a dialog that has just mapped is not yet in the tree, and its parent is not it.
+    if best is None and len(showing) == 1 and screen.window_count(pid) <= 1:
         best = showing[0]
     frame_index = best[0] if best else None
     popups = [popup for popup in popups if popup[0] != frame_index]
+    if best is not None and origin is not None and rect is not None:
+        origin = frame_origin(tree.window_size(best[1]), rect, expected, origin)
+    scale = x11_scale(screen, wid, tree, best[1]) if best else None
+    if scale is not None:
+        origin = scale
+        popups = [(index, top, tree.bounds(top, scale), scale) for index, top, _, _ in popups]
     return ((best[0], best[1], origin) if best else None), popups, rect
+
+
+def x11_scale(screen, wid, tree, top):
+    """For an X11 window on a scaled seat, how its accessible's screen coordinates relate to
+    the seat's: a Scale when the toolkit reports Xwayland's pixels (Chromium), None when it
+    reports the seat's logical ones already (Qt). Read off the window's own size."""
+    if not screen.x11(wid) or top is None:
+        return None
+    frame = screen.frame_rect(wid)
+    if not frame or frame["width"] <= 0 or frame["height"] <= 0:
+        return None
+    # The window's own extents, and those of its first child: Chromium reports its frame in
+    # the seat's pixels and everything inside it in Xwayland's.
+    sizes = [tree.window_size(top)] + [tree.window_size(child) for _, child in tree.children(top)[:1] if child is not None]
+    ratio = max([(w / frame["width"] + h / frame["height"]) / 2 for w, h in filter(None, sizes) if w > 0 and h > 0], default=1)
+    return Scale(ratio) if ratio > 1.25 else None
 
 
 def top_origin(screen, wid, pid, tree, top):
     """Where the top-level accessible `top` (the window, or one of its popups) is placed:
     None for screen coordinates."""
     origin = screen.origin(wid)
+    if screen.x11(wid):
+        return x11_scale(screen, wid, tree, top)
     if origin is None or top is None:
         return origin
     size = tree.window_size(top)
     frame = screen.frame_rect(wid)
+    rect = screen.rect(wid)
+    if size and rect and frame_origin(size, rect, frame, origin) != origin:
+        return (rect["x"], rect["y"])
     if size and not (frame and abs(frame["width"] - size[0]) <= 2 and abs(frame["height"] - size[1]) <= 2):
         popup = screen.popup_origin(pid, size)
         if popup is not None:
@@ -1071,6 +1468,9 @@ class Target:
             return
         self.pid = self.screen.pid(self.xid)
         if self.pid is None:
+            # An X11 window without _NET_WM_PID: the application whose window has its title.
+            self.pid = titled_pid(get_bus(self.screen.bus_display()), self.screen.title(self.xid))
+        if self.pid is None:
             self.note = "The focused window does not report its process, so its accessibility tree cannot be matched."
             return
         if not self.screen.confined(self.pid):
@@ -1078,7 +1478,13 @@ class Target:
             return
         self.bus = get_bus(self.screen.bus_display())
         self.app = self.bus.application(self.pid)
+        self.wine = None
         if self.app is None:
+            prefix = wine_prefix(self.pid)
+            if prefix is not None:
+                self.wine = wine_elements(self, prefix)
+                if self.wine is not None:
+                    return
             self.bus.retry(self.screen.bus_display())
             self.note = "The focused window's application exposes no accessibility tree; use a screenshot."
             return
@@ -1101,6 +1507,10 @@ class Target:
         elif not roots:
             self.note = "The focused window was not found in its application's accessibility tree; use a screenshot."
         return roots
+
+
+class Scale(float):
+    """An element origin meaning: screen coordinates, divided by this scale."""
 
 
 def element_id(xid, pid, path, fingerprint):
@@ -1126,6 +1536,13 @@ def collect(target, query=None, role=None):
     def visit(node, path, node_role, states):
         if len(found) >= MAX_ELEMENTS:
             return False
+        if query is None and (node_role == tree.Atspi.Role.SCROLL_PANE or node_role in tree.content_roles):
+            box = tree.bounds(node, origin[0])
+            if box is not None and intersects(box, clip[0]):
+                if node_role == tree.Atspi.Role.SCROLL_PANE:
+                    panes.append(clipped(box, clip[0]))
+                elif tree.child_count(node) or node_role in tree.text_content_roles:
+                    content.append(box)
         if query is None:
             wanted = tree.interesting(node, node_role, states)
             if wanted is False:
@@ -1149,18 +1566,64 @@ def collect(target, query=None, role=None):
             "id": element_id(target.xid, target.pid, path, tree.fingerprint(node_role, name)),
             "role": role_name, "name": name, "states": tree.state_names(states), "bounds": bounds,
         })
+        # Expose capabilities rather than asking a policy to infer them from pixels.
+        _, native_actions = tree.actions(node)
+        supported = []
+        if any(name in tree.press_actions for name in native_actions) or (node_role in tree.pointer_roles and tree.has(states, "SHOWING")) \
+                or tree.has(states, "SELECTABLE"):
+            supported.append("press")
+        if tree.has(states, "EDITABLE"): supported.append("set-text")
+        if tree.has(states, "FOCUSABLE"): supported.append("focus")
+        found[-1]["actions"] = supported
         value = tree.value(node, node_role, states)
         if value is not None and value != "":
             found[-1]["value"] = value
         return True
 
     clip, origin = [None], [None]
+    panes, content = [], []  # scroll panes; documents, texts and filled lists, readable as such
     for path, root, rect, at in target.roots():
         clip[0], origin[0] = rect, at
         tree.walk(root, path, visit)
         if len(found) >= MAX_ELEMENTS:
             break
+    if query is None and len(found) < MAX_ELEMENTS:
+        target.unread = unread_regions(panes, [e["bounds"] for e in found] + content)
     return found
+
+
+UNREAD_AREA = 160 * 120  # smaller scrolled areas are not worth reading from pixels
+UNREAD_COVER = 0.15  # the share of a scrolled area its exposed controls must cover
+
+
+def clipped(box, clip):
+    if clip is None:
+        return box
+    x, y = max(box["x"], clip["x"]), max(box["y"], clip["y"])
+    right = min(box["x"] + box["width"], clip["x"] + clip["width"])
+    bottom = min(box["y"] + box["height"], clip["y"] + clip["height"])
+    return {"x": x, "y": y, "width": max(0, right - x), "height": max(0, bottom - y)}
+
+
+def unread_regions(panes, boxes, limit=3):
+    """Scrolled areas whose content the application draws but does not expose: a large
+    scroll pane in which the exposed controls cover almost nothing (a list or icon view a
+    toolkit leaves out of its tree, a custom canvas). Innermost first, at most `limit`, as
+    [x, y, width, height] in seat coordinates."""
+    def covered(pane):
+        area = 0
+        for box in boxes:
+            part = clipped(box, pane)
+            area += part["width"] * part["height"]
+        return area / (pane["width"] * pane["height"])
+    regions = []
+    for pane in sorted(panes, key=lambda p: p["width"] * p["height"]):
+        if pane["width"] * pane["height"] < UNREAD_AREA or covered(pane) >= UNREAD_COVER:
+            continue
+        if any(intersects(pane, r) for r in regions):
+            continue
+        regions.append(pane)
+    return [[r["x"], r["y"], r["width"], r["height"]] for r in regions[:limit]]
 
 
 EMBED = "\ufffc"  # AT-SPI's object replacement character: an embedded child in a text
@@ -1258,39 +1721,125 @@ def resolve(display_name, element):
     xid, pid = int(match.group(1), 16), int(match.group(2))
     path = [int(i) for i in match.group(3).split(".")]
     screen = make_screen(display_name)
-    if xid not in screen.clients or screen.pid(xid) != pid or not screen.confined(pid):
+    if xid not in screen.clients or not screen.confined(pid):
         raise Failure("element not found", NOT_FOUND)
     bus = get_bus(screen.bus_display())
+    if (screen.pid(xid) or titled_pid(bus, screen.title(xid))) != pid:
+        raise Failure("element not found", NOT_FOUND)
     app = bus.application(pid)
     if app is None:
         bus.retry(screen.bus_display())
         raise Failure("element not found", NOT_FOUND)
     tree = Tree(bus.Atspi)
-    node, top = app, None
-    for index in path:
+    fingerprint = match.group(4)
+
+    def at(path):
+        node, top = app, None
+        for index in path:
+            try:
+                node = node.get_child_at_index(index) if index < node.get_child_count() else None
+            except Exception:
+                node = None
+            if node is None:
+                return None, top
+            top = top or node
+        return node, top
+
+    def matches(node):
+        states = tree.states(node)
         try:
-            node = node.get_child_at_index(index) if index < node.get_child_count() else None
+            role = node.get_role()
         except Exception:
-            node = None
-        if node is None:
+            return None
+        if states is None or tree.has(states, "DEFUNCT") or tree.fingerprint(role, tree.name(node, role, states)) != fingerprint:
+            return None
+        return states
+
+    node, top = at(path)
+    states = matches(node) if node is not None else None
+    if states is None:
+        # Its place moved (a sibling appeared or went, as a web page edits itself): the one
+        # showing control of the window with the same role and name is the element.
+        top, _ = at(path[:1])
+        found = []
+        if top is not None:
+            tree.walk(top, path[:1], lambda n, p, role, st: found.append(n) if matches(n) is not None else None)
+        if len(found) != 1:
             raise Failure("element not found", NOT_FOUND)
-        top = top or node
-    states = tree.states(node)
-    try:
-        role = node.get_role()
-    except Exception:
-        raise Failure("element not found", NOT_FOUND)
-    if states is None or tree.has(states, "DEFUNCT") or tree.fingerprint(role, tree.name(node, role, states)) != match.group(4):
-        raise Failure("element not found", NOT_FOUND)
+        node = found[0]
+        states = matches(node)
     return screen, xid, tree, node, states, top_origin(screen, xid, pid, tree, top)
 
 
+def wine_act(display_name, element, action, text):
+    """An action on a control of a program under Wine; False when the id is not one."""
+    match = ID_PATTERN.fullmatch(element or "")
+    if not match:
+        return False
+    path = [int(i) for i in match.group(3).split(".")]
+    if path[0] not in (WINE_CONTROL, WINE_MENU):
+        return False
+    xid, pid = int(match.group(1), 16), int(match.group(2))
+    screen = make_screen(display_name)
+    prefix = wine_prefix(pid)
+    if xid not in screen.clients or screen.pid(xid) != pid or not screen.confined(pid) or prefix is None:
+        raise Failure("element not found", NOT_FOUND)
+    where = ("w." if path[0] == WINE_CONTROL else "m.") + ".".join(str(i) for i in path[1:])
+    if action == "press":
+        answer = wine_bridge(prefix, "press", screen.title(xid), where)
+    elif action == "set-text":
+        answer = wine_bridge(prefix, "set", screen.title(xid), where, text or "")
+        if not answer or not answer.get("ok"):
+            # A control that takes no text by message (Scintilla's custom editor): the seat's
+            # pointer gives it focus and its keyboard replaces the text.
+            class Window:
+                pass
+            target = Window()
+            target.screen, target.xid, target.pid = screen, xid, pid
+            element_here = None
+            for _ in range(10):  # the window may be retitling as the text changes
+                target.screen = make_screen(display_name)
+                element_here = next((e for e in wine_elements(target, prefix) or [] if e["id"] == element), None)
+                if element_here:
+                    break
+                time.sleep(0.1)
+            bounds = (element_here or {}).get("bounds")
+            if not bounds:
+                raise Failure("the control takes no text and has no place on screen to type into")
+            screen.activate(xid)
+            screen.click(xid, bounds["x"] + min(bounds["width"] // 2, 40), bounds["y"] + min(bounds["height"] // 2, 20))
+            time.sleep(0.1)
+            screen.clear_text(xid)
+            time.sleep(0.1)
+            if text:
+                screen.type_text(xid, text)
+            return True
+    else:
+        raise Failure(f"{action} is not available on this control")
+    if not answer or not answer.get("ok"):
+        raise Failure((answer or {}).get("error") or "the program did not answer", NOT_FOUND if (answer or {}).get("error") == "element not found" else 1)
+    return True
+
+
 def act(display_name, element, action, text):
+    if wine_act(display_name, element, action, text):
+        return None
     screen, xid, tree, node, states, origin = resolve(display_name, element)
     if action == "press":
         if not (tree.has(states, "ENABLED") or tree.has(states, "SENSITIVE")):
             raise Failure("element is disabled")
         iface, names = tree.actions(node)
+        try:
+            opens_menu = node.get_role() in _roles(tree.Atspi, "MENU")
+        except Exception:
+            opens_menu = False
+        bounds = tree.bounds(node, origin)
+        # A menu's own action can open another menu of its bar (GTK 3 opens the first one), and
+        # a menu left open that way does not yield to the next press: a menu on screen is
+        # pressed with the seat's pointer at its own coordinates, like a person would.
+        if opens_menu and bounds is not None and tree.has(states, "SHOWING"):
+            screen.click(xid, bounds["x"] + bounds["width"] // 2, bounds["y"] + bounds["height"] // 2)
+            return
         for wanted in tree.press_actions:
             if wanted in names:
                 try:
@@ -1299,7 +1848,10 @@ def act(display_name, element, action, text):
                 except Exception:
                     pass
                 break
-        bounds = tree.bounds(node, origin)
+        # An item of a list, table or tree without an action of its own is selected through its
+        # container's Selection, as the toolkit selects it on a click.
+        if select_in_parent(tree, node, states):
+            return
         if bounds is None or not tree.has(states, "SHOWING"):
             raise Failure("element has no action and is not on screen")
         screen.click(xid, bounds["x"] + bounds["width"] // 2, bounds["y"] + bounds["height"] // 2)
@@ -1310,34 +1862,149 @@ def act(display_name, element, action, text):
                 return
         except Exception:
             pass
+        # Toolkits without GrabFocus (GTK 4): an editable field on screen takes focus from the
+        # seat's pointer, which only places the caret; anything else is not clicked.
+        bounds = tree.bounds(node, origin)
+        if tree.has(states, "EDITABLE") and bounds is not None and tree.has(states, "SHOWING"):
+            screen.activate(xid)
+            screen.click(xid, bounds["x"] + bounds["width"] // 2, bounds["y"] + bounds["height"] // 2)
+            deadline = time.monotonic() + 0.4
+            while time.monotonic() < deadline:
+                if tree.has(tree.fresh_states(node), "FOCUSED"):
+                    return
+                screen.let_draw()
+                time.sleep(0.01)
         raise Failure("element cannot take focus")
     if action == "set-text":
         if text is None:
             raise Failure("set-text needs --text", 2)
+        # The toolkit's EditableText, when the field then reads the new text: some accept the
+        # call and change nothing (Firefox's web fields).
+        # A number for a numeric control (spin button, slider) goes in through its Value, which
+        # the toolkit applies at once; typed digits wait for Enter or a focus change.
         try:
-            if node.get_editable_text_iface() is not None and tree.Atspi.EditableText.set_text_contents(node, text):
-                return
+            number = float(text)
+        except ValueError:
+            number = None
+        if number is not None and node.get_role() in _roles(tree.Atspi, "SPIN_BUTTON", "SLIDER") and node.get_value_iface() is not None:
+            try:
+                if tree.Atspi.Value.set_current_value(node, number):
+                    return
+            except Exception:
+                pass
+        pid = screen.pid(xid)
+        try:
+            if pid not in INERT_EDITABLE and node.get_editable_text_iface() is not None and tree.Atspi.EditableText.set_text_contents(node, text):
+                # A password field reads back masked (bullets of the same length) or not at all.
+                if node.get_role() in _roles(tree.Atspi, "PASSWORD_TEXT"):
+                    return
+                masked = lambda value: value is not None and len(value) == len(text) and text and set(value) <= set("•●*·")
+                shown = wait_text(screen, tree, node, lambda value: value == text or masked(value), 0.3)
+                if shown in (text, None) or masked(shown):
+                    return
+                INERT_EDITABLE.add(pid)  # remembered for the life of this helper
         except Exception:
             pass
-        # No EditableText (Chromium's and Electron's fields): focus its window and the field
-        # through AT-SPI, then replace the text with keys sent to that window.
+        # Otherwise (Chromium's and Electron's fields have no EditableText): focus its window
+        # and the field through AT-SPI, or with the seat's pointer at the field when that does
+        # not take, then replace the text with keys sent to that window.
         if not tree.has(states, "EDITABLE"):
             raise Failure("element is not editable")
         screen.activate(xid)
-        try:
-            focused = node.get_component_iface() is not None and tree.Atspi.Component.grab_focus(node)
-        except Exception:
-            focused = False
-        if not focused:
-            raise Failure("element cannot take focus to type into")
-        deadline = time.monotonic() + 0.15
-        while not tree.has(tree.states(node), "FOCUSED"):
-            if time.monotonic() >= deadline:
-                raise Failure("element did not take focus to type into")
-            time.sleep(0.01)
-        screen.replace_text(xid, text)
+        bounds = tree.bounds(node, origin)
+        on_screen = bounds is not None and tree.has(states, "SHOWING")
+
+        def grab():
+            try:
+                return node.get_component_iface() is not None and tree.Atspi.Component.grab_focus(node)
+            except Exception:
+                return False
+
+        def click():
+            if not on_screen:
+                return False
+            screen.click(xid, bounds["x"] + bounds["width"] // 2, bounds["y"] + bounds["height"] // 2)
+            return True
+
+        def focused(seconds):
+            # States are cached per process until an event says otherwise: read them fresh.
+            deadline = time.monotonic() + seconds
+            while not tree.has(tree.fresh_states(node), "FOCUSED"):
+                if time.monotonic() >= deadline:
+                    return False
+                screen.let_draw()
+                time.sleep(0.01)
+            return True
+
+        if not (grab() and focused(0.4)) and not (click() and focused(0.4)):
+            raise Failure("element did not take focus to type into")
+        # Keys and typed text reach an application by different paths (key events; an input
+        # method's commit), which it may handle out of order: the text goes in only once the
+        # field reads empty, and the action ends once it reads the new text. An empty field
+        # is not cleared: its Ctrl+A and BackSpace would have nothing to wait for.
+        if wait_text(screen, tree, node, lambda value: True, 0) != "":
+            screen.clear_text(xid)
+            if wait_text(screen, tree, node, lambda value: not value, 0.5) is None:
+                time.sleep(0.15)  # nothing to read: give the keys their time
+        if text:
+            screen.type_text(xid, text)
+            shown = wait_text(screen, tree, node, lambda value: value == text, 1.0)
+            if shown == "":
+                # Some applications update what they expose well after the field itself.
+                return "typed; the field does not read the new text yet"
+            if shown is not None and shown != text:
+                raise Failure(f"the field shows {shown[:80]!r} after typing; read it again before retrying")
         return
     raise Failure(f"unknown action {action}", 2)
+
+
+def select_in_parent(tree, node, states):
+    """Select `node` through the Selection of the nearest container that has one (its list or
+    table; GTK 4 puts a row between a list and its cells): the container's child that holds
+    `node` is selected. Whether `node` then reads selected."""
+    if not tree.has(states, "SELECTABLE"):
+        return False
+    try:
+        child, parent = node, node.get_parent()
+        for _ in range(3):
+            if parent is None:
+                return False
+            if parent.get_selection_iface() is not None:
+                if not tree.Atspi.Selection.select_child(parent, child.get_index_in_parent()):
+                    return False
+                break
+            child, parent = parent, parent.get_parent()
+        else:
+            return False
+    except Exception:
+        return False
+    deadline = time.monotonic() + 0.3
+    while not tree.has(tree.fresh_states(node), "SELECTED"):
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.02)
+    return True
+
+
+# Processes whose EditableText accepts a new text and changes nothing (Firefox's web fields).
+INERT_EDITABLE = set()
+
+
+def wait_text(screen, tree, node, done, seconds):
+    """Poll an element's text, read fresh, until `done(text)` or `seconds` pass; the last text,
+    or None for an element without readable text. The seat lets applications draw meanwhile."""
+    deadline = time.monotonic() + seconds
+    while True:
+        if seconds:
+            screen.let_draw()
+        try:
+            node.clear_cache()
+        except Exception:
+            pass
+        value = tree.text(node)
+        if value is None or done(value) or time.monotonic() >= deadline:
+            return value
+        time.sleep(0.01)
 
 
 # --- Commands --------------------------------------------------------------------------
@@ -1518,11 +2185,16 @@ def serve(display):
             if WARM_BUS is not None:
                 _, GLib = _gio()
                 dispatch_accessibility_events(GLib.MainContext.default())
+            if needs_registration(op, request):
+                refresh()
             # A native accessibility call can stall outside our tree-walk budget.
             # Capture its stack before the parent terminates the bounded request.
             faulthandler.dump_traceback_later(10)
             try:
                 result, _ = execute(ACTIVE_ARGS)
+                if stale(op, result):
+                    refresh()
+                    result, _ = execute(ACTIVE_ARGS)
             finally:
                 faulthandler.cancel_dump_traceback_later()
         except ServedResult as result_error:
@@ -1533,6 +2205,53 @@ def serve(display):
         sys.stdout.flush()
 
 
+def refresh():
+    """Read the registry's applications and their top-level windows afresh. libatspi's cache
+    learns of a new top-level (a dialog) from events that can lag behind and does not recover
+    by itself; clearing the cached children of the desktop and of each application makes the
+    next read ask the applications. The helper stays the same AT-SPI client: a new one would
+    cost each GTK 3 application three descriptors (see `BusWorker`)."""
+    global KNOWN_WINDOWS
+    bus = WARM_BUS
+    if bus is not None and bus.address:
+        _, GLib = _gio()
+        dispatch_accessibility_events(GLib.MainContext.default())
+        try:
+            bus.desktop.clear_cache_single()
+            for index in range(bus.desktop.get_child_count()):
+                app = bus.desktop.get_child_at_index(index)
+                if app is not None:
+                    app.clear_cache_single()
+        except Exception:
+            pass
+    KNOWN_WINDOWS = seat_windows()
+
+
+def stale(op, result):
+    """Whether a long-lived helper's answer comes from a cache that missed a new window."""
+    if op in ("elements", "find", "text"):
+        return str(result.get("note", "")).startswith("The focused window was not found")
+    return op == "act" and result.get("error") == "element not found"
+
+
+def stale(op, result):
+    """Whether a long-lived helper's answer comes from a cache that missed a new window."""
+    if op in ("elements", "find", "text"):
+        return str(result.get("note", "")).startswith("The focused window was not found")
+    return op == "act" and result.get("error") == "element not found"
+
+
+def reconnect():
+    """Drop this helper's libatspi connection and cache; the next request registers again."""
+    global WARM_BUS
+    if WARM_BUS is not None and WARM_BUS.address:
+        try:
+            WARM_BUS.Atspi.exit()
+        except Exception:
+            pass
+    WARM_BUS = None
+
+
 def execute(args):
     is_act = args.command == "act"
     try:
@@ -1541,19 +2260,36 @@ def execute(args):
         if args.command == "bus":
             return command_bus(args.display, args.wait), 0
         if is_act:
-            act(args.display, args.element, args.action, args.text)
-            return {"ok": True}, 0
+            note = act(args.display, args.element, args.action, args.text)
+            return {"ok": True, **({"note": note} if note else {})}, 0
         target = Target(args.display)
         result = {"window": target.window}
+        if target.app is not None:
+            try:
+                result["toolkit"] = f"{target.app.get_toolkit_name() or ''} {target.app.get_toolkit_version() or ''}".strip()
+            except Exception:
+                pass
         if args.command == "text":
-            result["text"] = read_text(target) if target.app is not None else ""
+            if getattr(target, "wine", None) is not None:
+                result["text"] = "\n".join(e.get("value") or e["name"] for e in target.wine if e.get("value") or e["name"])
+            else:
+                result["text"] = read_text(target) if target.app is not None else ""
             if len(result["text"]) > MAX_TEXT:
                 result["text"] = result["text"][:MAX_TEXT]
                 result["truncated"] = True
         else:
             query = args.query if args.command == "find" else None
             role = args.role if args.command == "find" else None
-            result["elements"] = collect(target, query, role) if target.app is not None else []
+            if getattr(target, "wine", None) is not None:
+                q = _norm(query) if query is not None else None
+                result["elements"] = [e for e in target.wine if (q is None or q in _norm(e["name"])) and role_matches(e["role"], role)]
+            else:
+                result["elements"] = collect(target, query, role) if target.app is not None else []
+            if getattr(target, "unread", None):
+                result["unread"] = target.unread
+            if target.app is not None and target.tree.partial:
+                result["partial"] = (f"{len(target.tree.partial)} large container(s) ({', '.join(str(c) for c in target.tree.partial[:3])} children) "
+                                     "are read in part: their selected children and the first few")
         if target.note:
             result["note"] = target.note
         return result, 0

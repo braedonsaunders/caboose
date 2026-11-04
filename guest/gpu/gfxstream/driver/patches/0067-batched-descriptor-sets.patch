@@ -1,0 +1,71 @@
+From: Caboose <caboose@local>
+Subject: [PATCH 67/67] Allocate and write descriptor sets in the guest when the phone takes them
+
+With hello feature 0x40000 (caboose_gfxstream_batched_descriptor_sets, decided by the
+process's first connection) the driver uses gfxstream's batched descriptor sets: a pool
+asks the phone once for its set ids, allocations and writes stay in the guest, and the
+sets a submit's command buffers bind go just before it in one
+vkQueueCommitDescriptorSetUpdatesGOOGLE on the same stream. DXVK allocates and writes a set
+for most draws; each was a packet of its own with a reply to account for. The private
+synchronous profile no longer excludes the feature; its staged submit commits the pending
+sets before detaching the command buffers.
+---
+diff --git a/src/gfxstream/guest/vulkan/gfxstream_vk_device.cpp b/src/gfxstream/guest/vulkan/gfxstream_vk_device.cpp
+--- a/src/gfxstream/guest/vulkan/gfxstream_vk_device.cpp
++++ b/src/gfxstream/guest/vulkan/gfxstream_vk_device.cpp
+@@ -24,6 +24,10 @@
+ #include "vk_sync_dummy.h"
+ #include "vk_util.h"
+ static GfxStreamConnectionManager* getConnectionManager(void);
++#ifdef CABOOSE_GFXSTREAM_PRIVATE_ICD
++// SocketStream.cpp: 1 when the phone takes batched descriptor sets (hello feature 0x40000).
++extern "C" int caboose_gfxstream_batched_descriptor_sets;
++#endif
+ #include "caboose-wsi/mesa_surface.inc"
+ static VkBaseOutStructure* caboose_extract_struct(void* start, VkStructureType sType) {
+     auto* curr = reinterpret_cast<VkBaseOutStructure*>(start);
+@@ -146,6 +150,9 @@ static VkResult SetupInstanceForProcess(void) {
+         // This is a wire-format feature, not a Vulkan hardware capability.
+         struct GfxStreamVkFeatureInfo features = {};
+         features.hasVulkanNullOptionalStrings = true;
++        // Hello feature 0x40000: descriptor sets are allocated and written here and sent with
++        // the next submit (docs/gpu-live.md, "Batched descriptor sets").
++        features.hasVulkanBatchedDescriptorSetUpdate = caboose_gfxstream_batched_descriptor_sets == 1;
+         gfxstream::vk::ResourceTracker::get()->setupFeatures(&features);
+         if (!caboose_surface::profileReady()) return VK_ERROR_INCOMPATIBLE_DRIVER;
+         gNoRenderControlEnc = 1;
+diff --git a/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp b/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp
+--- a/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp
++++ b/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp
+@@ -7780,6 +7780,18 @@ void ResourceTracker::flushStagingStreams(void* context, VkQueue queue, uint32_t
+                                           const VkSubmitInfoType* pSubmits) {
+ #if defined(CABOOSE_GFXSTREAM_PRIVATE_INDEXED_WSI)
+     if (cabooseSynchronousProfile() && !usingDirectMapping()) {
++        // Command buffers go with their submit; the descriptor sets they bind that were
++        // allocated or written since go just before it, in one commit on the same stream.
++        if (mFeatureInfo.hasVulkanBatchedDescriptorSetUpdate) {
++            std::vector<VkCommandBuffer> submitted;
++            for (uint32_t i = 0; i < submitCount; ++i)
++                for (uint32_t j = 0; j < getCommandBufferCount(pSubmits[i]); ++j)
++                    submitted.push_back(getCommandBuffer(pSubmits[i], j));
++            std::unordered_set<VkDescriptorSet> pendingSets;
++            collectAllPendingDescriptorSetsBottomUp(submitted, pendingSets);
++            // The submit below detaches the staged commands and then resets the topology.
++            commitDescriptorSetUpdates(context, queue, pendingSets);
++        }
+         return;
+     }
+ #endif
+diff --git a/src/gfxstream/guest/vulkan_enc/ResourceTracker.h b/src/gfxstream/guest/vulkan_enc/ResourceTracker.h
+--- a/src/gfxstream/guest/vulkan_enc/ResourceTracker.h
++++ b/src/gfxstream/guest/vulkan_enc/ResourceTracker.h
+@@ -572,8 +572,7 @@ class ResourceTracker {
+         return mFeatureInfo.setupComplete && mFeatureInfo.hasVulkanNullOptionalStrings &&
+             !mFeatureInfo.hasVulkanAsyncQueueSubmit && !mFeatureInfo.hasDeferredVulkanCommands &&
+             !mFeatureInfo.hasVulkanAsyncQsri && !mFeatureInfo.hasVulkanQueueSubmitWithCommands &&
+-            !mFeatureInfo.hasDirectMem && !mFeatureInfo.hasVirtioGpuNext &&
+-            !mFeatureInfo.hasVulkanBatchedDescriptorSetUpdate;
++            !mFeatureInfo.hasDirectMem && !mFeatureInfo.hasVirtioGpuNext;
+     }
+     uint32_t getApiVersionFromInstance(VkInstance instance);
+     uint32_t getApiVersionFromDevice(VkDevice device);

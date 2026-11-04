@@ -114,6 +114,12 @@ int main(int argc, char** argv) {
         inventory.clear();
         assert(!substitute(known, m1024.data(), m1024.size(), true, blake3, load, token));
         assert(loads == 2);
+        // An empty inventory may be an executor without a store, which cannot resolve a
+        // token for code it was sent: nothing is named by token.
+        assert(!substitute(known, m1024.data(), m1024.size(), true, blake3, load, token));
+        assert(!substitute(known, m8192.data(), m8192.size(), true, blake3, load, token));
+        assert(!substitute(known, m8192.data(), m8192.size(), true, blake3, load, token));
+        assert(loads == 2 && known.size() == 0);
     }
     {
         // With more than one device stream, only what the inventory listed is named.

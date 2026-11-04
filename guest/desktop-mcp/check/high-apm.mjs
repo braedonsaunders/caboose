@@ -23,38 +23,36 @@ async function call(name, args = {}) {
   assert.ok(!result.isError, JSON.stringify(result))
   return result.content
 }
-const json = content => JSON.parse(content[0].text)
+const text = content => content.map(part => part.text ?? '').join('\n')
+const idOf = (listing, name) => listing.split('\n').find(line => line.includes(` "${name}"`))?.split(' ')[0]
 try {
-  const elements = json(await call('elements')).elements
-  const entry = elements.find(e => e.name === 'File name')
-  assert.equal(entry.value, 'report.txt')
-  const changed = json(await call('batch', { steps: [{ action: 'set_text', id: entry.id, text: 'batch.txt' }] }))
-  assert.equal(changed.completed, 1)
-  assert.equal(changed.state.elements.find(e => e.id === entry.id).value, 'batch.txt')
-  const stopped = json(await call('batch', { steps: [
-    { action: 'set_text', id: entry.id, text: 'before-error.txt' },
-    { action: 'click_element', id: entry.id.replace(/-[^-]+$/, '-ffffff') },
-    { action: 'set_text', id: entry.id, text: 'must-not-run.txt' },
+  const listing = text(await call('look'))
+  const entry = idOf(listing, 'File name')
+  assert.ok(entry && listing.includes(`${entry} text "File name" = "report.txt"`), listing)
+  const changed = text(await call('act', { steps: [{ set: entry, text: 'batch.txt' }] }))
+  assert.match(changed, /^Done\./)
+  assert.ok(changed.includes(`~ ${entry} text "File name" = "batch.txt"`), changed)
+  const stopped = text(await call('act', { steps: [
+    { set: entry, text: 'before-error.txt' },
+    { press: 'e999999' },
+    { set: entry, text: 'must-not-run.txt' },
   ] }))
-  assert.equal(stopped.completed, 1)
-  assert.match(stopped.error, /element not found/)
-  assert.equal(stopped.state.elements.find(e => e.id === entry.id).value, 'before-error.txt')
-  const observed = await call('set_text', { id: entry.id, text: 'observed.txt', observe: true })
-  assert.equal(JSON.parse(observed[1].text).state.elements.find(e => e.id === entry.id).value, 'observed.txt')
+  assert.match(stopped, /^Did 1 of 3; stopped: stale id/)
+  assert.ok(stopped.includes('"before-error.txt"') && !stopped.includes('must-not-run'), stopped)
   const plain = await call('screenshot')
   assert.equal(plain.length, 1)
-  const marked = await call('screenshot', { annotate: true })
+  const marked = await call('screenshot', { marks: true })
   assert.equal(marked[0].mimeType, 'image/png')
   assert.ok(Buffer.from(marked[0].data, 'base64').subarray(0, 8).equals(Buffer.from([137,80,78,71,13,10,26,10])))
-  assert.ok(JSON.parse(marked[1].text).some(e => e.id === entry.id && e.mark > 0))
+  assert.ok(marked[1].text.split('\n').some(line => line.split(' ')[1] === entry), marked[1].text)
   const times = []
   for (let i = 0; i < 20; i++) {
     const start = performance.now()
-    await call('elements')
+    await call('look')
     times.push(performance.now() - start)
   }
   times.sort((a, b) => a - b)
-  console.log(`PASS high-APM batch, stale ID halt, observe, values, annotations; warm elements median=${times[10].toFixed(1)}ms p95=${times[19].toFixed(1)}ms`)
+  console.log(`PASS high-APM act, stale ID halt, changes, values, marks; warm look median=${times[10].toFixed(1)}ms p95=${times[19].toFixed(1)}ms`)
 } finally {
   child.stdin.end()
   child.kill()

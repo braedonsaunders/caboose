@@ -1,0 +1,340 @@
+{
+  "note": "Each task runs inside the computer as the agent user with the agent seat's environment, HOME=$BENCH/home. setup creates files and starts the application; verify exits 0 only when the effect is there.",
+  "tasks": [
+    {
+      "id": "mousepad-save-as",
+      "app": "Mousepad",
+      "setup": "mkdir -p $HOME/Documents; printf 'hello\\n' > $HOME/Documents/notes.txt; start mousepad $HOME/Documents/notes.txt",
+      "prompt": "In the open Mousepad window, replace the whole text with \"basalt 417 cinder\" and save it as a new file named cinder-41.txt in the same Documents folder.",
+      "verify": "test \"$(cat $HOME/Documents/cinder-41.txt)\" = 'basalt 417 cinder'"
+    },
+    {
+      "id": "mousepad-find-replace",
+      "app": "Mousepad",
+      "setup": "mkdir -p $HOME/Documents; printf 'the granite and the granite again\\n' > $HOME/Documents/notes.txt; start mousepad $HOME/Documents/notes.txt",
+      "prompt": "In the open Mousepad window, use Find and Replace to replace every \"granite\" with \"heron\", then save the file.",
+      "verify": "test \"$(cat $HOME/Documents/notes.txt)\" = 'the heron and the heron again'"
+    },
+    {
+      "id": "mousepad-preference",
+      "app": "Mousepad",
+      "setup": "gsettings reset org.xfce.mousepad.preferences.view show-line-numbers; mkdir -p $HOME/Documents; printf 'hello\\n' > $HOME/Documents/notes.txt; start mousepad $HOME/Documents/notes.txt",
+      "prompt": "In the open Mousepad window, turn on line numbers in Mousepad's preferences.",
+      "verify": "test \"$(gsettings get org.xfce.mousepad.preferences.view show-line-numbers)\" = true",
+      "reset": "gsettings reset org.xfce.mousepad.preferences.view show-line-numbers"
+    },
+    {
+      "id": "thunar-create-folder",
+      "app": "Thunar",
+      "setup": "mkdir -p $HOME/Documents; touch $HOME/Documents/report.txt; start thunar $HOME/Documents",
+      "prompt": "In the open file manager window, create a new folder named Studio42 in the Documents folder it shows.",
+      "verify": "test -d $HOME/Documents/Studio42"
+    },
+    {
+      "id": "thunar-rename",
+      "app": "Thunar",
+      "setup": "mkdir -p $HOME/Documents; printf 'q3\\n' > $HOME/Documents/report.txt; start thunar $HOME/Documents",
+      "prompt": "In the open file manager window, rename the file report.txt to summary-2026.txt.",
+      "verify": "test -f $HOME/Documents/summary-2026.txt && test ! -e $HOME/Documents/report.txt"
+    },
+    {
+      "id": "thunar-preference",
+      "app": "Thunar",
+      "setup": "xfconf-query -c thunar -r -R -p / 2>/dev/null; start thunar-settings",
+      "prompt": "In the open Thunar Preferences window, turn on \"Text beside icons\".",
+      "verify": "test \"$(xfconf-query -c thunar -p /misc-text-beside-icons)\" = true",
+      "reset": "xfconf-query -c thunar -r -R -p / 2>/dev/null; true"
+    },
+    {
+      "id": "chromium-form",
+      "app": "Chromium",
+      "setup": "page $HOME/Documents/form.html 'Shipping' 'Claimed'; start chromium --no-first-run --no-default-browser-check --user-data-dir=$HOME/chromium file://$HOME/Documents/form.html",
+      "prompt": "In the open Chromium window, fill the form: Recipient \"Iris Moss\", City \"Granite Falls\", tick Gift wrap, then press Ship order.",
+      "verify": "window_title 'Claimed - Chromium'"
+    },
+    {
+      "id": "chromium-two-page",
+      "app": "Chromium",
+      "setup": "page $HOME/Documents/form.html 'Details' 'Claimed'; printf '<!doctype html><title>Welcome</title><h1>Welcome</h1><p><a href=\"help.html\">Help</a></p><p><a href=\"form.html\">Continue to the form</a></p>' > $HOME/Documents/start.html; start chromium --no-first-run --no-default-browser-check --user-data-dir=$HOME/chromium file://$HOME/Documents/start.html",
+      "prompt": "In the open Chromium window, follow \"Continue to the form\", then fill Recipient \"Iris Moss\" and City \"Granite Falls\", tick Gift wrap and press Ship order.",
+      "verify": "window_title 'Claimed - Chromium'"
+    },
+    {
+      "id": "writer-save",
+      "app": "libreoffice-writer",
+      "setup": "mkdir -p $HOME/Documents; start soffice --norestore --nologo --writer",
+      "prompt": "In the open LibreOffice Writer window, type the text \"Quarterly report for heron\" and save the document in ODF format as report.odt in the Documents folder of the home directory.",
+      "verify": "unzip -p $HOME/Documents/report.odt content.xml | grep -q 'Quarterly report for heron'"
+    },
+    {
+      "id": "calc-sum",
+      "app": "libreoffice-calc",
+      "setup": "mkdir -p $HOME/Documents; start soffice --norestore --nologo --calc",
+      "prompt": "In the open LibreOffice Calc window, put 12 in A1, 30 in A2 and a formula adding them in A3, then save the spreadsheet in ODF format as sums.ods in the Documents folder of the home directory.",
+      "verify": "unzip -p $HOME/Documents/sums.ods content.xml | grep -q 'of:=\\[.A1\\]+\\[.A2\\]' && unzip -p $HOME/Documents/sums.ods content.xml | grep -q '>42<'"
+    },
+    {
+      "id": "terminal-command",
+      "app": "xfce4-terminal",
+      "setup": "mkdir -p $HOME/Documents; start xfce4-terminal --disable-server --working-directory=$HOME/Documents",
+      "prompt": "In the open terminal window, run a command that writes the word fjord into a file named term.txt in the current directory.",
+      "verify": "grep -qx fjord $HOME/Documents/term.txt"
+    },
+    {
+      "id": "vscode-edit",
+      "app": "com.microsoft.VSCode",
+      "setup": "mkdir -p $HOME/Documents; printf 'host = local\\nport = 8080\\n' > $HOME/Documents/app.conf; start /usr/share/code/code --user-data-dir $HOME/vscode --extensions-dir $HOME/vscode-extensions --disable-workspace-trust --skip-welcome --new-window $HOME/Documents/app.conf",
+      "prompt": "In the open Visual Studio Code window, change the port in app.conf from 8080 to 9090 and save the file.",
+      "verify": "grep -qx 'port = 9090' $HOME/Documents/app.conf && grep -qx 'host = local' $HOME/Documents/app.conf"
+    },
+    {
+      "id": "keepassxc-new-database",
+      "app": "KeePassXC",
+      "setup": "export XDG_CONFIG_HOME=$HOME/.config; mkdir -p $HOME/Documents; start keepassxc",
+      "prompt": "In the open KeePassXC window, create a new password database named Vault with the password \"heron-basalt-42\" and save it as vault.kdbx in the Documents folder of the home directory.",
+      "verify": "test \"$(head -c 4 $HOME/Documents/vault.kdbx | od -An -tx1 | tr -d ' ')\" = 03d9a29a"
+    },
+    {
+      "id": "zenity-form",
+      "app": "zenity",
+      "setup": "start sh -c 'zenity --forms --title=Signup --text=Signup --add-entry=Name --add-entry=City > \"$BENCH/zenity.out\"'",
+      "prompt": "In the open Signup dialog, enter the Name \"Iris Moss\" and the City \"Granite Falls\", then confirm it with OK.",
+      "verify": "test \"$(cat $BENCH/zenity.out)\" = 'Iris Moss|Granite Falls'"
+    },
+    {
+      "id": "keyboard-settings",
+      "app": "xfce4-keyboard-settings",
+      "setup": "xfconf-query -c xsettings -p /Net/CursorBlink -r 2>/dev/null; GDK_BACKEND=x11 start xfce4-keyboard-settings",
+      "prompt": "In the open Keyboard settings window, turn off the blinking text cursor.",
+      "verify": "test \"$(xfconf-query -c xsettings -p /Net/CursorBlink)\" = false",
+      "reset": "xfconf-query -c xsettings -p /Net/CursorBlink -r 2>/dev/null; true"
+    },
+    {
+      "id": "impress-title",
+      "app": "soffice",
+      "setup": "mkdir -p $HOME/Documents; start soffice --norestore --nologo --impress",
+      "prompt": "In the open LibreOffice Impress window, start an empty presentation, give the first slide the title \"Harbor plan\" and save it in ODF format as plan.odp in the Documents folder of the home directory.",
+      "verify": "unzip -p $HOME/Documents/plan.odp content.xml | grep -q 'Harbor plan'"
+    },
+    {
+      "id": "thunar-copy",
+      "app": "Thunar",
+      "setup": "mkdir -p $HOME/Documents/Archive; printf 'q3\\n' > $HOME/Documents/report.txt; start thunar $HOME/Documents",
+      "prompt": "In the open file manager window, copy the file report.txt into the Archive folder, keeping the original where it is.",
+      "verify": "test -f $HOME/Documents/Archive/report.txt && test -f $HOME/Documents/report.txt"
+    },
+    {
+      "id": "thunar-trash",
+      "app": "Thunar",
+      "setup": "mkdir -p $HOME/Documents; printf 'old\\n' > $HOME/Documents/draft.txt; printf 'keep\\n' > $HOME/Documents/final.txt; start thunar $HOME/Documents",
+      "prompt": "In the open file manager window, delete the file draft.txt. Leave final.txt alone.",
+      "verify": "test ! -e $HOME/Documents/draft.txt && test -f $HOME/Documents/final.txt"
+    },
+    {
+      "id": "chromium-select",
+      "app": "Chromium",
+      "setup": "mkdir -p $HOME/Documents; printf '%s' '<!doctype html><html><head><title>Order</title></head><body><form onsubmit=\"event.preventDefault(); document.title = (s.value === &#39;express&#39; && document.querySelector(&#39;input[name=size]:checked&#39;)?.value === &#39;large&#39;) ? &#39;Placed&#39; : &#39;Incomplete&#39;\"><p><label for=s>Shipping</label> <select id=s><option value=standard>Standard</option><option value=express>Express</option><option value=pickup>Pickup</option></select></p><p><label><input type=radio name=size value=small checked> Small</label> <label><input type=radio name=size value=large> Large</label></p><button type=submit>Place order</button></form></body></html>' > $HOME/Documents/order.html; start chromium --no-first-run --no-default-browser-check --user-data-dir=$HOME/chromium file://$HOME/Documents/order.html",
+      "prompt": "In the open Chromium window, choose Express shipping and the Large size, then press Place order.",
+      "verify": "window_title 'Placed - Chromium'"
+    },
+    {
+      "id": "writer-docx",
+      "app": "libreoffice-writer",
+      "setup": "mkdir -p $HOME/Documents; start soffice --norestore --nologo --writer",
+      "prompt": "In the open LibreOffice Writer window, write two lines, \"Harbor minutes\" and \"Next meeting Tuesday\", and save the document in Word format as minutes.docx in the Documents folder of the home directory.",
+      "verify": "unzip -p $HOME/Documents/minutes.docx word/document.xml | grep -q 'Harbor minutes' && unzip -p $HOME/Documents/minutes.docx word/document.xml | grep -q 'Next meeting Tuesday'"
+    },
+    {
+      "id": "calc-csv-total",
+      "app": "libreoffice-calc",
+      "setup": "mkdir -p $HOME/Documents; printf 'item,amount\\nrope,12\\nsail,30\\nanchor,58\\n' > $HOME/Documents/costs.csv; start soffice --norestore --nologo --calc --infilter=CSV:44,34,76 $HOME/Documents/costs.csv",
+      "prompt": "In the open LibreOffice Calc window showing costs.csv, put the word total in A5 and a formula summing the amounts in B5, then save it, keeping the CSV format.",
+      "verify": "grep -qx 'total,100' $HOME/Documents/costs.csv"
+    },
+    {
+      "id": "terminal-mkdir",
+      "app": "xfce4-terminal",
+      "setup": "mkdir -p $HOME/Documents; start xfce4-terminal --disable-server --working-directory=$HOME/Documents",
+      "prompt": "In the open terminal window, create a directory named logs-2026 with an empty file named today.log inside it, in the current directory.",
+      "verify": "test -f $HOME/Documents/logs-2026/today.log"
+    },
+    {
+      "id": "keepassxc-add-entry",
+      "app": "KeePassXC",
+      "setup": "export XDG_CONFIG_HOME=$HOME/.config; mkdir -p $HOME/Documents; printf 'heron-basalt-42\\nheron-basalt-42\\n' | keepassxc-cli db-create -p $HOME/Documents/vault.kdbx >/dev/null 2>&1; start keepassxc $HOME/Documents/vault.kdbx",
+      "prompt": "In the open KeePassXC window, unlock the database with the password \"heron-basalt-42\", add an entry titled Mail with the username iris and the password \"cinder-77\", and save the database.",
+      "verify": "printf 'heron-basalt-42\\n' | keepassxc-cli show -q -s $HOME/Documents/vault.kdbx Mail 2>/dev/null | grep -q 'UserName: iris' && printf 'heron-basalt-42\\n' | keepassxc-cli show -q -s $HOME/Documents/vault.kdbx Mail 2>/dev/null | grep -q 'Password: cinder-77'"
+    },
+    {
+      "id": "zenity-list",
+      "app": "zenity",
+      "setup": "start sh -c 'zenity --list --title=Fruit --text=Pick --column=Fruit --column=Colour apple red banana yellow cherry dark-red > \"$BENCH/zenity.out\"'",
+      "prompt": "In the open Fruit dialog, choose banana and confirm with OK.",
+      "verify": "test \"$(cat $BENCH/zenity.out)\" = banana"
+    },
+    {
+      "id": "zenity-calendar",
+      "app": "zenity",
+      "setup": "start sh -c 'zenity --calendar --title=Booking --text=Date --day=3 --month=11 --year=2026 --date-format=%Y-%m-%d > \"$BENCH/zenity.out\"'",
+      "prompt": "In the open Booking dialog, pick the date 19 November 2026 and confirm with OK.",
+      "verify": "test \"$(cat $BENCH/zenity.out)\" = 2026-11-19"
+    },
+    {
+      "id": "vscode-new-file",
+      "app": "com.microsoft.VSCode",
+      "setup": "mkdir -p $HOME/Documents/site; start /usr/share/code/code --user-data-dir $HOME/vscode --extensions-dir $HOME/vscode-extensions --disable-workspace-trust --skip-welcome --new-window $HOME/Documents/site",
+      "prompt": "In the open Visual Studio Code window, create a file named notes.md in the open site folder containing the line \"# Harbor\", and save it.",
+      "verify": "grep -qx '# Harbor' $HOME/Documents/site/notes.md"
+    },
+    {
+      "id": "file-roller-extract",
+      "app": "org.gnome.FileRoller",
+      "setup": "mkdir -p $HOME/Documents; python3 -c \"import zipfile, os; z = zipfile.ZipFile(os.environ['HOME'] + '/Documents/photos.zip', 'w'); z.writestr('photos/one.txt', 'a'); z.writestr('photos/two.txt', 'b'); z.close()\"; start file-roller $HOME/Documents/photos.zip",
+      "prompt": "In the open archive manager window showing photos.zip, extract all of its files into a new folder named extracted inside the Documents folder of the home directory.",
+      "verify": "test -f $HOME/Documents/extracted/photos/two.txt || test -f $HOME/Documents/extracted/two.txt"
+    },
+    {
+      "id": "webmcp-shop",
+      "app": "Chromium",
+      "setup": "mkdir -p $HOME/Documents; cat > $HOME/Documents/shop.html <<'HTML'\n<!doctype html><html><head><title>Harbor shop</title></head><body><h1>Harbor shop</h1><ul id=cart></ul><p><label>Quantity <input id=q type=number value=1></label> <button onclick=\"add('rope')\">Add rope</button> <button onclick=\"add('sail')\">Add sail</button> <button onclick=\"add('anchor')\">Add anchor</button></p><button id=buy>Checkout</button>\n<script>\nconst cart = []\nconst add = item => { cart.push({ item, qty: Number(document.getElementById('q').value) }); render() }\nconst render = () => { document.getElementById('cart').innerHTML = cart.map(i => '<li>' + i.qty + ' ' + i.item + '</li>').join('') }\ndocument.modelContext.registerTool({ name: 'add_to_cart', description: 'Add an item to the cart', inputSchema: { type: 'object', properties: { item: { type: 'string', enum: ['rope', 'sail', 'anchor'] }, qty: { type: 'number' } }, required: ['item', 'qty'] },\n  execute: ({ item, qty }) => { cart.push({ item, qty }); render(); return { content: [{ type: 'text', text: 'cart: ' + cart.map(i => i.qty + ' ' + i.item).join(', ') }] } } })\ndocument.modelContext.registerTool({ name: 'checkout', description: 'Place the order for the cart', inputSchema: { type: 'object', properties: {} },\n  execute: () => { document.title = 'Ordered ' + cart.map(i => i.qty + ' ' + i.item).join(', '); return { content: [{ type: 'text', text: document.title }] } } })\ndocument.getElementById('buy').onclick = () => { document.title = 'Ordered ' + cart.map(i => i.qty + ' ' + i.item).join(', ') }\n</script></body></html>\nHTML\nstart python3 -m http.server 18761 --bind 127.0.0.1 --directory $HOME/Documents; sleep 0.5; start chromium --no-first-run --no-default-browser-check --user-data-dir=$HOME/chromium http://127.0.0.1:18761/shop.html",
+      "prompt": "In the open Chromium window, put 3 rope and 1 anchor in the cart and check out.",
+      "verify": "window_title 'Ordered 3 rope, 1 anchor - Chromium'"
+    },
+    {
+      "id": "webmcp-berth",
+      "app": "Chromium",
+      "setup": "mkdir -p $HOME/Documents; cat > $HOME/Documents/berth.html <<'HTML'\n<!doctype html><html><head><title>Marina</title></head><body><h1>Marina</h1>\n<form toolname=\"book_berth\" toolautosubmit tooldescription=\"Book a berth for a boat\" onsubmit=\"event.preventDefault(); document.title = 'Booked ' + this.boat.value + ' for ' + this.nights.value + ' nights'\">\n<p><label>Boat <input name=boat toolparamdescription=\"The boat's name\"></label></p><p><label>Nights <input name=nights type=number toolparamdescription=\"How many nights\"></label></p><button type=submit>Book</button></form></body></html>\nHTML\nstart python3 -m http.server 18761 --bind 127.0.0.1 --directory $HOME/Documents; sleep 0.5; start chromium --no-first-run --no-default-browser-check --user-data-dir=$HOME/chromium http://127.0.0.1:18761/berth.html",
+      "prompt": "In the open Chromium window, book a berth for the boat Heron for 4 nights.",
+      "verify": "window_title 'Booked Heron for 4 nights - Chromium'"
+    },
+    {
+      "id": "webmcp-derived-form",
+      "app": "Chromium",
+      "setup": "page $HOME/Documents/form.html 'Shipping' 'Claimed'; start python3 -m http.server 18761 --bind 127.0.0.1 --directory $HOME/Documents; sleep 0.5; start chromium --no-first-run --no-default-browser-check --user-data-dir=$HOME/chromium http://127.0.0.1:18761/form.html",
+      "prompt": "In the open Chromium window, fill the form: Recipient \"Iris Moss\", City \"Granite Falls\", tick Gift wrap, then press Ship order.",
+      "verify": "window_title 'Claimed - Chromium'"
+    },
+    {
+      "id": "flow-download-extract-edit",
+      "app": "Chromium",
+      "setup": "mkdir -p $HOME/Documents $HOME/Downloads; python3 -c \"import zipfile, os; z = zipfile.ZipFile(os.environ['HOME'] + '/Documents/data.zip', 'w'); z.writestr('notes.txt', 'draft one\\\\n'); z.close()\"; mkdir -p $(dirname $HOME/Documents/download.html); cat > $HOME/Documents/download.html <<'HTML'\n<!doctype html><title>Data</title><h1>Data</h1><p><a href=\"data.zip\" download>Download data</a></p>\nHTML\nstart python3 -m http.server 18761 --bind 127.0.0.1 --directory $HOME/Documents; sleep 0.5; start chromium --no-first-run --no-default-browser-check --user-data-dir=$HOME/chromium http://127.0.0.1:18761/download.html",
+      "prompt": "In the open Chromium window, download data.zip with the Download data link (it lands in /tmp/caboose-bench/home/Downloads). Then extract it with the archive manager (file-roller) into a new folder /tmp/caboose-bench/home/Documents/data, open the extracted notes.txt in Mousepad, add a second line reading reviewed, and save it.",
+      "verify": "grep -qx 'reviewed' $HOME/Documents/data/notes.txt && grep -qx 'draft one' $HOME/Documents/data/notes.txt"
+    },
+    {
+      "id": "flow-text-to-pdf",
+      "app": "Mousepad",
+      "setup": "mkdir -p $HOME/Documents; printf 'Harbor report: all berths full.\\n' > $HOME/Documents/report.txt; start mousepad $HOME/Documents/report.txt",
+      "prompt": "The open Mousepad window shows report.txt. Put its text into a new LibreOffice Writer document (start Writer with soffice --writer) and export that document as a PDF named /tmp/caboose-bench/home/Documents/report.pdf.",
+      "verify": "test \"$(head -c 4 $HOME/Documents/report.pdf)\" = '%PDF'"
+    },
+    {
+      "id": "flow-folder-move-edit",
+      "app": "Thunar",
+      "setup": "mkdir -p $HOME/Documents; printf 'total 30\\n' > $HOME/Documents/bill1.txt; printf 'total 12\\n' > $HOME/Documents/bill2.txt; start thunar $HOME/Documents",
+      "prompt": "In the open file manager, create a folder named Invoices in Documents and move bill1.txt and bill2.txt into it. Then open Invoices/bill2.txt in Mousepad, change its text to total 42 and save it.",
+      "verify": "test -f $HOME/Documents/Invoices/bill1.txt && test ! -e $HOME/Documents/bill2.txt && test \"$(cat $HOME/Documents/Invoices/bill2.txt)\" = 'total 42'"
+    },
+    {
+      "id": "flow-calc-to-web",
+      "app": "libreoffice-calc",
+      "setup": "mkdir -p $HOME/Documents; printf 'item,amount\\nrope,12\\nsail,30\\nanchor,58\\n' > $HOME/Documents/costs.csv; mkdir -p $(dirname $HOME/Documents/claims.html); cat > $HOME/Documents/claims.html <<'HTML'\n<!doctype html><title>Claims</title><h1>Claims</h1><form onsubmit=\"event.preventDefault(); document.title = 'Filed ' + document.getElementById('t').value\"><label for=t>Total</label> <input id=t> <button>File</button></form>\nHTML\nstart python3 -m http.server 18761 --bind 127.0.0.1 --directory $HOME/Documents; sleep 0.5; start soffice --norestore --nologo --calc --infilter=CSV:44,34,76 $HOME/Documents/costs.csv",
+      "prompt": "The open LibreOffice Calc window shows costs.csv. Put a formula in B5 that sums the amounts, save the sheet in ODF format as /tmp/caboose-bench/home/Documents/costs.ods, then open http://127.0.0.1:18761/claims.html in Chromium (chromium http://127.0.0.1:18761/claims.html), enter that sum as the Total and press File.",
+      "verify": "test -f $HOME/Documents/costs.ods && window_title 'Filed 100 - Chromium'"
+    },
+    {
+      "id": "flow-terminal-to-editor",
+      "app": "xfce4-terminal",
+      "setup": "mkdir -p $HOME/Documents; touch $HOME/Documents/alpha.txt $HOME/Documents/beta.txt; start xfce4-terminal --disable-server --working-directory=$HOME/Documents",
+      "prompt": "In the open terminal, write the names of the files in the current directory into a file named list.txt there (one per line). Then open /tmp/caboose-bench/home/Documents/list.txt in Mousepad, add a last line reading done, and save it.",
+      "verify": "grep -qx alpha.txt $HOME/Documents/list.txt && grep -qx beta.txt $HOME/Documents/list.txt && test \"$(tail -n 1 $HOME/Documents/list.txt)\" = done"
+    },
+    {
+      "id": "flow-writer-letter",
+      "app": "libreoffice-writer",
+      "setup": "mkdir -p $HOME/Documents; start soffice --norestore --nologo --writer",
+      "prompt": "In the open LibreOffice Writer window, write a short letter: a first line Harbor notice in bold, then two paragraphs, \"The east dock closes on Monday.\" and \"Moorings move to the west dock.\". Save it in Word format as /tmp/caboose-bench/home/Documents/notice.docx.",
+      "verify": "x=$(unzip -p $HOME/Documents/notice.docx word/document.xml) && echo \"$x\" | grep -q 'Harbor notice' && echo \"$x\" | grep -q 'The east dock closes on Monday.' && echo \"$x\" | grep -q 'Moorings move to the west dock.' && echo \"$x\" | grep -Eq '<w:b( w:val=\"(1|true|on)\")?/>'"
+    },
+    {
+      "id": "flow-web-wizard",
+      "app": "Chromium",
+      "setup": "mkdir -p $(dirname $HOME/Documents/step1.html); cat > $HOME/Documents/step1.html <<'HTML'\n<!doctype html><title>Step 1</title><h1>Choose a plan</h1><form action=\"step2.html\"><label for=p>Plan</label> <select id=p name=plan><option>Basic</option><option>Harbor</option><option>Fleet</option></select> <button>Next</button></form>\nHTML\nmkdir -p $(dirname $HOME/Documents/step2.html); cat > $HOME/Documents/step2.html <<'HTML'\n<!doctype html><title>Step 2</title><h1>Boat size</h1><form action=\"step3.html\"><input type=hidden name=plan id=h><p><label><input type=radio name=size value=small checked> Small</label> <label><input type=radio name=size value=large> Large</label></p><button>Next</button></form><script>document.getElementById(\"h\").value = new URLSearchParams(location.search).get(\"plan\")</script>\nHTML\nmkdir -p $(dirname $HOME/Documents/step3.html); cat > $HOME/Documents/step3.html <<'HTML'\n<!doctype html><title>Step 3</title><h1>Confirm</h1><form id=f><label><input type=checkbox id=t> I accept the harbor rules</label> <button>Enroll</button></form><script>const q = new URLSearchParams(location.search); document.getElementById(\"f\").onsubmit = e => { e.preventDefault(); document.title = document.getElementById(\"t\").checked ? \"Enrolled \" + q.get(\"plan\") + \" \" + q.get(\"size\") : \"Not accepted\" }</script>\nHTML\nstart python3 -m http.server 18761 --bind 127.0.0.1 --directory $HOME/Documents; sleep 0.5; start chromium --no-first-run --no-default-browser-check --user-data-dir=$HOME/chromium http://127.0.0.1:18761/step1.html",
+      "prompt": "In the open Chromium window, go through the enrollment: choose the Harbor plan, then the Large boat size, then accept the harbor rules and enroll.",
+      "verify": "window_title 'Enrolled Harbor large - Chromium'"
+    },
+    {
+      "id": "flow-two-preferences",
+      "app": "Mousepad",
+      "setup": "gsettings reset org.xfce.mousepad.preferences.view show-line-numbers; xfconf-query -c thunar -r -R -p / 2>/dev/null; mkdir -p $HOME/Documents; printf 'hello\\n' > $HOME/Documents/notes.txt; start mousepad $HOME/Documents/notes.txt",
+      "prompt": "Turn on line numbers in the open Mousepad's preferences, then open the file manager preferences (start thunar-settings) and turn on \"Text beside icons\".",
+      "verify": "test \"$(gsettings get org.xfce.mousepad.preferences.view show-line-numbers)\" = true && test \"$(xfconf-query -c thunar -p /misc-text-beside-icons)\" = true",
+      "reset": "gsettings reset org.xfce.mousepad.preferences.view show-line-numbers; xfconf-query -c thunar -r -R -p / 2>/dev/null; true"
+    },
+    {
+      "id": "flow-dialog-to-file",
+      "app": "zenity",
+      "setup": "mkdir -p $HOME/Documents; printf '' > $HOME/Documents/crew.txt; start sh -c 'zenity --forms --title=Crew --text=Crew --add-entry=Name --add-entry=Role > \"$BENCH/zenity.out\"'",
+      "prompt": "In the open Crew dialog, enter the Name \"Iris Moss\" and the Role \"Skipper\" and confirm with OK. Then write the same two values as two lines (Iris Moss, then Skipper) into /tmp/caboose-bench/home/Documents/crew.txt with Mousepad (mousepad /tmp/caboose-bench/home/Documents/crew.txt) and save it.",
+      "verify": "test \"$(cat $BENCH/zenity.out)\" = 'Iris Moss|Skipper' && test \"$(sed -n 1p $HOME/Documents/crew.txt)\" = 'Iris Moss' && test \"$(sed -n 2p $HOME/Documents/crew.txt)\" = Skipper"
+    },
+    {
+      "id": "flow-vscode-project",
+      "app": "com.microsoft.VSCode",
+      "setup": "mkdir -p $HOME/Documents/harbor; start /usr/share/code/code --user-data-dir $HOME/vscode --extensions-dir $HOME/vscode-extensions --disable-workspace-trust --skip-welcome --new-window $HOME/Documents/harbor",
+      "prompt": "In the open Visual Studio Code window with the harbor folder, create two files in that folder: README.md containing the line \"# Harbor\" and berths.txt containing the line \"12 berths\", and save both.",
+      "verify": "grep -qx '# Harbor' $HOME/Documents/harbor/README.md && grep -qx '12 berths' $HOME/Documents/harbor/berths.txt"
+    },
+    {
+      "id": "flow-keepass-to-web",
+      "app": "KeePassXC",
+      "setup": "export XDG_CONFIG_HOME=$HOME/.config; mkdir -p $HOME/Documents; printf 'heron-basalt-42\\nheron-basalt-42\\n' | keepassxc-cli db-create -p $HOME/Documents/vault.kdbx >/dev/null 2>&1; printf 'heron-basalt-42\\n' | keepassxc-cli add -q -u iris-harbor $HOME/Documents/vault.kdbx Mail >/dev/null 2>&1; mkdir -p $(dirname $HOME/Documents/login.html); cat > $HOME/Documents/login.html <<'HTML'\n<!doctype html><title>Login</title><form onsubmit=\"event.preventDefault(); document.title = 'Hello ' + document.getElementById('u').value\"><label for=u>Username</label> <input id=u> <button>Sign in</button></form>\nHTML\nstart python3 -m http.server 18761 --bind 127.0.0.1 --directory $HOME/Documents; sleep 0.5; start keepassxc $HOME/Documents/vault.kdbx",
+      "prompt": "In the open KeePassXC window, unlock the database with the password \"heron-basalt-42\" and find the username of the Mail entry. Then open http://127.0.0.1:18761/login.html in Chromium (chromium http://127.0.0.1:18761/login.html), enter that username and press Sign in.",
+      "verify": "window_title 'Hello iris-harbor - Chromium'"
+    },
+    {
+      "id": "direct-mousepad-wrap",
+      "app": "Mousepad",
+      "setup": "gsettings reset org.xfce.mousepad.preferences.view word-wrap; start mousepad",
+      "prompt": "Make Mousepad wrap long lines in every document, as a preference that stays on.",
+      "verify": "test \"$(gsettings get org.xfce.mousepad.preferences.view word-wrap)\" = true",
+      "reset": "gsettings reset org.xfce.mousepad.preferences.view word-wrap"
+    },
+    {
+      "id": "direct-thunar-hidden",
+      "app": "Thunar",
+      "setup": "xfconf-query -c thunar -p /last-show-hidden -r 2>/dev/null; mkdir -p $HOME/Documents; printf 'x\\n' > $HOME/Documents/.hidden-note; start thunar $HOME/Documents",
+      "prompt": "Make the file manager show hidden files, and keep showing them.",
+      "verify": "test \"$(xfconf-query -c thunar -p /last-show-hidden)\" = true",
+      "reset": "xfconf-query -c thunar -p /last-show-hidden -r 2>/dev/null; true"
+    },
+    {
+      "id": "direct-calc-table",
+      "app": "libreoffice-calc",
+      "setup": "mkdir -p $HOME/Documents; start soffice --norestore --nologo --calc",
+      "prompt": "In the open spreadsheet, enter 12, 30, 8 and 50 in A1 to A4 and a formula for their sum in A5, then save it in ODF format as totals.ods in the Documents folder of the home directory.",
+      "verify": "x=$(unzip -p $HOME/Documents/totals.ods content.xml) && echo \"$x\" | grep -q 'of:=SUM(\\[.A1:.A4\\])' && echo \"$x\" | grep -q '>100<'"
+    },
+    {
+      "id": "direct-writer-replace",
+      "app": "libreoffice-writer",
+      "setup": "mkdir -p $HOME/Documents; printf 'The colour of the hull.\\nA second colour coat.\\nColour charts follow; colour is checked.\\n' > $HOME/Documents/memo.txt; start soffice --norestore --nologo --writer $HOME/Documents/memo.txt",
+      "prompt": "In the open document, change every \"colour\" to \"color\" (keep \"Colour\" at a sentence start capitalised as \"Color\"), then save it in its current format.",
+      "verify": "! grep -qi colour $HOME/Documents/memo.txt && test \"$(grep -o -i color $HOME/Documents/memo.txt | wc -l)\" = 4 && grep -q '^Color charts' $HOME/Documents/memo.txt"
+    },
+    {
+      "id": "direct-files-sort",
+      "app": "Thunar",
+      "setup": "mkdir -p $HOME/Downloads $HOME/Documents; for f in alpha beta gamma; do printf \"$f\\n\" > $HOME/Downloads/$f.txt; done; printf '%%PDF-1.4\\n' > $HOME/Downloads/plan.pdf; start thunar $HOME/Downloads",
+      "prompt": "Move every .txt file in the Downloads folder into a new folder named notes inside Documents (both in the home directory). Leave other files where they are.",
+      "verify": "for f in alpha beta gamma; do test -f $HOME/Documents/notes/$f.txt && test ! -e $HOME/Downloads/$f.txt || exit 1; done; test -f $HOME/Downloads/plan.pdf"
+    },
+    {
+      "id": "direct-browser-total",
+      "app": "Chromium",
+      "setup": "mkdir -p $HOME/Documents; printf '<!doctype html><title>Invoice</title><h1>Invoice 1187</h1><table><tr><th>Item</th><th>Price</th></tr><tr><td>Rope</td><td>12.50</td></tr><tr><td>Cleats</td><td>8.75</td></tr><tr><td>Fenders</td><td>31.00</td></tr><tr><td>Shackle</td><td>9.00</td></tr></table>' > $HOME/Documents/invoice.html; start chromium --no-first-run --no-default-browser-check --user-data-dir=$HOME/chromium file://$HOME/Documents/invoice.html",
+      "prompt": "Add up the prices in the table on the open page and write the total, just the number with two decimals, into a new text file total.txt in the Documents folder of the home directory.",
+      "verify": "test \"$(tr -d ' \\n' < $HOME/Documents/total.txt)\" = 61.25"
+    }
+  ]
+}

@@ -40,7 +40,7 @@ from surfaces import FrameLog, NativeError, ProtocolViolation, SerialQueue, Surf
 PROTOCOL = 'caboose.gpu.live.v1'
 # The phone's capabilities (LiveGPUConnection.features).
 FEATURES = ('guest-handles,guest-handle-arrays,completion-feed,ordered-present,guest-images,guest-query-pools,'
-            'shader-cache,executor-resume,zstd-stream,upload-cache,guest-buffer-views')
+            'shader-cache,executor-resume,zstd-stream,upload-cache,guest-buffer-views,batched-descriptor-sets')
 HELLO = (b'CBGLREF1' + struct.pack('<II', 4, 0x70) +
          bytes.fromhex('20d3bb2e30337cabf0febb006ed102ab25ccf6d9ddbfaf624c7e68f9040969c0'))
 MAX_MESSAGE = 256 * 1024
@@ -654,6 +654,13 @@ def main():
     surfaces.EXTRA_FORMATS[:] = [tuple(int(n) for n in pair.split(':')) for pair in options.extra_formats.split(',') if pair]
     width, _, height = options.display.partition('x')
     options.display = (int(width), int(height))
+    # The shader and upload caches need their stores: without --cache-root the executor
+    # cannot resolve what a guest names by hash, so it does not offer them.
+    if not options.cache_root:
+        kept = [name for name in options.features.split(',') if name not in ('shader-cache', 'upload-cache')]
+        if len(kept) != len(options.features.split(',')):
+            log('no --cache-root: shader-cache and upload-cache not offered')
+        options.features = ','.join(kept)
     runtime = native.Runtime(str(options.library))
     current = []
     draining = []

@@ -7,7 +7,7 @@ shares it; `caboose-scan` scans a document with the phone.
 
 | File | What |
 | --- | --- |
-| `caboose-portal` | The xdg-desktop-portal backend `org.freedesktop.impl.portal.desktop.caboose`: `FileChooser` (answered from the phone, or by `xdg-desktop-portal-gtk`) and `Settings` (`org.freedesktop.appearance`, `org.gnome.desktop.interface`, `org.gnome.desktop.wm.preferences`). D-Bus activated on each seat's session bus. |
+| `caboose-portal` | The xdg-desktop-portal backend `org.freedesktop.impl.portal.desktop.caboose`: `FileChooser` (answered from the phone, or by `xdg-desktop-portal-gtk`) and `Settings` (`org.freedesktop.appearance`, `org.gnome.desktop.interface`, `org.gnome.desktop.wm.preferences`). D-Bus activated on each seat's session bus. On the agent seat it also serves `com.caboose.FileChooserAnswers` at `/com/caboose/FileChooser` (`Pending`, `Answer(handle, paths)`, `Cancel(handle)`), through which desktop MCP's `chooser.*` tools answer an open request without its dialog: an open path must exist, a save path's folder must. |
 | `caboose-bridge` | The host's commands (`drain`, `respond`, `appearance`) and the owner seat's daemon (`daemon`): MPRIS to `now-playing.json` and commands back, the appearance in GTK's `settings.ini` for X11 applications, and the display's environment for D-Bus-activated services. |
 | `caboose-scan` | `caboose-scan [--format pdf\|jpeg] [--output PATH]`: the phone scans a document; prints each file's path. |
 | `bridgecore.py` | Validation and the logic both share, without D-Bus. |
@@ -43,16 +43,16 @@ written by the host.
 
 - **File choosing** for applications that use the FileChooser portal, from the phone's
   Files, Photos, camera or document scanner: GTK 4, GTK 3 applications that use
-  `GtkFileChooserNative`, Chromium and Electron applications such as VS Code, and Firefox. Applications that draw their own dialog (GTK 3's
+  `GtkFileChooserNative`, Chromium, and Electron applications such as VS Code. Applications that draw their own dialog (GTK 3's
   `GtkFileChooserDialog`, Qt through its GTK platform theme, LibreOffice's GTK 3 dialogs)
   keep it.
 - **Appearance** live for Wayland GTK and libadwaita applications and for applications
-  that read `org.freedesktop.appearance` (Chromium, Firefox, Electron); X11 GTK
+  that read `org.freedesktop.appearance` (Chromium, Electron); X11 GTK
   applications follow from their next start. Light mode uses WhiteSur-Light where the image
   has it and Adwaita otherwise; high contrast is reported through the portal's `contrast`
   for applications that honour it.
 - **Now Playing** for any MPRIS player: Spotify, mpv, VLC, Rhythmbox, and web media in
-  Chromium and Firefox.
+  Chromium.
 - **Scanning** from a terminal or a script: `caboose-scan` shows the phone's document
   scanner and prints where the scan was saved (`~/Caboose Documents/<uuid>/`, or
   `--output`). PDF is the default; `--format jpeg` writes one image per page. It needs

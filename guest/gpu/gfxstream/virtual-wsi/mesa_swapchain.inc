@@ -4,6 +4,7 @@ struct Image {
     VkImage image=VK_NULL_HANDLE;
     VkDeviceMemory memory=VK_NULL_HANDLE;
     uint64_t serial=0;
+    bool pending=false;
     bool held=false;   // guest-owned images: acquired by the application, not yet presented
     // An ordered present's wait: a submission at the present waits for the application's
     // semaphores and signals this one, which the phone waits for. The application may signal
@@ -23,6 +24,12 @@ struct AcquireSlot {
     bool fenceSubmitted=false;
 };
 constexpr size_t kAcquireSlots=3;
+enum class RemotePhase { Dormant, Query, Create, Map, Ready, Retiring, Retired };
+struct PendingFrame {
+    uint64_t queue=0, order=0;
+    uint32_t index=0;
+    std::vector<uint64_t> waits;
+};
 struct DeviceSwapchain {
     std::shared_ptr<Surface> surface;
     VkDevice device=VK_NULL_HANDLE;
@@ -39,7 +46,13 @@ struct DeviceSwapchain {
     // Guest-owned images (hello feature 0x800): acquisition is local, and the phone takes
     // a native image inside each present, dropping the frame when none is free in mailbox.
     bool guestImages=false;
-    bool firstPresentWaited=false; // guest-owned: the first present waited for the surface's bind
+    bool firstPresentWaited=false; // legacy path only
+    bool cancelled=false, noAcquire=false;
+    RemotePhase phase=RemotePhase::Dormant;
+    std::optional<Retirement::Lease> lease;
+    uint64_t hostDevice=0, hostPhysical=0;
+    std::vector<uint64_t> hostImages;
+    std::deque<PendingFrame> pending;
     bool mailbox=false;
     size_t nextImage=0;
     // Guest-owned swapchains are created on the guest first; the phone's swapchain is
@@ -160,18 +173,19 @@ static void pickHandoffQueue(DeviceSwapchain& swap) {
 // done, without asking the phone. The application's semaphore and fence are signaled by a
 // submission with no waits; the device stream orders it after that copy.
 static VkResult guestAcquire(DeviceSwapchain& swap, uint64_t timeout, VkSemaphore semaphore, VkFence fence,
-                             uint32_t* index) {
+                             uint32_t* index, std::unique_lock<std::recursive_mutex>& operation) {
     auto& client=swap.surface->client;
     const auto start=std::chrono::steady_clock::now();
     constexpr uint64_t kDay=86400ull*1000000000ull;
     for (;;) {
+        if (swap.noAcquire || swap.cancelled || swap.poisoned) return VK_ERROR_OUT_OF_DATE_KHR;
         if (swap.native) client.pump();
         if (client.revoked()) return VK_ERROR_OUT_OF_DATE_KHR;
         const size_t count=swap.images.size();
         for (size_t k=0;k<count;++k) {
             const size_t i=(swap.nextImage+k)%count;
             auto& image=swap.images[i];
-            if (image.held || (image.serial && !client.released(image.serial))) continue;
+            if (image.held || image.pending || (image.serial && !client.released(image.serial))) continue;
             if (image.serial) { client.consumeRelease(image.serial); image.serial=0; }
             if (!swap.handoffQueue) return VK_ERROR_INITIALIZATION_FAILED;
             auto* encoder=gfxstream::vk::ResourceTracker::getThreadLocalEncoder();
@@ -180,18 +194,19 @@ static VkResult guestAcquire(DeviceSwapchain& swap, uint64_t timeout, VkSemaphor
             signal.signalSemaphoreCount=semaphore ? 1 : 0; signal.pSignalSemaphores=&semaphore;
             const VkResult submitted=tracker->on_vkQueueSubmit(encoder,VK_SUCCESS,swap.handoffQueue,semaphore ? 1 : 0,&signal,fence);
             if (submitted!=VK_SUCCESS) return wsiFailed("acquire","hand-off submit",submitted);
-            if (swap.native) client.acquireLocally(swap.native,uint32_t(i));
+            if (swap.phase==RemotePhase::Ready) client.acquireLocally(swap.native,uint32_t(i));
             image.held=true; swap.nextImage=i+1; *index=uint32_t(i);
             return VK_SUCCESS;
         }
         // Every image is with the application or still being copied on the phone.
-        if (!swap.native || !client.sourcesInFlight() || timeout==0) return timeout==0 ? VK_NOT_READY : VK_TIMEOUT;
+        if (timeout==0) return VK_NOT_READY;
+        if (swap.cancelled || swap.poisoned) return VK_ERROR_OUT_OF_DATE_KHR;
         const uint64_t spent=uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::steady_clock::now()-start).count());
         if (timeout!=UINT64_MAX && spent>=timeout) return VK_TIMEOUT;
         const uint64_t left=timeout==UINT64_MAX ? kDay : std::min(timeout-spent,kDay);
-        try { client.waitAnyReleased(std::chrono::steady_clock::now()+std::chrono::nanoseconds(left)); }
-        catch (const std::system_error& error) { if (error.code().value()!=ETIMEDOUT) throw; }
+        swap.surface->changed.wait_for(operation,std::min(std::chrono::nanoseconds(left),
+                                                        std::chrono::nanoseconds(1000000)));
     }
 }
 // Creates the private acquire semaphores and fences, before the phone maps the swapchain,
@@ -379,12 +394,18 @@ static VkResult createNative(DeviceSwapchain& swap) {
         if (swap.images[i].held) surface.client.acquireLocally(swap.native,uint32_t(i));
     return VK_SUCCESS;
 }
+#include "caboose-wsi/mesa_pending.inc"
+
 // Validates and retires `oldSwapchain` on the phone before its replacement is created.
 static VkResult retireOld(VkDevice handle, const VkSwapchainCreateInfoKHR* info, const std::shared_ptr<Surface>& surface) {
     if (!info->oldSwapchain) return VK_SUCCESS;
     auto previous=lookupSwapchain(info->oldSwapchain);
     if (!previous || previous->surface!=surface || previous->device!=handle || previous->retired)
         return VK_ERROR_INITIALIZATION_FAILED;
+    if (previous->guestImages && previous->lease) {
+        previous->noAcquire=true; // queued and already acquired images retain their presentation rights
+        return VK_SUCCESS;
+    }
     if (previous->guestImages && !previous->nativeAttempted) { previous->nativeRetired=true; return VK_SUCCESS; }
     if (!previous->nativeRetired && !surface->client.retired()) {
         if (!previous->native) return VK_ERROR_INITIALIZATION_FAILED;
@@ -456,13 +477,9 @@ static VkResult VKAPI_CALL createSwapchain(VkDevice handle, const VkSwapchainCre
                 swap->images.resize(std::clamp(info->minImageCount,kGuestMinImages,kGuestMaxImages));
                 result=allocateImages(*swap,imageInfo); if (result!=VK_SUCCESS) return cleanup(result);
                 pickHandoffQueue(*swap);
-                // The phone's swapchain waits for a window: until the surface binds, frames
-                // are rendered and dropped. A swapchain that does not fit the window it binds
-                // to reports VK_ERROR_OUT_OF_DATE_KHR at its first present.
-                if (tryBind(*surface)) {
-                    result=createNative(*swap);
-                    if (result==VK_ERROR_DEVICE_LOST) return cleanup(result);
-                }
+                result=preparePendingSwapchain(*swap);
+                if (result!=VK_SUCCESS) return cleanup(result);
+                surface->remoteSwaps.push_back(swap);
                 *out=guestHandle; return VK_SUCCESS;
             } catch (...) { cleanup(VK_ERROR_INITIALIZATION_FAILED); throw; }
         }
@@ -515,7 +532,12 @@ static void VKAPI_CALL destroySwapchain(VkDevice device, VkSwapchainKHR handle, 
     try {
     auto swap=lookupSwapchain(handle); if (!swap || swap->device!=device) return;
     std::lock_guard<std::recursive_mutex> operation(swap->surface->operationMutex);
-    if (!retireSwapchain(*swap)) return;
+    if (swap->guestImages && swap->lease) {
+        swap->cancelled=true;
+        freeImages(*swap); swap->retired=true;
+        try { startSurfaceWorker(swap->surface); } catch (...) { swap->poisoned=true; }
+        swap->surface->changed.notify_all();
+    } else if (!retireSwapchain(*swap)) return;
     std::lock_guard<std::mutex> lock(mutex); swapchains.erase(handle);
     } catch (...) { /* Keep the native and source reservations on uncertain teardown. */ }
 }
@@ -525,8 +547,12 @@ static bool beforeDestroyDevice(VkDevice device) {
     { std::lock_guard<std::mutex> lock(mutex);
       for (auto& pair:swapchains) if (pair.second->device==device) retained.push_back(pair); }
     for (auto& pair:retained) {
-        std::lock_guard<std::recursive_mutex> operation(pair.second->surface->operationMutex);
-        if (!retireSwapchain(*pair.second)) return false;
+        if (pair.second->guestImages && pair.second->lease) {
+            destroySwapchain(device,pair.first,nullptr);
+        } else {
+            std::lock_guard<std::recursive_mutex> operation(pair.second->surface->operationMutex);
+            if (!retireSwapchain(*pair.second)) return false;
+        }
     }
     { std::lock_guard<std::mutex> lock(mutex); for (auto& pair:retained) swapchains.erase(pair.first); }
     return true;
@@ -560,7 +586,7 @@ static VkResult VKAPI_CALL acquireImage(VkDevice device, VkSwapchainKHR handle, 
         auto swap=lookupSwapchain(handle);
         if (!swap || swap->device!=device || !index || (!semaphore && !fence)) return VK_ERROR_INITIALIZATION_FAILED;
         auto& surface=*swap->surface;
-        std::lock_guard<std::recursive_mutex> operation(surface.operationMutex);
+        std::unique_lock<std::recursive_mutex> operation(surface.operationMutex);
         VkResult late=VK_SUCCESS;
         if (orderedPresentFailed(*swap,&late)) return late;
         if (swap->retired || swap->poisoned || surface.client.revoked()) return VK_ERROR_OUT_OF_DATE_KHR;
@@ -583,7 +609,7 @@ static VkResult VKAPI_CALL acquireImage(VkDevice device, VkSwapchainKHR handle, 
             boxedFence=get_host_u64_VkFence(value->internal_object);
         }
         if (swap->guestImages && windowResized(*swap)) { swap->poisoned=true; return VK_ERROR_OUT_OF_DATE_KHR; }
-        if (swap->guestImages) return guestAcquire(*swap,timeout,internalSemaphore,internalFence,index);
+        if (swap->guestImages) return guestAcquire(*swap,timeout,internalSemaphore,internalFence,index,operation);
         if (swap->preRequest) {
             // The image was acquired ahead of time against a private semaphore: wait as
             // long as the application allows. The phone's acquire has no timeout of its
@@ -701,6 +727,12 @@ static VkResult VKAPI_CALL present(VkQueue handle, const VkPresentInfoKHR* info)
             internalWaits.push_back(value->internal_object);
         }
         auto& surface=*swap->surface;
+        if (swap->guestImages && swap->lease &&
+            (swap->phase!=RemotePhase::Ready || !swap->pending.empty())) {
+            auto result=enqueuePendingFrame(*swap,queue,index,internalWaits);
+            if (info->pResults) info->pResults[0]=result;
+            return result;
+        }
         // A frame for a resized X11 window is not shown either: the application recreates.
         const bool resized=swap->guestImages && windowResized(*swap);
         if (resized || (swap->guestImages && !swap->native)) {

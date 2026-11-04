@@ -10,14 +10,14 @@ PRISTINE_DECODER = '5d1e1b5e5603e4f05aa72f11002beb37e3e258ae5f67f66b176d3848574a
 PATCHED_DECODER = '0badee02d73dab5935eb720732cb821a1ad57d2597c36ada84de92467e4b61fe'
 MARSHALING = '2174da9a4aaf50d228c36537c6b6fc3c66ccec8e8ce1c6c761e225da1488a302'
 PATCHED_INPUTS = {
-    'host/vulkan/vk_decoder_global_state.cpp': '5cf20f6c1cbcf96ca1fbaad7853309fe0c777dc77f4bc49ef3f5e2f16edaa89d',
+    'host/vulkan/vk_decoder_global_state.cpp': '5287afb3c66ff13fe72222779f345140fcbbca456d88e629b5ab7a3b2931652e',
     'host/vulkan/vk_decoder_global_state.h': 'ad7c64a4154b1c59819d116c93c16a34a5327bbde19e5fbea9955d8bd1f85025',
-    'host/vulkan/vk_decoder_internal_structs.h': '659f26ccfba079d5ad1ec8637ae8cac89161921115624ceb23a3796a4485173d',
+    'host/vulkan/vk_decoder_internal_structs.h': '16c97d6bf51cf022f252b06918790fda58017966522883915fe2078975355391',
     'host/vulkan/caboose_guest_gpu_completion.h': '4729d0b4ceac83b8304eabf709d2e9346a9c48b4d1ad5275cc52b9c6127e8c4d',
     'host/features/include/gfxstream/host/features.h': '8c4e029e5717c102711a278c912dc9f1062b97155194f34cbcc1efede7c2c59b',
 }
 AUDIT_INPUTS = {
-    'host/vulkan/vk_decoder_global_state.cpp': '5cf20f6c1cbcf96ca1fbaad7853309fe0c777dc77f4bc49ef3f5e2f16edaa89d',
+    'host/vulkan/vk_decoder_global_state.cpp': '5287afb3c66ff13fe72222779f345140fcbbca456d88e629b5ab7a3b2931652e',
     'host/vulkan/vk_decoder_global_state.h': 'ad7c64a4154b1c59819d116c93c16a34a5327bbde19e5fbea9955d8bd1f85025',
     'host/features/include/gfxstream/host/features.h': 'd8e66ce6778cb29403248a2fbaf0143f1ebe2683c9256cfc0a4500db3ad367e3',
     'host/vulkan/caboose_memory_audit.h': '070cbdf15ad4e54770f0f8f3fe3ac7920e2b57f142605c2a8574132c1cbc71aa',
@@ -26,13 +26,18 @@ AUDIT_INPUTS = {
 # objects), display timing, the media latch objects, the shader cache (fork shader-cache),
 # executor suspension (fork executor-suspend), pipeline stand-ins (fork pipeline-standin) and the
 # queue stall report (fork queue-stall), the lost-device report (fork device-lost) and the Linux
-# executor's headless surface (fork linux-headless-executor).
+# executor's headless surface (fork linux-headless-executor), and pool set ids kept apart from
+# per-call descriptor sets (fork batched-descriptor-sets).
 RESOURCE_CACHE_INPUTS = {
-    'host/vulkan/vk_decoder_global_state.cpp': '5cf20f6c1cbcf96ca1fbaad7853309fe0c777dc77f4bc49ef3f5e2f16edaa89d',
+    'host/vulkan/vk_decoder_global_state.cpp': '5287afb3c66ff13fe72222779f345140fcbbca456d88e629b5ab7a3b2931652e',
     'host/vulkan/caboose_pipeline_cache.h': '3450de5a914b57557b5df681ec0221386b92c67d7d58f10788dc9470da90aa0c',
 }
+# Queue commands a v4 stream may carry. vkQueueCommitDescriptorSetUpdatesGOOGLE carries the
+# descriptor sets a process allocated and wrote in the guest since its last submit (hello
+# feature 0x40000, docs/gpu-live.md "Batched descriptor sets"); it is synchronous like a
+# submit. Every other vkQueue* command stays forbidden.
 SAFE_QUEUE = {'vkQueueSubmit', 'vkQueueSubmit2', 'vkQueueSubmit2KHR',
-              'vkQueueBindSparse', 'vkQueueWaitIdle'}
+              'vkQueueBindSparse', 'vkQueueWaitIdle', 'vkQueueCommitDescriptorSetUpdatesGOOGLE'}
 
 
 def main():

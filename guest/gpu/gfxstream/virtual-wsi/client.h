@@ -40,6 +40,8 @@ public:
     void acquireLocally(uint64_t swapchain, uint32_t index);
     // Sources still being copied on the phone (not yet released).
     size_t sourcesInFlight() const;
+    size_t presentationsInFlight() const { return sources_.size(); }
+    size_t presentationsInFlight(uint64_t swapchain) const;
     void consumeRelease(uint64_t serial);
     void waitPresentationIdle(Deadline deadline);
     // Waits until fewer than `frames` presented frames are still unretired.
@@ -47,6 +49,7 @@ public:
     // Waits until no presented frame is unretired, or `until`: false then, the connection intact.
     bool waitPresentationIdleFor(Deadline until);
     Record retire(Deadline deadline);
+    void beginRetire(Deadline deadline);
     bool retired() const { return retired_; }
     // Called when the peer closes the connection (the executor left), before the failure.
     static void (*peerGone)();
@@ -55,6 +58,11 @@ public:
     Status failure() const { return failure_; }
     bool released(uint64_t serial) const;
     Record createSwapchain(const Bytes& suffix, Deadline deadline);
+    void beginCreateSwapchain(const Bytes& suffix, Deadline deadline);
+    bool takeCreatedSwapchain(Record* reply);
+    void beginMapSwapchain(uint64_t swapchain, const std::vector<uint64_t>& images,
+                           Deadline deadline, uint32_t flags = 0);
+    bool takeMappedSwapchain(Record* reply);
     // `flags`: 1 guest-owned images (any count up to 8), 2 with it, mailbox drop.
     Record mapSwapchain(uint64_t swapchain, const std::vector<uint64_t>& images, Deadline deadline, uint32_t flags = 0);
     void beginAcquire(uint64_t swapchain, uint64_t request, uint64_t semaphore,
@@ -75,6 +83,8 @@ public:
     // True, with its status, once an ordered present of `swapchain` was not queued.
     bool presentFailed(uint64_t swapchain, Status* status) const;
     Record retireSwapchain(uint64_t swapchain, Deadline deadline);
+    void beginRetireSwapchain(uint64_t swapchain, Deadline deadline);
+    bool takeRetiredSwapchain(Record* reply);
 private:
     void send(uint16_t kind, const Bytes& body, Deadline deadline);
     Record receive(Deadline deadline);
@@ -121,6 +131,10 @@ private:
     std::map<uint64_t,Swapchain> swapchains_;
     std::map<uint64_t,Record> acquireReplies_;
     bool bindPending_ = false;
+    uint64_t pendingCreate_ = 0, pendingMap_ = 0, pendingRetire_ = 0;
+    uint32_t pendingCreateMinimum_ = 0;
+    bool createArrived_ = false, mapArrived_ = false, retireArrived_ = false;
+    Record createReply_{}, mapReply_{}, retireReply_{};
     uint64_t pendingQuery_ = 0;
     bool queryArrived_ = false;
     Record queryReply_{};

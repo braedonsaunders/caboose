@@ -24,6 +24,7 @@ broker with CABOOSE_GFXSTREAM_SOCKET=DIR/gpu.sock and CABOOSE_GFXSTREAM_SURFACE_
 import argparse
 import array
 import contextlib
+import ctypes
 import os
 from pathlib import Path
 import select
@@ -42,6 +43,33 @@ def log(message):
     print('CABOOSE_BROKER_HOST ' + message, flush=True)
 
 
+def x11_window_exists(display, window):
+    # Probe at reply time, after the deliberate delay. No server resource is created.
+    xcb = ctypes.CDLL('libxcb.so.1')
+    libc = ctypes.CDLL(None)
+    xcb.xcb_connect.argtypes = [ctypes.c_char_p, ctypes.c_void_p]
+    xcb.xcb_connect.restype = ctypes.c_void_p
+    xcb.xcb_connection_has_error.argtypes = [ctypes.c_void_p]
+    xcb.xcb_get_geometry.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+    xcb.xcb_get_geometry.restype = ctypes.c_uint32
+    xcb.xcb_get_geometry_reply.argtypes = [ctypes.c_void_p, ctypes.c_uint32, ctypes.POINTER(ctypes.c_void_p)]
+    xcb.xcb_get_geometry_reply.restype = ctypes.c_void_p
+    xcb.xcb_disconnect.argtypes = [ctypes.c_void_p]
+    libc.free.argtypes = [ctypes.c_void_p]
+    connection = xcb.xcb_connect(display.encode(), None)
+    try:
+        if xcb.xcb_connection_has_error(connection):
+            raise RuntimeError('X11 refusal fixture cannot connect to ' + display)
+        error = ctypes.c_void_p()
+        reply = xcb.xcb_get_geometry_reply(connection, xcb.xcb_get_geometry(connection, window), ctypes.byref(error))
+        exists = bool(reply) and not error.value
+        libc.free(reply)
+        libc.free(error)
+        return exists
+    finally:
+        xcb.xcb_disconnect(connection)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
     parser.add_argument('--directory', type=Path, required=True)
@@ -50,6 +78,8 @@ def main():
     parser.add_argument('--bind-delay', type=float, default=0.0, metavar='SECONDS')
     parser.add_argument('--supervised', action='store_true',
                         help='run the broker on its own control socket, outliving this compositor')
+    parser.add_argument('--refuse-missing-x11', metavar='DISPLAY',
+                        help='refuse X11 windows absent when the delayed bind is answered')
     options = parser.parse_args()
     directory = options.directory
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -130,7 +160,12 @@ def main():
                     log(f'broker restarted pid={broker.pid}')
             now = time.monotonic()
             while delayed and delayed[0][0] <= now:
-                _, data, line = delayed.pop(0)
+                _, data, line, request = delayed.pop(0)
+                if (options.refuse_missing_x11 and request.space == control_protocol.X11_WINDOW
+                        and not x11_window_exists(options.refuse_missing_x11, request.object_id)):
+                    data = control_protocol.encode_result(control_protocol.BindResult(
+                        request.request, 1, bytes(16), bytes(16), 0, 0))
+                    line = f'bind refused missing X11 object={request.object_id:#x}'
                 parent.sendall(data)
                 log(line)
             timeout = 0.5 if not delayed else max(0.0, min(0.5, delayed[0][0] - now))
@@ -163,7 +198,7 @@ def main():
                         record.request, 0, epoch, grant, record.object_id, generation))
                     line = (f'bind granted process={record.process} pid={record.pid} object={record.object_id:#x} '
                             f'space={record.space} generation={generation}')
-                    delayed.append((time.monotonic() + options.bind_delay, data, line))
+                    delayed.append((time.monotonic() + options.bind_delay, data, line, record))
                 elif isinstance(record, control_protocol.RevokeRequest):
                     parent.sendall(control_protocol.encode_revoke(control_protocol.RevokeGrant(
                         record.epoch, record.grant, record.generation)))

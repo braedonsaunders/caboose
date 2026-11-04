@@ -82,7 +82,7 @@ final class DesktopNoticeTests: XCTestCase {
     }
 
     func testDesktopEntryMatchesAnInstalledAppByID() {
-        let ids = ["firefox-esr.desktop", "org.signal.Signal.desktop", "thunderbird.desktop"]
+        let ids = ["chromium.desktop", "org.signal.Signal.desktop", "thunderbird.desktop"]
         XCTAssertEqual(DesktopEntryMatch.appID(for: "org.signal.Signal", among: ids), "org.signal.Signal.desktop")
         XCTAssertEqual(DesktopEntryMatch.appID(for: "Thunderbird.desktop", among: ids), "thunderbird.desktop")
         XCTAssertNil(DesktopEntryMatch.appID(for: "signal", among: ids))

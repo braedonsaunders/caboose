@@ -21,25 +21,109 @@ seat, never through X.
 
 ## Tools
 
-The accessibility tools come first in the tool list, and their descriptions tell the model
-to prefer them: they answer quickly, need no screenshot and no image tokens, and act on a
-control by id rather than by guessed coordinates.
+Three tools, with short definitions: they go to the model on every turn.
 
 | Tool | Arguments | Does |
 | --- | --- | --- |
-| `elements` | — | the focused window's controls: `{ window: { title, app }, elements: [{ id, role, name, value?, states, bounds }] }` |
-| `find` | `query`, `role?` | elements whose name contains `query` (case-insensitive), optionally of one role |
-| `click_element` | `id` | press it: its AT-SPI action, else a click at its centre |
-| `set_text` | `id`, `text` | replace an editable element's text |
-| `batch` | `steps`, `observe?` | 1–20 sequential actions, stopping at the first failure; updated elements by default |
-| `read_text` | — | the focused window's readable text, page text included |
-| `screenshot` | `window?`, `annotate?` | PNG; annotation adds numbered accessibility bounds and a legend |
-| `list_windows`, `focus` | `window` | windows bottom to top with id, kind, title, app, geometry and focus; give one the keyboard |
-| `click`, `drag`, `type`, `key`, `scroll` | coordinates, text, keys | the seat's pointer and keyboard; `click` takes `button` 1–3 and `count` 1–3, `scroll` wheel clicks |
-| `launch` | `command` | start an app on the agent seat with the accessibility environment below |
+| `look` | `find?`, `text?`, `windows?` | the focused window's controls, one line each (below); `find` keeps those whose name contains it (case-insensitive); `text` adds the window's readable text (documents, pages, terminals); `windows` lists every window with its id and position |
+| `act` | `steps`, `observe?` | 1–30 steps in order, stopping at the first failure, then what changed |
+| `screenshot` | `window?`, `marks?` | PNG of the seat or one window; `marks` numbers the controls on it and lists them with their ids and centres |
 
-A failure comes back as a tool error with a sentence the model can act on; an id that no
-longer resolves says to list the window again.
+A step is an object with one verb: `{"press": id}` (the control's AT-SPI action, else a
+click at its centre), `{"set": id, "text": t}` (replace a field's text; a number for a spin
+button or slider goes in through its Value), `{"key": "ctrl+s"}`, `{"type": t}`,
+`{"click": [x, y], "button": 1-3, "count": 1-3}`, `{"scroll": [x, y], "dx": n, "dy": n}`,
+`{"drag": [x1, y1, x2, y2]}`, `{"focus": window}`, `{"wait": ms}` (10–5000: until the windows
+stop drawing, then at most 200 ms more, never longer than `ms`; every step already waits for
+the application's reaction) and
+`{"launch": "command"}` (an application on the agent seat, with the accessibility
+environment below). A control can also be named instead of given by id, `{"press": {"name": "Save", "role":
+"button"}}`: it is found when the step runs, in whatever window has focus then (read again for
+up to 1.5 s while a window opens), so one `act` can go through a dialog that its earlier steps
+open. A name that matches no control, or more than one, stops the run. An element step whose id no longer names that control (the window lost
+focus, or the control changed or went) fails as a `stale id` and does nothing, so it is safe
+to retry with the ids of a new `look`. A pointer step at a control first checks that no other
+application's window covers it. `act` replies `Done.` (or how many steps ran and why it stopped), then the changes;
+`observe: false` skips the settle and the read.
+
+In a Chromium window on the agent seat, `look` also lists the page's tools (WebMCP tools the
+page declares, and tools derived from its forms, links and buttons, marked `[derived]`) as
+`name(param: type, …) — description`, and the step `{"tool": name, "args": {...}}` calls one
+and returns its result; see [guest/webmcp](../webmcp/README.md).
+
+**Direct tools** do what the GUI would, through the application's or the system's own
+interfaces, so an agent can skip the clicks. `look` lists the focused application's once, after
+its controls (`look` with `find` searches them too), and `{"tool": name, "args": {...}}` calls
+one. `direct.py` finds them with general mechanisms, for whichever application has the window,
+and acts only in the agent seat's session (its bus, its profile's home and settings):
+
+| Tools | From | Offered when |
+| --- | --- | --- |
+| `terminal.read`, `terminal.run` | the focused window's terminal as text; `run` types one command line and Return and returns the output once the terminal has not changed for a second (or after `timeout`, default 30 s) | the window has a terminal |
+| `chooser.answer`, `chooser.cancel` | an open portal file dialog, answered with a path in the agent's home without the dialog (caboose-portal's `com.caboose.FileChooserAnswers`) | a portal file request is open on the seat |
+| `files.list`, `read`, `write`, `copy`, `move`, `mkdir`, `trash`, `extract` | the file system, inside the agent's home only (symbolic links resolved; `trash`, never delete; archive entries that would leave the target refused) | always |
+| `kde.*` | a KDE application's main-window actions (`org.kde.KMainWindow` `actions`, `activateAction`) on the names it owns or that carry its id (a sandboxed application's belong to its bus proxy) | it has one main window |
+| `app.*`, `win.*` | the application's GApplication actions (`org.gtk.Actions` on the D-Bus names its process owns); `win.*` those of its one exported window; `{"state": …}` sets a toggle, `{"value": …}` passes an argument | the application exports actions |
+| `desktop.*` | its desktop entry's actions, started through the launcher | its entry has actions |
+| `media.play`, `pause`, `play_pause`, `next`, `previous`, `stop`, `status`, `open` | its MPRIS player | it owns `org.mpris.MediaPlayer2.*` |
+| `folder.show` | `org.freedesktop.FileManager1` | it owns that name |
+| `settings.get`, `settings.set` | its GSettings schemas (an id with the application's name as a component), typed and range-checked by the schema, and its xfconf channel (named like the application), typed by the stored value | it has either |
+| `doc.info`, `text`, `cells`, `set_cells`, `append`, `replace`, `slide`, `save` | its document through LibreOffice's UNO (the launcher opens the seat's UNO pipe); `save` with a path picks the format by extension | the window is LibreOffice's, started by the launcher |
+| `browser.tabs`, `activate`, `open`, `evaluate` | Chromium's tabs, and the DevTools protocol for `evaluate`, through the Caboose WebMCP extension | the window is Chromium's on the agent seat |
+
+The listing names each tool's arguments and their types; D-Bus actions are grouped by their
+name up to the last dot. `CABOOSE_DESKTOP_DIRECT_TOOLS=0` leaves direct tools out.
+
+A failure comes back as a sentence the model can act on; an id that no longer resolves says
+to look again. The server's `initialize` reply carries one line of `instructions`.
+`CABOOSE_DESKTOP_TRACE=FILE` appends one JSON line per tool call (`tool`, `ms`, reply
+`chars`, `images`), for measuring. `CABOOSE_DESKTOP_PAGE_TOOLS=0` leaves page tools out, to measure the
+accessibility path alone.
+
+### Observations
+
+An observation is compact text (`observation.mjs`). The first one, and every `look`, names
+the focused window (the others only as a count) and lists its controls:
+
+```
+In dialog 9 "Save As" (mousepad) of 7, focused (1 other window)
+e14 text "Name" = "notes.txt" [editable, focused]
+e15 button "Save"
+```
+
+Each control has a short id (`e14`) that names the same control for as long as the server
+runs; tools take short ids or the full element ids. After an action, the observation holds
+only the changes since the previous one: windows `Opened`, `Closed` or `Retitled`, where
+focus went, and the focused window's controls added (`+`), changed (`~`, the whole new line)
+or removed (`- e14`). A window seen for the first time is listed whole. Bounds are left
+out; `screenshot` with `marks` gives positions when coordinates are needed.
+
+A Windows program under Wine has no AT-SPI tree; its window is read by `caboose-msaa.exe`
+(`wine/caboose-msaa.c`, cross-built by the image's build stage and installed beside `a11y.py`),
+which runs in the program's own prefix and lists its Win32 child controls with roles from
+their window classes, their text and states. `press` uses a control's default action and
+`set` its text by message, or for a control that takes no text by message (Scintilla), the
+seat's pointer and keyboard.
+
+A window with no accessibility tree (SDL, games, custom-drawn toolkits) is still described:
+`look` returns its picture and, with Tesseract installed, the lines of text OCR finds in it
+with their centres in seat coordinates, both marked as read from pixels. `look` with `ocr`
+adds those lines for any window, for areas its controls leave out (icon views, canvases).
+Without being asked, `look` also reads from pixels each large scrolled area in which the
+exposed controls cover less than 15% and no document, text, terminal or filled list or table
+is exposed: a list or icon view a toolkit leaves out of its tree, such as GTK 4's column view
+in GTK 4.18, whose rows are drawn but not exposed. `elements` names those areas as `unread`.
+The picture is enlarged and greyed first (ImageMagick) and read as sparse text.
+
+A Wayland window that draws its own shadow is measured from the corner its toolkit uses:
+GTK 3 reports positions from the surface, shadow included, and GTK 4 from the window inside
+it. The top-level accessible's size says which. An X11 window that
+does not report its process is matched to the one application with a window of its title.
+
+These tools are the seat's assistive technology, and say so: before the first read and
+before each launch the server sets `org.a11y.Status.ScreenReaderEnabled` on the seat's
+accessibility bus, as a screen reader does, and Chromium, Electron and other toolkits that
+build their whole tree only for one then expose it.
 
 Run `node --test guest/desktop-mcp/ensure-agent-seat.test.mjs` and
 `node guest/desktop-mcp/selftest.mjs` from the repository root to check startup coordination
@@ -60,26 +144,24 @@ seat's displays on a dark background, rendered by the compositor. A seat nobody 
 lets applications draw once a second, so `seat.py` asks the compositor to let them draw
 (`settle`) before it takes a picture. Every tool works with no client attached.
 
-Mutating tools accept `observe: true` to append the focused window's updated elements.
-The default is false for single actions and true for `batch`. A batch accepts
-`click_element`, `set_text`, `focus_element`, `click`, `drag`, `type`, `key`, `scroll`,
-`focus`, and `wait` (10–5000 ms), with each step's normal arguments. It returns
-`{ completed, total, error?, state?, observationError? }`. Failure stops later steps;
-a changed focused window or stale element ID fails an element step. Observation failures
-preserve the completed action count. Settling permits rendering for at most three 50 ms
-rounds, stopping immediately when no callbacks were released; it does not guarantee an
-application has finished navigation.
+Before the read that follows an `act`, the server lets the
+seat settle on the compositor's commit record: after a press, until the first commit after
+it (at most 150 ms); after a text edit, until no window committed for 30 ms (at most
+300 ms). It does not guarantee an application has finished navigation. Within an `act`, a
+step after typed text waits the same way for the text to be drawn, and input after a shortcut
+(a key with ctrl, alt or super) waits for the first commit after it (at most 150 ms): an
+application can run a shortcut's command after the key event (LibreOffice's ctrl+b), and text
+typed next would otherwise arrive first. A press, key or click that changes nothing waits up to
+2.5 s for a new window, which a busy application may still be building.
 
-`elements` and `find` include optional `value` strings (up to 200 characters) for editable
-fields, selected options and numeric controls. Password/sensitive fields omit values.
-Values never contribute to ID fingerprints. `screenshot` with `annotate: true` returns an
-image and a JSON legend of `{ mark, id, role, name, center, bounds }` for the focused
-window's visible controls intersecting the capture. Window-specific captures exclude
-controls from other windows. Bounds and centers stay in seat coordinates; badges are
-translated into image coordinates. Without annotation the response remains one image.
+Control lines include an optional value (up to 200 characters) for editable fields, selected
+options and numeric controls. Password and sensitive fields omit values. Values never
+contribute to ID fingerprints. `screenshot` with `marks` numbers the focused window's
+visible controls on the picture and lists each mark with its short id, role, name and centre
+in seat coordinates.
 
 The server keeps one accessibility worker and one seat worker warm, serializes requests
-and whole batches, and closes helpers on EOF or termination. Workers restart after exit
+and whole `act` runs, and closes helpers on EOF or termination. Workers restart after exit
 or timeout on the next call. A lost response is never replayed automatically because an
 input may already have executed. Cached seat environments are checked through the control
 socket, avoiding repeated privileged startup and any watcher-replacing display hello.
@@ -145,8 +227,12 @@ a11y.py serve    --display :101
 - `serve`: newline-delimited JSON requests on stdin with `op` (`elements`, `find`, `act`,
   `text`) and the corresponding CLI option names; one JSON response per request. The
   display is fixed for the worker lifetime. Python/GI and the AT-SPI connection stay warm;
-  queued accessibility events refresh the normal libatspi cache between requests;
-  a bus fallback executes a bounded single-call helper against the next bus. Existing CLI
+  queued accessibility events refresh the normal libatspi cache between requests. A request
+  for a window the cache has not seen (a new dialog) clears the cached children of the
+  registry and of each application and reads again in the same process, and a bus fallback
+  asks one long-lived worker per further bus: the worker stays one AT-SPI client for its
+  life, because every new client used to cost each GTK 3 application three descriptors
+  (at-spi2-atk before 2.62, which the image replaces from trixie-backports). Existing CLI
   commands and `act`'s `{ "ok": true }` response remain unchanged.
 
 When a list is empty for a reason (no window, a window whose application exposes no tree,
@@ -222,13 +308,25 @@ id passed on the agent seat is "element not found".
 
 Apps build an accessibility tree only when asked. The computer asks them through:
 
-- `ACCESSIBILITY_ENABLED=1` (Chromium, Electron), `GNOME_ACCESSIBILITY=1` (Firefox) and
+- `ACCESSIBILITY_ENABLED=1` (Chromium, Electron), `GNOME_ACCESSIBILITY=1` (Gecko applications) and
   `QT_LINUX_ACCESSIBILITY_ALWAYS_ON=1` (Qt) in both display units and the container image's
   environment, and in what the `launch` tool starts (which also drops any inherited
   `NO_AT_BRIDGE` and `GTK_A11Y=none`);
 - `toolkit-accessibility=true` as the default of `org.gnome.desktop.interface` (a GSettings
   override), which at-spi-bus-launcher reports as `org.a11y.Status.IsEnabled`, so apps
   started without that environment still expose a tree;
+
+What `launch` starts also gets `XDG_SESSION_TYPE=wayland`: the seat is a Wayland session,
+and Chromium and Electron then run as Wayland clients rather than through Xwayland.
+
+`set_text` uses the toolkit's EditableText when the field then reads the new text. Where it
+does not (Chromium and Electron have none; Firefox's web fields accept it and change
+nothing), the field is focused through AT-SPI, or with the seat's pointer when that does not
+take, cleared only if it holds text, typed into once the clearing keys have landed (keys and
+an input method's text reach an application by different paths), and read back. A field
+that does not read the new text within a second says so in the reply. Element ids name a
+control by its place in the tree; when a page moves it, the one showing control of the
+window with the same role and name is used.
 
 `press` on an element without an action that is not on screen, and `set-text` on a field
 that cannot take focus, say so instead of pretending.
@@ -251,7 +349,9 @@ display (default `:101`) and `CABOOSE_DISPLAY_CONTROL` the seat.
 
 - `node --test ensure-agent-seat.test.mjs worker.test.mjs` checks cached startup,
   recovery, warm helpers, timeouts and restart without replay.
-- `python3 -m unittest test_a11y.py test_readiness.py` checks password/value handling
+- `python3 -m unittest test_a11y.py test_readiness.py` checks password/value handling,
+  that a stale answer is read again in the same worker and that another bus is asked through
+  one long-lived worker,
   and that readiness sends no WebSocket handshake (the readiness stand-in runs unprivileged).
 - `./check-bounded.sh` runs the Linux Docker gate with a two-CPU, 4 GiB, 512-process
   builder (30-minute build timeout) and a two-CPU, 1500 MiB, 256-process test container
@@ -264,7 +364,7 @@ display (default `:101`) and `CABOOSE_DISPLAY_CONTROL` the seat.
   and other seats' processes.
 - `./check-a11y.sh [--rmi]` exercises the helper and the server in real X sessions under
   Docker on any amd64 or arm64 machine; no KVM. It builds the image `caboose-a11y-check` from
-  `check/Dockerfile` (Debian 13 with Xvfb, Xwayland, D-Bus, at-spi2-core, Mousepad, Chromium,
+  `check/Dockerfile` (Debian 13 with Xvfb, Xwayland, D-Bus, at-spi2-core from trixie-backports as the image has it, xdg-desktop-portal-gtk, Mousepad, Chromium,
   Node, and Caboose Display built from this checkout), runs `check/run.sh` in a throwaway
   container with this directory mounted read-only, and removes the container (`--rmi`
   removes the image too). It prints PASS or FAIL per assertion and exits 1 if any failed:
@@ -282,6 +382,9 @@ display (default `:101`) and `CABOOSE_DISPLAY_CONTROL` the seat.
   - **Isolation**: nothing of `:100` (pids, windows, text) appears in `:101` results, an
     owner element's id is rejected on `:101` with exit 3 and the owner's window is untouched,
     and a process with windows on both displays is not read.
+  - **Descriptors**: 100 new AT-SPI clients, each reading every application as an assistive
+    technology does, leave `xdg-desktop-portal-gtk` and a GTK 3 window with no more than six
+    extra descriptors (at-spi2-atk 2.56 left 300).
   - **Stale ids**: a changed fingerprint, an unknown path, a malformed id and an id from a
     closed window are rejected with exit 3, and the replacement window is untouched.
   - **Both Caboose Display instances as the computer runs them**, each on a session bus of
@@ -297,16 +400,17 @@ display (default `:101`) and `CABOOSE_DISPLAY_CONTROL` the seat.
   - **The agent seat with nobody watching**: an agent app is found and pressed, the seat
     lists no owner window, an owner element's id is rejected with exit 3, and the owner's
     window is untouched.
-  - **Warm MCP contract**: batch execution, stale-ID stop, observation, field values,
-    numbered screenshots, and reported warm accessibility timing.
-  - **Coordinate tools**, through `caboose-desktop-mcp` over stdio: `list_windows` shows the
-    dialog; `click`, `key` and `type` at the elements' bounds fill its field; `click`
-    presses Save; `screenshot` shows the new window rather than a blank seat.
+  - **Warm MCP contract**: an `act` run, a stale id stopping it, the changes it reports,
+    field values, marked screenshots, and warm `look` timing.
+  - **Pointer and keyboard steps**, through `caboose-desktop-mcp` over stdio: `look` with
+    `windows` shows the dialog; `click`, `key` and `type` steps at the controls' bounds fill
+    its field; a `click` presses Save; `screenshot` shows the new window rather than a blank
+    seat.
   - **Chromium as a native Wayland client on the agent seat**, configured only by the
     installed flags file: a link, a button and a field inside a local page are listed;
     `set-text` (twice, replacing) and `press` run the page's script; a `click` at the
     link's bounds follows it; `text` returns the page text and the followed link; and the
-    server's `find` and `read_text` work against the page.
+    server's `look` with `find` and with `text` work against the page.
 
 ### Persistent agent GUI profiles
 
@@ -320,6 +424,11 @@ agent state is reused, while unknown versions fail with an explicit migration er
 No owner profiles, SQLite databases, WAL files, cookies or extensions are copied.
 Agent sign-ins persist in the agent profile; owner browser sign-ins are not imported.
 
+`CABOOSE_AGENT_PROFILE`, in the server's environment, names another private directory to
+hold the profile (its `home` and data, cache and state directories), for a run that resets
+its own state; the desktop benchmark uses it. Configuration stays the seat's, where its
+settings services keep their files.
+
 The task runner retains its existing owner HOME and CLI authentication configuration.
 Applications an agent starts with desktop MCP's `launch` run on the agent seat in that
 private profile, whatever the application; a program the runner starts itself keeps the
@@ -331,79 +440,3 @@ profile persistence, crash-lock release, unknown-version and redirection checks.
 use disposable directories and synthetic sign-in bytes, never owner state. Real browser
 window routing and browser-specific crash recovery require a disposable Linux display
 check; these unit tests do not establish those outcomes.
-
-### Bounded computer specialist
-
-Setting `CABOOSE_SPECIALIST_MODEL` in the desktop MCP process advertises
-`computer_task`. The model uses the guest's loopback OpenAI endpoint at port 11434.
-The caller supplies `objective`, the currently focused agent `window`, and a `goal`
-with an exact control `name` and `role`, plus optional exact `value` or `state`.
-The goal is the completion contract; prose in the objective is not independently
-verified. A goal may instead contain `all`, an array of 1–8 such conditions. All must hold
-in the same observation. Duplicate goal matches return `needs_clarification`.
-
-The controller observes controls, asks the model for one accessibility action,
-reobserves the target, executes through the existing batch validator, and observes
-its effect. Only observed IDs and `click_element`, `set_text`, or `focus_element`
-are accepted. It permits at most 20 actions (8 by default), bounds model calls to
-10 seconds, and stops the delegate at 60 seconds. It does not retry a lost action
-response. `verified` includes observed evidence and separate observation, model,
-action and total timings; failures return control to the delegating agent.
-An empty tree or model escalation returns `needs_visual` with an annotated
-window screenshot when available. The caller handles visual tasks; this controller
-does not autonomously click screenshots.
-
-The tool stays within the existing agent seat and task process. It does not change
-owner focus, start a display client, or resume a paused task. Model unavailability
-ends this delegate; it does not stop the Linux computer or require a phone for
-other desktop tools. No raw task traces are saved in product use.
-
-`node --test guest/desktop-mcp/specialist.test.mjs` checks grounding, stale IDs,
-focus changes, cancellation, completion and budgets. `check/specialist.sh` runs in
-a disposable Linux container with Caboose Display, GTK3, AT-SPI and Node, with this
-directory mounted at `/src`. Run it under `dbus-run-session`; the shell creates its
-own runtime directory, home and compositor. The default oracle policy measures
-harness overhead only. `--model MODEL` evaluates an actual model through loopback
-port 11434, or `CABOOSE_SPECIALIST_ENDPOINT` in the benchmark process. Never point
-its compositor at an owner's runtime or profile. Bound the container run and remove
-that named container when finished.
-
-The benchmark uses generated GTK controls, separates development and held-out
-labels/layouts, verifies effects independently from the fixture's event log, and
-counts wrong-control actions. Its opt-in trace sink writes only generated fixture
-observations/actions to `/tmp/specialist-traces.jsonl`. The four microtasks do not
-establish general computer-use accuracy or weight-training gains.
-
-`check/specialist-cases.py --split train --count 400 --output cases.json` generates
-synthetic form workflows. The `validation` and `heldout` splits use disjoint labels
-and layout seeds; held-out forms add a third field. Run
-`check/specialist-workflow.sh CASES_JSON OUTPUT_JSONL [--model MODEL]` under the same
-disposable-container setup to measure multi-action completion, wrong controls,
-incorrect field values, premature submission and separate timing categories.
-The oracle writes explicit fixture traces alongside results. Save the fixture's
-`/tmp/workflow-effects.jsonl` as independent evidence.
-
-`node check/specialist-dataset.mjs INPUT_DIR OUTPUT_DIR` validates successful oracle
-results named `{train,validation,heldout}-results.jsonl` and their `.traces.jsonl`
-files, then exports chat training splits without mixing trajectories. Only generated
-fixture data belongs in this pipeline. `specialist-mlx-eval.py` replays observations
-through MLX and reports exact next-action agreement and latency; this is not closed-loop
-GUI success, and an alternative valid ordering can differ from the oracle.
-`specialist-mlx-train.py` wraps MLX LoRA with non-thinking templates, masked prompts,
-and a 5 GiB MLX allocation limit. It accepts the ordinary `mlx_lm.lora` arguments.
-Training requires a separate Python environment with `mlx-lm[train]`; these tools
-are development checks and are not installed in the guest product.
-
-The reproducible small-model configuration is `check/specialist-lora.yaml`: Qwen3
-0.6B-compatible q/v LoRA, rank 8, scale 2, seed 42, 1,600 microsteps with accumulation
-8 (200 optimizer updates). Supply local model, dataset and output directories:
-
-```sh
-python check/specialist-mlx-train.py --config check/specialist-lora.yaml \
-  --model MODEL_DIRECTORY --data DATA_DIRECTORY --adapter-path ADAPTER_DIRECTORY
-```
-
-The fixture training tools are checked with MLX 0.32.4, mlx-lm 0.32.2 and
-Transformers 5.22.1. Keep baseline and adapter evaluations on the same model revision,
-non-thinking template, task cases and hardware; do not infer phone speed from Mac
-measurements. Weight training and runtime export are separate operations.

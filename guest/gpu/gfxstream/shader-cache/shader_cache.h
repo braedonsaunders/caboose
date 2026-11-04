@@ -101,6 +101,9 @@ public:
             std::memcpy(key.data(), keys.data() + offset, kKeyBytes);
             keys_.insert(key);
         }
+        // An executor without a store answers an empty inventory too, and cannot resolve a
+        // token for code it was sent; only a listed key shows a store that keeps code.
+        stored_ = !keys_.empty();
         state_ = State::loaded;
         return state_;
     }
@@ -109,10 +112,11 @@ public:
         refreshLocked();
         return state_ == State::loaded && keys_.count(key) != 0;
     }
+    // Remembers a module sent as code, to name by token later, when the executor has a store.
     void add(const Key& key) {
         std::lock_guard<std::mutex> lock(mutex_);
         refreshLocked();
-        if (state_ == State::loaded) keys_.insert(key);
+        if (state_ == State::loaded && stored_) keys_.insert(key);
     }
     // A new executor connected. Lock-free: the connection may be made inside an encoder call.
     void reset() { epoch_.fetch_add(1, std::memory_order_acq_rel); }
@@ -128,12 +132,14 @@ private:
         if (epoch == seenEpoch_) return;
         seenEpoch_ = epoch;
         state_ = State::unknown;
+        stored_ = false;
         keys_.clear();
     }
     std::mutex mutex_;
     std::atomic<uint64_t> epoch_{0};
     uint64_t seenEpoch_ = 0;
     State state_ = State::unknown;
+    bool stored_ = false;
     std::unordered_set<Key, KeyHash> keys_;
 };
 
@@ -145,7 +151,8 @@ inline Known& known() {
 // Decides what vkCreateShaderModule sends for `code`. Returns true and fills `token` when
 // the phone holds the module; otherwise the code is sent, and once `singleStream` (all of
 // the process's commands share one device stream, so the phone has created the module
-// from that code before it meets a later token) the module's key is remembered.
+// from that code before it meets a later token) and the inventory listed any key (the
+// phone has a store, which keeps that code) the module's key is remembered.
 // `hash(code, size, Key*)` is BLAKE3-256; `load` is as for Known::ensure.
 template <class Hash, class Load>
 bool substitute(Known& known, const void* code, size_t codeSize, bool singleStream, Hash&& hash,

@@ -11,12 +11,38 @@ apt-get update
 apt-get install -y --no-upgrade --no-install-recommends \
   ca-certificates curl xz-utils python3-gi gir1.2-gtk-3.0 adwaita-icon-theme \
   mesa-vulkan-drivers libgl1-mesa-dri \
-  chromium firefox-esr xfce4-terminal thunar mousepad libreoffice libreoffice-gtk3 \
-  evince keepassxc file-roller \
+  chromium xfce4-terminal thunar mousepad libreoffice libreoffice-gtk3 \
+  evince keepassxc file-roller tesseract-ocr tesseract-ocr-eng \
+  wine wine64 default-jre libatk-wrapper-java libatk-wrapper-java-jni \
   git ripgrep fd-find bat eza fzf zoxide btop lazygit neovim tmux gh git-delta \
   jq curl wget unzip zip bzip2 tree ncdu htop fastfetch ffmpeg imagemagick docker.io docker-cli docker-compose mpv yt-dlp tealdeer \
   fonts-inter fonts-jetbrains-mono fonts-noto-core fonts-noto-cjk fonts-noto-color-emoji
 if ! command -v npm >/dev/null; then apt-get install -y nodejs npm; fi
+# Chromium is the one browser: the system default for web pages and links (xdg-open,
+# GIO) and for Xfce's web-browser helper.
+install -d /etc/xdg/xfce4
+python3 - <<'PY'
+import configparser
+from pathlib import Path
+p = Path('/etc/xdg/mimeapps.list')
+c = configparser.ConfigParser(interpolation=None, strict=False)
+c.optionxform = str
+if p.exists(): c.read(p)
+if not c.has_section('Default Applications'): c.add_section('Default Applications')
+for mime in ('x-scheme-handler/http', 'x-scheme-handler/https', 'text/html', 'application/xhtml+xml'):
+    c['Default Applications'][mime] = 'chromium.desktop;'
+with p.open('w') as f: c.write(f)
+PY
+printf 'WebBrowser=chromium\n' > /etc/xdg/xfce4/helpers.rc
+# AT-SPI from trixie-backports (2.62): before it, at-spi2-atk keeps every closed direct
+# accessibility connection open, so each new assistive-technology client leaves three
+# descriptors in every GTK 3 application until it hits its limit (a portal that can no longer
+# open dialogs). Every installed package of the source moves together.
+printf 'deb https://deb.debian.org/debian trixie-backports main\n' > /etc/apt/sources.list.d/trixie-backports.list
+apt-get update
+mapfile -t atspi < <(dpkg-query -W -f '${db:Status-Status} ${Package}\n' at-spi2-core at-spi2-common libatspi2.0-0t64 \
+  gir1.2-atspi-2.0 libatk-adaptor libatk-bridge2.0-0t64 libatk1.0-0t64 gir1.2-atk-1.0 2>/dev/null | awk '$1 == "installed" { print $2 }' || true)
+apt-get install -y --no-install-recommends -t trixie-backports "${atspi[@]}"
 # Pin the upstream tarball integrity as well as the package version. npm checks
 # the downloaded tarballs and dependency integrity while installing.
 install_npm() {

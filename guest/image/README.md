@@ -128,17 +128,27 @@ the image builder, the container image and a running computer all use it. Debian
 come from the signed repositories; OpenCode, mise, Lazydocker, uv and Obsidian are pinned to
 upstream release assets with checked SHA-256 hashes; the npm agents are pinned by version
 and registry integrity. Obsidian is proprietary software; amd64 uses its `.deb`, arm64 its pinned Electron archive.
+AT-SPI (`at-spi2-core` and the libraries built from it) comes from trixie-backports: before
+2.62, at-spi2-atk keeps every closed direct accessibility connection open, so each new
+assistive-technology client left three descriptors in every GTK 3 application until it could
+no longer open any (`xdg-desktop-portal-gtk` stopped showing file dialogs).
 
 | Category | Lineup |
 | --- | --- |
-| Browsers and writing | Chromium, Firefox ESR, Obsidian, LibreOffice (with its GTK 3 backend, so it is a Wayland application), Mousepad |
-| Desktop tools | Xfce Terminal, Thunar, Evince, KeePassXC, File Roller, mpv |
+| Browsers and writing | Chromium, Obsidian, LibreOffice (with its GTK 3 backend, so it is a Wayland application), Mousepad |
+| Desktop tools | Xfce Terminal, Thunar, Evince, KeePassXC, File Roller, mpv, Tesseract OCR (English; desktop MCP reads text from windows without an accessibility tree) |
+| Runtimes | Wine (64-bit Windows programs), the Java runtime with its ATK accessibility wrapper |
 | Development | VS Code, Neovim, Git, GitHub CLI, delta, Docker and Compose, Lazygit, Lazydocker, btop, tmux, mise, Node 22, uv |
 | Shell | ripgrep, fd, bat, eza, fzf, zoxide, jq, tree, ncdu, htop, fastfetch, yt-dlp, tealdeer, ffmpeg, ImageMagick |
 | Desktop AI | Claude Desktop (Claude Code), ChatGPT Linux preview (Codex) |
 | Agent CLIs | Claude Code CLI, Codex CLI, OpenCode, Gemini CLI |
 | Rendering | Mesa Vulkan and OpenGL software drivers |
 | Fonts | Inter, JetBrains Mono, Noto (core, CJK, colour emoji) |
+
+Chromium is the one browser. `apps.sh` makes it the system default for web pages and links
+(`x-scheme-handler/http`, `x-scheme-handler/https`, `text/html` and `application/xhtml+xml`
+in `/etc/xdg/mimeapps.list`, which `xdg-open` and GIO read) and Xfce's web-browser helper
+(`WebBrowser=chromium` in `/etc/xdg/xfce4/helpers.rc`).
 
 The official [Claude Desktop](https://code.claude.com/docs/en/desktop-linux) and
 [ChatGPT Linux preview](https://learn.chatgpt.com/docs/linux/linux-app) Debian packages

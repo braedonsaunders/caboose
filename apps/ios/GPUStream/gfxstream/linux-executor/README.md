@@ -52,8 +52,8 @@ acknowledgements), opens a native process per `PROCESS_OPEN`, runs each stream o
 socketpair with `caboose_gpu_runtime_run` (completion feeds, ORDER marks, shader and upload
 inventories are the runtime's), and serves surface binds, queries, indexed swapchains,
 acquisitions and ordered presents through the presentation drafts. `--cache-root DIR` gives
-the shader and upload caches a directory; without it the computer sends every module and
-upload. A window bound with no extent takes `--display` (default 1920x1080), the extent of
+the shader and upload caches a directory; without it the executor does not offer
+`shader-cache` or `upload-cache`, so the computer sends every module and upload. A window bound with no extent takes `--display` (default 1920x1080), the extent of
 the executor's offscreen display. SIGTERM or SIGINT drains the executor (`EXECUTOR_DRAIN`);
 it exits 0 after a normal close that followed its `REVOKED`. `--sessions N` connects again
 after a session ends, as the phone does, for N sessions in all, on the same runtime; each end
@@ -125,3 +125,33 @@ the same build and settings give the same chain.
 - Phone-decoded video: the runtime's portable media reports no formats, so guests decode
   every video stream themselves.
 - Display timing for frame lab and the memory-audit receipts are not collected.
+
+## Capability-query latency
+
+Build `guest/gpu/gfxstream/driver/sync-check/capability_queries.c` with the Vulkan headers
+and `-lvulkan`, then run:
+
+```sh
+sh apps/ios/GPUStream/gfxstream/linux-executor/check-capabilities.sh IMAGE WORK DRIVER CAPABILITY_PROBE OUT
+```
+
+This creates a fresh broker/cache directory and runs four independent probe processes:
+an uncached baseline (`CABOOSE_CAPABILITY_CACHE_DISABLE=1`), a cold process on the empty
+cache, and two that reuse the seat cache. Each reports setup, format queries, device
+creation, descriptor-support queries, records appended and time spent appending, and
+whole-process time. All answer hashes must match, no process may write more than one
+record per new answer, the cold process may take at most 10% plus 50 ms longer than the
+baseline, and the executor must drain cleanly. These Linux measurements do not establish
+phone latency.
+
+## GL client after its executor leaves
+
+```sh
+sh apps/ios/GPUStream/gfxstream/linux-executor/check-gl-loss.sh IMAGE WORK DRIVER GL_LOSS_EXIT OUT
+```
+
+`GL_LOSS_EXIT` is `guest/gpu/gfxstream/driver/sync-check/gl_loss_exit.c` built against
+libdl. It renders through Zink into an offscreen colour buffer and flushes every frame; the
+check ends the executor mid-frame and requires the program to tear its context down and
+exit. It prints the frames rendered and the teardown time. `KEEP_EXECUTOR=1` keeps the
+executor, for the same client's teardown with its executor present.

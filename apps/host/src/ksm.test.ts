@@ -124,9 +124,12 @@ describe('KSM event-driven scan-boost controller', () => {
     expect((await readFile(join(root, 'sleep_millisecs'), 'utf8')).trim()).toBe('20')
 
     await vi.advanceTimersByTimeAsync(15_000)
-
-    expect((await readFile(join(root, 'pages_to_scan'), 'utf8')).trim()).toBe('256')
-    expect((await readFile(join(root, 'sleep_millisecs'), 'utf8')).trim()).toBe('500')
+    // The step-down writes the files after the timer fires: wait for them on real time.
+    vi.useRealTimers()
+    await vi.waitFor(async () => {
+      expect((await readFile(join(root, 'pages_to_scan'), 'utf8')).trim()).toBe('256')
+      expect((await readFile(join(root, 'sleep_millisecs'), 'utf8')).trim()).toBe('500')
+    })
   })
 
   it('gracefully no-ops when KSM sysfs is absent or unwritable', async () => {

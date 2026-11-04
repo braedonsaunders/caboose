@@ -37,9 +37,9 @@ static void exercise(int scenario) {
         bound.insert(bound.end(),ident.begin(),ident.end()); statusBytes(bound); transmit(fd,17,bound);
         auto create=receive(fd,25); assert(create.size()==96 && u32(create,44)==2 && u32(create,92)==0);
         auto created=identityBytes(); put64(created,1); put64(created,111); statusBytes(created);
-        put32(created,2); put32(created,0); transmit(fd,26,created);
+        put32(created,2); put32(created,0); if (scenario==5) usleep(100000); transmit(fd,26,created);
         auto map=receive(fd,27); assert(map.size()==48 && u32(map,24)==2 && u64(map,32)==101 && u64(map,40)==103);
-        auto mapped=identityBytes(); put64(mapped,111); statusBytes(mapped); transmit(fd,28,mapped);
+        auto mapped=identityBytes(); put64(mapped,111); statusBytes(mapped); if (scenario==5) usleep(100000); transmit(fd,28,mapped);
         for (int frame=1;frame<=frames;++frame) {
             auto acquire=receive(fd,29); assert(u64(acquire,24)==uint64_t(frame+1));
             assert(u64(acquire,32)==17 && u64(acquire,40)==0 && u32(acquire,56)==1);
@@ -75,8 +75,25 @@ static void exercise(int scenario) {
     Client client; client.connect(path.c_str(),deadline); client.bind(7,13,0,0,deadline);
     Bytes create; put64(create,1); put64(create,11); put64(create,0);
     for (uint32_t word:{0,2,44,0,640,480,1,18,1,1,2,1,0,0}) put32(create,word);
-    auto created=client.createSwapchain(create,deadline); assert(u64(created.body,48)==111 && u32(created.body,72)==2);
-    client.mapSwapchain(111,{101,103},deadline);
+    Record created;
+    if (scenario==5) {
+        const auto start=std::chrono::steady_clock::now();
+        client.beginCreateSwapchain(create,deadline);
+        assert(!client.takeCreatedSwapchain(&created));
+        assert(std::chrono::steady_clock::now()-start<std::chrono::milliseconds(50));
+        while (!client.takeCreatedSwapchain(&created)) { client.pump(); usleep(1000); }
+        const auto mapStart=std::chrono::steady_clock::now();
+        client.beginMapSwapchain(111,{101,103},deadline);
+        Record mapped;
+        assert(!client.takeMappedSwapchain(&mapped));
+        assert(std::chrono::steady_clock::now()-mapStart<std::chrono::milliseconds(50));
+        while (!client.takeMappedSwapchain(&mapped)) { client.pump(); usleep(1000); }
+        assert(status(mapped.body,48).success());
+    } else {
+        created=client.createSwapchain(create,deadline);
+        client.mapSwapchain(111,{101,103},deadline);
+    }
+    assert(u64(created.body,48)==111 && u32(created.body,72)==2);
     bool invalidIndexRejected=false;
     for (int frame=1;frame<=frames;++frame) {
         client.beginAcquire(111,frame+1,17,0,12345,deadline);
@@ -278,7 +295,7 @@ static void exerciseOrdered(int scenario) {
     assert(unlink(path.c_str())==0); assert(rmdir(dir)==0);
 }
 int main() {
-    for (int scenario=0;scenario<5;++scenario) exercise(scenario);
+    for (int scenario=0;scenario<6;++scenario) exercise(scenario);
     for (int scenario=0;scenario<8;++scenario) exerciseOrdered(scenario);
-    std::cout<<"5 indexed and 8 ordered-present scenarios passed, including 130 frames with final retirement\n";
+    std::cout<<"6 indexed and 8 ordered-present scenarios passed, including 130 frames with final retirement\n";
 }

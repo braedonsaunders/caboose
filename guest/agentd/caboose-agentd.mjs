@@ -261,7 +261,7 @@ function displayEnv(vars) {
 /** The agent seat's launch environment the runner was started with, as the desktop tools need it. */
 const SEAT_ENV = ['WAYLAND_DISPLAY', 'CABOOSE_DISPLAY_CONTROL', 'XAUTHORITY', 'XDG_RUNTIME_DIR', 'DBUS_SESSION_BUS_ADDRESS', 'GDK_BACKEND',
   'QT_QPA_PLATFORM', 'SDL_VIDEODRIVER', 'GALLIUM_DRIVER', 'LIBVA_DRIVER_NAME',
-  'GST_VA_ALL_DRIVERS', 'CABOOSE_SPECIALIST_MODEL']
+  'GST_VA_ALL_DRIVERS']
 
 function seatEnv() {
   return [

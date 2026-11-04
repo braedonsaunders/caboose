@@ -1,0 +1,34 @@
+#!/bin/sh
+# caboose-gpu-warmup-session SOCKET
+# Run by the GPU broker, detached, when a new executor session starts serving on SOCKET.
+# Asks the new executor, many at once, the capability questions earlier sessions asked;
+# the first time, it starts the computer's GL implementation, and each installed
+# freedesktop runtime's, once each, headless, with the environment applications are
+# launched with. Either way their capability discovery is in the session's cache before an
+# application asks (README.md).
+set -u
+[ $# = 1 ] || { echo "usage: $0 SOCKET" >&2; exit 2; }
+env_file=${CABOOSE_LAUNCH_ENV:-/run/caboose/display.env}
+if [ -r "$env_file" ]; then set -a; . "$env_file"; set +a; fi
+export CABOOSE_GFXSTREAM_SOCKET="$1" CABOOSE_CAPABILITY_CACHE_DIAGNOSTICS=1
+here=$(dirname "$(readlink -f "$0")")
+# With earlier sessions' logs, their questions are asked again, many at once: they hold
+# what every application asked, so nothing else competes with an application starting
+# now. Without any, the GL implementations start once each and their questions become
+# the next session's.
+history=$(dirname "$1")/capabilities/history
+logs=$(ls -t "$history"/formats-*.bin 2>/dev/null | head -n 4)
+if [ -n "$logs" ]; then
+    # shellcheck disable=SC2086 # file names are formats-<hex>.bin
+    exec nice -n 19 timeout 60 "$here/caboose-gpu-warmup" --replay $logs
+fi
+nice -n 19 timeout 60 "$here/caboose-gpu-warmup" &
+# Inside a runtime the tool is the one in the "host" GL extension, installed with the driver.
+if command -v flatpak >/dev/null 2>&1; then
+    flatpak list --installation=default --runtime --columns=ref 2>/dev/null | grep '^org\.freedesktop\.Platform/x86_64/' | sort -u |
+    while read -r ref; do
+        nice -n 19 timeout 60 flatpak run --installation=default --filesystem=xdg-run/caboose-gpu \
+            --command=/usr/lib/x86_64-linux-gnu/GL/host/lib/caboose-gpu-warmup "runtime/$ref" &
+    done
+fi
+wait

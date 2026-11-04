@@ -110,6 +110,59 @@ left are never sent. A free releases its share of the asynchronous allocation bu
 (`async_allocation.h`) when it is sent, so an allocation decided meanwhile still sees it. At
 most 8192 are held; past that a destroy waits up to a second for the oldest.
 
+## Physical capability cache
+
+`static_query_cache.h` reuses exact format and image-format answers across processes.
+A physical handle is associated with an identity only after the current executor has
+answered its properties query. The identity includes the accepted protocol fingerprint
+and feature mask, a broker-issued executor-session nonce, actual backend device/driver UUIDs, versions and names, pipeline-cache
+UUID, architecture, and the guest driver's complete prepared-source fingerprint. A new
+connection clears all handle associations. Cache records are reusable only within one
+executor session; a newly connected executor gets a fresh nonce even if its advertised
+identifiers match. Without the nonce extension, the cache remains process-local. The broker socket path selects storage only;
+it does not establish device identity.
+
+The seat cache is `capabilities/` beside `CABOOSE_GFXSTREAM_SOCKET`, inside the directory
+already exposed to Flatpak and pressure-vessel. Without an absolute socket path, storage
+uses `$XDG_CACHE_HOME/caboose-gpu` or `~/.cache/caboose-gpu`. No additional sandbox mount
+is added. Format queries accept no extension chain or exactly `VkFormatProperties3`;
+image-format queries require empty input and output extension chains. Other chains go
+to the executor. Image answers persist only success or format-not-supported results.
+Logical-device descriptor-layout support queries remain real queries: enabled device
+features affect their answers.
+
+Files are untrusted seat-user data, not an authorization source. Readers require a
+private directory and regular private files owned by the effective user, and reject
+symlinks in every path component. Each file is an append-only log: a header carrying the
+complete identity, then records, each with its sizes, a checksum and the full scope
+prefix in its key. Readers take records in order and stop at the first damaged or partial
+one, so a torn tail left by a crash costs only the records after it; a file of another
+format or with a damaged header supplies nothing. Checksums detect damaged records, not
+malicious writes by the same user. Values contain only fixed-size capability scalars,
+never pointers or object handles. Bounds are 8192 entries, 64 device scopes, 4096-byte
+values and 8 MiB per file.
+
+A process opens a scope's directory, lock and file once. Each new answer is appended as
+one record under the exclusive lock, which every reader and writer takes for at most 5 ms
+(holders keep it for one read or append), after adopting records other processes
+appended since and cutting any torn tail; nothing already written is rewritten and there
+is no fsync, since the cache is optional. While another process holds the lock, new
+records wait in a 256 KiB per-scope buffer and go out with the next append, or in one
+last attempt when the process exits. A forked child opens its own lock before writing.
+Unsafe paths, a lock held past 5 ms, oversized or corrupt records produce cache misses.
+Current connection/device identity always comes from real queries.
+`CABOOSE_CAPABILITY_CACHE_DIAGNOSTICS=1` prints hits, misses, appended records and bytes,
+time spent appending and contended locks at exit; `CABOOSE_CAPABILITY_CACHE_DISABLE=1`
+bypasses the cache.
+
+`test_static_query_cache.cpp` covers fresh-process reuse, changed identities/protocols,
+concurrent and forked writers, lock contention and held-back records, append-only write
+volume, unsafe permissions, symlinks, size limits, torn tails, corrupt records and other
+formats. `../../../../apps/ios/GPUStream/gfxstream/linux-executor/check-capabilities.sh`
+measures a genuinely empty cache and two fresh warmed processes, with separate format,
+device-creation and descriptor-query timings. A warmed result does not measure first-use
+latency.
+
 ## Executor loss
 
 The phone executor's streams end only when it leaves (the app goes to the background or
@@ -150,3 +203,6 @@ held destroys across queues, devices and executors, and event status replies. Th
 the headers, not the generated encoder or a device. `test_requirements_cache.cpp` needs
 Vulkan's headers on the include path (`test.sh` uses Mesa's, or
 `CABOOSE_VULKAN_INCLUDE`).
+
+`CABOOSE_CAPABILITY_CACHE_DISABLE=1` bypasses lookups and stores for a baseline run
+(see "Physical capability cache" for the diagnostics).

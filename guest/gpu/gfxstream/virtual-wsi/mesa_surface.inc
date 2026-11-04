@@ -18,6 +18,11 @@
 #include <cstdlib>
 #include <memory>
 #include <mutex>
+#include <condition_variable>
+#include <thread>
+#include <deque>
+#include "caboose-bounded-memory/presentation_retirement.h"
+#include "caboose-bounded-memory/async_allocation.h"
 #include <system_error>
 #include "goldfish_vk_private_defs.h"
 #include "Resources.h"
@@ -48,8 +53,20 @@ static bool indexed() {
     return false;
 #endif
 }
+struct DeviceSwapchain;
+using Retirement=caboose::memory::PresentationRetirement;
+static void syncRetirementGeneration(uint64_t generation) {
+    auto abandoned=caboose::memory::presentationRetirement.changeGeneration(generation);
+    for (const auto& packet:abandoned.abandoned)
+        if (packet.allocation) caboose::memory::asyncAllocationBudget.freed(packet.allocation);
+}
 struct Surface {
     std::recursive_mutex operationMutex;
+    std::condition_variable_any changed;
+    bool workerStarted=false, destroyed=false;
+    std::optional<Retirement::Lease> instanceLease;
+    uint64_t generation=0;
+    std::vector<std::shared_ptr<DeviceSwapchain>> remoteSwaps;
     VkInstance instance;
     uint64_t boxedInstance;
     uint32_t object;
@@ -73,6 +90,7 @@ struct Surface {
     bool formatsCounted=false, modesCounted=false;
     Client client;
 };
+static void startSurfaceWorker(const std::shared_ptr<Surface>& surface);
 static std::mutex mutex;
 static std::map<VkSurfaceKHR,std::shared_ptr<Surface>> surfaces;
 static std::shared_ptr<Surface> lookup(VkSurfaceKHR handle) {
@@ -144,6 +162,13 @@ static bool tryBind(Surface& surface, bool present=false,
     if (surface.bound) return true;
     const auto now=std::chrono::steady_clock::now();
     try {
+        if (lazyBind() && !surface.instanceLease) {
+            surface.generation=caboose::completion::executorGeneration.load(std::memory_order_acquire);
+            syncRetirementGeneration(surface.generation);
+            surface.instanceLease=caboose::memory::presentationRetirement.reserve(surface.generation,
+                {{Retirement::Kind::Instance,surface.boxedInstance}});
+            if (!surface.instanceLease) throw std::bad_alloc();
+        }
         if (!surface.client.bindPending()) {
             if ((!present && now<surface.nextBind) || now<surface.nextPhoneBind) return false;
             surface.attempted=true; ++surface.bindAttempts;
@@ -200,6 +225,10 @@ static VkResult query(VkPhysicalDevice physical, VkSurfaceKHR handle, Bytes& cap
     if (surface.instance!=gfxstream_vk_instance_to_handle(device->instance) || surface.poisoned)
         return VK_ERROR_SURFACE_LOST_KHR;
     try {
+        if (surface.workerStarted) {
+            caps=surface.caps.empty() ? localCaps() : surface.caps;
+            return VK_SUCCESS;
+        }
         if (!tryBind(surface,false,lazyBind() ? std::chrono::steady_clock::duration::zero()
                                               : std::chrono::steady_clock::duration(kQueryBindPatience))) {
             if (!lazyBind()) return VK_ERROR_SURFACE_LOST_KHR;
@@ -364,6 +393,16 @@ static void VKAPI_CALL destroy(VkInstance instance, VkSurfaceKHR handle, const V
     if (!retained || retained->instance!=instance) return;
     auto& surface=*retained;
     std::lock_guard<std::recursive_mutex> lock(surface.operationMutex);
+#if defined(CABOOSE_GFXSTREAM_PRIVATE_INDEXED_WSI)
+    if (lazyBind()) {
+        surface.destroyed=true;
+        // Host thread exhaustion cannot extend the application allocator's lifetime.
+        try { if (surface.attempted || surface.instanceLease) startSurfaceWorker(retained); }
+        catch (...) { surface.poisoned=true; }
+        surface.changed.notify_all();
+    }
+    else
+#endif
     if (!retire(surface)) return;
     VK_FROM_HANDLE(gfxstream_vk_instance, owner, instance);
     vk_free2(&owner->vk.alloc,surface.customAllocator ? &surface.allocator : nullptr,
@@ -380,6 +419,12 @@ static bool beforeDestroyInstance(VkInstance instance) {
         std::lock_guard<std::mutex> lock(mutex);
         for (auto& item:surfaces) if (item.second->instance==instance) retained.push_back(item);
     }
+#if defined(CABOOSE_GFXSTREAM_PRIVATE_INDEXED_WSI)
+    if (lazyBind()) {
+        for (auto& item:retained) destroy(instance,item.first,nullptr);
+        return true; // native instance destruction is fenced by the owned retirement packet
+    }
+#endif
     // First obtain every retirement proof. Do not partially destroy the instance.
     for (auto& item:retained) {
         std::lock_guard<std::recursive_mutex> lock(item.second->operationMutex);

@@ -1,7 +1,7 @@
 # caboose_drv_video.so: the Caboose VA-API driver
 
 A libva driver through which applications' video is decoded on the phone. Players
-(Chromium, Firefox, mpv, VLC, GStreamer, FFmpeg) decode through it as through any hardware
+(Chromium, mpv, VLC, GStreamer, FFmpeg) decode through it as through any hardware
 decoder. It rebuilds each picture's compressed bitstream from the VA buffers. In a process
 whose windows the phone renders (the Caboose Vulkan driver is loaded and the GPU broker's
 phone decodes the format), it sends that bitstream to the phone over a media stream of the

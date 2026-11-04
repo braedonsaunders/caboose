@@ -26,13 +26,14 @@ OWNED = {
     'virtual-wsi/client.cpp': 'src/gfxstream/guest/vulkan/caboose-wsi/client.cpp',
     'virtual-wsi/wire.h': 'src/gfxstream/guest/vulkan/caboose-wsi/wire.h',
     'virtual-wsi/mesa_surface.inc': 'src/gfxstream/guest/vulkan/caboose-wsi/mesa_surface.inc',
+    'virtual-wsi/mesa_pending.inc': 'src/gfxstream/guest/vulkan/caboose-wsi/mesa_pending.inc',
     'virtual-wsi/mesa_swapchain.inc': 'src/gfxstream/guest/vulkan/caboose-wsi/mesa_swapchain.inc',
     **{f'bounded-memory/{name}': f'src/gfxstream/guest/vulkan_enc/caboose-bounded-memory/{name}'
        for name in ('async_allocation.h', 'cb_staging.h', 'completion_feed.h', 'deferred_replies.h',
                     'flush_packet.h', 'flush_shadow.h', 'flush_timing.h', 'ranges.h',
-                    'requirements_cache.h', 'rpc_timing.h', 'static_query_cache.h',
+                    'requirements_cache.h', 'rpc_timing.h', 'static_query_cache.h', 'capability_chains.h',
                     'query_results.h', 'handles.h', 'upload_cache.h', 'write_watch.h', 'poll_stall.h',
-                    'deferred_destroys.h', 'event_status.h', 'memory_traffic.h')},
+                    'deferred_destroys.h', 'presentation_retirement.h', 'event_status.h', 'memory_traffic.h')},
     **{f'dmabuf/{name}': f'src/gfxstream/guest/vulkan_enc/caboose-dmabuf/{name}'
        for name in ('dmabuf.h', 'registration.h', 'remote_images.h', 'sync_file.h')},
     **{f'media/{name}': f'src/gfxstream/guest/vulkan_enc/caboose-media/{name}'
@@ -100,7 +101,11 @@ def prepare(root):
         target = root / destination
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(GFXSTREAM / source, target)
-    (root / 'src/gfxstream/caboose-driver.json').write_text(json.dumps(manifest(), indent=2) + '\n')
+    inputs = manifest()
+    source_identity = hashlib.sha256(json.dumps(inputs, sort_keys=True).encode()).hexdigest()
+    (root / 'src/gfxstream/guest/vulkan_enc/caboose-bounded-memory/source_identity.h').write_text(
+        '#pragma once\n#define CABOOSE_DRIVER_SOURCE_ID "' + source_identity + '"\n')
+    (root / 'src/gfxstream/caboose-driver.json').write_text(json.dumps(inputs, indent=2) + '\n')
 
 
 if __name__ == '__main__':
