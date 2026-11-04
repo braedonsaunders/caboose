@@ -1,0 +1,114 @@
+#!/usr/bin/python3
+"""org.freedesktop.portal.Documents on the agent seat's bus, served by the owner bus's portal.
+
+Both seats run as one user, and the document portal mounts its file system at that user's
+/run/user/<uid>/doc, the path every Flatpak sandbox and xdg-desktop-portal expect: one portal
+serves the user, on the owner's bus, and this forwards the agent bus's calls to it (as
+secret-forwarder.py does for Secret Service), file descriptors included. Calls come only from
+the agent seat's unsandboxed processes (its xdg-desktop-portal, flatpak run): the portal
+would take this forwarder's identity for the caller's, so a sandboxed caller is refused."""
+import os
+import sys
+from gi.repository import Gio, GLib
+
+SERVICE = 'org.freedesktop.portal.Documents'
+ROOT = '/org/freedesktop/portal/documents'
+INTERFACES = ('org.freedesktop.portal.Documents', 'org.freedesktop.portal.FileTransfer', 'org.freedesktop.DBus.Properties',
+              'org.freedesktop.DBus.Introspectable', 'org.freedesktop.DBus.Peer')
+DBUS = 'org.freedesktop.DBus'
+OWNER_BUS = 'unix:path=/run/user/%d/bus' % os.getuid()
+
+
+def connect(address):
+    bus = Gio.DBusConnection.new_for_address_sync(address,
+        Gio.DBusConnectionFlags.AUTHENTICATION_CLIENT | Gio.DBusConnectionFlags.MESSAGE_BUS_CONNECTION, None, None)
+    bus.set_exit_on_close(False)
+    return bus
+
+
+def bus_call(bus, method, signature, args):
+    return bus.call_sync(DBUS, '/org/freedesktop/DBus', DBUS, method, GLib.Variant(signature, args),
+                         None, Gio.DBusCallFlags.NONE, 5000, None).unpack()
+
+
+def sandboxed(pid):
+    return os.path.exists(f'/proc/{pid}/root/.flatpak-info')
+
+
+class Forwarder:
+    def __init__(self, agent):
+        self.agent = agent
+        self.owner = connect(OWNER_BUS)
+        try:
+            bus_call(self.owner, 'GetNameOwner', '(s)', (SERVICE,))
+        except GLib.Error:
+            bus_call(self.owner, 'StartServiceByName', '(su)', (SERVICE, 0))
+        # A restarted portal forgets nothing on disk, but its connection changes: end, and
+        # let activation start a fresh forwarder.
+        self.owner.signal_subscribe(DBUS, DBUS, 'NameOwnerChanged', '/org/freedesktop/DBus', SERVICE,
+                                    Gio.DBusSignalFlags.NONE, lambda *_: os._exit(0), None)
+        self.owner.connect('closed', lambda *_: os._exit(1))
+        agent.connect('closed', lambda *_: os._exit(1))
+        agent.add_filter(self.filter, None)
+        if bus_call(agent, 'RequestName', '(su)', (SERVICE, 4))[0] != 1:
+            raise RuntimeError(f'{SERVICE} is already owned on this bus')
+
+    def filter(self, bus, message, incoming, data):
+        # Callers address the portal by its name, or (a proxy that follows the name's owner) by
+        # this connection's own name.
+        if incoming and message.get_message_type() == Gio.DBusMessageType.METHOD_CALL \
+                and message.get_destination() in (SERVICE, bus.get_unique_name()):
+            GLib.idle_add(self.forward, message.copy())
+            return None
+        return message
+
+    def error(self, request, name, text):
+        self.agent.send_message(request.new_method_error_literal(name, text), Gio.DBusSendMessageFlags.NONE)
+
+    def forward(self, request):
+        path, interface = request.get_path() or '', request.get_interface() or ''
+        if not (path == ROOT or path.startswith(ROOT + '/')) or interface not in INTERFACES:
+            self.error(request, 'org.freedesktop.DBus.Error.AccessDenied', 'Only the document portal is forwarded')
+            return False
+        try:
+            sender = request.get_sender()
+            if bus_call(self.agent, 'GetConnectionUnixUser', '(s)', (sender,))[0] != os.getuid():
+                raise PermissionError('another user')
+            if sandboxed(bus_call(self.agent, 'GetConnectionUnixProcessID', '(s)', (sender,))[0]):
+                raise PermissionError('a sandboxed caller')
+        except (GLib.Error, PermissionError) as error:
+            self.error(request, 'org.freedesktop.DBus.Error.AccessDenied', f'Refused: {error}')
+            return False
+        forwarded = Gio.DBusMessage.new_method_call(SERVICE, path, interface, request.get_member())
+        body = request.get_body()
+        if body is not None:
+            forwarded.set_body(body)
+        fds = request.get_unix_fd_list()
+        if fds is not None:
+            forwarded.set_unix_fd_list(fds)
+        self.owner.send_message_with_reply(forwarded, Gio.DBusSendMessageFlags.NONE, 60000, None, self.replied, request)
+        return False
+
+    def replied(self, bus, result, request):
+        try:
+            reply = bus.send_message_with_reply_finish(result)
+        except GLib.Error as error:
+            self.error(request, 'org.freedesktop.DBus.Error.Failed', error.message)
+            return
+        if reply.get_message_type() == Gio.DBusMessageType.ERROR:
+            self.error(request, reply.get_error_name(), (reply.get_body().unpack()[0] if reply.get_body() else '') or 'refused')
+            return
+        answer = request.new_method_reply()
+        body = reply.get_body()
+        if body is not None:
+            answer.set_body(body)
+        fds = reply.get_unix_fd_list()
+        if fds is not None:
+            answer.set_unix_fd_list(fds)
+        self.agent.send_message(answer, Gio.DBusSendMessageFlags.NONE)
+
+
+if __name__ == '__main__':
+    Forwarder(connect(os.environ['DBUS_SESSION_BUS_ADDRESS']))
+    GLib.MainLoop().run()
+    sys.exit(0)

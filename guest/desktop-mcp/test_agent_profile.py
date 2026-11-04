@@ -46,6 +46,19 @@ class Profiles(unittest.TestCase):
             self.assertEqual((root / 'version').read_text(), '1\n')
             self.assertEqual(root.stat().st_mode & 0o077, 0)
 
+    def test_another_profile_keeps_the_seats_flatpaks_and_wine_prefix(self):
+        with tempfile.TemporaryDirectory() as directory:
+            owner = Path(directory) / 'owner'
+            default = owner / '.local/share/caboose/agent-seat/home'
+            (default / '.local/share/flatpak').mkdir(parents=True)
+            (default / '.wine').mkdir()
+            env = profile.environment(owner, Path(directory) / 'run')
+            self.assertEqual(env['FLATPAK_USER_DIR'], str(default / '.local/share/flatpak'))
+            self.assertEqual(env['WINEPREFIX'], str(default / '.wine'))
+            for path in (default.parent, default, default / '.local', default / '.local/share'):
+                path.chmod(0o700)
+            self.assertNotIn('WINEPREFIX', profile.environment(owner))
+
     def test_kernel_releases_initialization_lock_after_crash(self):
         with tempfile.TemporaryDirectory() as directory:
             env = profile.environment(directory)

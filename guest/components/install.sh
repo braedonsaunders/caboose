@@ -80,8 +80,10 @@ sh "$root/notifications/install.sh"
 sh "$root/webmcp/install.sh"
 bash "$root/phone/install.sh"
 sh "$root/bridge/install.sh"
-sh "$root/keyring/install.sh"
+# Flatpak before the keyring: the agent bus's activation directory is drawn from the system's
+# D-Bus services, the document portal's among them.
 sh "$root/flatpak/install.sh" "$mode"
+sh "$root/keyring/install.sh"
 sh "$root/game/install.sh"
 sh "$root/gpu/install.sh"
 sh "$root/agentd/install.sh"

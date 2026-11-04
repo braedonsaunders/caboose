@@ -1,0 +1,112 @@
+#!/usr/bin/env python3
+"""fusermount3 for a container computer: it asks the host's FUSE broker
+(caboose-fuse-broker, beside the computer) to mount or unmount, since the computer itself
+may not. It speaks libfuse's fusermount3 protocol: a mount takes `-o OPTIONS -- MOUNTPOINT`
+and hands the open /dev/fuse back over the socket named by _FUSE_COMMFD; `-u` (with `-z`,
+`-q`) unmounts. Installed over /usr/bin/fusermount3 (a dpkg diversion keeps the original as
+/usr/bin/fusermount3.caboose-off) in container computers only."""
+import array
+import json
+import os
+import socket
+import stat
+import sys
+
+SOCKET = '/run/caboose/fuse.sock'
+
+
+def parse(argv):
+    options, mountpoint, unmount, lazy, quiet = '', None, False, False, False
+    args = iter(argv)
+    for arg in args:
+        if arg in ('-o', '--options'):
+            options = next(args, '')
+        elif arg.startswith('-o') and len(arg) > 2:
+            options = arg[2:]
+        elif arg in ('-u', '--unmount'):
+            unmount = True
+        elif arg in ('-z', '--lazy'):
+            lazy = True
+        elif arg in ('-q', '--quiet'):
+            quiet = True
+        elif arg in ('-V', '--version'):
+            print('fusermount3 version: caboose-fusermount (through the host FUSE broker)')
+            sys.exit(0)
+        elif arg == '--':
+            mountpoint = next(args, None)
+        elif arg == '--auto-unmount':
+            raise SystemExit('fusermount3: --auto-unmount is not available in a container computer')
+        elif not arg.startswith('-'):
+            mountpoint = arg
+        else:
+            raise SystemExit(f'fusermount3: unknown option {arg}')
+    if not mountpoint:
+        raise SystemExit('fusermount3: missing mountpoint')
+    return options, os.path.abspath(mountpoint), unmount, lazy, quiet
+
+
+def ask(request):
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as conn:
+        conn.settimeout(30)
+        try:
+            conn.connect(SOCKET)
+        except OSError as error:
+            raise SystemExit(f'fusermount3: no FUSE broker for this computer ({error.strerror})')
+        conn.sendall(json.dumps(request).encode())
+        fds = array.array('i')
+        data, ancillary, _, _ = conn.recvmsg(65536, socket.CMSG_SPACE(fds.itemsize))
+        for level, kind, payload in ancillary:
+            if level == socket.SOL_SOCKET and kind == socket.SCM_RIGHTS:
+                fds.frombytes(payload[:len(payload) - len(payload) % fds.itemsize])
+        reply = json.loads(data or b'{}')
+        if not reply.get('ok'):
+            raise SystemExit(f"fusermount3: {reply.get('error', 'the FUSE broker refused')}")
+        return fds[0] if fds else None
+
+
+ORIGINAL = '/usr/bin/fusermount3.caboose-off'
+
+
+def main(argv):
+    # A computer created with /dev/fuse mounts by itself: the original fusermount3 does it.
+    try:
+        if stat.S_ISCHR(os.stat('/dev/fuse').st_mode) and os.path.exists(ORIGINAL):
+            os.execv(ORIGINAL, ['fusermount3', *argv])
+    except FileNotFoundError:
+        pass
+    options, mountpoint, unmount, lazy, _quiet = parse(argv)
+    if unmount:
+        ask({'op': 'unmount', 'mountpoint': mountpoint, 'lazy': lazy})
+        return 0
+    commfd = os.environ.get('_FUSE_COMMFD')
+    if not commfd or not commfd.isdigit():
+        raise SystemExit('fusermount3: mounting needs _FUSE_COMMFD (run by libfuse)')
+    # auto_unmount, as fusermount3 does it: stay until the file system's process closes the
+    # socket (it has ended), then unmount.
+    words = [o for o in options.split(',') if o]
+    auto = 'auto_unmount' in words
+    options = ','.join(o for o in words if o != 'auto_unmount')
+    device = ask({'op': 'mount', 'mountpoint': mountpoint, 'options': options})
+    if device is None:
+        raise SystemExit('fusermount3: the FUSE broker sent no device')
+    with socket.socket(fileno=int(commfd)) as channel:
+        channel.sendmsg([b'\0'], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, array.array('i', [device]))])
+        os.close(device)
+        if auto:
+            if os.fork():
+                return 0  # libfuse waits for this process only without auto_unmount
+            os.setsid()
+            try:
+                while channel.recv(4096):
+                    pass
+            except OSError:
+                pass
+            try:
+                ask({'op': 'unmount', 'mountpoint': mountpoint, 'lazy': True})
+            except SystemExit:
+                pass
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main(sys.argv[1:]))

@@ -4,7 +4,9 @@ Real tasks in real applications on the agent seat, done by a big model through d
 MCP. It compares the native tools (accessibility tree, semantic actions, batches) with a
 screenshot computer-use baseline: the same model with only screenshots, pointer and
 keyboard. Success is decided by each task's own check of the effect (a file, a setting, a
-page title), never by what the model reports. The `direct-` tasks are ones a direct tool can
+page title), never by what the model reports. The `flathub-` tasks run Flathub applications (GNOME Text Editor and Calculator, Gnumeric,
+Kate, Okular, GIMP, VSCodium) and the `wine-` tasks Windows programs (Notepad++, Notepad,
+7-Zip) from the agent profile's installations. The `direct-` tasks are ones a direct tool can
 do without the GUI (a setting, a spreadsheet, a replace, files, a page's numbers); the
 baseline does them through the GUI.
 
@@ -12,7 +14,7 @@ baseline does them through the GUI.
 application, the `app` id of the window to wait for, the `prompt`, a `verify` command that
 exits 0 only when the effect is there, and an optional `reset` for settings kept outside
 the run directory. They run inside the computer as the agent user with the agent seat's
-environment and `HOME=/tmp/caboose-bench/home`, after `prelude.sh`.
+environment and `HOME=/home/caboose/caboose-bench/home`, after `prelude.sh`.
 
 ## Run
 
@@ -23,10 +25,11 @@ application on it between tasks.
 ```sh
 python3 run.py --mode native --model claude-sonnet-5-5 --output native.jsonl \
   --exec 'ssh HOST docker exec -i -u caboose CONTAINER bash -s' \
-  --mcp "ssh HOST \"docker exec -i -u caboose CONTAINER bash -c 'set -a; . /run/caboose/agent-display.env; set +a; CABOOSE_AGENT_PROFILE=/tmp/caboose-bench exec node /opt/caboose/desktop-mcp.mjs'\""
+  --mcp "ssh HOST \"docker exec -i -u caboose CONTAINER bash -c 'set -a; . /run/caboose/agent-display.env; set +a; CABOOSE_AGENT_PROFILE=/home/caboose/caboose-bench exec node /opt/caboose/desktop-mcp.mjs'\""
 ```
 
-`CABOOSE_AGENT_PROFILE=/tmp/caboose-bench` makes the run directory the server's agent profile,
+`CABOOSE_AGENT_PROFILE=/home/caboose/caboose-bench` makes the run directory the server's agent profile
+(under the home: a Flatpak sandbox has its own `/tmp`, so a home there would be out of its sight),
 so an application the agent launches has the same home as the task's files.
 
 A run stops, recording nothing for the task, when the agent itself reports an error before any

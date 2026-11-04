@@ -4,7 +4,8 @@
 usage: summarize.py RECORDS.jsonl ...
 
 Each file holds run.py's records (one JSON line per task run); runs of the same mode are
-pooled. Sets: the single-application tasks, the `flow-` workflows and the `direct-` tasks."""
+pooled. Sets: the single-application tasks, the `flathub-` and `wine-` ones, the `flow-` workflows
+and the `direct-` tasks."""
 import json
 import statistics as st
 import sys
@@ -16,7 +17,10 @@ if not rows:
 
 
 def kind(task):
-    return 'workflows' if task.startswith('flow-') else 'direct' if task.startswith('direct-') else 'single-app'
+    for prefix, name in (('flow-', 'workflows'), ('direct-', 'direct'), ('flathub-', 'Flathub'), ('wine-', 'Wine')):
+        if task.startswith(prefix):
+            return name
+    return 'single-app'
 
 
 def line(records):
@@ -29,7 +33,7 @@ def line(records):
 modes = sorted({r['mode'] for r in rows})
 print('| Set | Mode | Success | Mean / median s | Calls | Input tokens | $/task |')
 print('|---|---|---|---|---|---|---|')
-for name in ('single-app', 'workflows', 'direct'):
+for name in ('single-app', 'Flathub', 'Wine', 'workflows', 'direct'):
     for mode in modes:
         records = [r for r in rows if r['mode'] == mode and kind(r['task']) == name]
         if records:

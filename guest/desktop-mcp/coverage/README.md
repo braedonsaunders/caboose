@@ -20,3 +20,5 @@ python3 coverage/survey.py --table coverage.jsonl
 
 Applications run with the agent profile's home, as an agent's would. The survey ends each
 one before starting the next; it never touches the owner's seat.
+
+`results/` keeps the reported surveys and what was fixed after each.

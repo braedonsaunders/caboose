@@ -704,6 +704,30 @@ each wake the host bind-remounts an older container's read-only `/sys/fs/cgroup`
 that container's mount namespace with a one-shot privileged helper. A microVM computer has
 no app scopes. See [guest/scopes](../guest/scopes/README.md).
 
+**FUSE.** A container computer is created with the host's `/dev/fuse` and `CAP_SYS_ADMIN`, so
+its setuid `fusermount3` can mount the Flatpak document portal's file system; its seccomp
+profile allows the mount calls only with that capability. The tradeoff: `CAP_SYS_ADMIN` lets
+the container's root mount and administer inside its own namespaces, a wider surface than
+FUSE alone, in exchange for Flatpak apps receiving the files chosen for them. On a host whose
+Docker applies AppArmor's default profile (which denies `mount`), the computer's spec adds
+`apparmor=unconfined`. A container created before this has neither until it is created
+again; meanwhile the host runs `<computer>-fuse` beside it, a privileged sidecar in its process
+namespace running `caboose-fuse-broker`, which mounts FUSE only on a directory the caller owns
+under `/run/user/<uid>` (`nosuid`, `nodev`, the options `fusermount3` gives a user) for the
+computer's `fusermount3`, `caboose-fusermount`; libfuse opens `/dev/fuse` itself first, so the
+broker leaves an empty placeholder there. Where `/dev/fuse` is a real device,
+`caboose-fusermount` runs the original `fusermount3`.
+
+**System Flatpak.** A container computer's `/var/lib/flatpak` is a volume of its own
+(`<computer>-flatpak`), filled from the image on first use, so system-wide Flatpak apps
+(Steam) survive the container being created again; removing the computer removes it.
+
+One document portal serves the computer's user, on the owner's bus, at the
+`/run/user/<uid>/doc` every Flatpak sandbox and `xdg-desktop-portal` expect; the agent
+seat's bus forwards `org.freedesktop.portal.Documents` to it (`caboose-documents-forwarder`,
+as Secret Service is forwarded), for its unsandboxed callers only. This holds for microVM
+computers too.
+
 **Services.** The same daemon is the container computer's service manager. A service is
 declared in a unit file, a subset of systemd's: root's in `/etc/caboose/services/<name>.service`
 (may set `User=`) and the owner's in `~/.config/caboose/services/<name>.service` (run as the

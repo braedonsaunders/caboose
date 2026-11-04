@@ -45,7 +45,16 @@ def environment(owner_home, root=None):
                 os.fsync(directory_fd)
             finally:
                 os.close(directory_fd)
-        return dict(HOME=str(home), XDG_CONFIG_HOME=str(home / '.config'),
+        # Another profile keeps the seat's installed software: its user Flatpak installation
+        # and its Wine prefix stay those of the default profile.
+        software = {}
+        if root != Path(owner_home) / '.local/share/caboose/agent-seat':
+            default = Path(owner_home) / '.local/share/caboose/agent-seat/home'
+            if (default / '.local/share/flatpak').is_dir():
+                software['FLATPAK_USER_DIR'] = str(default / '.local/share/flatpak')
+            if (default / '.wine').is_dir():
+                software['WINEPREFIX'] = str(default / '.wine')
+        return dict(**software, HOME=str(home), XDG_CONFIG_HOME=str(home / '.config'),
                     XDG_DATA_HOME=str(home / '.local/share'), XDG_CACHE_HOME=str(home / '.cache'),
                     XDG_STATE_HOME=str(home / '.local/state'), CABOOSE_SEAT='agent',
                     DBUS_SESSION_BUS_ADDRESS='unix:path=/run/user/1000/agent-bus')

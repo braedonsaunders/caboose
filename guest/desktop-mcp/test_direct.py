@@ -78,6 +78,24 @@ class Values(unittest.TestCase):
         self.assertEqual(direct.app_words({'app_id': 'mousepad'}), {'mousepad'})
 
 
+class Where(unittest.TestCase):
+    def test_the_paths_a_window_works_on_come_from_its_command_line_and_title(self):
+        home = os.path.realpath(tempfile.mkdtemp())
+        project = os.path.join(home, 'Documents', 'harbor')
+        profile = os.path.join(home, 'vscode')
+        os.makedirs(project); os.makedirs(profile)
+        open(os.path.join(project, 'notes.txt'), 'w').close()
+        cmdline = f'/usr/share/code/code --user-data-dir {profile} --new-window {project}'.encode()
+        real_open = open
+
+        def fake_open(path, *args, **kwargs):
+            return io.BytesIO(cmdline) if path == '/proc/42/cmdline' else real_open(path, *args, **kwargs)
+        with patch.dict(os.environ, {'HOME': home}), patch('builtins.open', fake_open), \
+                patch.object(direct.os, 'readlink', side_effect=OSError), patch.object(direct, 'is_office', return_value=False):
+            paths = direct.where({'pid': 42, 'title': 'notes.txt - harbor - Visual Studio Code'})
+        self.assertEqual(paths, [project, os.path.join(project, 'notes.txt'), profile])
+
+
 class Serve(unittest.TestCase):
     def test_requests_answer_one_json_line_each(self):
         lines = io.StringIO(json.dumps({'op': 'files'}) + '\n' + json.dumps({'op': 'call', 'name': 'files.read', 'args': {'path': '/etc/hosts'}}) + '\n')
