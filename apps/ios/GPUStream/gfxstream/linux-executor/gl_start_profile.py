@@ -36,6 +36,35 @@ STEAM_LOG = re.compile(r'^\[(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)[^\]]*\] (.*)')
 MILESTONES = (('webhelper start', re.compile(r'^exec \./steamwebhelper')),
               ('GPU process failed to initialize', re.compile(r'Exiting GPU process due to errors during initialization')),
               ('surface bind refused', re.compile(r'CABOOSE_GPU_SURFACE_BIND .* attempt=1 refused')))
+PROXY_PORT = 14707
+# A TCP proxy that delays each direction by argv[3] seconds, in order: argv[1] listens, argv[2] is
+# the seat's broker on 127.0.0.1.
+DELAY_PROXY = '''
+import asyncio, sys, time
+listen, target, delay = int(sys.argv[1]), int(sys.argv[2]), float(sys.argv[3])
+async def pump(reader, writer):
+    queue = asyncio.Queue()
+    async def feed():
+        while True:
+            data = await reader.read(1 << 16)
+            await queue.put((time.monotonic() + delay, data))
+            if not data: return
+    asyncio.ensure_future(feed())
+    while True:
+        due, data = await queue.get()
+        wait = due - time.monotonic()
+        if wait > 0: await asyncio.sleep(wait)
+        if not data:
+            writer.close(); return
+        writer.write(data); await writer.drain()
+async def client(reader, writer):
+    up_reader, up_writer = await asyncio.open_connection('127.0.0.1', target)
+    await asyncio.gather(pump(reader, up_writer), pump(up_reader, writer), return_exceptions=True)
+async def main():
+    server = await asyncio.start_server(client, '127.0.0.1', listen)
+    await server.serve_forever()
+asyncio.run(main())
+'''
 DECODE = re.compile(r'^(\S+) CABOOSE_GPU_DECODE_TIMING stream=(\d+) opcode=(\d+) elapsed_us=(\d+)')
 READ = re.compile(r'CABOOSE_READ_PROFILE (.*)')
 
@@ -56,6 +85,13 @@ def main():
     parser.add_argument('--steam-home', required=True, help="a home of the check's own with a Steam Flatpak profile")
     parser.add_argument('--seconds', type=int, default=180)
     parser.add_argument('--prepare', default='', help="shell run in the seat before Steam starts (SEAT is its directory)")
+    parser.add_argument('--rtt-ms', type=float, default=0,
+                        help="round-trip time added between the executor and the seat's broker, as a phone's network adds")
+    parser.add_argument('--capability-history', metavar='DIR',
+                        help="a directory (in the computer) that carries the seat's capability logs from run to run, "
+                             "as a computer keeps them from session to session (warmup/README.md)")
+    parser.add_argument('--keep', action='store_true', help="keep Steam running for --seconds after its first picture")
+    parser.add_argument('--steam-arg', action='append', default=[], help="an argument for the Steam client")
     parser.add_argument('--flatpak-env', action='append', default=[], metavar='NAME=VALUE',
                         help="an environment variable for Steam's Flatpak (SEAT is the seat's directory)")
     o = parser.parse_args()
@@ -65,10 +101,36 @@ def main():
     o.gdb = False
     # A port and X display of its own, apart from a chaos run's.
     check_chaos.PORT, check_chaos.XDISPLAY = 14697, 183
+    # The phone's capabilities, as executor.py declares them for the phone (check_chaos.py
+    # keeps an older list of its own).
+    source = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'executor.py')).read()
+    check_chaos.PHONE = ''.join(re.findall(r"'([^']*)'", re.search(r'FEATURES = \(([^)]*)\)', source).group(1)))
     seat = check_chaos.Seat(o)
+    proxy = None
+    if o.rtt_ms > 0:
+        # The executor connects through a proxy that holds each direction's bytes for half the
+        # round trip, in the computer's network namespace but in a container of its own: only
+        # this seat's executor connection is delayed.
+        proxy = f'{seat.name}-rtt'
+        check_chaos.run('docker', 'run', '-d', '--rm', '--name', proxy, '--network', f'container:{o.computer}',
+                        '--cpus', '1', '--entrypoint', 'python3', 'caboose-linux-executor', '-c', DELAY_PROXY,
+                        str(PROXY_PORT), str(check_chaos.PORT), str(o.rtt_ms / 2000))
+        original = check_chaos.run
+        def run(*argv, **kwargs):
+            if argv[:2] == ('docker', 'run') and any('executor.py' in a for a in argv):
+                argv = tuple(a.replace(f'--connect 127.0.0.1:{check_chaos.PORT}', f'--connect 127.0.0.1:{PROXY_PORT}')
+                             for a in argv)
+            return original(*argv, **kwargs)
+        check_chaos.run = run
     report = []
     try:
         seat.start()
+        if o.capability_history:
+            # Earlier runs' capability logs, where the broker finds earlier sessions' logs.
+            # The broker's own user and private modes, as its checks require.
+            seat.sh(f'umask 077; mkdir -p {o.capability_history} {seat.dir}/run/gpu/capabilities/history && '
+                    f'for f in {o.capability_history}/formats-*.bin; do [ -f "$f" ] && cp "$f" {seat.dir}/run/gpu/capabilities/history/; done; true',
+                    user='caboose', check=False)
         executor = seat.executor()
         seat.viewer()
         time.sleep(3)
@@ -81,7 +143,8 @@ def main():
                  f'--env=CABOOSE_CHAOS_SEAT={os.getpid()} --env=CABOOSE_READ_PROFILE=1 {extra}'
                  '--env=CABOOSE_GFXSTREAM_SOCKET=$CABOOSE_GFXSTREAM_SOCKET --env=CABOOSE_GFXSTREAM_SURFACE_SOCKET=$CABOOSE_GFXSTREAM_SURFACE_SOCKET '
                  f'--env=VK_DRIVER_FILES={seat.dir}/icd.json:{seat.dir}/icd32.json:{check_chaos.FLATPAK_LAVAPIPE} '
-                 f'--env=PRESSURE_VESSEL_FILESYSTEMS_RW={seat.dir} --filesystem={seat.dir} com.valvesoftware.Steam')
+                 f'--env=PRESSURE_VESSEL_FILESYSTEMS_RW={seat.dir} --filesystem={seat.dir} com.valvesoftware.Steam '
+                 + ' '.join(shlex.quote(a) for a in o.steam_arg))
         first = None
         deadline = time.monotonic() + o.seconds
         while time.monotonic() < deadline:
@@ -90,7 +153,8 @@ def main():
                 first = time.time() - started
                 report.append(f'first real picture {first:.1f} s after Steam started ({good[0][2]}x{good[0][3]})')
                 # Let the start settle, so the processes that drew it exit and print their profiles.
-                deadline = min(deadline, time.monotonic() + 30)
+                if not o.keep:
+                    deadline = min(deadline, time.monotonic() + 30)
             time.sleep(1)
         if first is None:
             report.append(f'no real picture within {o.seconds} s')
@@ -99,10 +163,18 @@ def main():
         seat.sh(f'pkill -TERM -f steamwebhelper; pkill -TERM -f "{o.steam_home}"', check=False)
         time.sleep(10)
         steam = seat.sh(f'cat {seat.dir}/steam.log', check=False)
+        if o.capability_history:
+            seat.sh(f'umask 077; mkdir -p {o.capability_history} && '
+                    f'for f in {seat.dir}/run/gpu/capabilities/formats-*.bin; do [ -f "$f" ] && cp "$f" {o.capability_history}/; done; '
+                    f'ls -t {o.capability_history}/formats-*.bin 2>/dev/null | tail -n +5 | xargs -r rm -f; true',
+                    user='caboose', check=False)
+            report.append('capability logs kept: ' + seat.sh(f'cd {o.capability_history} && find . -type f | head -20 | tr "\n" " "', check=False))
         logs = f'{o.steam_home}/.var/app/com.valvesoftware.Steam/.local/share/Steam/logs'
         steam += seat.sh(f'cat {logs}/console-linux.txt {logs}/webhelper-linux.txt', check=False)
     finally:
         seat.cleanup()
+        if proxy:
+            check_chaos.run('docker', 'rm', '-f', proxy, check=False)
     t0 = stamp(mark)
     for line in log.splitlines():
         m = INSTANCE.match(line)
