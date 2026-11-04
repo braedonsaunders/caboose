@@ -537,7 +537,9 @@ installed application; `GET /v1/catalog/discover?q=&category=&offset=` ranks the
 at a time without a running computer. `src/flathub.ts` keeps Flathub's index and icons in
 `CABOOSE_IMAGE_ROOT/flathub`, `src/releases.ts` the latest verified Craft releases in
 `CABOOSE_IMAGE_ROOT/releases`, and `src/depot.ts` the shared runtime depot's record in
-`CABOOSE_IMAGE_ROOT/depot.json` (`docs/architecture.md` § Runtime depot). On the container
+`CABOOSE_IMAGE_ROOT/depot.json` (`docs/architecture.md` § Runtime depot). `src/library-record.ts`
+keeps each computer's `library-apps.json`, the Library apps outside its Flatpak volume, which the
+host installs again at a wake when the computer lacks them. On the container
 runtime the depot is the Docker volume `caboose-depot` and its builder runs `src/depot-builder.py`
 in a throwaway container from `CABOOSE_CONTAINER_IMAGE`. Linux microVM hosts can set
 `CABOOSE_VM_DEPOT` to share a host directory read-only via virtio-fs; otherwise each
