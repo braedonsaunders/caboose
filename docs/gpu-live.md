@@ -308,7 +308,9 @@ on its own stream. A process that holds a free until the work before it has comp
 sends one for a queue whose latest submissions no watch follows. The decoder serves both commands itself. For a watch it
 submits, under the queue's lock, an empty batch whose new fence signals once all work
 submitted to that queue before it has completed, holding the queue's instance and
-device alive until a watcher thread has waited for and destroyed that fence. Queues of
+device alive until a watcher thread has waited for and destroyed that fence. Each queue
+has its own watcher, so a record is written as soon as its queue's work completes, whatever
+another queue is still doing. Queues of
 another process and virtually shared queues are not watched. On the feed stream the
 phone writes one 16-byte record per watch: serial u64, status i32 and reserved u32
 zero. Status 0 means the work completed, `-4` the device was lost, and `1` the queue

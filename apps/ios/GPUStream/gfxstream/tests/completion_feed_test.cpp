@@ -6,7 +6,9 @@
 #include <cassert>
 #include <condition_variable>
 #include <cstring>
+#include <chrono>
 #include <map>
+#include <thread>
 #include <sys/socket.h>
 #include <unistd.h>
 using caboose::gpuv2::CompletionFeed;
@@ -30,6 +32,10 @@ struct Gpu {
                 return released[queue];
             };
         };
+    }
+    int pending() {
+        std::lock_guard<std::mutex> lock(mutex);
+        return outstanding;
     }
     void release(uint64_t queue, int result = 0) {
         std::lock_guard<std::mutex> lock(mutex);
@@ -117,10 +123,10 @@ int main() {
         // and the outstanding marker is still waited for by the watcher.
         completions.watch(0x4, 5);
         gpu.release(0x3);
-        for (int i = 0; i < 200 && gpu.outstanding; ++i) usleep(5000);
-        assert(gpu.outstanding == 0);
+        for (int i = 0; i < 200 && gpu.pending(); ++i) usleep(5000);
+        assert(gpu.pending() == 0);
     }  // destruction joins the watcher after every marker completed
-    assert(gpu.outstanding == 0 && gpu.submitted == 4);
+    assert(gpu.pending() == 0 && gpu.submitted == 4);
     ::close(sockets[0]); ::close(sockets[1]);
 
     // Bytes after the feed command are a protocol violation.
@@ -162,6 +168,41 @@ int main() {
         completions.cancelOrders();
         stopped.join();
         assert(completions.waitOrdered(10) == ECANCELED && completions.waitOrdered(6) == 0);
+    }
+    // Each queue retires on its own: a queue whose work is still running holds back no
+    // record of another queue, and the stall report names the marker waited for longest.
+    {
+        Gpu lanes;
+        CompletionFeed completions(lanes.submit());
+        int pair[2];
+        assert(socketpair(AF_UNIX, SOCK_STREAM, 0, pair) == 0);
+        std::thread reader([&] { assert(completions.run(pair[1], stop) == 0); });
+        completions.watch(0x10, 1);  // long work on queue 0x10
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        completions.watch(0x20, 2);
+        completions.watch(0x20, 3);
+        lanes.release(0x20);
+        Record a = readRecord(pair[0]), b = readRecord(pair[0]);
+        assert(a.serial == 2 && b.serial == 3);  // in order within the queue
+        auto state = completions.state();
+        assert(state.outstanding == 1 && state.oldestSerial == 1 && state.oldestQueue == 0x10);
+        assert(state.lanes == 2);
+        // More queues than lanes: they share lanes, every watch is still reported, and the
+        // long queue's lane takes no other marker while it has the fewest elsewhere.
+        for (uint64_t q = 0x100; q < 0x100 + 3 * CompletionFeed::kMaxLanes; ++q) {
+            completions.watch(q, q);
+            lanes.release(q);
+            Record r = readRecord(pair[0]);
+            assert(r.serial == q && r.status == CompletionFeed::kCompleted);
+        }
+        assert(completions.state().lanes == CompletionFeed::kMaxLanes);
+        assert(completions.state().outstanding == 1);
+        lanes.release(0x10);
+        Record late = readRecord(pair[0]);
+        assert(late.serial == 1 && late.status == CompletionFeed::kCompleted);
+        shutdown(pair[0], SHUT_WR);
+        reader.join();
+        ::close(pair[0]); ::close(pair[1]);
     }
     // Process stop: the socket is shut down and run returns 0.
     {
