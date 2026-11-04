@@ -8,6 +8,7 @@
 #include <fcntl.h>
 #include <mutex>
 #include <string>
+#include <sys/file.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #include <unordered_map>
@@ -227,6 +228,12 @@ private:
         if (bytes.size() < sizeof(kMagic) || std::memcmp(bytes.data(), kMagic, sizeof(kMagic))) return;
         size_t at = sizeof(kMagic);
         while (bytes.size() - at >= sizeof(uint32_t) && values_.size() < kMaxEntries) {
+            // A header in the middle: two processes once both began an empty file. The records
+            // after it are as good as the ones before.
+            if (bytes.size() - at >= sizeof(kMagic) && !std::memcmp(bytes.data() + at, kMagic, sizeof(kMagic))) {
+                at += sizeof(kMagic);
+                continue;
+            }
             uint32_t length = 0;
             std::memcpy(&length, bytes.data() + at, sizeof(length));
             if (length > kMaxKeyBytes || bytes.size() - at - sizeof(length) < length + kValueBytes) break;
@@ -251,8 +258,12 @@ private:
         if (file == files_.end() || key.size() > kMaxKeyBytes) return;
         const int fd = ::open(file->second.c_str(), O_WRONLY | O_APPEND | O_CREAT | O_CLOEXEC, 0644);
         if (fd < 0) return;
+        // Exclusive while the size is read and the record written, so only the process that
+        // finds the file empty writes its header.
+        int locked;
+        do { locked = ::flock(fd, LOCK_EX); } while (locked < 0 && errno == EINTR);
         struct stat info;
-        if (fstat(fd, &info) != 0 || info.st_size >= kMaxFileBytes) {
+        if (locked != 0 || fstat(fd, &info) != 0 || info.st_size >= kMaxFileBytes) {
             ::close(fd);
             return;
         }

@@ -1579,9 +1579,22 @@ class Session:
                 self.decoder.feed(payload, messages.append)
                 for message in messages: await self.message(message)
 
+    async def opened(self, process, stream, process_id, stream_id):
+        """Waits for the phone's answers to a stream's openings (its process's and its own),
+        which `local` answers the guest's hello without waiting for; failing the
+        session when one never comes, as waiting for it there did."""
+        try:
+            await self.phone_answer(process['ready'], 10)
+            await self.phone_answer(stream['ready'], 10)
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            self.fail(f'local stream {stream_id} of process {process_id}: no answer to its opening: {type(error).__name__}: {error}')
+
     async def local(self, reader, writer):
         peer = None
         process_id = stream_id = None
+        opening = None
         local_aborted = False
         try:
             sock = writer.get_extra_info('socket')
@@ -1612,12 +1625,15 @@ class Session:
                 local_aborted = True
                 return
             process['streams'].add(stream_id)
-            await self.phone_answer(process['ready'], 10)
             stream = {'process': process_id, 'writer': writer, 'reader': reader, 'ready': asyncio.Event(),
                       'remote_fin': asyncio.Event(), 'local_eof': False, 'discard_reply': False}
             self.streams[stream_id] = stream
+            # The phone takes PROCESS_OPEN, STREAM_OPEN and the stream's data in the order they
+            # are sent, and answers the openings before anything the data asks for: the guest's
+            # hello is answered now, without waiting a round trip for each opening. An opening
+            # the phone leaves unanswered still fails the session, as before (`opened`).
             self.send(Kind.STREAM_OPEN, process_id, stream_id)
-            await self.phone_answer(stream['ready'], 10)
+            opening = asyncio.ensure_future(self.opened(process, stream, process_id, stream_id))
             try:
                 writer.write(reply)
                 if struct.unpack_from('<I',reply,12)[0] & CACHE_SESSION:
@@ -1679,6 +1695,7 @@ class Session:
                     break
                 finally:
                     if credit is not None: credit.release()
+            await opening
             await self.phone_answer(stream['remote_fin'], 10)
         except OverflowError:
             # Reject an excess local stream without taking ownership or poisoning
@@ -1687,6 +1704,7 @@ class Session:
         except (OSError, ValueError, RuntimeError, BufferError, asyncio.TimeoutError, asyncio.IncompleteReadError) as error:
             self.fail(f'local stream {stream_id} of process {process_id}: {type(error).__name__}: {error}')
         finally:
+            if opening is not None and not opening.done(): opening.cancel()
             if peer is not None: peer.close()
             reader.close()
             abort_writer = (local_aborted or self.draining or self.failed or
@@ -1752,6 +1770,11 @@ class Broker:
     async def request_bind(self, session, process_id, object_id, expected_epoch=None,
                            space=control_protocol.WAYLAND_SURFACE, probe=False):
         """Ask the compositor to bind a live process and its native Wayland surface or X11 window."""
+        if (self.session is session and not session.draining and process_id in session.processes and
+                not session.processes[process_id]['ready'].is_set()):
+            # A process's hello is answered before the phone answers its opening: a bind it asks
+            # for meanwhile waits for that answer.
+            await session.phone_answer(session.processes[process_id]['ready'], 10)
         if (self.session is not session or session.draining or process_id not in session.processes or
             not session.processes[process_id]['ready'].is_set()):
             raise RuntimeError('process is not ready for surface binding')
