@@ -195,15 +195,16 @@ Runs DXVK's d3d11 triangle (`BENCH_DIR/triangle.exe`, in the Steam Flatpak's dat
 in a running computer, with `DRIVER` loaded for that process only, on the real Linux executor
 under the phone's feature list (batched descriptor sets, guest-chosen set ids, completion
 payloads, ordering barriers and silent success), the same with only the set ids, without the set
-ids, without batched descriptor sets, and an older phone's. The broker is this checkout's (`broker_host.py`, every bind granted)
-on a port of its own, so the computer's own executor and displays are untouched. Each case
-requires DXVK to report the device without skipping it, a D3D11 device, a swapchain and presented
-frames, and no executor fault. The triangle runs with `CABOOSE_READ_PROFILE=1`; each case prints
-the time descriptor set allocations spent waiting for earlier replies (`drain20077`), and the
-phone's case requires guest-chosen set ids, completion payloads and silent success granted and no
-such wait. `PORT`, `DISPLAY_ENV` (the display the triangle presents on), `SOCKETS` (a shorter
-directory for the GPU sockets) and `CASES` (a subset) let it run beside other checks on one
-computer; it ends only the triangle started from `BENCH_DIR`.
+ids, without batched descriptor sets, and an older phone's. The broker is this checkout's
+(`broker_host.py`, every bind granted) on a port of its own, so the computer's own executor and
+displays are untouched. Each case requires DXVK to report the device without skipping it, a D3D11
+device, a swapchain and presented frames, and no executor fault. The triangle runs with
+`CABOOSE_READ_PROFILE=1`; each case prints the time descriptor set allocations spent waiting for
+earlier replies (`drain20077`) and the waits the driver speculated (`speculated`), and the phone's
+case requires guest-chosen set ids, completion payloads, ordering barriers and silent success
+granted and no such allocation wait. `PORT`, `DISPLAY_ENV` (the display the triangle presents
+on), `SOCKETS` (a shorter directory for the GPU sockets) and `CASES` (a subset) let it run beside
+other checks on one computer; it ends only the triangle started from `BENCH_DIR`.
 The release seal runs it.
 
 ## Bind of an unmapped popup

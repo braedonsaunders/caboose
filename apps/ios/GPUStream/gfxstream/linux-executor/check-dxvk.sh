@@ -16,14 +16,15 @@
 # only, with CABOOSE_READ_PROFILE=1) for SECONDS (default 20). Each case requires DXVK to report
 # the device without skipping it, a D3D11 device, a swapchain and presented frames, and the
 # executor to end without a fault. The phone's case also requires the hello to grant guest-chosen
-# set ids (0x100000), completion payloads (0x200000) and silent success (0x800000), and descriptor
-# set allocation never to wait for replies (no drain20077);
-# every case prints the allocation drains it saw. PORT (default 14660) and DISPLAY_ENV (default
-# /run/caboose/display.env) pick the broker port and the display, CASES a subset of the cases; only the Wine processes in
-# BENCH_DIR's own triangle is ended, so checks with separate BENCH_DIRs can share a computer.
+# set ids (0x100000), completion payloads (0x200000), ordering barriers (0x400000) and silent
+# success (0x800000), and descriptor set allocation never to wait for replies (no drain20077);
+# every case prints the allocation drains it saw and the waits it speculated. PORT (default
+# 14660) and DISPLAY_ENV (default /run/caboose/display.env) pick the broker port and the display,
+# and CASES a subset of the cases. Only the triangle started from BENCH_DIR is ended, so checks
+# with separate BENCH_DIRs can share a computer.
 # SOCKETS puts the GPU sockets elsewhere when BENCH_DIR's path is too long for one.
 set -eu
-[ $# -ge 4 ] && [ $# -le 5 ] || { sed -n '4,24p' "$0" >&2; exit 2; }
+[ $# -ge 4 ] && [ $# -le 5 ] || { sed -n '4,25p' "$0" >&2; exit 2; }
 computer=$1
 work=$(cd "$2" && pwd)
 driver=$(realpath "$3")
@@ -116,9 +117,12 @@ for case in ${CASES:-phone setids poolids unbatched older}; do
     granted=$(grep -a -m1 -o 'CABOOSE_GPU_HELLO features=0x[0-9a-f]*' "$log" | cut -d= -f2)
     [ -n "$granted" ] && [ $((granted & 0x100000)) -ne 0 ] || fail "$case: guest-chosen set ids not granted (${granted:-no hello})"
     [ $((granted & 0x200000)) -ne 0 ] || fail "$case: completion payloads not granted ($granted)"
+    [ $((granted & 0x400000)) -ne 0 ] || fail "$case: ordering barriers not granted ($granted)"
     [ $((granted & 0x800000)) -ne 0 ] || fail "$case: silent success not granted ($granted)"
     [ "$drains" = 0ms/0 ] || fail "$case: descriptor set allocation waited for replies ($drains)"
   fi
-  echo "PASS DXVK $case: adapter, D3D11 device, swapchain, $frames frames presented, allocation drains $drains, hello $(grep -a -m1 -o 'CABOOSE_GPU_HELLO features=0x[0-9a-f]*' "$log" | cut -d= -f2)"
+  # Waits answered without a round trip (WAIT_SERIAL), as the read profile counts them.
+  speculated=$(grep -a -o ' speculated=[0-9]*' "$log" | cut -d= -f2 | sort -n | tail -1)
+  echo "PASS DXVK $case: adapter, D3D11 device, swapchain, $frames frames presented, allocation drains $drains, speculated waits ${speculated:-0}, hello $(grep -a -m1 -o 'CABOOSE_GPU_HELLO features=0x[0-9a-f]*' "$log" | cut -d= -f2)"
 done
 echo 'PASS DXVK found an adapter and presented under every negotiation'
