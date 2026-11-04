@@ -30,11 +30,24 @@ public:
     static constexpr uint32_t kWatchOpcode = 0x4342FE02;
     static constexpr uint32_t kOrderOpcode = 0x4342FE03;
     static constexpr uint32_t kWaitSerialOpcode = 0x4342FE04;
+    static constexpr uint32_t kWatch2Opcode = 0x4342FE05;
     static constexpr uint32_t kFeedVersion = 1;
     static constexpr uint32_t kFeedPacketSize = 16;
     static constexpr uint32_t kWatchPacketSize = 24;
     static constexpr uint32_t kOrderPacketSize = 16;
     static constexpr uint32_t kWaitSerialPacketSize = 16;
+    // WATCH2: a 32-byte header, then up to kMaxCaptures 32-byte capture entries.
+    static constexpr uint32_t kWatch2HeaderSize = 32;
+    static constexpr uint32_t kCaptureEntrySize = 32;
+    static constexpr uint32_t kMaxCaptures = 256;
+    static constexpr uint32_t kCaptureQueries = 1, kCaptureMemory = 2;
+    // A record's payload is at most this; a larger one is sent empty (the guest asks instead).
+    static constexpr size_t kMaxPayload = 1024 * 1024;
+    // Payload bytes queued for the feed and not yet written; past it payloads are sent empty.
+    static constexpr size_t kMaxUnwrittenPayload = 16 * 1024 * 1024;
+    // A silent command's failure (silent-success replies): serial 0 and this status, with
+    // the opcode and result as its 8-byte payload.
+    static constexpr int32_t kFault = 0x7FFF0001;
     static constexpr size_t kRecordSize = 16;
     static constexpr int32_t kCompleted = 0;
     static constexpr int32_t kDeviceLost = -4;
@@ -47,7 +60,7 @@ public:
 
     static bool isFeedOpcode(uint32_t opcode) {
         return opcode == kFeedOpcode || opcode == kWatchOpcode || opcode == kOrderOpcode ||
-               opcode == kWaitSerialOpcode;
+               opcode == kWaitSerialOpcode || opcode == kWatch2Opcode;
     }
     static size_t packetSize(uint32_t opcode) {
         return opcode == kFeedOpcode ? kFeedPacketSize : opcode == kWatchOpcode ? kWatchPacketSize
@@ -57,16 +70,28 @@ public:
     // The marker backend: submits a marker behind `boxedQueue`'s work and returns a waiter
     // that blocks until it completes (returning the VkResult) and then releases it, or an
     // empty function when the queue cannot be watched.
-    using Waiter = std::function<int32_t()>;
+    //
+    // With captures (WATCH2), once the marker completes and before the waiter releases the
+    // device, it calls `afterFence` with a Capturer: it writes one capture's data (the query
+    // values with availability, or the memory bytes) to `out` and returns its VkResult.
+    struct Capture { uint32_t kind = 0; uint64_t handle = 0, a = 0, b = 0; };
+    using Capturer = std::function<int32_t(const Capture&, unsigned char* out)>;
+    using AfterFence = std::function<void(const Capturer&)>;
+    using Waiter = std::function<int32_t(const AfterFence& afterFence)>;
     using Submit = std::function<Waiter(uint64_t boxedQueue)>;
+    // A capture's data bytes: 16 per query (value, availability), or the memory range.
+    static size_t captureBytes(const Capture& c) { return c.kind == kCaptureQueries ? c.b * 16 : c.b; }
 
     explicit CompletionFeed(Submit submit);
     ~CompletionFeed();
     CompletionFeed(const CompletionFeed&) = delete;
     CompletionFeed& operator=(const CompletionFeed&) = delete;
 
-    // From a device stream. Never waits for the GPU.
-    void watch(uint64_t boxedQueue, uint64_t serial);
+    // From a device stream. Never waits for the GPU. Captures (WATCH2) are taken after the
+    // marker completes and carried in the record's payload.
+    void watch(uint64_t boxedQueue, uint64_t serial, std::vector<Capture> captures = {});
+    // A command whose reply is silent failed: a FAULT record for the guest.
+    void fault(uint32_t opcode, int32_t result);
     // From a device stream: every command before this ORDER mark has been decoded.
     void ordered(uint64_t serial);
     // Blocks until the ORDER mark `serial` (or a later one) has been decoded: 0, or
@@ -111,6 +136,11 @@ public:
 
     // Parses a complete WATCH packet; false if malformed.
     static bool parseWatch(const unsigned char* packet, size_t size, uint64_t* queue, uint64_t* serial);
+    // Parses a complete WATCH2 packet; false if malformed. `size` is the packet's declared size.
+    static bool parseWatch2(const unsigned char* packet, size_t size, uint64_t* queue, uint64_t* serial,
+                            std::vector<Capture>* captures);
+    // A WATCH2 packet's size from its first 24 bytes (0 when its count is out of bounds).
+    static size_t watch2Size(const unsigned char* header24);
     // Parses a complete WAIT_SERIAL packet; false if malformed.
     static bool parseWaitSerial(const unsigned char* packet, size_t size, uint64_t* serial);
     // Parses a complete ORDER packet; false if malformed.
@@ -119,8 +149,13 @@ public:
     static bool parseFeed(const unsigned char* packet, size_t size);
 
 private:
-    struct Pending { uint64_t serial = 0; Waiter wait; uint64_t queue = 0; int64_t watchedMs = 0; };
-    struct Record { uint64_t serial; int32_t status; };
+    struct Pending {
+        uint64_t serial = 0; Waiter wait; uint64_t queue = 0; int64_t watchedMs = 0;
+        std::vector<Capture> captures;
+    };
+    struct Record { uint64_t serial; int32_t status; std::vector<unsigned char> payload; };
+    // The payload of a completed watch with captures, or empty when over the bounds.
+    std::vector<unsigned char> takeCaptures(const std::vector<Capture>& captures, const Capturer& capturer);
     // One watcher thread and the markers it waits for, in submission order.
     struct Lane {
         std::condition_variable changed;
@@ -130,7 +165,7 @@ private:
     };
     Lane& laneForLocked(uint64_t queue);
     void watcherLoop(Lane& lane);
-    void push(uint64_t serial, int32_t status);
+    void push(uint64_t serial, int32_t status, std::vector<unsigned char> payload = {});
     void resolvedLocked(uint64_t serial);  // a watch has its outcome (under mutex_)
 
     Submit submit_;
@@ -145,6 +180,7 @@ private:
     std::condition_variable serialsChanged_;
     bool serialsCancelled_ = false;
     std::deque<Record> records_;
+    size_t unwrittenPayload_ = 0;
     int wake_[2] = {-1, -1};
     uint64_t generation_ = 0;  // the current feed stream's run; earlier ones return
     bool detached_ = false;

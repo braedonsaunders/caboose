@@ -19,6 +19,9 @@ public:
     void* getDmaForReading(uint64_t) override;
     void unlockDma(uint64_t) override;
     int error() const { return error_.load(); }
+    // While holding, replies are kept instead of written (silent-success replies).
+    void hold(bool holding) { holding_ = holding; }
+    std::vector<unsigned char>& held() { return held_; }
     bool eof() const { return eof_; }
 protected:
     const unsigned char* readRaw(void* data, size_t* size) override;
@@ -31,5 +34,7 @@ private:
     std::vector<unsigned char> buffer_;
     std::atomic<int> error_{0};
     bool eof_ = false;
+    bool holding_ = false;
+    std::vector<unsigned char> held_;
 };
 }
