@@ -6,6 +6,8 @@
 set -eu
 git -c safe.directory='*' clone --quiet --no-hardlinks /mesa /work/mesa
 python3 /caboose/driver/prepare.py /work/mesa
+# The commands silent success leaves out are the ones the encoder defers (check_silent_success.py).
+python3 /caboose/driver/check_silent_success.py /work/mesa
 /caboose/driver/test.sh /work/tests >/work/tests.log 2>&1 || { cat /work/tests.log >&2; exit 1; }
 # The driver is never unloaded (-z nodelete): the Vulkan loader unloads a driver when its
 # last instance is destroyed, while threads the driver started (the completion feed) still

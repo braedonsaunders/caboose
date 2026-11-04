@@ -21,7 +21,7 @@ _TOKEN = re.compile(rb"^[!#$%&'*+.^_`|~0-9A-Za-z-]+$")
 FEATURES = frozenset({'guest-handles', 'guest-handle-arrays', 'completion-feed', 'ordered-present', 'guest-images', 'guest-query-pools',
                       'shader-cache', 'executor-resume', 'zstd-stream', 'upload-cache', 'guest-buffer-views',
                       'batched-descriptor-sets', 'batched-descriptor-sets-inline',
-                      'guest-set-ids', 'completion-payloads'})
+                      'guest-set-ids', 'completion-payloads', 'silent-success'})
 class AdmissionError(ValueError):
     pass
 

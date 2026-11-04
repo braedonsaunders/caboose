@@ -15,6 +15,7 @@
 #include "completion_feed.h"
 #include "handles.h"
 #include "query_results.h"
+#include "silent_success.h"
 
 namespace caboose::memory {
 inline thread_local uint32_t lastOpcode = 0;
@@ -179,6 +180,7 @@ public:
     // A create of `count` objects whose consecutive handles start at `first`: its reply
     // is those handles, then one result.
     void addHandleCreates(const void* encoder, uint64_t first, uint32_t count, uint64_t bytes) {
+        if (silentReply(encoder)) return;
         std::lock_guard<decltype(mutex_)> lock(mutex_);
         auto& entry = pending_[encoder];
         entry.replies.push_back({0, 0, first, false, count, bytes, nullptr, lastOpcode});
@@ -201,8 +203,10 @@ public:
     void addCheckedResult(const void* encoder, uint64_t bytes) {
         addCheckedResults(encoder, 1, bytes);
     }
+    // Every result is a listed command's (a staged submit's command buffer begins and ends, then
+    // the submit): under silent success none of them comes (silent_success.h).
     void addCheckedResults(const void* encoder, uint32_t results, uint64_t bytes) {
-        if (!results) return;
+        if (!results || silentReply(encoder)) return;
         std::lock_guard<decltype(mutex_)> lock(mutex_);
         auto& entry = pending_[encoder];
         entry.replies.insert(entry.replies.end(), results, Reply{0, 0, 0, true, 1, 0, nullptr});
@@ -364,6 +368,14 @@ public:
     }
 
 private:
+    // The command just sent (lastOpcode) has no reply on success: its stream is silent and it
+    // is one of silent success's commands. Noted, so a later drainObjects confirms it.
+    static bool silentReply(const void* encoder) {
+        auto& mode = caboose::silent::replyMode();
+        if (!caboose::silent::silentOpcode(lastOpcode) || !mode.silent(encoder)) return false;
+        mode.sentSilently(encoder);
+        return true;
+    }
     struct Reply;
     static size_t wireSize(const Reply& reply) {
         if (reply.data) return reply.data->data.size() + (reply.dataResult ? sizeof(int32_t) : 0);

@@ -34,7 +34,8 @@ OWNED = {
                     'requirements_cache.h', 'rpc_timing.h', 'static_query_cache.h', 'capability_chains.h',
                     'query_results.h', 'handles.h', 'upload_cache.h', 'write_watch.h', 'poll_stall.h',
                     'deferred_destroys.h', 'presentation_retirement.h', 'event_status.h', 'memory_traffic.h',
-                    'lost_memory.h', 'lock_order.h', 'guest_set_ids.h', 'completion_payloads.h')},
+                    'lost_memory.h', 'lock_order.h', 'guest_set_ids.h', 'completion_payloads.h',
+                    'silent_success.h')},
     **{f'dmabuf/{name}': f'src/gfxstream/guest/vulkan_enc/caboose-dmabuf/{name}'
        for name in ('dmabuf.h', 'registration.h', 'remote_images.h', 'sync_file.h')},
     **{f'media/{name}': f'src/gfxstream/guest/vulkan_enc/caboose-media/{name}'

@@ -1,5 +1,5 @@
 From: Caboose <caboose@local>
-Subject: [PATCH 79/86] Recycle only the sets of pools that never free sets one by one
+Subject: [PATCH 79/88] Recycle only the sets of pools that never free sets one by one
 
 A reset batched pool kept its sets and handed them out again under their old handles. In a
 pool that frees sets individually (ANGLE's, as Chromium Embedded Framework in Halo: MCC uses

@@ -194,6 +194,10 @@ public final class LiveGPUConnection: NSObject, LiveGPUResumeSocket, URLSessionW
     /// sets ("Batched descriptor sets") and takes the set ids a guest chose for its pools
     /// ("Guest-chosen set ids").
     static let features = "guest-handles,guest-handle-arrays,completion-feed,ordered-present,guest-images,guest-query-pools,shader-cache,executor-resume,zstd-stream,upload-cache,guest-buffer-views,batched-descriptor-sets-inline,guest-set-ids"
+    /// The capability of a decoder that leaves out the replies of the commands a guest does not
+    /// wait for and reports their failures on the completion feed (docs/gpu-live.md, "Silent
+    /// success"). `features` does not name it: this app's decoder writes every reply.
+    static let silentSuccessFeature = "silent-success"
     static let resumeHeader = "X-Caboose-GPU-Resume"
     /// A resume attempt waits this long for its upgrade; the next follows at once.
     static let resumeTimeout: TimeInterval = 3

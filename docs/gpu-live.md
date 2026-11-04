@@ -276,8 +276,9 @@ only known names, lowercased and sorted: `guest-handles`, `guest-handle-arrays`,
 `upload-cache` ([Upload cache](#upload-cache)), `guest-buffer-views`,
 `batched-descriptor-sets`, `batched-descriptor-sets-inline`
 ([Batched descriptor sets](#batched-descriptor-sets)), `guest-set-ids`
-([Guest-chosen set ids](#guest-chosen-set-ids)) and `completion-payloads`
-([Completion payloads](#completion-payloads)).
+([Guest-chosen set ids](#guest-chosen-set-ids)), `completion-payloads`
+([Completion payloads](#completion-payloads)) and `silent-success`
+([Silent success](#silent-success)). The phone app does not declare `silent-success`.
 The broker reads them from the authenticated upgrade request.
 
 A local process on the indexed v4 path may offer optional features in its 48-byte
@@ -287,16 +288,18 @@ hello by setting bits above the required mask `0x70`: `0x80` (guest-assigned han
 images), `0x1000` (guest-assigned query pools; requires `0x80`) and `0x2000` (shader
 cache), `0x8000` (upload cache), `0x10000` (guest-assigned buffer views; requires `0x80`),
 `0x40000` (batched descriptor sets without inline uniform blocks), `0x80000` (batched
-descriptor sets with inline uniform blocks), `0x100000` (guest-chosen set ids; requires `0x80`)
-and `0x200000` (completion payloads; requires `0x200`).
+descriptor sets with inline uniform blocks), `0x100000` (guest-chosen set ids; requires `0x80`),
+`0x200000` (completion payloads; requires `0x200`) and `0x800000` (silent success; requires
+`0x80` and `0x200`).
 The broker replies with the required mask plus the offered bits whose capability
 the phone declared (`guest-handles`, `guest-handle-arrays`, `completion-feed`,
 `ordered-present`, `guest-images`, `guest-query-pools`, `shader-cache`, `upload-cache`,
 `guest-buffer-views`, `batched-descriptor-sets`, `batched-descriptor-sets-inline`, `guest-set-ids`,
-`completion-payloads` respectively); it drops `0x100`, `0x1000`, `0x10000` and `0x100000` when it
-does not grant `0x80`, and `0x200000` when it does not grant `0x200`.
-An offer with unknown bits, one of those without `0x80`, `0x200000` without `0x200`, or any other difference from the v4
-hello closes the local connection. A process falls back to offering fewer features.
+`completion-payloads`, `silent-success` respectively); it drops `0x100`, `0x1000`, `0x10000`,
+`0x100000` and `0x800000` when it does not grant `0x80`, and `0x200000` and `0x800000` when it
+does not grant `0x200`. An offer with unknown bits, one of those without `0x80`, `0x200000` or
+`0x800000` without `0x200`, or any other difference from the v4 hello closes the local
+connection. A process falls back to offering fewer features.
 
 ### Batched descriptor sets
 
@@ -406,8 +409,9 @@ another process and virtually shared queues are not watched. On the feed stream 
 phone writes one record per watch: serial u64, status i32 and payload bytes u32, which is
 zero except for a COMPLETION_WATCH2 watch, followed by that many bytes. Status 0 means the
 work completed, `-4` the device was lost, and `1` the queue cannot be watched. Records may
-arrive in any order. A record with serial 0 is not a completion; a process skips one it does
-not know, payload included. Watches made before the feed stream
+arrive in any order. A record with serial 0 is not a completion but the phone's own: a FAULT
+([Silent success](#silent-success)), or one a process does not know, which it skips, payload
+included. Watches made before the feed stream
 attaches are kept for it. Further bytes from the process on the feed stream are a
 protocol error; its end, or process stop, ends the feed. Watches still outstanding are
 waited for, and their records discarded.
@@ -750,11 +754,75 @@ Chromium, GL and DXVK applications, through random executor kills, network drops
 viewer reconnects and losses during application startup, with every application required to
 present real pictures (not noise, not blank) after each. The release seal runs it.
 
+### Silent success
+
+With `0x800000` (granted with `0x80` and `0x200`), a process's device streams can leave out the
+replies of the commands it does not wait for. A device stream switches with one packet, sent on
+it after the client-flags word like any command:
+
+| Command | Opcode | Size | Payload |
+| --- | --- | --- | --- |
+| REPLY_MODE | `0x4342FE06` | 16 | mode u32 = 1 (silent success), reserved u32 = 0 |
+
+It has no reply, and it holds for that stream from then on. The process sends it once on each
+device stream, including a stream it connects again after its executor changed, only while its
+completion feed runs, and before the first command whose reply it will not read; a stream
+without the switch is answered as before. The decoder ends the stream of a process without a
+feed that sends it (`EPROTO`). The decoder does not see the hello, so the switch is the only
+signal.
+
+On a switched stream the decoder writes no reply for the commands in
+`apps/ios/GPUStream/gfxstream/silent-success-opcodes.inc` when their result is `VK_SUCCESS`; a
+command of that list without a result counts as succeeded. They are the commands the guest
+does not wait for: guest-assigned creates and allocations (memory, fences, semaphores, query
+pools, buffers, images and views, buffer views, shader modules, pipeline caches, graphics and
+compute pipelines, pipeline layouts, samplers, descriptor set layouts and pools, descriptor
+sets, framebuffers, render passes, command pools and command buffers), queue submits with
+their staged command buffer begins and ends, buffer and image binds, and host event sets and
+resets. Only an encoder on a device stream switches; one recording a command buffer into
+local staging never sends REPLY_MODE. A command of the list that fails writes no reply
+either: the decoder sends one FAULT record on the process's feed, 24 bytes, little-endian:
+
+| Field | Value |
+| --- | --- |
+| serial u64 | 0 |
+| status i32 | `0x7FFF0001` |
+| payload bytes u32 | 8 |
+| opcode u32 | the failed command |
+| result i32 | its result |
+
+A FAULT made before the feed stream attaches is kept for it, as watches are.
+A FAULT is the loss of the process's device, as an [invalid command](#invalid-commands) is: the
+process prints `CABOOSE_GPU_SILENT_FAULT opcode=… result=…` and `CABOOSE_GPU_EXECUTOR_LOST`, its
+calls return `VK_ERROR_DEVICE_LOST`, and an application that recovers creates a new instance.
+A feed that ends while a stream is switched is the same loss (`CABOOSE_GPU_SILENT_FEED_ENDED`):
+the failures of its commands could no longer arrive.
+
+The guest's list is `guest/gpu/gfxstream/bounded-memory/silent_success.h`;
+`test_silent_success_list.py` fails when it differs from the decoder's, and every driver build
+checks (`driver/check_silent_success.py`) that the encoder defers the reply of each command in
+it and of no other. The guest uses silent success only when `0x80`, `0x100`, `0x200`, `0x1000`
+and `0x10000` are granted with it, so that every create of the list takes a guest-assigned
+handle. Those commands' replies are not queued: they do not count toward the 6 MiB of commands
+or 64 KiB of replies a process lets the phone owe, and no drain before a synchronous command
+reads them. On a switched stream every allocation takes a guest-assigned handle; one that
+would otherwise have waited for its reply (an import, an export, or one past the guest's
+allocation budget) is followed by the round trip below before it returns, and a plain one
+that would take its heap past the heap's size, counting the process's own allocations alone,
+returns `VK_ERROR_OUT_OF_DEVICE_MEMORY` without being sent. A pipeline
+create with `VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT` compiles: the flag is
+cleared, since `VK_PIPELINE_COMPILE_REQUIRED` would arrive as a FAULT. Before the presentation
+channel names objects or work the stream made, the process reads the reply of one
+`vkEnumerateInstanceVersion` sent after its last silent command, so the phone has decoded them.
+An allocation or create the phone refuses is then device loss, never a result the application
+sees.
+
 ## Lock order
 
 The guest driver's locks form one hierarchy; a thread holding a lock takes only locks below it:
 the encoder's stream lock, then the flush shadow, the tracker (`ResourceTracker::mLock`), the
-deferred replies and the completion tracker. Taking the same lock again (the tracker's is
+deferred replies and the completion tracker. The silent-success switch table
+(`bounded-memory/silent_success.h`) is taken under the encoder's lock and takes no other lock. Taking the same lock again (the tracker's is
 recursive) or another encoder's is allowed. `bounded-memory/lock_order.h` holds the hierarchy and
 a checker: with `CABOOSE_LOCK_ORDER=1` every acquisition of those locks is checked and a lock
 taken above one already held is reported once with its calling frames

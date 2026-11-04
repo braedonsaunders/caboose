@@ -40,7 +40,8 @@ inline constexpr uint32_t kFeedVersion = 1;
 inline constexpr uint32_t kFeedPacketSize = 16;
 inline constexpr uint32_t kWatchPacketSize = 24;
 inline constexpr uint32_t kOrderPacketSize = 16;
-// A feed record: serial u64, status i32, reserved u32 = 0.
+// A feed record's header: serial u64, status i32, payload bytes u32 (0 for a watch's record),
+// then the payload (silent_success.h readRecord).
 inline constexpr size_t kRecordSize = 16;
 // Record status: the work completed; the device was lost; or the phone cannot watch
 // that queue (a deferred or shared queue), so its fences must be asked about directly.
@@ -976,9 +977,11 @@ private:
 // Reads one record of the feed stream with recv(data, size) (true once all of it arrived) and
 // applies it to `tracker`: the 16-byte head (serial, status, payload bytes, which a phone
 // without completion payloads sends as 0) and its payload. A record with serial 0 is not a
-// completion (a fault report) and is skipped. False when the stream ended, or a record
+// completion: a FAULT (status payloads::kFaultStatus with an 8-byte payload, the failed
+// command's opcode u32 and result i32; docs/gpu-live.md, "Silent success") is handed to
+// onFault(opcode, result), and any other is skipped. False when the stream ended, or a record
 // announces more than one may carry, which ends the feed.
-template <class Recv> inline bool readRecord(Recv recv, Tracker& tracker) {
+template <class Recv, class OnFault> inline bool readRecord(Recv recv, Tracker& tracker, OnFault onFault) {
     uint8_t head[payloads::kRecordHeadSize];
     if (!recv(head, sizeof(head))) return false;
     uint64_t serial;
@@ -991,8 +994,19 @@ template <class Recv> inline bool readRecord(Recv recv, Tracker& tracker) {
     thread_local std::vector<uint8_t> payload;
     payload.resize(bytes);
     if (bytes && !recv(payload.data(), bytes)) return false;
-    if (serial) tracker.completeRecord(serial, status, payload.data(), bytes);
+    if (serial) {
+        tracker.completeRecord(serial, status, payload.data(), bytes);
+    } else if (status == payloads::kFaultStatus && bytes == 8) {
+        uint32_t opcode;
+        int32_t result;
+        std::memcpy(&opcode, payload.data(), 4);
+        std::memcpy(&result, payload.data() + 4, 4);
+        onFault(opcode, result);
+    }
     return true;
+}
+template <class Recv> inline bool readRecord(Recv recv, Tracker& tracker) {
+    return readRecord(recv, tracker, [](uint32_t, int32_t) {});
 }
 
 // Set while this process's completion feed is running.

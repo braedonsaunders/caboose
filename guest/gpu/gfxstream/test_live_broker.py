@@ -472,6 +472,14 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(negotiate(hello(0x200270), everything - {'completion-payloads'}), hello(0x270))
         self.assertEqual(negotiate(hello(0x200270), everything - {'completion-feed'}), hello(0x70))
         self.assertIsNone(negotiate(hello(0x200070), everything))
+        # Silent success (0x800000) is granted with guest handles and the completion feed; an
+        # offer without either is malformed, and a phone that grants neither drops it.
+        self.assertEqual(negotiate(hello(0x8002F0), everything), hello(0x8002F0))
+        self.assertEqual(negotiate(hello(0x8002F0), everything - {'silent-success'}), hello(0x2F0))
+        self.assertIsNone(negotiate(hello(0x800270), everything))
+        self.assertIsNone(negotiate(hello(0x8000F0), everything))
+        self.assertEqual(negotiate(hello(0x8002F0), everything - {'completion-feed'}), hello(0xF0))
+        self.assertEqual(negotiate(hello(0x8002F0), everything - {'guest-handles'}), hello(0x270))
         # Buffer view handles need guest handles too.
         self.assertEqual(negotiate(hello(0x100F0), everything), hello(0x100F0))
         self.assertEqual(negotiate(hello(0x100F0), everything - {'guest-buffer-views'}), hello(0xF0))
