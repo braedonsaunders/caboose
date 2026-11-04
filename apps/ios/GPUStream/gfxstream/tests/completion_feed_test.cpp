@@ -3,7 +3,9 @@
 //   apps/ios/GPUStream/gfxstream/tests/completion_feed_test.cpp \
 //   apps/ios/GPUStream/gfxstream/completion_feed.cpp -o /tmp/caboose-completion-feed-test
 #include "completion_feed.h"
+#include <atomic>
 #include <cassert>
+#include <cerrno>
 #include <condition_variable>
 #include <cstring>
 #include <chrono>
@@ -203,6 +205,46 @@ int main() {
         shutdown(pair[0], SHUT_WR);
         reader.join();
         ::close(pair[0]); ::close(pair[1]);
+    }
+    // WAIT_SERIAL: a barrier returns once its watch is resolved, whatever the other queues do.
+    {
+        Gpu barrier;
+        CompletionFeed completions(barrier.submit());
+        unsigned char packet[16];
+        const uint32_t op = CompletionFeed::kWaitSerialOpcode, size = 16;
+        const uint64_t named = 7;
+        std::memcpy(packet, &op, 4); std::memcpy(packet + 4, &size, 4); std::memcpy(packet + 8, &named, 8);
+        uint64_t parsed = 0;
+        assert(CompletionFeed::parseWaitSerial(packet, 16, &parsed) && parsed == 7);
+        assert(!CompletionFeed::parseWaitSerial(packet, 15, &parsed));
+        assert(CompletionFeed::isFeedOpcode(op) && CompletionFeed::packetSize(op) == 16);
+        // A barrier above the last watch is the guest's protocol error.
+        assert(completions.waitSerial(1) == EPROTO);
+        completions.watch(0x10, 1);   // long work
+        completions.watch(0x20, 2);
+        completions.watch(0xBAD, 3);  // unwatched: resolved at once
+        assert(completions.waitSerial(3) == 0 && completions.serialResolved(3));
+        std::atomic_bool done{false};
+        std::thread waiter([&] { assert(completions.waitSerial(2) == 0); done = true; });
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        assert(!done && !completions.serialResolved(2));
+        barrier.release(0x20);
+        waiter.join();
+        assert(!completions.serialResolved(1));
+        // Process stop cancels a barrier still waiting.
+        std::thread stopped([&] { assert(completions.waitSerial(1) == ECANCELED); });
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        completions.cancelOrders();
+        stopped.join();
+        barrier.release(0x10);
+        // A device-lost marker resolves its barrier too.
+        Gpu lost;
+        CompletionFeed other(lost.submit());
+        other.watch(0x30, 4);
+        lost.release(0x30, -4);
+        assert(other.waitSerial(4) == 0);
+        // Serials skipped by the guest were never watched: nothing to wait for.
+        assert(other.waitSerial(2) == 0);
     }
     // Process stop: the socket is shut down and run returns 0.
     {

@@ -326,6 +326,7 @@ completion commands use the ordinary 8-byte packet header, little-endian:
 | COMPLETION_FEED | `0x4342FE01` | 16 | version u32 = 1, reserved u32 = 0 |
 | COMPLETION_WATCH | `0x4342FE02` | 24 | boxed queue u64, serial u64 (both nonzero) |
 | COMPLETION_ORDER | `0x4342FE03` | 16 | order serial u64 (nonzero) |
+| WAIT_SERIAL | `0x4342FE04` | 16 | watch serial u64 (nonzero) |
 
 After each queue submission that signals a fence or timeline semaphore, sets or resets an
 event, ends or resets a query or writes coherent memory, the process sends
@@ -344,6 +345,13 @@ cannot be watched. Records may arrive in any order. Watches made before the feed
 attaches are kept for it. Further bytes from the process on the feed stream are a
 protocol error; its end, or process stop, ends the feed. Watches still outstanding are
 waited for, and their records discarded.
+
+With `0x400000` a process may send `WAIT_SERIAL` on a device stream, with no reply: the
+decoder decodes nothing more from that stream until the watch with that serial has its
+record (its marker completed, its device was lost, or its queue cannot be watched), so
+work the process sends after it reaches the GPU after the work the watch names, without the
+process waiting for the feed. A serial above the process's last watch is a protocol error
+that ends the stream; process stop ends the wait.
 
 The process then knows the state of every fence and timeline semaphore whose signal
 operations it has seen, of its events, and whether each query's result is available.

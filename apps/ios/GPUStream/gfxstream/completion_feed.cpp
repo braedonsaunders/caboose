@@ -40,6 +40,30 @@ bool CompletionFeed::parseWatch(const unsigned char* packet, size_t size, uint64
     return *queue != 0 && *serial != 0;
 }
 
+bool CompletionFeed::parseWaitSerial(const unsigned char* packet, size_t size, uint64_t* serial) {
+    if (size != kWaitSerialPacketSize || u32(packet) != kWaitSerialOpcode || u32(packet + 4) != kWaitSerialPacketSize)
+        return false;
+    *serial = u64(packet + 8);
+    return *serial != 0;
+}
+
+void CompletionFeed::resolvedLocked(uint64_t serial) {
+    if (unresolved_.erase(serial)) serialsChanged_.notify_all();
+}
+
+bool CompletionFeed::serialResolved(uint64_t serial) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return serial <= lastWatched_ && !unresolved_.count(serial);
+}
+
+int CompletionFeed::waitSerial(uint64_t serial) {
+    std::unique_lock<std::mutex> lock(mutex_);
+    // A barrier names a watch the process has already made.
+    if (serial > lastWatched_) return EPROTO;
+    serialsChanged_.wait(lock, [&] { return serialsCancelled_ || !unresolved_.count(serial); });
+    return unresolved_.count(serial) ? ECANCELED : 0;
+}
+
 bool CompletionFeed::parseOrder(const unsigned char* packet, size_t size, uint64_t* serial) {
     if (size != kOrderPacketSize || u32(packet) != kOrderOpcode || u32(packet + 4) != kOrderPacketSize)
         return false;
@@ -68,6 +92,11 @@ void CompletionFeed::cancelOrders() {
         ordersCancelled_ = true;
     }
     orderChanged_.notify_all();
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        serialsCancelled_ = true;
+    }
+    serialsChanged_.notify_all();
 }
 
 bool CompletionFeed::parseFeed(const unsigned char* packet, size_t size) {
@@ -167,6 +196,11 @@ CompletionFeed::Lane& CompletionFeed::laneForLocked(uint64_t queue) {
 void CompletionFeed::watch(uint64_t boxedQueue, uint64_t serial) {
     {
         std::lock_guard<std::mutex> lock(mutex_);
+        if (serial > lastWatched_) {
+            // Serials skipped on the way here were never watched: nothing to wait for.
+            lastWatched_ = serial;
+            serialsChanged_.notify_all();
+        }
         if (closing_ || detached_) return;
         ++watches_;
         if (outstanding_ >= kMaxOutstanding) {
@@ -177,12 +211,17 @@ void CompletionFeed::watch(uint64_t boxedQueue, uint64_t serial) {
             return;
         }
     }
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        unresolved_.insert(serial);
+    }
     // The marker submission takes decoder locks: never under this feed's lock.
     Waiter wait = submit_(boxedQueue);
     if (!wait) {
         {
             std::lock_guard<std::mutex> lock(mutex_);
             ++unwatched_;
+            resolvedLocked(serial);
         }
         push(serial, kUnwatched);
         return;
@@ -193,6 +232,8 @@ void CompletionFeed::watch(uint64_t boxedQueue, uint64_t serial) {
             // The lanes may be gone: the marker is waited for here, releasing its device.
             lock.unlock();
             wait();
+            std::lock_guard<std::mutex> relock(mutex_);
+            resolvedLocked(serial);
             return;
         }
         Lane& lane = laneForLocked(boxedQueue);
@@ -220,6 +261,7 @@ void CompletionFeed::watcherLoop(Lane& lane) {
             std::lock_guard<std::mutex> lock(mutex_);
             lane.waiting = {};
             --outstanding_;
+            resolvedLocked(next.serial);
             lastCompletedSerial_ = next.serial;
             lastStatus_ = result == 0 ? kCompleted : kDeviceLost;
             lastCompletedMs_ = nowMs();

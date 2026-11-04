@@ -10,6 +10,7 @@
 #include <mutex>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace caboose::gpuv2 {
@@ -28,10 +29,12 @@ public:
     static constexpr uint32_t kFeedOpcode = 0x4342FE01;
     static constexpr uint32_t kWatchOpcode = 0x4342FE02;
     static constexpr uint32_t kOrderOpcode = 0x4342FE03;
+    static constexpr uint32_t kWaitSerialOpcode = 0x4342FE04;
     static constexpr uint32_t kFeedVersion = 1;
     static constexpr uint32_t kFeedPacketSize = 16;
     static constexpr uint32_t kWatchPacketSize = 24;
     static constexpr uint32_t kOrderPacketSize = 16;
+    static constexpr uint32_t kWaitSerialPacketSize = 16;
     static constexpr size_t kRecordSize = 16;
     static constexpr int32_t kCompleted = 0;
     static constexpr int32_t kDeviceLost = -4;
@@ -43,10 +46,12 @@ public:
     static constexpr size_t kMaxLanes = 8;
 
     static bool isFeedOpcode(uint32_t opcode) {
-        return opcode == kFeedOpcode || opcode == kWatchOpcode || opcode == kOrderOpcode;
+        return opcode == kFeedOpcode || opcode == kWatchOpcode || opcode == kOrderOpcode ||
+               opcode == kWaitSerialOpcode;
     }
     static size_t packetSize(uint32_t opcode) {
-        return opcode == kFeedOpcode ? kFeedPacketSize : opcode == kWatchOpcode ? kWatchPacketSize : kOrderPacketSize;
+        return opcode == kFeedOpcode ? kFeedPacketSize : opcode == kWatchOpcode ? kWatchPacketSize
+             : opcode == kWaitSerialOpcode ? kWaitSerialPacketSize : kOrderPacketSize;
     }
 
     // The marker backend: submits a marker behind `boxedQueue`'s work and returns a waiter
@@ -69,6 +74,13 @@ public:
     int waitOrdered(uint64_t serial);
     // Wakes every order wait with ECANCELED and refuses later ones (process stop).
     void cancelOrders();
+    // WAIT_SERIAL: blocks until the watch `serial` is resolved (its marker completed, its
+    // device was lost, or its queue cannot be watched): 0; ECANCELED once the process stops;
+    // EPROTO for a serial above the process's last watch. A device stream decodes nothing after
+    // the barrier until it returns, so the GPU work the barrier names comes before it there.
+    int waitSerial(uint64_t serial);
+    // Whether the watch `serial` has been made and resolved.
+    bool serialResolved(uint64_t serial);
     // Runs the feed on `fd` until the guest closes it (0), `stop` is set or the socket is
     // shut down (0), or an error (errno). A later feed stream takes over from an earlier one.
     int run(int fd, const std::atomic_bool& stop);
@@ -99,6 +111,8 @@ public:
 
     // Parses a complete WATCH packet; false if malformed.
     static bool parseWatch(const unsigned char* packet, size_t size, uint64_t* queue, uint64_t* serial);
+    // Parses a complete WAIT_SERIAL packet; false if malformed.
+    static bool parseWaitSerial(const unsigned char* packet, size_t size, uint64_t* serial);
     // Parses a complete ORDER packet; false if malformed.
     static bool parseOrder(const unsigned char* packet, size_t size, uint64_t* serial);
     // Parses a complete FEED packet; false if malformed or an unknown version.
@@ -117,12 +131,19 @@ private:
     Lane& laneForLocked(uint64_t queue);
     void watcherLoop(Lane& lane);
     void push(uint64_t serial, int32_t status);
+    void resolvedLocked(uint64_t serial);  // a watch has its outcome (under mutex_)
 
     Submit submit_;
     std::mutex mutex_;
     std::vector<std::unique_ptr<Lane>> lanes_;
     std::unordered_map<uint64_t, size_t> laneOfQueue_;  // queues with a lane of their own
     size_t outstanding_ = 0;  // markers queued or waited for, over every lane
+    // Watches made and not yet resolved, and the highest serial watched: what WAIT_SERIAL
+    // waits on. Bounded by the outstanding watches (kMaxOutstanding).
+    std::unordered_set<uint64_t> unresolved_;
+    uint64_t lastWatched_ = 0;
+    std::condition_variable serialsChanged_;
+    bool serialsCancelled_ = false;
     std::deque<Record> records_;
     int wake_[2] = {-1, -1};
     uint64_t generation_ = 0;  // the current feed stream's run; earlier ones return

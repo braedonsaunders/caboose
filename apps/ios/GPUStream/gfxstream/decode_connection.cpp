@@ -296,6 +296,22 @@ int decodeConnection(int fd, size_t max_packet, size_t max_reply_buffer,
                         decodedAny = true;
                         continue;
                     }
+                    if (opcode == CompletionFeed::kWaitSerialOpcode) {
+                        uint64_t serial = 0;
+                        if (!CompletionFeed::parseWaitSerial(pending.data(), size, &serial))
+                            return finish(DecodeStage::framing, EPROTO);
+                        {
+                            // Waiting for the GPU runs no command: a suspension need not wait.
+                            ExecutorGate::Idle barrierIdle(gate);
+                            const int waited = completions->waitSerial(serial);
+                            if (waited == EPROTO) return finish(DecodeStage::framing, EPROTO);
+                            if (waited != 0) return finish(DecodeStage::stopped, 0);
+                        }
+                        if (!passGate()) return finish(DecodeStage::stopped, 0);
+                        pending.erase(pending.begin(), pending.begin() + size);
+                        decodedAny = true;
+                        continue;
+                    }
                     if (opcode == CompletionFeed::kWatchOpcode) {
                         uint64_t queue = 0, serial = 0;
                         if (!CompletionFeed::parseWatch(pending.data(), size, &queue, &serial))
