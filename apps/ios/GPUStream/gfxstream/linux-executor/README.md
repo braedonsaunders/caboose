@@ -254,7 +254,22 @@ data, for example `d3d11_stress.exe` built from `d3d11-stress.cpp`, which reads 
 copy every frame; `--env CABOOSE_LAZY_READBACK=0` reads every invalidated range at once. The
 report gives the program's frame rates and FAIL lines, the bytes it sent and received and how
 coherent memory was read back (invalidated, delivered, made lazy, filled), and its synchronous
-round trips per command.
+round trips per command. `--executor-env NAME=VALUE` sets the executor's environment, such as
+`CABOOSE_PIPELINE_LANE_THREADS`.
+
+## GPU load at a phone's round-trip time
+
+`ue-load.cpp` is what a D3D11 engine does while it loads a level, as Unreal Engine 4 titles do,
+in phases each ended by waiting for the GPU: it creates shader pairs and their input layouts,
+uploads textures with full mip chains and immutable mesh buffers, draws a loading screen whose
+every frame first uses a batch of new shader pairs in states of their own, and draws again with
+them all. Built like `d3d11-stress.cpp` and run with `readback_profile.py` (`--exe ue_load.exe
+--args 'SHADERS TEXTURES SIZE PER_FRAME'`), its report adds each phase's time (`phase NAME
+ms=…`), and the program's log has the driver's launch timeline (`CABOOSE_GPU_LAUNCH`) and the
+executor's log the phone side's pipeline compiles (`CABOOSE_GPU_PIPELINES`; docs/gpu-live.md,
+"Launch timeline"). On this executor lavapipe compiles a pipeline's shaders when it first draws,
+on the queue, where the phone compiles them when the pipeline is made: the pipelines phase here
+times the round trips and the work, not the phone's compiles.
 
 ## Bind of an unmapped popup
 

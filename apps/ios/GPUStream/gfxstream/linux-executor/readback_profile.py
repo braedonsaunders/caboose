@@ -11,7 +11,7 @@ in WORK/build through a proxy that holds each direction's bytes for half of --rt
 --steam-home's Steam Flatpak data, runs through Proton (--proton) with the arguments --args, such
 as d3d11_stress.exe built from d3d11-stress.cpp beside this script, which reads back staging
 copies every frame. --env adds environment to it (CABOOSE_LAZY_READBACK=0 reads every
-invalidated range at once).
+invalidated range at once), and --executor-env to the executor (CABOOSE_PIPELINE_LANE_THREADS).
 
 The report (OUT/report.txt) gives the program's frame rates, its FAIL lines, the coherent
 memory the driver read back and how (CABOOSE_GPU_MEMORY_TRAFFIC: invalidated bytes and calls,
@@ -74,6 +74,8 @@ def main():
     parser.add_argument('--exe', required=True, help="the Windows program, inside --steam-home's Steam Flatpak data")
     parser.add_argument('--args', default='', help='its arguments')
     parser.add_argument('--env', action='append', default=[], metavar='NAME=VALUE', help='environment for it')
+    parser.add_argument('--executor-env', action='append', default=[], metavar='NAME=VALUE',
+                        help="environment for the executor (CABOOSE_PIPELINE_LANE_THREADS=8, for one)")
     parser.add_argument('--rtt-ms', type=float, default=30)
     parser.add_argument('--seconds', type=int, default=75)
     parser.add_argument('--proton', default='/opt/caboose-games/GE-Proton11-11/proton')
@@ -90,18 +92,20 @@ def main():
     seat = check_chaos.Seat(o)
     marker = f'CABOOSE_CHAOS_SEAT={os.getpid()}'
     proxy = None
+    original = check_chaos.run
+    def run(*argv, **kwargs):
+        if argv[:2] == ('docker', 'run') and any('executor.py' in a for a in argv):
+            if proxy:
+                argv = tuple(a.replace(f'--connect 127.0.0.1:{check_chaos.PORT}', f'--connect 127.0.0.1:{PROXY_PORT}')
+                             for a in argv)
+            argv = argv[:2] + tuple(x for e in o.executor_env for x in ('-e', e)) + argv[2:]
+        return original(*argv, **kwargs)
+    check_chaos.run = run
     if o.rtt_ms > 0:
         proxy = f'{seat.name}-rtt'
         check_chaos.run('docker', 'run', '-d', '--rm', '--name', proxy, '--network', f'container:{o.computer}',
                         '--cpus', '1', '--entrypoint', 'python3', 'caboose-linux-executor', '-c', DELAY_PROXY,
                         str(PROXY_PORT), str(check_chaos.PORT), str(o.rtt_ms / 2000))
-        original = check_chaos.run
-        def run(*argv, **kwargs):
-            if argv[:2] == ('docker', 'run') and any('executor.py' in a for a in argv):
-                argv = tuple(a.replace(f'--connect 127.0.0.1:{check_chaos.PORT}', f'--connect 127.0.0.1:{PROXY_PORT}')
-                             for a in argv)
-            return original(*argv, **kwargs)
-        check_chaos.run = run
     output = ''
     try:
         seat.start()
@@ -128,7 +132,7 @@ def main():
         deadline = time.monotonic() + o.seconds + 60
         while time.monotonic() < deadline:
             output = seat.sh(f'cat {seat.dir}/program-output.txt {seat.dir}/program.log', check=False)
-            if 'done frames=' in output:
+            if re.search(r'^done ', output, re.M):
                 break
             time.sleep(2)
     finally:
@@ -142,13 +146,13 @@ def main():
         seat.cleanup()
         if proxy:
             check_chaos.run('docker', 'rm', '-f', proxy, check=False)
-    report = [f'rtt {o.rtt_ms:g} ms, {o.exe} {o.args} {" ".join(o.env)}'.rstrip()]
+    report = [f'rtt {o.rtt_ms:g} ms, {o.exe} {o.args} {" ".join(o.env)} {" ".join(o.executor_env)}'.rstrip()]
     rates = [(int(m.group(1)), float(m.group(2))) for m in FPS.finditer(output)]
     if rates:
         steady = [fps for _, fps in rates[1:]] or [rates[0][1]]
         report.append(f'frames {rates[-1][0]}, fps per 5 s: {" ".join(f"{fps:.2f}" for _, fps in rates)}; '
                       f'mean after the first {sum(steady) / len(steady):.2f}')
-    report.extend(line for line in output.splitlines() if line.startswith('FAIL '))
+    report.extend(line for line in output.splitlines() if line.startswith(('FAIL ', 'phase ', 'done ')))
     totals = dict.fromkeys(TRAFFIC_FIELDS, 0)
     for m in TRAFFIC.finditer(output):
         for field in TRAFFIC_FIELDS:
