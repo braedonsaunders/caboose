@@ -23,6 +23,7 @@ transfer and reply handling, so it can be tested without Mesa.
 | `static_query_cache.h` | Answers of physical-device format queries, which cannot change, by their exact parameters |
 | `query_results.h` | Query results without a round trip: a no-wait vkGetQueryPoolResults returns what its earlier identical request found, and resets drop stale results |
 | `completion_feed.h` | The completion feed's wire format and the tracker of every fence, timeline semaphore, event and query the process follows; the pause-on-loss waits: a paused process holds a loss until a new executor's socket appears, including a loss the phone replies with and a device stream that ends before the broker removes the old socket (`test_pause_on_loss.cpp`) |
+| `guest_set_ids.h` | Set ids a batched descriptor pool chooses with hello `0x100000`: the guest handles after the pool's own, in one block of the handle counter, and the create flag that tells the decoder so (docs/gpu-live.md, "Guest-chosen set ids") |
 | `handles.h` | Vulkan handles as 64-bit keys and back, without the cast through `uintptr_t` that drops the upper half of a non-dispatchable handle in 32-bit builds |
 | `flush_timing.h`, `rpc_timing.h` | Bounded opt-in timing records (`CABOOSE_PRIVATE_GPU_FLUSH_TIMING=1`, `CABOOSE_PRIVATE_GPU_RPC_TIMING=1`) |
 
@@ -199,7 +200,8 @@ prefetch generations, guest-assigned handle checks (single and arrays), deferred
 results, the object drain, non-blocking drains, the allocation budget, single-encoder
 ownership, the requirements cache keys and lookups, the completion tracker's fences,
 timelines, events, queries, stale serials, untracked objects, device loss and feed closure,
-held destroys across queues, devices and executors, and event status replies. They exercise
+held destroys across queues, devices and executors, event status replies, and the blocks of
+guest-chosen descriptor set ids. They exercise
 the headers, not the generated encoder or a device. `test_requirements_cache.cpp` needs
 Vulkan's headers on the include path (`test.sh` uses Mesa's, or
 `CABOOSE_VULKAN_INCLUDE`).

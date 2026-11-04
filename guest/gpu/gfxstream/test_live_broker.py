@@ -454,6 +454,12 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(negotiate(hello(0x40070), everything), hello(0x40070))
         self.assertEqual(negotiate(hello(0x40070), everything - {'batched-descriptor-sets'}), hello(0x70))
         self.assertEqual(negotiate(hello(0x5ff80 | 0x70), everything - {'batched-descriptor-sets'}), hello(0x1ff80 | 0x70))
+        # Guest-chosen set ids (0x100000) are granted when the phone declared them, and only with
+        # guest handles; an older phone leaves the process asking for its pools' ids.
+        self.assertEqual(negotiate(hello(0x1000F0), everything), hello(0x1000F0))
+        self.assertEqual(negotiate(hello(0x1000F0), everything - {'guest-set-ids'}), hello(0xF0))
+        self.assertIsNone(negotiate(hello(0x100070), everything))
+        self.assertEqual(negotiate(hello(0x1000F0), everything - {'guest-handles'}), hello(0x70))
         # Buffer view handles need guest handles too.
         self.assertEqual(negotiate(hello(0x100F0), everything), hello(0x100F0))
         self.assertEqual(negotiate(hello(0x100F0), everything - {'guest-buffer-views'}), hello(0xF0))

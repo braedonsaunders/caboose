@@ -26,6 +26,7 @@ extern "C" int caboose_gfxstream_executor_resume;
 extern "C" int caboose_gfxstream_upload_cache;
 extern "C" int caboose_gfxstream_guest_buffer_views;
 extern "C" int caboose_gfxstream_batched_descriptor_sets;
+extern "C" int caboose_gfxstream_guest_set_ids;
 
 namespace {
 using Hello = std::vector<unsigned char>;
@@ -105,10 +106,11 @@ void roundTrip(CabooseSocketStream& stream) {
 }  // namespace
 
 int main() {
-    // Everything first (batched descriptor sets with inline uniform blocks, 0x80000), then without them, without buffer views, without the upload cache, without executor
-    // resume, without the shader cache, without query pools, without guest images, and guest
-    // handles alone for a broker that predates bits 8-16.
-    const Hello offered = hello(0xBFFF0), noBatched = hello(0x3FFF0), noCacheSession = hello(0x1FFF0), noBufferViews = hello(0xFFF0), noUpload = hello(0x7FF0), noResume = hello(0x3FF0), noShaderCache = hello(0x1FF0), noQueryPools = hello(0xFF0),
+    // Everything first (guest-chosen set ids, 0x100000, with batched descriptor sets with inline
+    // uniform blocks, 0x80000), then without the set ids, without batched sets, without buffer
+    // views, without the upload cache, without executor resume, without the shader cache, without
+    // query pools, without guest images, and guest handles alone for a broker that predates bits 8-16.
+    const Hello offered = hello(0x1BFFF0), noSetIds = hello(0xBFFF0), noBatched = hello(0x3FFF0), noCacheSession = hello(0x1FFF0), noBufferViews = hello(0xFFF0), noUpload = hello(0x7FF0), noResume = hello(0x3FF0), noShaderCache = hello(0x1FF0), noQueryPools = hello(0xFF0),
                 noGuestImages = hello(0x7F0), handles = hello(0xF0), plain = hello(0x70);
     unsetenv("CABOOSE_GFXSTREAM_GUEST_HANDLES");
 
@@ -134,15 +136,15 @@ int main() {
         assert(stream.connect(broker.path.c_str())==0); roundTrip(stream);
     }
     {
-        Broker broker(3, [&](const Hello& offer) { return offer==noCacheSession ? handles : Hello{}; });
+        Broker broker(4, [&](const Hello& offer) { return offer==noCacheSession ? handles : Hello{}; });
         CabooseSocketStream stream(1024);
         assert(stream.connect(broker.path.c_str())==0); roundTrip(stream);
-        assert((broker.offers==std::vector<Hello>{offered,noBatched,noCacheSession}));
+        assert((broker.offers==std::vector<Hello>{offered,noSetIds,noBatched,noCacheSession}));
     }
     // A short or zero nonce fails the handshake; fallback must not turn a partial
     // trailer into a Vulkan reply. Every retry is refused in this fixture.
     for (int length : {0,16,32}) {
-        Broker broker(11, [length](const Hello&) {
+        Broker broker(12, [length](const Hello&) {
             Hello reply=hello(0x200F0); reply.insert(reply.end(),length,0); return reply;
         }, [](int,int) {});
         CabooseSocketStream stream(1024);
@@ -212,6 +214,22 @@ int main() {
         assert(stream.connect(broker.path.c_str()) == 0 && caboose_gfxstream_batched_descriptor_sets == 1);
         roundTrip(stream);
     }
+    // Guest-chosen set ids (0x100000) follow each executor connection too, and only with guest
+    // handles (0x80): a later executor that does not grant them leaves new pools asking for ids.
+    {
+        Broker broker(1, [](const Hello&) { return hello(0x1800F0); });
+        CabooseSocketStream stream(1024);
+        assert(stream.connect(broker.path.c_str()) == 0 && caboose_gfxstream_guest_set_ids == 1 &&
+               caboose_gfxstream_batched_descriptor_sets == 1);
+        roundTrip(stream);
+    }
+    {
+        Broker broker(1, [](const Hello&) { return hello(0x800F0); });
+        CabooseSocketStream stream(1024);
+        assert(stream.connect(broker.path.c_str()) == 0 && caboose_gfxstream_guest_set_ids == 0 &&
+               caboose_gfxstream_batched_descriptor_sets == 1);
+        roundTrip(stream);
+    }
     // 0x40000 (batched without inline uniform blocks) is never offered: a broker that grants
     // it grants what was not offered, and the offer falls back.
     {
@@ -268,28 +286,28 @@ int main() {
     }
     // A broker that knows only bit 7 closes on the full offer and grants guest handles.
     {
-        Broker broker(10, [&](const Hello& offer) { return offer == handles ? handles : Hello{}; });
+        Broker broker(11, [&](const Hello& offer) { return offer == handles ? handles : Hello{}; });
         auto* stream = new CabooseSocketStream(1024);
         assert(stream->connect(broker.path.c_str()) == 0);
         assert(caboose_gfxstream_guest_handles == 1 && caboose_gfxstream_guest_handle_arrays == 0);
         roundTrip(*stream);
         delete stream;
-        assert((broker.offers == std::vector<Hello>{offered, noBatched, noCacheSession, noBufferViews, noUpload, noResume, noShaderCache, noQueryPools, noGuestImages, handles}));
+        assert((broker.offers == std::vector<Hello>{offered, noSetIds, noBatched, noCacheSession, noBufferViews, noUpload, noResume, noShaderCache, noQueryPools, noGuestImages, handles}));
     }
     // A broker that predates bit 7 closes; the driver reconnects offering the plain hello.
     {
-        Broker broker(11, [&](const Hello& offer) { return offer == plain ? plain : Hello{}; });
+        Broker broker(12, [&](const Hello& offer) { return offer == plain ? plain : Hello{}; });
         auto* stream = new CabooseSocketStream(1024);
         assert(stream->connect(broker.path.c_str()) == 0);
         assert(caboose_gfxstream_guest_handles == 0);
         roundTrip(*stream);
         delete stream;
-        assert((broker.offers == std::vector<Hello>{offered, noBatched, noCacheSession, noBufferViews, noUpload, noResume, noShaderCache, noQueryPools, noGuestImages, handles, plain}));
+        assert((broker.offers == std::vector<Hello>{offered, noSetIds, noBatched, noCacheSession, noBufferViews, noUpload, noResume, noShaderCache, noQueryPools, noGuestImages, handles, plain}));
     }
     // An answer granting what was not offered, or any other difference, fails the
     // connection with EPROTO, after the plain retry.
     {
-        Broker broker(11, [&](const Hello&) { return hello(0x100070); });
+        Broker broker(12, [&](const Hello&) { return hello(0x200070); });
         auto* stream = new CabooseSocketStream(1024);
         errno = 0;
         assert(stream->connect(broker.path.c_str()) == -1 && errno == EPROTO);
@@ -298,7 +316,7 @@ int main() {
     {
         Hello wrong = plain;
         wrong.back() ^= 1;
-        Broker broker(11, [&](const Hello&) { return wrong; });
+        Broker broker(12, [&](const Hello&) { return wrong; });
         auto* stream = new CabooseSocketStream(1024);
         errno = 0;
         assert(stream->connect(broker.path.c_str()) == -1 && errno == EPROTO);
