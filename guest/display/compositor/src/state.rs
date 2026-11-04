@@ -964,6 +964,8 @@ impl State {
             if self.queue_gpu_revoke(grant).is_err() { self.gpu_control_failed(); }
         }
         let focused = self.focus_history.last() == Some(&id);
+        // A popup takes the keyboard for its grab without becoming the focused window.
+        let had_keyboard = self.focused_window() == Some(id);
         self.focus_history.retain(|f| *f != id);
         let Some(w) = self.windows.remove(id) else { return };
         // A touch on a closing surface (a menu, say) never gets its release; without a
@@ -974,14 +976,30 @@ impl State {
             }
             self.input.clear_touches();
         }
-        // Closing the focused window (a dialog, a transient surface) gives focus back to
-        // the window focused before it, as a desktop does.
-        if focused {
-            if let Some(previous) = self.focus_history.pop() {
+        // Closing the window that has the keyboard (a dialog, a transient surface, a menu
+        // holding a grab) gives the keyboard back, as a desktop does: to the menu whose grab
+        // is still open, else the window focused before it.
+        let grab = self.input.popup_grab.filter(|g| *g != id && self.windows.get(*g).is_some());
+        match keyboard_after_close(focused, had_keyboard, grab, self.focus_history.last().copied()) {
+            KeyboardAfterClose::Keep => {}
+            KeyboardAfterClose::Popup(popup) => {
+                if let (Some(Surface::Popup(p)), Some(keyboard)) =
+                    (self.windows.get(popup).map(|w| w.surface.clone()), self.seat.get_keyboard())
+                {
+                    let serial = self.next_serial();
+                    keyboard.set_focus(self, Some(KeyboardFocus::Wayland(p.wl_surface().clone())), serial);
+                }
+            }
+            KeyboardAfterClose::Window(previous) => {
+                // Taken off the history as focus_window puts it back on top.
+                self.focus_history.retain(|f| *f != previous);
                 self.focus_window(previous);
-            } else if let Some(keyboard) = self.seat.get_keyboard() {
-                let serial = self.next_serial();
-                keyboard.set_focus(self, None, serial);
+            }
+            KeyboardAfterClose::Nobody => {
+                if let Some(keyboard) = self.seat.get_keyboard() {
+                    let serial = self.next_serial();
+                    keyboard.set_focus(self, None, serial);
+                }
             }
         }
         self.game_window_gone(id);
@@ -1220,6 +1238,70 @@ fn is_explicit_buffer_detach(buffer: Option<&BufferAssignment>) -> bool {
 /// override-redirect one (a menu, tooltip or dropdown, shown as a popup over its parent).
 fn gpu_bindable_x11(top_level: bool, override_redirect: bool, alive: bool) -> bool {
     alive && (override_redirect || top_level)
+}
+
+/// Where the keyboard goes when a window closes.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum KeyboardAfterClose {
+    /// The closing window did not have it.
+    Keep,
+    /// To the popup whose grab is still open (a parent menu).
+    Popup(u64),
+    /// To the window focused before.
+    Window(u64),
+    /// No window is left to take it.
+    Nobody,
+}
+
+/// `focused`: the closing window was the focused one; `had_keyboard`: it held the keyboard
+/// (a popup's grab gives it the keyboard without focusing it); `grab`: a popup grab still
+/// open after it closes; `previous`: the most recently focused window left.
+pub(crate) fn keyboard_after_close(
+    focused: bool,
+    had_keyboard: bool,
+    grab: Option<u64>,
+    previous: Option<u64>,
+) -> KeyboardAfterClose {
+    if !focused && !had_keyboard {
+        return KeyboardAfterClose::Keep;
+    }
+    if let (false, Some(popup)) = (focused, grab) {
+        return KeyboardAfterClose::Popup(popup);
+    }
+    match previous {
+        Some(previous) => KeyboardAfterClose::Window(previous),
+        None => KeyboardAfterClose::Nobody,
+    }
+}
+
+#[cfg(test)]
+mod keyboard_after_close_tests {
+    use super::{keyboard_after_close, KeyboardAfterClose::*};
+
+    #[test]
+    fn closing_a_window_without_the_keyboard_leaves_it() {
+        assert_eq!(keyboard_after_close(false, false, None, Some(1)), Keep);
+        assert_eq!(keyboard_after_close(false, false, Some(3), Some(1)), Keep);
+    }
+
+    #[test]
+    fn a_closed_dialog_gives_it_to_the_window_focused_before() {
+        assert_eq!(keyboard_after_close(true, true, None, Some(1)), Window(1));
+        assert_eq!(keyboard_after_close(true, false, None, Some(1)), Window(1));
+        assert_eq!(keyboard_after_close(true, true, None, None), Nobody);
+    }
+
+    #[test]
+    fn a_closed_menu_gives_it_back_to_its_window() {
+        // The menu's grab gave it the keyboard; its window is still the focused one.
+        assert_eq!(keyboard_after_close(false, true, None, Some(1)), Window(1));
+        assert_eq!(keyboard_after_close(false, true, None, None), Nobody);
+    }
+
+    #[test]
+    fn a_closed_submenu_gives_it_to_the_menu_still_open() {
+        assert_eq!(keyboard_after_close(false, true, Some(4), Some(1)), Popup(4));
+    }
 }
 
 #[cfg(test)]
@@ -1470,6 +1552,43 @@ impl State {
         });
         if popup.is_initial_configure_sent() {
             let _ = popup.send_pending_configure();
+        }
+    }
+
+    /// Gives a window the keyboard on request (the control socket's `focus`). A window that
+    /// already has it is deactivated and given it again, so the client sees its window lose
+    /// and regain both activation and the keyboard: one that ignored its first activation (sent
+    /// while its window was being made) takes the keyboard now.
+    pub fn refocus_window(&mut self, id: u64) {
+        if self.windows.get(id).is_none() {
+            return;
+        }
+        if self.focused_window() == Some(id) {
+            self.deactivate_window(id);
+            if let Some(keyboard) = self.seat.get_keyboard() {
+                let serial = self.next_serial();
+                keyboard.set_focus(self, None, serial);
+            }
+        }
+        self.focus_window(id);
+    }
+
+    /// Tells a window it is no longer the active one.
+    fn deactivate_window(&mut self, id: u64) {
+        let Some(w) = self.windows.get(id) else { return };
+        match &w.surface {
+            Surface::Toplevel(t) => {
+                let changed = t.with_pending_state(|s| {
+                    s.states.unset(smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State::Activated)
+                });
+                if changed && t.is_initial_configure_sent() {
+                    t.send_pending_configure();
+                }
+            }
+            Surface::X11(x) => {
+                let _ = x.set_activated(false);
+            }
+            Surface::Popup(_) => {}
         }
     }
 

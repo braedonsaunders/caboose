@@ -428,6 +428,27 @@ It closes its own clients on success or failure and refuses an occupied seat. Ru
 the identical fixture on the previous compositor as a negative control: stale
 foreground metadata fails its foreground assertion. No owner display is involved.
 
+### Keyboard focus returns without a click
+
+`scripts/check-focus.sh` checks that a native Wayland GTK 3 window keeps the keyboard at
+each step, with no click:
+- when it maps;
+- after its context menu (a popup holding a keyboard grab) closes;
+- after a dialog transient for it closes;
+- after the control socket's `focus` names it again.
+
+Run it inside a computer as the compositor's user, against a private seat (never the owner's
+display or the agent seat). Pass the seat's control socket and the env file its compositor
+wrote with `--env-file`:
+
+```sh
+sh scripts/check-focus.sh /path/to/private/control.sock /path/to/private/display.env [WORK_DIR]
+```
+
+`scripts/focus_check_app.py` is the window. It writes its entry's text to a file, so the
+check reads exactly which typed letters arrived. The check needs python3-gi with GTK 3 and
+prints `PASS`, or the first step whose letter was lost.
+
 ### X11 core wheel delivery check
 
 `scripts/check-x11-scroll.py --control /path/to/private/control.sock --compositor-pid PID` compares one
