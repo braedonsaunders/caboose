@@ -14,7 +14,7 @@ baseline does them through the GUI.
 application, the `app` id of the window to wait for, the `prompt`, a `verify` command that
 exits 0 only when the effect is there, and an optional `reset` for settings kept outside
 the run directory. They run inside the computer as the agent user with the agent seat's
-environment and `HOME=/tmp/caboose-bench/home`, after `prelude.sh`.
+environment and `HOME=/home/caboose/caboose-bench/home`, after `prelude.sh`.
 
 ## Run
 
@@ -25,10 +25,11 @@ application on it between tasks.
 ```sh
 python3 run.py --mode native --model claude-sonnet-5-5 --output native.jsonl \
   --exec 'ssh HOST docker exec -i -u caboose CONTAINER bash -s' \
-  --mcp "ssh HOST \"docker exec -i -u caboose CONTAINER bash -c 'set -a; . /run/caboose/agent-display.env; set +a; CABOOSE_AGENT_PROFILE=/tmp/caboose-bench exec node /opt/caboose/desktop-mcp.mjs'\""
+  --mcp "ssh HOST \"docker exec -i -u caboose CONTAINER bash -c 'set -a; . /run/caboose/agent-display.env; set +a; CABOOSE_AGENT_PROFILE=/home/caboose/caboose-bench exec node /opt/caboose/desktop-mcp.mjs'\""
 ```
 
-`CABOOSE_AGENT_PROFILE=/tmp/caboose-bench` makes the run directory the server's agent profile,
+`CABOOSE_AGENT_PROFILE=/home/caboose/caboose-bench` makes the run directory the server's agent profile
+(under the home: a Flatpak sandbox has its own `/tmp`, so a home there would be out of its sight),
 so an application the agent launches has the same home as the task's files.
 
 A run stops, recording nothing for the task, when the agent itself reports an error before any

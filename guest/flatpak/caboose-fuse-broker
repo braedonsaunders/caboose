@@ -104,7 +104,13 @@ def serve_one(conn):
             conn.sendmsg([json.dumps({'ok': True}).encode()], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, array.array('i', [device]))])
             return
         if request.get('op') == 'unmount':
-            path, _ = checked_mountpoint(request.get('mountpoint'), uid)
+            # A mount whose file system has ended cannot be looked at; it is found by its name.
+            path = request.get('mountpoint')
+            if not isinstance(path, str) or not path.startswith('/') or '\0' in path:
+                raise Refused('the mountpoint must be an absolute path')
+            path = os.path.normpath(path)
+            if not path.startswith(f'/run/user/{uid}/'):
+                raise Refused(f'mounts are only allowed under /run/user/{uid}')
             if not fuse_mounted_by(path, uid):
                 raise Refused('no FUSE mount of the caller there')
             if libc.umount2(path.encode(), 2 if request.get('lazy') else 0) != 0:
@@ -116,7 +122,24 @@ def serve_one(conn):
         conn.sendall(json.dumps({'ok': False, 'error': str(error)}).encode())
 
 
+def placeholder():
+    """libfuse opens /dev/fuse itself before it asks fusermount3, and gives up when it cannot:
+    the computer has no FUSE device it may open, so a placeholder (an empty regular file) lets
+    that open succeed; the mount then fails for want of privilege and libfuse asks fusermount3,
+    which asks this broker. A real device node is left alone."""
+    path = ROOT + '/dev/fuse'
+    try:
+        if stat.S_ISCHR(os.lstat(path).st_mode):
+            return
+    except FileNotFoundError:
+        pass
+    with open(path, 'a'):
+        pass
+    os.chmod(path, 0o666)
+
+
 def main():
+    placeholder()
     path = ROOT + SOCKET
     try:
         os.unlink(path)

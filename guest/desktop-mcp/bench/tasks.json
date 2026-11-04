@@ -218,14 +218,14 @@
       "id": "flow-download-extract-edit",
       "app": "Chromium",
       "setup": "mkdir -p $HOME/Documents $HOME/Downloads; python3 -c \"import zipfile, os; z = zipfile.ZipFile(os.environ['HOME'] + '/Documents/data.zip', 'w'); z.writestr('notes.txt', 'draft one\\\\n'); z.close()\"; mkdir -p $(dirname $HOME/Documents/download.html); cat > $HOME/Documents/download.html <<'HTML'\n<!doctype html><title>Data</title><h1>Data</h1><p><a href=\"data.zip\" download>Download data</a></p>\nHTML\nstart python3 -m http.server 18761 --bind 127.0.0.1 --directory $HOME/Documents; sleep 0.5; start chromium --no-first-run --no-default-browser-check --user-data-dir=$HOME/chromium http://127.0.0.1:18761/download.html",
-      "prompt": "In the open Chromium window, download data.zip with the Download data link (it lands in /tmp/caboose-bench/home/Downloads). Then extract it with the archive manager (file-roller) into a new folder /tmp/caboose-bench/home/Documents/data, open the extracted notes.txt in Mousepad, add a second line reading reviewed, and save it.",
+      "prompt": "In the open Chromium window, download data.zip with the Download data link (it lands in /home/caboose/caboose-bench/home/Downloads). Then extract it with the archive manager (file-roller) into a new folder /home/caboose/caboose-bench/home/Documents/data, open the extracted notes.txt in Mousepad, add a second line reading reviewed, and save it.",
       "verify": "grep -qx 'reviewed' $HOME/Documents/data/notes.txt && grep -qx 'draft one' $HOME/Documents/data/notes.txt"
     },
     {
       "id": "flow-text-to-pdf",
       "app": "Mousepad",
       "setup": "mkdir -p $HOME/Documents; printf 'Harbor report: all berths full.\\n' > $HOME/Documents/report.txt; start mousepad $HOME/Documents/report.txt",
-      "prompt": "The open Mousepad window shows report.txt. Put its text into a new LibreOffice Writer document (start Writer with soffice --writer) and export that document as a PDF named /tmp/caboose-bench/home/Documents/report.pdf.",
+      "prompt": "The open Mousepad window shows report.txt. Put its text into a new LibreOffice Writer document (start Writer with soffice --writer) and export that document as a PDF named /home/caboose/caboose-bench/home/Documents/report.pdf.",
       "verify": "test \"$(head -c 4 $HOME/Documents/report.pdf)\" = '%PDF'"
     },
     {
@@ -239,21 +239,21 @@
       "id": "flow-calc-to-web",
       "app": "libreoffice-calc",
       "setup": "mkdir -p $HOME/Documents; printf 'item,amount\\nrope,12\\nsail,30\\nanchor,58\\n' > $HOME/Documents/costs.csv; mkdir -p $(dirname $HOME/Documents/claims.html); cat > $HOME/Documents/claims.html <<'HTML'\n<!doctype html><title>Claims</title><h1>Claims</h1><form onsubmit=\"event.preventDefault(); document.title = 'Filed ' + document.getElementById('t').value\"><label for=t>Total</label> <input id=t> <button>File</button></form>\nHTML\nstart python3 -m http.server 18761 --bind 127.0.0.1 --directory $HOME/Documents; sleep 0.5; start soffice --norestore --nologo --calc --infilter=CSV:44,34,76 $HOME/Documents/costs.csv",
-      "prompt": "The open LibreOffice Calc window shows costs.csv. Put a formula in B5 that sums the amounts, save the sheet in ODF format as /tmp/caboose-bench/home/Documents/costs.ods, then open http://127.0.0.1:18761/claims.html in Chromium (chromium http://127.0.0.1:18761/claims.html), enter that sum as the Total and press File.",
+      "prompt": "The open LibreOffice Calc window shows costs.csv. Put a formula in B5 that sums the amounts, save the sheet in ODF format as /home/caboose/caboose-bench/home/Documents/costs.ods, then open http://127.0.0.1:18761/claims.html in Chromium (chromium http://127.0.0.1:18761/claims.html), enter that sum as the Total and press File.",
       "verify": "test -f $HOME/Documents/costs.ods && window_title 'Filed 100 - Chromium'"
     },
     {
       "id": "flow-terminal-to-editor",
       "app": "xfce4-terminal",
       "setup": "mkdir -p $HOME/Documents; touch $HOME/Documents/alpha.txt $HOME/Documents/beta.txt; start xfce4-terminal --disable-server --working-directory=$HOME/Documents",
-      "prompt": "In the open terminal, write the names of the files in the current directory into a file named list.txt there (one per line). Then open /tmp/caboose-bench/home/Documents/list.txt in Mousepad, add a last line reading done, and save it.",
+      "prompt": "In the open terminal, write the names of the files in the current directory into a file named list.txt there (one per line). Then open /home/caboose/caboose-bench/home/Documents/list.txt in Mousepad, add a last line reading done, and save it.",
       "verify": "grep -qx alpha.txt $HOME/Documents/list.txt && grep -qx beta.txt $HOME/Documents/list.txt && test \"$(tail -n 1 $HOME/Documents/list.txt)\" = done"
     },
     {
       "id": "flow-writer-letter",
       "app": "libreoffice-writer",
       "setup": "mkdir -p $HOME/Documents; start soffice --norestore --nologo --writer",
-      "prompt": "In the open LibreOffice Writer window, write a short letter: a first line Harbor notice in bold, then two paragraphs, \"The east dock closes on Monday.\" and \"Moorings move to the west dock.\". Save it in Word format as /tmp/caboose-bench/home/Documents/notice.docx.",
+      "prompt": "In the open LibreOffice Writer window, write a short letter: a first line Harbor notice in bold, then two paragraphs, \"The east dock closes on Monday.\" and \"Moorings move to the west dock.\". Save it in Word format as /home/caboose/caboose-bench/home/Documents/notice.docx.",
       "verify": "x=$(unzip -p $HOME/Documents/notice.docx word/document.xml) && echo \"$x\" | grep -q 'Harbor notice' && echo \"$x\" | grep -q 'The east dock closes on Monday.' && echo \"$x\" | grep -q 'Moorings move to the west dock.' && echo \"$x\" | grep -Eq '<w:b( w:val=\"(1|true|on)\")?/>'"
     },
     {
@@ -275,7 +275,7 @@
       "id": "flow-dialog-to-file",
       "app": "zenity",
       "setup": "mkdir -p $HOME/Documents; printf '' > $HOME/Documents/crew.txt; start sh -c 'zenity --forms --title=Crew --text=Crew --add-entry=Name --add-entry=Role > \"$BENCH/zenity.out\"'",
-      "prompt": "In the open Crew dialog, enter the Name \"Iris Moss\" and the Role \"Skipper\" and confirm with OK. Then write the same two values as two lines (Iris Moss, then Skipper) into /tmp/caboose-bench/home/Documents/crew.txt with Mousepad (mousepad /tmp/caboose-bench/home/Documents/crew.txt) and save it.",
+      "prompt": "In the open Crew dialog, enter the Name \"Iris Moss\" and the Role \"Skipper\" and confirm with OK. Then write the same two values as two lines (Iris Moss, then Skipper) into /home/caboose/caboose-bench/home/Documents/crew.txt with Mousepad (mousepad /home/caboose/caboose-bench/home/Documents/crew.txt) and save it.",
       "verify": "test \"$(cat $BENCH/zenity.out)\" = 'Iris Moss|Skipper' && test \"$(sed -n 1p $HOME/Documents/crew.txt)\" = 'Iris Moss' && test \"$(sed -n 2p $HOME/Documents/crew.txt)\" = Skipper"
     },
     {

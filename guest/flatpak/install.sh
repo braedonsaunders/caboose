@@ -19,18 +19,22 @@ if [ "${mode#*container}" != "$mode" ]; then
   fi
   install -m 0755 "$here/caboose-bwrap" /usr/bin/bwrap
   # A container may not mount: FUSE mounts go through the host's broker beside it
-  # (caboose-fuse-broker), which caboose-fusermount, as the computer's fusermount3, asks. The
-  # document portal then starts as caboose-document-portal, each seat with its own mount.
+  # (caboose-fuse-broker), which caboose-fusermount, as the computer's fusermount3, asks; the
+  # document portal can then run, so its D-Bus service is the package's again.
   if [ "$(dpkg-divert --truename /usr/bin/fusermount3)" = /usr/bin/fusermount3 ]; then
     dpkg-divert --local --rename --divert /usr/bin/fusermount3.caboose-off --add /usr/bin/fusermount3
   fi
   install -m 0755 "$here/caboose-fusermount" /usr/bin/fusermount3
-  install -m 0755 "$here/caboose-document-portal" /usr/libexec/caboose-document-portal
   install -Dm755 "$here/caboose-fuse-broker" /opt/caboose/flatpak/caboose-fuse-broker
   documents=/usr/share/dbus-1/services/org.freedesktop.portal.Documents.service
-  if [ "$(dpkg-divert --truename "$documents")" = "$documents" ]; then
-    dpkg-divert --local --rename --divert "$documents.caboose-off" --add "$documents"
+  if [ "$(dpkg-divert --truename "$documents")" != "$documents" ]; then
+    rm -f "$documents"
+    dpkg-divert --local --rename --remove "$documents"
   fi
-  install -m 0644 "$here/org.freedesktop.portal.Documents.service" "$documents"
   install -d -m 0755 /run/caboose
 fi
+# One document portal serves the user, on the owner's bus, at the /run/user/<uid>/doc every
+# sandbox expects; the agent seat's bus forwards to it (keyring/install-services.py takes the
+# agent seat's activation files from /opt/caboose/agent-services.d).
+install -Dm755 "$here/caboose-documents-forwarder" /opt/caboose/flatpak/caboose-documents-forwarder
+install -Dm644 "$here/org.freedesktop.portal.Documents.agent.service" /opt/caboose/agent-services.d/org.freedesktop.portal.Documents.service

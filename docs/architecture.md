@@ -715,8 +715,15 @@ gives a user, and hands back the open `/dev/fuse`; it unmounts only the caller's
 mounts. The tradeoff: a privileged process sits beside every container computer, so the
 broker's checks, not the container's confinement, stand between the computer's users and
 the kernel's FUSE mount path; the computer itself gains no device or capability, and an
-existing computer gets FUSE without being created again. Each seat's document portal mounts
-in a runtime directory of its own (the agent seat's in `/run/user/<uid>/caboose-agent`).
+existing computer gets FUSE without being created again. Libfuse opens `/dev/fuse` itself
+before it falls back to `fusermount3`, so the broker leaves an empty regular file there for
+that open; the mount then fails for want of privilege and goes to the broker.
+
+One document portal serves the computer's user, on the owner's bus, at the
+`/run/user/<uid>/doc` every Flatpak sandbox and `xdg-desktop-portal` expect; the agent
+seat's bus forwards `org.freedesktop.portal.Documents` to it (`caboose-documents-forwarder`,
+as Secret Service is forwarded), for its unsandboxed callers only. This holds for microVM
+computers too.
 
 **Services.** The same daemon is the container computer's service manager. A service is
 declared in a unit file, a subset of systemd's: root's in `/etc/caboose/services/<name>.service`
