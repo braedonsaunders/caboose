@@ -869,7 +869,7 @@ private:
     struct Watch;
     void finishWatchLocked(uint64_t serial, int32_t status, Watch watch,
                            const std::vector<payloads::Capture>& captures, bool idle) {
-        lastProgress_ = Clock::now();
+        queueProgress_[watch.queue] = Clock::now();
         auto queue = queues_.find(watch.queue);
         if (watch.speculated) {
             speculatedOutstanding_.fetch_sub(1, std::memory_order_acq_rel);
@@ -953,6 +953,7 @@ public:
         commandQueries_.clear();
         watches_.clear();
         queues_.clear();
+        queueProgress_.clear();
         barriers_.clear();
         barrierStream_ = 0;
         barriersPending_.store(false, std::memory_order_release);
@@ -990,11 +991,12 @@ public:
     }
     // A wait of at least this long is the application's guard against a hung GPU, as DXVK's
     // five seconds per submission: it ends only after that long without the phone completing
-    // any of this process's work, not while work it waits for is still being completed
-    // (progressTimeout). Shorter waits end at their deadline.
-    void progressTimeouts(Clock::duration atLeast) {
+    // work on the queues of the watches it waits for, and at the latest at the smaller of four
+    // times its timeout and its timeout plus `ceiling`. Shorter waits end at their deadline.
+    void progressTimeouts(Clock::duration atLeast, Clock::duration ceiling = std::chrono::seconds(30)) {
         std::lock_guard<decltype(mutex_)> lock(mutex_);
         progressAtLeast_ = atLeast;
+        progressCeiling_ = ceiling;
     }
     // Waits until the fences are signaled (all, or any) or `deadline` passes.
     Answer waitFences(const uint64_t* fences, uint32_t count, bool all, Clock::time_point deadline) {
@@ -1011,10 +1013,9 @@ public:
             if (closed_) return Answer::AskDevice;
             if (changed_.wait_until(lock, std::min(deadline, report)) == std::cv_status::timeout) {
                 answer = fencesLocked(fences, count, all);
-                if (answer == Answer::NotYet && progressingLocked(requested, [&] {
+                if (answer == Answer::NotYet && progressingLocked(requested, began, [&](std::vector<uint64_t>* queues) {
                         for (uint32_t i = 0; i < count; ++i)
-                            if (fenceWatchLocked(fences[i])) return true;
-                        return false;
+                            if (const uint64_t serial = fenceWatchLocked(fences[i])) queues->push_back(watches_.at(serial).queue);
                     }, &deadline))
                     continue;
                 if (answer == Answer::NotYet && !closed_ && Clock::now() < deadline) {
@@ -1051,10 +1052,10 @@ public:
             if (closed_) return Answer::AskDevice;
             if (changed_.wait_until(lock, std::min(deadline, report)) == std::cv_status::timeout) {
                 answer = timelinesLocked(semaphores, values, count, all);
-                if (answer == Answer::NotYet && progressingLocked(requested, [&] {
+                if (answer == Answer::NotYet && progressingLocked(requested, began, [&](std::vector<uint64_t>* queues) {
                         for (uint32_t i = 0; i < count; ++i)
-                            if (providerLocked(semaphores[i], values[i])) return true;
-                        return false;
+                            if (const uint64_t serial = providerLocked(semaphores[i], values[i]))
+                                queues->push_back(watches_.at(serial).queue);
                     }, &deadline))
                     continue;
                 if (answer == Answer::NotYet && !closed_ && Clock::now() < deadline) {
@@ -1091,14 +1092,26 @@ private:
         return oldest;
     }
     // At a long wait's deadline: whether it goes on because what it waits for is watched and the
-    // phone completed some of the process's work within the last `requested`; then `deadline`
-    // moves to `requested` after that last completion.
-    template <class Watched>
-    bool progressingLocked(Clock::duration requested, Watched&& watched, Clock::time_point* deadline) {
+    // phone completed work on one of those watches' queues within the last `requested`; then
+    // `deadline` moves to `requested` after that completion, but never past the ceiling: the
+    // smaller of four times `requested` and `requested` plus thirty seconds after `began`, so an
+    // application's hang detection still fires behind a queue that keeps completing other work.
+    template <class Queues>
+    bool progressingLocked(Clock::duration requested, Clock::time_point began, Queues&& queuesOf,
+                           Clock::time_point* deadline) {
         const Clock::time_point now = Clock::now();
-        if (now < *deadline || closed_ || lost_ || requested < progressAtLeast_ || !watched()) return false;
-        if (lastProgress_ + requested <= now) return false;
-        *deadline = lastProgress_ + requested;
+        if (now < *deadline || closed_ || lost_ || requested < progressAtLeast_) return false;
+        const Clock::time_point ceiling = began + std::min(4 * requested, requested + progressCeiling_);
+        if (now >= ceiling) return false;
+        std::vector<uint64_t> queues;
+        queuesOf(&queues);
+        Clock::time_point last{};
+        for (uint64_t queue : queues) {
+            auto progress = queueProgress_.find(queue);
+            if (progress != queueProgress_.end()) last = std::max(last, progress->second);
+        }
+        if (queues.empty() || last + requested <= now) return false;
+        *deadline = std::min(last + requested, ceiling);
         ++extendedWaits_;
         return true;
     }
@@ -1368,7 +1381,8 @@ private:
     std::atomic<uint64_t> speculatedOutstanding_{0};
     Clock::duration stallFirst_ = std::chrono::seconds(10), stallRepeat_ = std::chrono::seconds(60);
     Clock::duration progressAtLeast_ = std::chrono::seconds(1);
-    Clock::time_point lastProgress_{};
+    Clock::duration progressCeiling_ = std::chrono::seconds(30);
+    std::unordered_map<uint64_t, Clock::time_point> queueProgress_;  // last record of each queue
     uint64_t extendedWaits_ = 0;
     uint64_t speculatedWaits_ = 0;
 

@@ -462,8 +462,9 @@ process waits for the records instead. A record that reports device loss is devi
 and a value reported reached stays reached. `CABOOSE_GPU_SPECULATE=0` turns speculation off.
 
 A wait the guest answers from the feed with a timeout of a second or more ends only once that
-long has passed without the phone completing any of the process's work, while what it waits for
-has been sent and is watched; shorter waits end at their timeout. Applications use such a
+long has passed without the phone completing work on the queues of the submissions it waits
+for, while those have been sent and are watched, and at the latest at the smaller of four times
+its timeout and its timeout plus thirty seconds; shorter waits end at their timeout. Applications use such a
 timeout to detect a hung GPU (DXVK gives every submission five seconds, then reports the device
 lost), and a submission behind a phone's pipeline compiles can take longer while the phone is
 not hung: after a speculated wait, the next wait also covers the work before it. A wait still
