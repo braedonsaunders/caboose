@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 #include "completion_payloads.h"
+#include "gpu_writes.h"
 #include "lock_order.h"
 #include <algorithm>
 #include <atomic>
@@ -241,9 +242,12 @@ public:
                 if (serial <= through && (queue ? watch.queue == queue : watch.device == device))
                     serials.push_back(serial);
         }
-        // Their records, with what they captured, are still to come.
+        // Their records, with what they captured, are still to come. A record whose captures
+        // are being stored completes its watch itself once the shadows know of them: waited for,
+        // so nothing after the idle wait sees those shadows before.
         for (uint64_t serial : serials) {
-            std::lock_guard<decltype(mutex_)> lock(mutex_);
+            std::unique_lock<decltype(mutex_)> lock(mutex_);
+            changed_.wait(lock, [&] { return !storing_.count(serial); });
             auto it = watches_.find(serial);
             if (it == watches_.end()) continue;
             Watch watch = std::move(it->second);
@@ -558,10 +562,12 @@ public:
     // A record from the feed stream. Unknown serials (already superseded) are ignored.
     void complete(uint64_t serial, int32_t status) { completeRecord(serial, status, nullptr, 0); }
     // A record and its payload (completion_payloads.h). Captured memory is stored in its
-    // allocations' shadows before the watch completes, so nothing that waits for the
-    // submission sees the shadow before; a capture of memory a later batch also writes, or
-    // whose watch an idle wait already completed, is not stored. A malformed payload is
-    // not used, and the record still completes its watch.
+    // allocations' shadows, and the driver told of it (the flush shadow and write watch), before
+    // the watch completes, so nothing that waits for the submission sees the shadow before or
+    // writes it before the driver has noted it; the stored ranges are then delivered for the
+    // invalidate after the wait (takeDelivered). A capture of memory a later batch also writes,
+    // or whose watch an idle wait already completed, is not stored. A malformed payload is not
+    // used, and the record still completes its watch.
     void completeRecord(uint64_t serial, int32_t status, const uint8_t* payload, size_t size) {
         std::vector<payloads::Capture> captures;
         if (status != kCompleted || !payload || !size || !payloads::parsePayload(payload, size, &captures))
@@ -609,15 +615,46 @@ public:
                 auto writer = memoryWriters_.find(store.memory);
                 if (writer == memoryWriters_.end() || writer->second != serial) continue;
                 std::memcpy(store.target.base + store.offset, store.data, size_t(store.size));
+                deliveredLocked(serial, store.memory, store.offset, store.size);
                 stored.push_back(std::move(store));
             }
-            Watch watch = std::move(it->second);
-            watches_.erase(it);
-            finishWatchLocked(serial, status, std::move(watch), captures, false);
+            if (stored.empty()) {
+                Watch watch = std::move(it->second);
+                watches_.erase(it);
+                finishWatchLocked(serial, status, std::move(watch), captures, false);
+                return;
+            }
+            storing_.insert(serial);
         }
+        // Told without the lock (the hooks take locks above it), while the watch is outstanding.
         const StoredMemory note = stored_.load(std::memory_order_acquire);
         if (note)
             for (const auto& store : stored) note(store.memory, store.target, store.offset, store.size);
+        std::lock_guard<decltype(mutex_)> lock(mutex_);
+        storing_.erase(serial);
+        auto it = watches_.find(serial);
+        if (it == watches_.end()) {  // a new executor connection forgot it
+            changed_.notify_all();
+            return;
+        }
+        Watch watch = std::move(it->second);
+        watches_.erase(it);
+        finishWatchLocked(serial, status, std::move(watch), captures, false);
+    }
+    // The ranges of `memory` the record of watch `serial` delivered into its shadow, once the
+    // watch has completed: an invalidate after the wait need not read them. Each is handed out
+    // once; false when the record delivered none of the allocation.
+    bool takeDelivered(uint64_t memory, uint64_t serial, caboose::memory::gpu::Spans* out) {
+        std::lock_guard<decltype(mutex_)> lock(mutex_);
+        auto found = delivered_.find({serial, memory});
+        if (found == delivered_.end()) return false;
+        *out = found->second;
+        delivered_.erase(found);
+        return true;
+    }
+    size_t deliveredEntries() {
+        std::lock_guard<decltype(mutex_)> lock(mutex_);
+        return delivered_.size();
     }
     size_t pendingValueRecords() {
         std::lock_guard<decltype(mutex_)> lock(mutex_);
@@ -690,6 +727,7 @@ public:
         valueWatches_.clear();
         poolCaptures_.clear();
         memoryWriters_.clear();
+        delivered_.clear();
         commandQueries_.clear();
         watches_.clear();
         lost_ = false;
@@ -818,6 +856,18 @@ private:
         }
     }
     std::unordered_map<uint64_t, uint64_t> memoryWriters_;   // allocation -> its latest writing serial
+    // (serial, allocation) -> the ranges its record stored, until an invalidate takes them. Only
+    // ranges held exactly: one the spans cannot hold is left out, and read back by the
+    // invalidate. At most kMaxDelivered allocations' worth, the oldest serials going first.
+    static constexpr size_t kMaxDelivered = 4096;
+    std::map<std::pair<uint64_t, uint64_t>, caboose::memory::gpu::Spans> delivered_;
+    void deliveredLocked(uint64_t serial, uint64_t memory, uint64_t offset, uint64_t size) {
+        if (!size || offset + size < offset) return;
+        delivered_[{serial, memory}].addExactly(offset, offset + size);
+        while (delivered_.size() > kMaxDelivered) delivered_.erase(delivered_.begin());
+    }
+    // Serials whose record is noting its stored captures; their watches complete after.
+    std::unordered_set<uint64_t> storing_;
     std::atomic<ResolveMemory> resolve_{nullptr};
     std::atomic<StoredMemory> stored_{nullptr};
     // The batch's captures, within one record: its ended queries of captured pools as ranges,
