@@ -50,6 +50,11 @@ PICTURE = re.compile(r'^(\S+) CABOOSE_LINUX_EXECUTOR picture window=(\S+) serial
                      r'content=([0-9.]+) colours=(\d+)')
 PORT, XDISPLAY = 14695, 181
 FRESH_CHROMIUM = (608, 378)
+# The Flatpak runtime's CPU Vulkan drivers, which the computer's own launch environment keeps
+# beside its GPU driver: without them a 32-bit Steam client with no device fell back to
+# drawing on the CPU and ran out of address space.
+FLATPAK_LAVAPIPE = ('/usr/lib/x86_64-linux-gnu/GL/default/vulkan/icd.d/lvp_icd.x86_64.json:'
+                    '/usr/lib/i386-linux-gnu/GL/default/vulkan/icd.d/lvp_icd.i686.json')
 # DXVK's d3d11 triangle's window: its own size inside a Wine desktop, or a top-level window the
 # compositor sizes to the seat's 1280x800 display (Wine without a desktop).
 TRIANGLE = ((1016, 573), (1280, 785))
@@ -84,8 +89,15 @@ class Seat:
         argv = ['docker', 'exec'] + (['-d'] if detach else []) + (['-u', user] if user else []) + [self.computer, 'sh', '-c', script]
         return run(*argv, check=check)
 
+    def shm(self):
+        return set(self.sh('ls -d /dev/shm/flatpak-* 2>/dev/null', check=False).split())
+
     def start(self):
         d = self.dir
+        # Flatpak's shared-memory directories that exist before the seat's apps run: only the
+        # seat's own are removed at the end (an app ended by a signal leaves its directory, and
+        # a full /dev/shm ends every app on the computer).
+        self.shm_before = self.shm()
         files = os.path.join(self.o.release, 'files')
         self.sh(f'mkdir -m 0700 -p {d}/run/gpu {d}/home {d}/bin && head -c 24 /dev/urandom | od -An -tx1 | tr -d " \\n" > {d}/token')
         # The release's own compositor, broker and driver, in the seat's directory.
@@ -232,6 +244,14 @@ class Seat:
             self.sh(f"pkill -{signal} -f '{self.dir}/'", check=False)
             time.sleep(2)
         os.makedirs(os.path.join(self.o.out, 'seat'), exist_ok=True)
+        # Only while no other Steam runs: a directory made meanwhile could be its.
+        others = self.sh('for p in $(pgrep -u caboose -f "bwrap.*com.valvesoftware.Steam"); do tr "\\0" "\\n" < /proc/$p/environ 2>/dev/null | '
+                         f'grep -qx CABOOSE_CHAOS_SEAT={os.getpid()} || echo $p; done', user='caboose', check=False).split()
+        if others:
+            print(f'left {len(self.shm() - getattr(self, "shm_before", set()))} shared-memory directories: another Steam runs', flush=True)
+        else:
+            for path in sorted(self.shm() - getattr(self, 'shm_before', set())):
+                self.sh(f'rm -rf {shlex.quote(path)}', check=False)
         for f in self.sh(f'cd {self.dir} && ls *.log', check=False).split():
             with open(os.path.join(self.o.out, 'seat' if f not in ('display.log', 'probe.log') else '', f), 'w') as out:
                 out.write(self.sh(f'cat {self.dir}/{f}', check=False))
@@ -281,7 +301,7 @@ def main():
     def dxvk_command(seconds):
         bench = os.path.dirname(o.triangle)
         return (f'env HOME={o.steam_home} timeout {seconds} flatpak run --env=CABOOSE_GFXSTREAM_SOCKET=$CABOOSE_GFXSTREAM_SOCKET '
-                f'--env=CABOOSE_GFXSTREAM_SURFACE_SOCKET=$CABOOSE_GFXSTREAM_SURFACE_SOCKET --env=VK_DRIVER_FILES={seat.dir}/icd.json:{seat.dir}/icd32.json '
+                f'--env=CABOOSE_GFXSTREAM_SURFACE_SOCKET=$CABOOSE_GFXSTREAM_SURFACE_SOCKET --env=VK_DRIVER_FILES={seat.dir}/icd.json:{seat.dir}/icd32.json:{FLATPAK_LAVAPIPE} '
                 f'--env=CABOOSE_CHAOS_SEAT={os.getpid()} --filesystem={seat.dir} --filesystem={os.path.dirname(o.proton)}:ro '
                 f'--command=sh com.valvesoftware.Steam -c '
                 f'"export STEAM_COMPAT_DATA_PATH={bench}/compat/1 STEAM_COMPAT_CLIENT_INSTALL_PATH={o.steam_home}/.var/app/'
@@ -334,7 +354,7 @@ def main():
         def steam():
             seat.app('steam', f'env HOME={o.steam_home} dbus-run-session -- flatpak run --env=CABOOSE_CHAOS_SEAT={os.getpid()} '
                      '--env=CABOOSE_GFXSTREAM_SOCKET=$CABOOSE_GFXSTREAM_SOCKET --env=CABOOSE_GFXSTREAM_SURFACE_SOCKET=$CABOOSE_GFXSTREAM_SURFACE_SOCKET '
-                     f'--env=VK_DRIVER_FILES={seat.dir}/icd.json:{seat.dir}/icd32.json --env=PRESSURE_VESSEL_FILESYSTEMS_RW={seat.dir} '
+                     f'--env=VK_DRIVER_FILES={seat.dir}/icd.json:{seat.dir}/icd32.json:{FLATPAK_LAVAPIPE} --env=PRESSURE_VESSEL_FILESYSTEMS_RW={seat.dir} '
                      f'--filesystem={seat.dir} com.valvesoftware.Steam')
         if o.steam_home:
             steam()
@@ -406,7 +426,20 @@ def main():
             # (the display's size) show.
             wanted['fresh gl'] = lambda w, h: (w, h) in ((320, 240), (1280, 800))
             if 'fresh dxvk' in fresh:
-                wanted['fresh dxvk'] = lambda w, h: (w, h) in TRIANGLE
+                # Wine's windows for it are the triangle's at whatever size Wine and the
+                # compositor gave them (in a Wine desktop, or a top-level of its own).
+                def dxvk_sizes():
+                    tree = seat.sh(f'. {seat.dir}/client; xwininfo -root -tree 2>/dev/null', user='caboose', check=False)
+                    return {(int(m.group(1)), int(m.group(2))) for m in
+                            re.finditer(r'\("steam_proton" "steam_proton"\)\s+(\d+)x(\d+)\+', tree)
+                            if int(m.group(1)) >= 600}
+                triangle_sizes, looked = set(TRIANGLE), [0.0]
+                def dxvk(w, h):
+                    if (w, h) not in triangle_sizes and time.monotonic() - looked[0] > 1:
+                        looked[0] = time.monotonic()
+                        triangle_sizes.update(dxvk_sizes())
+                    return (w, h) in triangle_sizes and (w, h) not in (chromium_size, FRESH_CHROMIUM)
+                wanted['fresh dxvk'] = dxvk
             missing, pictures = judge(mark, wanted, 60)
             stop_fresh()
             seconds = time.monotonic() - started
