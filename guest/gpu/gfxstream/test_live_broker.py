@@ -39,6 +39,8 @@ class Writer:
     def write_eof(self): self.eof = True
     def close(self): pass
     def abort(self): pass
+    def is_closing(self): return False
+    def get_write_buffer_size(self): return 0
     def get_extra_info(self, _name): return object()
     async def wait_closed(self): pass
 

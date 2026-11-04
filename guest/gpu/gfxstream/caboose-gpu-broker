@@ -211,6 +211,12 @@ CONTROL_HEADROOM_BYTES = 65536
 CONTROL_HEADROOM_MESSAGES = 8
 # An exited process whose surfaces have not retired this long after its last stream is stopped anyway.
 STALLED_SURFACE_SECONDS = 3
+# Toward the guest (docs/gpu-live.md, "Toward guest streams"): each local stream's transport
+# is its own writer queue, so the phone reader never waits for a process to read. A stream
+# may hold at most this many bytes its process has not read yet, all streams together at most
+# GUEST_HELD_BYTES; past either the stream holding the most loses its device, not the session.
+GUEST_STREAM_BYTES = RESUME_WINDOW_BYTES
+GUEST_HELD_BYTES = 4 * RESUME_WINDOW_BYTES
 
 
 class LocalSocketReader:
@@ -244,6 +250,11 @@ class LocalSocketReader:
             if not chunk: raise asyncio.IncompleteReadError(bytes(data), count)
             data.extend(chunk)
         return bytes(data)
+
+    def shutdown(self):
+        """Ends the stream for its process: it reads end of file and its writes fail."""
+        with contextlib.suppress(OSError):
+            self.socket.shutdown(socket.SHUT_RDWR)
 
     def close(self):
         self.socket.close()
@@ -1236,20 +1247,50 @@ class Session:
                 stream['remote_fin'].set(); return
             raise ValueError('unexpected draining stream message')
         if frame.kind == Kind.DATA:
-            try:
-                stream['writer'].write(frame.payload)
-                await stream['writer'].drain()
-            except OSError:
-                stream['discard_reply'] = True
+            self.write_local(frame.stream, stream, frame.payload)
             return
         if frame.kind == Kind.FIN:
+            # Sent once the transport has written everything queued before it.
             try:
-                stream['writer'].write_eof()
-                await stream['writer'].drain()
+                if not stream['writer'].transport.is_closing(): stream['writer'].write_eof()
             except OSError:
                 stream['discard_reply'] = True
             stream['remote_fin'].set(); return
         raise ValueError('unexpected executor message')
+
+    def write_local(self, stream_id, stream, payload):
+        """Queues phone bytes on one local stream's transport, never waiting for its process to
+        read them: the transport writes them in order as the socket takes them. A process that
+        leaves more than GUEST_STREAM_BYTES unread, or the stream holding the most once all
+        streams hold GUEST_HELD_BYTES, loses that stream (docs/gpu-live.md, "Toward guest
+        streams")."""
+        transport = stream['writer'].transport
+        if transport.is_closing():
+            # The process closed the socket or a write failed: what remains is not delivered.
+            stream['discard_reply'] = True
+            return
+        if transport.get_write_buffer_size() + len(payload) > GUEST_STREAM_BYTES:
+            self.end_unread_stream(stream_id, stream)
+            return
+        held = {key: item['writer'].transport.get_write_buffer_size() for key, item in self.streams.items()
+                if not item.get('discard_reply') and not item['writer'].transport.is_closing()}
+        while sum(held.values()) + len(payload) > GUEST_HELD_BYTES:
+            largest = max(held, key=held.get)
+            self.end_unread_stream(largest, self.streams[largest])
+            if largest == stream_id: return
+            del held[largest]
+        stream['writer'].write(payload)
+
+    def end_unread_stream(self, stream_id, stream):
+        """Ends one local stream whose process stopped reading: its queued bytes are dropped,
+        the process sees its device stream end, and the phone's further bytes for it are
+        discarded until its FIN, as for a process that exited."""
+        transport = stream['writer'].transport
+        print(f'CABOOSE_GPU_BROKER ended unread stream {stream_id} of process {stream["process"]}: '
+              f'{transport.get_write_buffer_size()} bytes not read', file=sys.stderr, flush=True)
+        stream['discard_reply'] = True
+        transport.abort()
+        if stream.get('reader') is not None: stream['reader'].shutdown()
 
     @staticmethod
     def unfinished_presents(surface):
@@ -1551,7 +1592,7 @@ class Session:
                 return
             process['streams'].add(stream_id)
             await self.phone_answer(process['ready'], 10)
-            stream = {'process': process_id, 'writer': writer, 'ready': asyncio.Event(),
+            stream = {'process': process_id, 'writer': writer, 'reader': reader, 'ready': asyncio.Event(),
                       'remote_fin': asyncio.Event(), 'local_eof': False, 'discard_reply': False}
             self.streams[stream_id] = stream
             self.send(Kind.STREAM_OPEN, process_id, stream_id)
@@ -1629,8 +1670,15 @@ class Session:
             reader.close()
             abort_writer = (local_aborted or self.draining or self.failed or
                             (stream_id is not None and self.streams.get(stream_id, {}).get('discard_reply', False)))
+            # Replies the process has still not read when its close times out are its own
+            # loss: the transport is aborted and the session goes on.
+            unread = 0 if abort_writer else writer.transport.get_write_buffer_size()
             if not await close_owned_writer(writer, abort=abort_writer):
-                self.failed = True
+                if unread:
+                    print(f'CABOOSE_GPU_BROKER ended unread stream {stream_id} of process {process_id}: '
+                          f'{unread} bytes not read at close', file=sys.stderr, flush=True)
+                else:
+                    self.failed = True
             if stream_id is not None and not self.draining:
                 self.streams.pop(stream_id, None)
                 with contextlib.suppress(RuntimeError, KeyError): self.bindings.unbind_stream(self.binding_generation, stream_id)
