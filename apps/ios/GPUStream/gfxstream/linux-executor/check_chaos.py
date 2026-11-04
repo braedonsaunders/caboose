@@ -321,17 +321,22 @@ def main():
 
     def stop_wine():
         # Wine winds down before the next DXVK start, which would otherwise join the running
-        # wineserver's desktop as a child window. Only the seat's own processes are ended.
+        # Wine session (its desktop, or a session left hung by an executor loss). Each DXVK run
+        # is its own Flatpak sandbox, a PID namespace: ending the sandbox ends every process of
+        # its Wine session, including wineserver (which cannot be told apart by its environment)
+        # and the Windows services. Only the seat's own sandboxes are ended.
         seat.stop('triangle.exe')
         marker = f'CABOOSE_CHAOS_SEAT={os.getpid()}'
-        for _ in range(30):
-            alive = seat.sh(f'for p in $(pgrep -u caboose -f "wineserver|triangle.exe|explorer.exe|winedevice"); do '
+        for attempt in range(30):
+            alive = seat.sh(f'for p in $(pgrep -u caboose -f "waitforexitandrun {o.triangle}"); do '
                             f'tr "\\0" "\\n" < /proc/$p/environ 2>/dev/null | grep -qx {marker} && echo $p; done',
                             user='caboose', check=False).split()
             if not alive:
                 return
-            seat.sh(f'kill -{"KILL" if _ > 10 else "TERM"} {" ".join(alive)}', user='caboose', check=False)
+            if attempt >= 5:
+                seat.sh(f'kill -KILL {" ".join(alive)}', user='caboose', check=False)
             time.sleep(1)
+        print('DXVK sandboxes did not end', flush=True)
 
     def judge(since, wanted, wait):
         """Whether every wanted app presented a real picture after `since`, within `wait` seconds."""
