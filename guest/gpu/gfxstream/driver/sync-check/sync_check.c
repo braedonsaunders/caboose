@@ -1390,7 +1390,7 @@ static void* VKAPI_PTR trackedReallocate(void* opaque, void* original, size_t si
 }
 
 static int exitChild(int mode, int fd) {
-    struct stat pipeStat;
+    struct stat pipeStat = {0};
     if (fd>=0 && (fstat(fd, &pipeStat) != 0 || !S_ISFIFO(pipeStat.st_mode))) {
         fprintf(stderr, "CABOOSE_SYNC_CHECK exit_child pipe fd=%d is not a pipe at start (errno %d)\n", fd, errno);
         return 6;
@@ -1414,11 +1414,11 @@ static int exitChild(int mode, int fd) {
     instanceInfo.enabledExtensionCount = 2;
     instanceInfo.ppEnabledExtensionNames = extensions;
     VkInstance childInstance;
-    if (vkCreateInstance(&instanceInfo, allocator, &childInstance) != VK_SUCCESS) { fprintf(stderr, "CABOOSE_SYNC_CHECK exit_child step=create_instance failed\n"); return 3; }
+    if (vkCreateInstance(&instanceInfo, allocator, &childInstance) != VK_SUCCESS) { fprintf(stderr, "CABOOSE_SYNC_CHECK exit_child step=create_instance failed\n"); { fprintf(stderr, "CABOOSE_SYNC_CHECK exit_child step=%d failed\n", __LINE__); return 3; } }
     uint32_t count = 1;
     VkPhysicalDevice childPhysical;
     VkResult enumerated = vkEnumeratePhysicalDevices(childInstance, &count, &childPhysical);
-    if ((enumerated != VK_SUCCESS && enumerated != VK_INCOMPLETE) || !count) return 3;
+    if ((enumerated != VK_SUCCESS && enumerated != VK_INCOMPLETE) || !count) { fprintf(stderr, "CABOOSE_SYNC_CHECK exit_child step=%d failed\n", __LINE__); return 3; }
     const float priority = 1.0f;
     VkDeviceQueueCreateInfo queueInfo = {VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};
     queueInfo.queueFamilyIndex = 0;
@@ -1431,9 +1431,21 @@ static int exitChild(int mode, int fd) {
     deviceInfo.enabledExtensionCount = 1;
     deviceInfo.ppEnabledExtensionNames = &swapchainExtension;
     VkDevice childDevice;
-    if (vkCreateDevice(childPhysical, &deviceInfo, allocator, &childDevice) != VK_SUCCESS) return 3;
-    xcb_connection_t* connection = xcb_connect(NULL, NULL);
-    if (xcb_connection_has_error(connection)) return 3;
+    if (vkCreateDevice(childPhysical, &deviceInfo, allocator, &childDevice) != VK_SUCCESS) { fprintf(stderr, "CABOOSE_SYNC_CHECK exit_child step=%d failed\n", __LINE__); return 3; }
+    // The check's X server (Xvfb) now and then resets a new client during its setup
+    // (ECONNRESET); that is the display, not the process under test, so connect again.
+    xcb_connection_t* connection = NULL;
+    int xError = 0, xErrno = 0;
+    for (int attempt = 0; attempt < 20; ++attempt) {
+        connection = xcb_connect(NULL, NULL);
+        xError = xcb_connection_has_error(connection);
+        if (!xError) break;
+        xErrno = errno;
+        xcb_disconnect(connection);
+        fprintf(stderr, "CABOOSE_SYNC_CHECK exit_child x11_connect retry xcb_error=%d errno=%d\n", xError, xErrno);
+        nanosleep(&(struct timespec){0, 50000000}, NULL);
+    }
+    if (xError) { fprintf(stderr, "CABOOSE_SYNC_CHECK exit_child step=x11_connect failed xcb_error=%d errno=%d\n", xError, xErrno); return 3; }
     xcb_screen_t* screen = xcb_setup_roots_iterator(xcb_get_setup(connection)).data;
     xcb_window_t window = xcb_generate_id(connection);
     xcb_create_window(connection, XCB_COPY_FROM_PARENT, window, screen->root, 0, 0, 320, 240, 0,
@@ -1444,13 +1456,13 @@ static int exitChild(int mode, int fd) {
     surfaceInfo.connection = connection;
     surfaceInfo.window = window;
     VkSurfaceKHR surface;
-    if (vkCreateXcbSurfaceKHR(childInstance, &surfaceInfo, allocator, &surface) != VK_SUCCESS) return 3;
+    if (vkCreateXcbSurfaceKHR(childInstance, &surfaceInfo, allocator, &surface) != VK_SUCCESS) { fprintf(stderr, "CABOOSE_SYNC_CHECK exit_child step=%d failed\n", __LINE__); return 3; }
     VkSurfaceCapabilitiesKHR caps;
-    if (vkGetPhysicalDeviceSurfaceCapabilitiesKHR(childPhysical, surface, &caps) != VK_SUCCESS) return 3;
+    if (vkGetPhysicalDeviceSurfaceCapabilitiesKHR(childPhysical, surface, &caps) != VK_SUCCESS) { fprintf(stderr, "CABOOSE_SYNC_CHECK exit_child step=%d failed\n", __LINE__); return 3; }
     VkSurfaceFormatKHR format;
     count = 1;
     VkResult listed = vkGetPhysicalDeviceSurfaceFormatsKHR(childPhysical, surface, &count, &format);
-    if ((listed != VK_SUCCESS && listed != VK_INCOMPLETE) || !count) return 3;
+    if ((listed != VK_SUCCESS && listed != VK_INCOMPLETE) || !count) { fprintf(stderr, "CABOOSE_SYNC_CHECK exit_child step=%d failed\n", __LINE__); return 3; }
     VkSwapchainCreateInfoKHR swapInfo = {VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR};
     swapInfo.surface = surface;
     swapInfo.minImageCount = caps.minImageCount;
@@ -1464,7 +1476,7 @@ static int exitChild(int mode, int fd) {
     swapInfo.presentMode = VK_PRESENT_MODE_FIFO_KHR;
     swapInfo.clipped = VK_TRUE;
     VkSwapchainKHR swapchain;
-    if (vkCreateSwapchainKHR(childDevice, &swapInfo, allocator, &swapchain) != VK_SUCCESS) return 3;
+    if (vkCreateSwapchainKHR(childDevice, &swapInfo, allocator, &swapchain) != VK_SUCCESS) { fprintf(stderr, "CABOOSE_SYNC_CHECK exit_child step=%d failed\n", __LINE__); return 3; }
     // Shutdown: the window goes first, as a toolkit's does, and one more frame is presented
     // to it (Steam's update window does), with its bind refused or still in flight.
     const char done = 1;
@@ -1473,7 +1485,7 @@ static int exitChild(int mode, int fd) {
     // elsewhere, and the parent see the pipe end without it.
     if (fd>=0) {
         struct stat st;
-        if (fstat(fd, &st) != 0 || !S_ISFIFO(st.st_mode)) {
+        if (fstat(fd, &st) != 0 || !S_ISFIFO(st.st_mode) || st.st_ino != pipeStat.st_ino || st.st_dev != pipeStat.st_dev) {
             char path[64], target[256] = "";
             snprintf(path, sizeof(path), "/proc/self/fd/%d", fd);
             const ssize_t n = readlink(path, target, sizeof(target) - 1);
@@ -1484,14 +1496,14 @@ static int exitChild(int mode, int fd) {
         const ssize_t wrote = write(fd, &done, 1);
         if (wrote != 1) {
             fprintf(stderr, "CABOOSE_SYNC_CHECK exit_child write fd=%d returned %zd errno=%d\n", fd, wrote, errno);
-            return 3;
+            { fprintf(stderr, "CABOOSE_SYNC_CHECK exit_child step=%d failed\n", __LINE__); return 3; }
         }
     }
     xcb_destroy_window(connection, window);
     xcb_flush(connection);
     VkSemaphoreCreateInfo semaphoreInfo = {VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
     VkSemaphore acquired;
-    if (vkCreateSemaphore(childDevice, &semaphoreInfo, allocator, &acquired) != VK_SUCCESS) return 3;
+    if (vkCreateSemaphore(childDevice, &semaphoreInfo, allocator, &acquired) != VK_SUCCESS) { fprintf(stderr, "CABOOSE_SYNC_CHECK exit_child step=%d failed\n", __LINE__); return 3; }
     uint32_t index = 0;
     const VkResult got = vkAcquireNextImageKHR(childDevice, swapchain, 1000000000ull, acquired, VK_NULL_HANDLE, &index);
     if (got == VK_SUCCESS || got == VK_SUBOPTIMAL_KHR) {
@@ -1528,7 +1540,7 @@ static int exitChild(int mode, int fd) {
 // A failed child's output: its CABOOSE_ lines and its last 20 lines.
 static void showChildOutput(const char* path) {
     FILE* file = fopen(path, "r");
-    if (!file) { printf("CABOOSE_SYNC_CHECK exit_child_output none (%s)\n", path); return; }
+    if (!file) { printf("CABOOSE_SYNC_CHECK exit_child_output none (%s) errno=%d\n", path, errno); return; }
     char line[512], tail[20][512];
     int lines = 0;
     while (fgets(line, sizeof(line), file)) {
@@ -1558,10 +1570,11 @@ static void exitLatencyCase(void) {
         if (pipe(pipefd) != 0) fail("pipe", VK_ERROR_INITIALIZATION_FAILED);
         fflush(stdout);
         const uint64_t started = nowUs();
-        const pid_t child = fork();
-        if (child < 0) fail("fork", VK_ERROR_INITIALIZATION_FAILED);
+        // Named before the fork, so parent and child agree on it.
         char childLog[64];
         snprintf(childLog, sizeof(childLog), "/tmp/caboose-sync-exit-child-%d-%d.log", (int)getpid(), round);
+        const pid_t child = fork();
+        if (child < 0) fail("fork", VK_ERROR_INITIALIZATION_FAILED);
         if (child == 0) {
             close(pipefd[0]);
             // The child's output goes to a file, shown when it fails.

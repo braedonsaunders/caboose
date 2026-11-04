@@ -56,7 +56,13 @@ def x11_window_exists(display, window):
     xcb.xcb_get_geometry_reply.restype = ctypes.c_void_p
     xcb.xcb_disconnect.argtypes = [ctypes.c_void_p]
     libc.free.argtypes = [ctypes.c_void_p]
-    connection = xcb.xcb_connect(display.encode(), None)
+    # A busy X server can refuse a connection for a moment: try again before giving up.
+    for attempt in range(20):
+        connection = xcb.xcb_connect(display.encode(), None)
+        if not xcb.xcb_connection_has_error(connection):
+            break
+        xcb.xcb_disconnect(connection)
+        time.sleep(0.1)
     try:
         if xcb.xcb_connection_has_error(connection):
             raise RuntimeError('X11 refusal fixture cannot connect to ' + display)
