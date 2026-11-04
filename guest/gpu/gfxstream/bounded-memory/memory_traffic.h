@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 // What a process moves through its device streams, always counted: mapped memory flushed to
-// the phone and read back from it, by who asked, the readbacks commands marked, every byte
+// the phone and read back from it, by who asked, what completion records delivered instead of
+// a readback, the readbacks commands marked, every byte
 // the process's sockets sent and received, what the coherent upkeep considered sending, and
 // what the upload cache's pieces went as. Every five seconds in which anything moved,
 // the first call after the window ends writes one CABOOSE_GPU_MEMORY_TRAFFIC line.
@@ -41,6 +42,12 @@ public:
         while (bytes > largest &&
                !largestInvalidate_.compare_exchange_weak(largest, bytes, std::memory_order_relaxed)) {}
     }
+    // Ranges of GPU-written coherent memory the invalidate after a wait did not read back: the
+    // completion record of the batch that wrote them delivered their bytes (completion_feed.h).
+    void delivered(uint64_t bytes, uint64_t ranges = 1) {
+        deliveredBytes_.fetch_add(bytes, std::memory_order_relaxed);
+        deliveries_.fetch_add(ranges, std::memory_order_relaxed);
+    }
     // A range the coherent upkeep flushes: the blocks written since the last flush (`watched`,
     // write_watch.h), or the whole mapping where writes are not recorded.
     void considered(bool watched, uint64_t bytes) {
@@ -80,6 +87,9 @@ public:
         uint64_t marked[kMarks];
         for (int i = 0; i < kMarks; ++i) marked[i] = markedBytes_[i].exchange(0, std::memory_order_relaxed);
         const uint64_t largest = largestInvalidate_.exchange(0, std::memory_order_relaxed);
+        const uint64_t deliveredBytes = deliveredBytes_.exchange(0, std::memory_order_relaxed);
+        const uint64_t deliveries = deliveries_.exchange(0, std::memory_order_relaxed);
+        moved += deliveredBytes;
         const uint64_t sent = sentBytes_.exchange(0, std::memory_order_relaxed);
         const uint64_t received = receivedBytes_.exchange(0, std::memory_order_relaxed);
         const uint64_t watched = watchedBytes_.exchange(0, std::memory_order_relaxed);
@@ -102,6 +112,7 @@ public:
             " coherent_flushed_bytes=%" PRIu64 " coherent_flushes=%" PRIu64
             " app_invalidated_bytes=%" PRIu64 " app_invalidates=%" PRIu64
             " coherent_invalidated_bytes=%" PRIu64 " coherent_invalidates=%" PRIu64
+            " coherent_delivered_bytes=%" PRIu64 " coherent_delivered=%" PRIu64
             " largest_invalidate_bytes=%" PRIu64
             " marked_copy_image_bytes=%" PRIu64 " marked_copy_buffer_bytes=%" PRIu64 " marked_query_bytes=%" PRIu64
             " coherent_watched_bytes=%" PRIu64 " coherent_whole_bytes=%" PRIu64 " staging_flushed_bytes=%" PRIu64
@@ -111,7 +122,7 @@ public:
             nowMs - start, sent, received,
             flushedBytes[application], flushes[application], flushedBytes[coherent], flushes[coherent],
             invalidatedBytes[application], invalidates[application],
-            invalidatedBytes[coherent], invalidates[coherent], largest,
+            invalidatedBytes[coherent], invalidates[coherent], deliveredBytes, deliveries, largest,
             marked[copyImageToBuffer], marked[copyBuffer], marked[copyQueryResults],
             watched, whole, staged, pieces[unchangedPiece], pieces[namedPiece], pieces[storedPiece],
             considered[copied], shadowSent[copied], considered[hashed], shadowSent[hashed], considered[unshadowed]);
@@ -131,6 +142,7 @@ private:
     std::atomic<uint64_t> flushedBytes_[kOrigins]{}, flushes_[kOrigins]{};
     std::atomic<uint64_t> invalidatedBytes_[kOrigins]{}, invalidates_[kOrigins]{};
     std::atomic<uint64_t> largestInvalidate_{0};
+    std::atomic<uint64_t> deliveredBytes_{0}, deliveries_{0};
     std::atomic<uint64_t> markedBytes_[kMarks]{};
     std::atomic<uint64_t> sentBytes_{0}, receivedBytes_{0};
     std::atomic<uint64_t> watchedBytes_{0}, wholeBytes_{0}, stagedBytes_{0};
