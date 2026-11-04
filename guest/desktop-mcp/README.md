@@ -37,7 +37,10 @@ button or slider goes in through its Value), `{"key": "ctrl+s"}`, `{"type": t}`,
 stop drawing, then at most 200 ms more, never longer than `ms`; every step already waits for
 the application's reaction) and
 `{"launch": "command"}` (an application on the agent seat, with the accessibility
-environment below). An element step whose id no longer names that control (the window lost
+environment below). A control can also be named instead of given by id, `{"press": {"name": "Save", "role":
+"button"}}`: it is found when the step runs, in whatever window has focus then (read again for
+up to 1.5 s while a window opens), so one `act` can go through a dialog that its earlier steps
+open. A name that matches no control, or more than one, stops the run. An element step whose id no longer names that control (the window lost
 focus, or the control changed or went) fails as a `stale id` and does nothing, so it is safe
 to retry with the ids of a new `look`. A pointer step at a control first checks that no other
 application's window covers it. `act` replies `Done.` (or how many steps ran and why it stopped), then the changes;
