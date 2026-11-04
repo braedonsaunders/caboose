@@ -264,7 +264,16 @@ is not refused: the decoder registers a stand-in under the same handle, with the
 layout, render pass and dynamic state, that runs a trivial vertex stage with rasterization
 discarded (or an empty kernel), so that pipeline's draws and dispatches do nothing, and the
 phone prints `CABOOSE_GPU_STANDIN kind=… handle=… index=… error=…` beside the provider's
-compile error. Pipeline libraries are refused as before. This covers device memory, fences, semaphores, buffers, images and
+compile error. Pipeline libraries are refused as before. Under guest-assigned handles the
+phone compiles pipelines off the decode thread, on a lane of two workers that holds at most
+256 pipelines: the decoder registers each handle at once and decodes on, and the first
+command that names the pipeline (a bind, a destroy, a library or base pipeline of another
+create) waits for that compile alone. Destroying a shader module, pipeline layout, render
+pass, descriptor set layout, sampler, pipeline cache, pipeline or the device first waits for
+the device's compiles. The reply is then success; a pipeline that could neither compile nor
+be stood in for ends the connection at its first use, which the process sees as device
+loss. A create whose result the process reads back (creation feedback, or
+fail-on-compile-required) and a create past the lane's bound compile in place. This covers device memory, fences, semaphores, buffers, images and
 views, samplers, shader modules, pipeline caches and layouts, descriptor set layouts
 and pools, command pools, render passes, framebuffers and pipelines; with `0x10000`, buffer
 views too. With `0x100` it

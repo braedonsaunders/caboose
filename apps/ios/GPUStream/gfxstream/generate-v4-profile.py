@@ -10,14 +10,14 @@ PRISTINE_DECODER = '5d1e1b5e5603e4f05aa72f11002beb37e3e258ae5f67f66b176d3848574a
 PATCHED_DECODER = '0badee02d73dab5935eb720732cb821a1ad57d2597c36ada84de92467e4b61fe'
 MARSHALING = '2174da9a4aaf50d228c36537c6b6fc3c66ccec8e8ce1c6c761e225da1488a302'
 PATCHED_INPUTS = {
-    'host/vulkan/vk_decoder_global_state.cpp': 'c65b8dca91095e658921e71baa33966d624c98554cdbff2f0609e70ad8a6d577',
+    'host/vulkan/vk_decoder_global_state.cpp': '0cd37c68799a6c3c3e3445419b300922cac320e837c06c7a034981d9bb3428f4',
     'host/vulkan/vk_decoder_global_state.h': 'be3d48e8ff58f8ae23495e2e05ff7c98ef69894862725dec32f089131343885b',
     'host/vulkan/vk_decoder_internal_structs.h': '16c97d6bf51cf022f252b06918790fda58017966522883915fe2078975355391',
     'host/vulkan/caboose_guest_gpu_completion.h': '4729d0b4ceac83b8304eabf709d2e9346a9c48b4d1ad5275cc52b9c6127e8c4d',
     'host/features/include/gfxstream/host/features.h': '8c4e029e5717c102711a278c912dc9f1062b97155194f34cbcc1efede7c2c59b',
 }
 AUDIT_INPUTS = {
-    'host/vulkan/vk_decoder_global_state.cpp': 'c65b8dca91095e658921e71baa33966d624c98554cdbff2f0609e70ad8a6d577',
+    'host/vulkan/vk_decoder_global_state.cpp': '0cd37c68799a6c3c3e3445419b300922cac320e837c06c7a034981d9bb3428f4',
     'host/vulkan/vk_decoder_global_state.h': 'be3d48e8ff58f8ae23495e2e05ff7c98ef69894862725dec32f089131343885b',
     'host/features/include/gfxstream/host/features.h': 'd8e66ce6778cb29403248a2fbaf0143f1ebe2683c9256cfc0a4500db3ad367e3',
     'host/vulkan/caboose_memory_audit.h': '070cbdf15ad4e54770f0f8f3fe3ac7920e2b57f142605c2a8574132c1cbc71aa',
@@ -30,9 +30,10 @@ AUDIT_INPUTS = {
 # per-call descriptor sets (fork batched-descriptor-sets), and bounded process teardown with the
 # device-memory budget (fork lost-owner-teardown), and inline uniform blocks kept offered with
 # batched descriptor sets (fork inline-uniform-blocks-with-batched-sets), and per-call sets that
-# pass the batched pool accounting get overflow sets (fork per-call-overflow-with-batched).
+# pass the batched pool accounting get overflow sets (fork per-call-overflow-with-batched), and
+# guest-assigned pipelines compiled off the decode thread (fork pipeline-compile-lane).
 RESOURCE_CACHE_INPUTS = {
-    'host/vulkan/vk_decoder_global_state.cpp': 'c65b8dca91095e658921e71baa33966d624c98554cdbff2f0609e70ad8a6d577',
+    'host/vulkan/vk_decoder_global_state.cpp': '0cd37c68799a6c3c3e3445419b300922cac320e837c06c7a034981d9bb3428f4',
     'host/vulkan/caboose_pipeline_cache.h': '3450de5a914b57557b5df681ec0221386b92c67d7d58f10788dc9470da90aa0c',
 }
 # Queue commands a v4 stream may carry. vkQueueCommitDescriptorSetUpdatesGOOGLE carries the
