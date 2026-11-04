@@ -101,6 +101,17 @@ naming a device the decoder never created and requires the refusal (`kGuestFault
 stage `guestInput`), clean process cleanup and a working runtime afterwards. On Linux it
 builds beside the executor (`linux-executor/`) and runs against lavapipe's loader.
 
+`caboose_gpu_native_one_way_start LOADER` checks one-way start ([gpu-live.md](../../../../docs/gpu-live.md#one-way-start))
+against the real decoder: a device stream sends `REPLY_MODE(3)`, a `vkCreateInstance` that fails
+(an extension no driver has), then `vkCreateInstance`, `vkEnumeratePhysicalDevices`,
+`vkCreateDevice` and `vkGetDeviceQueue2` under handles of its own, `vkQueueWaitIdle` on its
+queue, both destroys and `vkEnumerateInstanceVersion`, without reading anything. It requires
+the two replies of `vkQueueWaitIdle` and `vkEnumerateInstanceVersion` and nothing else on the
+stream, and one FAULT record on the process's completion feed with the failed create's opcode
+and `VK_ERROR_EXTENSION_NOT_PRESENT`. A handle the decoder did not take would end the stream as
+invalid input. It builds with the other runtime fixtures and runs beside the executor the same
+way.
+
 The standalone framing fixture passes on macOS with assertions enabled. It does
 not invoke the upstream decoder or validate arbitrary Vulkan command fields;
 the integrated Linux receiver also exercises the decoder. Arbitrary payload and

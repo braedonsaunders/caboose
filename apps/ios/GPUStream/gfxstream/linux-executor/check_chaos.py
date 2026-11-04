@@ -46,7 +46,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.abspath(os.path.join(HERE, '../../../../..'))
 PHONE = ('guest-handles,guest-handle-arrays,completion-feed,ordered-present,guest-images,guest-query-pools,'
          'executor-resume,zstd-stream,guest-buffer-views,batched-descriptor-sets-inline,guest-set-ids,completion-payloads,'
-         'wait-serial,silent-success')
+         'wait-serial,silent-success,one-way-start')
 PICTURE = re.compile(r'^(\S+) CABOOSE_LINUX_EXECUTOR picture window=(\S+) serial=\d+ (\d+)x(\d+) format=\d+ '
                      r'content=([0-9.]+) colours=(\d+)')
 # The seat's port and X display (CHAOS_PORT, CHAOS_X_DISPLAY), so two checks can share a computer.

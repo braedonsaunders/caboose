@@ -370,6 +370,23 @@ int main() {
         assert(sr::parseReplyMode(mode, 16) == 0);
         mode[12] = 0; mode[8] = 2;
         assert(sr::parseReplyMode(mode, 16) == 0);
+        // One-way start: REPLY_MODE(3) also silences the commands that start a process's Vulkan.
+        mode[8] = 3;
+        assert(sr::parseReplyMode(mode, 16) == 3);
+        for (uint32_t op : {20000u, 20002u, 20011u, 20017u, 20155u}) {
+            assert(!sr::listed(op) && !sr::listed(op, 1) && sr::listed(op, 3));
+        }
+        assert(sr::listed(20021u, 3) && !sr::listed(20024u, 3));
+        // A queue's reply is its handle: none is a failure.
+        std::vector<unsigned char> queue(8, 0);
+        assert(sr::resultOf(20155u, queue) == -3 && sr::resultOf(20017u, {}) == -3);
+        queue[7] = 0xCA;
+        assert(sr::resultOf(20155u, queue) == 0);
+        // A failed create's held reply: its handle, then its VkResult.
+        std::vector<unsigned char> instance(12, 0);
+        const int32_t missing = -7;  // VK_ERROR_EXTENSION_NOT_PRESENT
+        std::memcpy(instance.data() + 8, &missing, 4);
+        assert(sr::resultOf(20000u, instance) == -7);
     }
     // Process stop: the socket is shut down and run returns 0.
     {

@@ -7,10 +7,10 @@ from pathlib import Path
 
 PIN = 'f0ce013371a68e85b5a1a1b0cf14ac9ad729f4be'
 PRISTINE_DECODER = '5d1e1b5e5603e4f05aa72f11002beb37e3e258ae5f67f66b176d3848574a56a7'
-PATCHED_DECODER = '0badee02d73dab5935eb720732cb821a1ad57d2597c36ada84de92467e4b61fe'
+PATCHED_DECODER = '4f4af3395d10e411047ebcf6e47ec4e5f358e099783b371aa80d7b6cde9b8203'
 MARSHALING = '2174da9a4aaf50d228c36537c6b6fc3c66ccec8e8ce1c6c761e225da1488a302'
 PATCHED_INPUTS = {
-    'host/vulkan/vk_decoder_global_state.cpp': '44d163137c3ee3a8c55ea219eddeb85c89be45600f54601e697c0d616e288159',
+    'host/vulkan/vk_decoder_global_state.cpp': '04c08cfef5cebf76002e6ca70426507881d7c4c87275957ed14e6bf163e4c664',
     'host/vulkan/vk_decoder_global_state.h': 'b0c3751e3f6f21f8ffbfd6bf58362ad15a384d0689c931fc9090041155b3d611',
     'host/vulkan/vk_decoder_internal_structs.h': '16c97d6bf51cf022f252b06918790fda58017966522883915fe2078975355391',
     'host/vulkan/caboose_guest_gpu_completion.h': '4729d0b4ceac83b8304eabf709d2e9346a9c48b4d1ad5275cc52b9c6127e8c4d',
@@ -18,7 +18,7 @@ PATCHED_INPUTS = {
     'host/vulkan/caboose_guest_set_ids.h': '4815b9565b8691e94a19b61710cdde404ed3b5468a1bc1c6209e8787cfce85c9',
 }
 AUDIT_INPUTS = {
-    'host/vulkan/vk_decoder_global_state.cpp': '44d163137c3ee3a8c55ea219eddeb85c89be45600f54601e697c0d616e288159',
+    'host/vulkan/vk_decoder_global_state.cpp': '04c08cfef5cebf76002e6ca70426507881d7c4c87275957ed14e6bf163e4c664',
     'host/vulkan/vk_decoder_global_state.h': 'b0c3751e3f6f21f8ffbfd6bf58362ad15a384d0689c931fc9090041155b3d611',
     'host/features/include/gfxstream/host/features.h': 'd8e66ce6778cb29403248a2fbaf0143f1ebe2683c9256cfc0a4500db3ad367e3',
     'host/vulkan/caboose_memory_audit.h': '070cbdf15ad4e54770f0f8f3fe3ac7920e2b57f142605c2a8574132c1cbc71aa',
@@ -34,9 +34,10 @@ AUDIT_INPUTS = {
 # pass the batched pool accounting get overflow sets (fork per-call-overflow-with-batched), and
 # guest-assigned pipelines compiled off the decode thread (fork pipeline-compile-lane), and pools
 # whose set ids the guest chose (fork guest-set-ids), and query and memory captures for
-# completion records (fork completion-payload-captures).
+# completion records (fork completion-payload-captures), and guest-assigned instance, physical
+# device, device and queue handles (fork guest-dispatchable-handles).
 RESOURCE_CACHE_INPUTS = {
-    'host/vulkan/vk_decoder_global_state.cpp': '44d163137c3ee3a8c55ea219eddeb85c89be45600f54601e697c0d616e288159',
+    'host/vulkan/vk_decoder_global_state.cpp': '04c08cfef5cebf76002e6ca70426507881d7c4c87275957ed14e6bf163e4c664',
     'host/vulkan/caboose_pipeline_cache.h': '3450de5a914b57557b5df681ec0221386b92c67d7d58f10788dc9470da90aa0c',
 }
 # Queue commands a v4 stream may carry. vkQueueCommitDescriptorSetUpdatesGOOGLE carries the

@@ -281,7 +281,8 @@ only known names, lowercased and sorted: `guest-handles`, `guest-handle-arrays`,
 ([Batched descriptor sets](#batched-descriptor-sets)), `guest-set-ids`
 ([Guest-chosen set ids](#guest-chosen-set-ids)), `completion-payloads`
 ([Completion payloads](#completion-payloads)), `wait-serial` ([Completion feed](#completion-feed))
-and `silent-success` ([Silent success](#silent-success)).
+`silent-success` ([Silent success](#silent-success)) and `one-way-start`
+([One-way start](#one-way-start)).
 The broker reads them from the authenticated upgrade request.
 
 A local process on the indexed v4 path may offer optional features in its 48-byte
@@ -292,17 +293,19 @@ images), `0x1000` (guest-assigned query pools; requires `0x80`) and `0x2000` (sh
 cache), `0x8000` (upload cache), `0x10000` (guest-assigned buffer views; requires `0x80`),
 `0x40000` (batched descriptor sets without inline uniform blocks), `0x80000` (batched
 descriptor sets with inline uniform blocks), `0x100000` (guest-chosen set ids; requires `0x80`),
-`0x200000` (completion payloads; requires `0x200`), `0x400000` (WAIT_SERIAL; requires `0x200`)
-and `0x800000` (silent success; requires `0x80` and `0x200`).
+`0x200000` (completion payloads; requires `0x200`), `0x400000` (WAIT_SERIAL; requires `0x200`),
+`0x800000` (silent success; requires `0x80` and `0x200`) and `0x1000000` (one-way start;
+requires `0x80`, `0x200` and `0x800000`).
 The broker replies with the required mask plus the offered bits whose capability
 the phone declared (`guest-handles`, `guest-handle-arrays`, `completion-feed`,
 `ordered-present`, `guest-images`, `guest-query-pools`, `shader-cache`, `upload-cache`,
 `guest-buffer-views`, `batched-descriptor-sets`, `batched-descriptor-sets-inline`, `guest-set-ids`,
-`completion-payloads`, `wait-serial`, `silent-success` respectively); it drops `0x100`, `0x1000`,
-`0x10000`, `0x100000` and `0x800000` when it does not grant `0x80`, and `0x200000`, `0x400000` and
-`0x800000` when it does not grant `0x200`. An offer with unknown bits, one of those without `0x80`,
-`0x200000`, `0x400000` or `0x800000` without `0x200`, or any other difference from the v4 hello
-closes the local connection. A process falls back to offering fewer features.
+`completion-payloads`, `wait-serial`, `silent-success`, `one-way-start` respectively); it drops
+`0x100`, `0x1000`, `0x10000`, `0x100000`, `0x800000` and `0x1000000` when it does not grant `0x80`,
+`0x200000`, `0x400000`, `0x800000` and `0x1000000` when it does not grant `0x200`, and `0x1000000`
+when it does not grant `0x800000`. An offer with unknown bits, one of those without `0x80`,
+`0x200000`, `0x400000`, `0x800000` or `0x1000000` without `0x200`, `0x1000000` without `0x800000`,
+or any other difference from the v4 hello closes the local connection. A process falls back to offering fewer features.
 
 ### Batched descriptor sets
 
@@ -375,6 +378,17 @@ latter for pools that free individual sets), the decoder allocates the sets from
 pool it creates with the same flags and sizes. Overflow pools are reset and destroyed with
 their application pool, and their sets are freed back to them.
 
+The decoder also takes guest-assigned handles for the dispatchable objects that start a
+process's Vulkan: `vkCreateInstance` and `vkCreateDevice` register the instance or device
+under the handle the process wrote as their output. Physical devices and queues exist
+before the process names them, so `vkEnumeratePhysicalDevices` (the i-th physical device under
+the i-th handle of the array) and `vkGetDeviceQueue`/`vkGetDeviceQueue2` register the object
+under the process's handle the first time it names one; naming it again with the same handle,
+or with a value without `0xCA` in its top byte, reads it back, and naming it with another
+guest-assigned handle ends the stream as invalid input. Physical devices enumerated again
+keep their handles. A decoder that has these offers `one-way-start`
+([One-way start](#one-way-start)); an older one mints these handles whatever the process wrote.
+
 ### Invalid commands
 
 Nothing a process sends ends the phone's runtime or another process. A command the
@@ -402,7 +416,7 @@ completion commands use the ordinary 8-byte packet header, little-endian:
 | COMPLETION_ORDER | `0x4342FE03` | 16 | order serial u64 (nonzero) |
 | WAIT_SERIAL | `0x4342FE04` | 16 | watch serial u64 (nonzero) |
 | COMPLETION_WATCH2 | `0x4342FE05` | 32 + 32 × count | boxed queue u64, serial u64, count u32, flags u32 = 0, then the entries ([Completion payloads](#completion-payloads)) |
-| REPLY_MODE | `0x4342FE06` | 16 | mode u32 = 1 (silent success), reserved u32 = 0 |
+| REPLY_MODE | `0x4342FE06` | 16 | mode u32 = 1 (silent success) or 3 ([one-way start](#one-way-start)), reserved u32 = 0 |
 
 After each queue submission that signals a fence or timeline semaphore, sets or resets an
 event, ends or resets a query or writes coherent memory, the process sends
@@ -817,7 +831,7 @@ it after the client-flags word like any command:
 
 | Command | Opcode | Size | Payload |
 | --- | --- | --- | --- |
-| REPLY_MODE | `0x4342FE06` | 16 | mode u32 = 1 (silent success), reserved u32 = 0 |
+| REPLY_MODE | `0x4342FE06` | 16 | mode u32 = 1 (silent success) or 3 ([one-way start](#one-way-start)), reserved u32 = 0 |
 
 It has no reply, and it holds for that stream from then on. The process sends it once on each
 device stream, including a stream it connects again after its executor changed, only while its
@@ -873,6 +887,30 @@ channel names objects or work the stream made, the process reads the reply of on
 `vkEnumerateInstanceVersion` sent after its last silent command, so the phone has decoded them.
 An allocation or create the phone refuses is then device loss, never a result the application
 sees.
+
+### One-way start
+
+With `0x1000000` (granted with `0x80`, `0x200` and `0x800000`) a process may send
+`REPLY_MODE(3)` instead of `REPLY_MODE(1)`. Mode 3 is silent success, and it also silences the
+commands that start a process's Vulkan, whose handles the process chooses itself
+([Guest-assigned handles](#guest-assigned-handles)):
+
+| Command | Opcode | A failure |
+| --- | --- | --- |
+| `vkCreateInstance` | 20000 | its result |
+| `vkEnumeratePhysicalDevices` | 20002 | its result, `VK_INCOMPLETE` included |
+| `vkCreateDevice` | 20011 | its result |
+| `vkGetDeviceQueue` | 20017 | `VK_ERROR_INITIALIZATION_FAILED` when no queue matches |
+| `vkGetDeviceQueue2` | 20155 | `VK_ERROR_INITIALIZATION_FAILED` when no queue matches |
+
+On success the decoder writes nothing for them; a failure is a FAULT record with the opcode and
+that result, as for silent success. A decoder without one-way start ends a stream that sends
+`REPLY_MODE(3)` (`EPROTO`), so a process sends it only with `0x1000000` granted. The process
+predicts each answer from an identical call that succeeded earlier in the session (a
+vkEnumeratePhysicalDevices count, a device's queues); a prediction the phone does not bear out
+is a FAULT, and the device lost. `apps/ios/GPUStream/gfxstream/silent_replies.h` holds the mode
+and the commands; `caboose_gpu_native_one_way_start` checks them against the real decoder
+(`apps/ios/GPUStream/gfxstream/README.md`).
 
 ## Lock order
 
