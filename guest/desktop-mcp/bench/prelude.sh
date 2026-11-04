@@ -3,10 +3,10 @@
 # The run's own home and data directories: no session restore or recent files carry over
 # from the agent profile or an earlier task. The run directory is the agent profile of the
 # desktop server too (CABOOSE_AGENT_PROFILE=$BENCH in --mcp), so applications the agent
-# launches share this home. Settings stay with the seat's settings services (dconf, xfconf),
-# which tasks reset themselves.
-export HOME="$BENCH/home" XDG_CONFIG_HOME="$BENCH/home/.config" XDG_DATA_HOME="$BENCH/home/.local/share" \
-  XDG_CACHE_HOME="$BENCH/home/.cache" XDG_STATE_HOME="$BENCH/home/.local/state"
+# launches share this home. Configuration (XDG_CONFIG_HOME) stays the seat's, with its
+# settings services (dconf, xfconf), which tasks reset themselves.
+export HOME="$BENCH/home" XDG_DATA_HOME="$BENCH/home/.local/share" XDG_CACHE_HOME="$BENCH/home/.cache" \
+  XDG_STATE_HOME="$BENCH/home/.local/state"
 (umask 077; mkdir -p "$HOME/.config" "$HOME/.local/share" "$HOME/.local/state" "$HOME/.cache")
 TOOLS=${TOOLS:-/opt/caboose}  # where desktop MCP's helpers are installed
 SEAT=$TOOLS/seat.py
