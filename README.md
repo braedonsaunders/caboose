@@ -81,7 +81,7 @@ lived and worked. Here it's the computer that comes along wherever your phone go
 | **Console** (`apps/web`) | The self-host web console the host serves, for running the server rather than using the computer: what the computers are given of the machine, each computer's state, wake, park and restart, files, catalog apps, phones and settings, and the host's own health and configuration. |
 | **The computer** (`guest/`) | A Debian 13 golden image on Cloud Hypervisor. Each computer is a copy-on-write clone of it and keeps its own installs. The image includes Chromium, its one browser, VS Code, LibreOffice, Obsidian, Docker, a modern shell kit, and Claude Code, Codex, OpenCode and Gemini CLI; more apps, such as GIMP, install from the catalog. On a GPU host it can run as a container instead (WSL2, NVIDIA, or an Intel or AMD render node). |
 | **Caboose Display** (`guest/display`) | The computer's display server, in Rust: a headless Wayland compositor with Xwayland that streams each window on its own. |
-| **Agents** | Any agent in the [Agent Client Protocol registry](https://github.com/agentclientprotocol/registry), installed and signed in from the iPhone app, run by `caboose-agentd` in the computer on a second display only agents use, with `caboose-desktop-mcp` giving them accessibility-tree, screenshot, click, type, key, scroll, drag and launch tools for GUI apps. |
+| **Agents** | Any agent in the [Agent Client Protocol registry](https://github.com/agentclientprotocol/registry), installed and signed in from the iPhone app, run by `caboose-agentd` in the computer on a second display only agents use, with computer use (`caboose-computer-use`) giving them `look`, `act` and `screenshot`: applications read through their accessibility trees and driven by id, with direct and page tools that skip the GUI. |
 
 ## How it works
 
@@ -217,7 +217,7 @@ loopback, so run it on a host you trust. The GPU container runtime for WSL2 and 
 | [`guest/display`](guest/display) | Caboose Display: the per-window display server, its protocol and golden vectors (Rust) |
 | [`guest/vaapi`](guest/vaapi) | The VA-API driver that sends apps' compressed video to the phone for decoding (C) |
 | [`guest/agentd`](guest/agentd) | `caboose-agentd`: the ACP client that runs any registry agent for a task |
-| [`guest/desktop-mcp`](guest/desktop-mcp) | GUI tools for agents on their own seat, and the accessibility helper behind `/v1/screen` |
+| [`guest/computer-use`](guest/computer-use) | Computer use: the `caboose-computer-use` package, agents' tools on their own seat and the accessibility helpers behind `/v1/screen` |
 | [`guest/apps`](guest/apps) | `caboose-app`: apps agents make, web apps that run in their own window and appear in Apps |
 | [`guest/catalog`](guest/catalog) | The optional apps and packs the computer can install |
 | [`guest/files`](guest/files) | The file service behind the Files app extension and the console |

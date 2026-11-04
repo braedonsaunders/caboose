@@ -457,7 +457,7 @@ export function createContainerController(config: Config, dependencies: { docker
     terminalService: () => ({ url: terminalUrl, token: displayToken }),
     aiService: () => aiUrl && displayToken ? { url: aiUrl, token: displayToken } : undefined,
     async ensureAgentSeat() {
-      await exec('root', '/usr/local/libexec/caboose-agent-seat', [], 180_000)
+      await exec('root', '/usr/libexec/caboose/agent-seat', [], 180_000)
     },
     guest() {
       if (!running) return undefined

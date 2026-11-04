@@ -30,7 +30,7 @@ docker build -t caboose-computer -f guest/container/Dockerfile guest
 The image contains Debian 13 with Mesa (OpenGL, VA-API drivers), Xwayland, PulseAudio,
 `caboose-display`, `caboose-display-probe` and `caboose-display-ready`, the Caboose VA-API
 driver ([`guest/vaapi`](../vaapi/README.md)), the app lineup from `guest/image/apps.sh`, the
-desktop MCP server and accessibility helper ([`guest/desktop-mcp`](../desktop-mcp/README.md)),
+computer-use package ([`guest/computer-use`](../computer-use/README.md)),
 the agent runner ([`guest/agentd`](../agentd/README.md)), the file service
 ([`guest/files`](../files/README.md)), the terminal service
 ([`guest/terminal`](../terminal/README.md)), notifications
@@ -108,7 +108,7 @@ container is created or restarted.
 Apps launched on either seat prefer Wayland and fall back to X11 through Xwayland; on the
 owner's display they play sound through the `PULSE_SERVER` in its launch environment. Each
 seat's own accessibility bus and control socket keep the desktop tools and `/v1/screen`
-reading and driving one seat at a time (see [`guest/desktop-mcp`](../desktop-mcp/README.md)).
+reading and driving one seat at a time (see [`guest/computer-use`](../computer-use/README.md)).
 
 The displays and notification processes log to `/home/caboose/.cache/<name>.log`
 (`caboose-display.log`, `caboose-display-agent.log`, …).
@@ -178,7 +178,7 @@ Other checks for this image:
   handoff against a private display instance.
 - `guest/notifications/check-container.sh` checks the owner's notification endpoint, its
   actions and replies, and the separate session buses in a disposable container.
-- `guest/desktop-mcp/check-a11y.sh` runs both Caboose Display instances and the
+- `guest/computer-use/check/check-a11y.sh` runs both Caboose Display instances and the
   accessibility helper in Docker.
 
 ## Architecture
@@ -203,5 +203,5 @@ install the current `caboose-session` script for container computers. Run
 Agent display and session-bus processes start through `agent-profile.py` with persistent
 private GUI state. The agent bus uses the dedicated credential activation configuration;
 its live daemon must already use that configuration or startup requests an explicit
-restart. Owner session state is unchanged. See [agent GUI profiles](../desktop-mcp/README.md#persistent-agent-gui-profiles)
+restart. Owner session state is unchanged. See [agent GUI profiles](../computer-use/README.md#persistent-agent-gui-profiles)
 and [credential routing](../keyring/README.md#agent-credential-routing).

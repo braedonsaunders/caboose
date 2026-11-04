@@ -7,6 +7,8 @@ on:
       - '.github/workflows/check-display.yml'
       - 'guest/display/**'
       - 'guest/apps/**'
+      - 'guest/computer-use/**'
+      - 'guest/agentd/**'
       - 'guest/files/**'
       - 'guest/notifications/**'
       - 'guest/template/**'
@@ -19,7 +21,7 @@ on:
   workflow_dispatch:
     inputs:
       desktop_apm:
-        description: Run only the bounded desktop MCP acceptance gate
+        description: Run only the bounded computer-use acceptance gate
         type: boolean
         default: false
         required: false
@@ -52,6 +54,14 @@ jobs:
           python3 guest/template/test_template.py
           python3 -m unittest guest.components.test_owner_run
           node --test guest/apps/agent-page.test.mjs
+          python3 -m unittest discover -s guest/display -p 'test_*.py'
+      - name: Check computer use and build its packages
+        run: |
+          python3 -m unittest discover -s guest/computer-use/tests -p 'test_*.py'
+          node --test guest/computer-use/tests/*.test.mjs
+          node guest/computer-use/tests/selftest.mjs
+          python3 guest/computer-use/package.py "$RUNNER_TEMP/packages"
+          dpkg-deb --info "$RUNNER_TEMP"/packages/caboose-computer-use_*_all.deb
       - name: Build the Linux display test environment
         run: docker build -t caboose-display-dev guest/display
       - name: Check the combined compositor and protocol
@@ -71,14 +81,14 @@ jobs:
       - name: Parse desktop JavaScript before compiling the guest
         shell: bash
         run: |
-          for file in guest/desktop-mcp/*.mjs guest/desktop-mcp/check/*.mjs; do
+          for file in guest/computer-use/server/*.mjs guest/computer-use/check/*.mjs; do
             node --check "$file"
           done
       - name: Run bounded Linux display and AT-SPI acceptance
         shell: bash
         run: |
           set -o pipefail
-          bash guest/desktop-mcp/check-bounded.sh 2>&1 | tee "$RUNNER_TEMP/desktop-apm.log"
+          bash guest/computer-use/check/check-bounded.sh 2>&1 | tee "$RUNNER_TEMP/desktop-apm.log"
       - name: Verify cleanup and bound failure evidence
         if: always()
         shell: bash

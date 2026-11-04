@@ -147,7 +147,7 @@ it('serves the owner display and starts the agent seat on demand', async () => {
     expect(commands.some(command => command.includes('caboose-display-agent.service'))).toBe(false)
     expect(controller.agentDisplayUrl).toMatch(/:14601\/$/)
     await controller.ensureAgentSeat()
-    expect(commands.at(-1)).toBe('/usr/local/libexec/caboose-agent-seat')
+    expect(commands.at(-1)).toBe('/usr/libexec/caboose/agent-seat')
     await controller.apps()
     expect(commands.at(-1)).toContain('WAYLAND_DISPLAY=wayland-caboose-0')
     expect(commands.at(-1)).toContain('DISPLAY=:110')
