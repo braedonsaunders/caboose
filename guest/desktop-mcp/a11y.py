@@ -1048,6 +1048,11 @@ class Tree:
         self.top_roles = _roles(Atspi, "FRAME", "DIALOG", "WINDOW", "FILE_CHOOSER", "ALERT", "COLOR_CHOOSER",
                                 "FONT_CHOOSER", "DOCUMENT_FRAME")
         self.popup_roles = _roles(Atspi, "WINDOW", "MENU", "POPUP_MENU", "TOOL_TIP")
+        # Content read as text (look's text) rather than as controls, and containers that list
+        # their items: a scrolled area holding one is not unexposed.
+        self.text_content_roles = _roles(Atspi, "DOCUMENT_FRAME", "DOCUMENT_WEB", "DOCUMENT_TEXT", "DOCUMENT_SPREADSHEET",
+                                         "DOCUMENT_PRESENTATION", "DOCUMENT_EMAIL", "TERMINAL", "TEXT", "PARAGRAPH", "EMBEDDED")
+        self.content_roles = self.text_content_roles | _roles(Atspi, "TABLE", "TREE_TABLE", "TREE", "LIST", "LIST_BOX")
         self.block_roles = _roles(
             Atspi, "PARAGRAPH", "HEADING", "SECTION", "LIST", "LIST_ITEM", "TABLE", "TABLE_ROW", "FORM",
             "BLOCK_QUOTE", "ARTICLE", "FOOTER", "HEADER", "LANDMARK", "PANEL", "SEPARATOR", "DOCUMENT_WEB",
@@ -1098,6 +1103,12 @@ class Tree:
     # selected children and the first few, instead of thousands of round trips.
     LARGE = 512
     SAMPLE = 32
+
+    def child_count(self, node):
+        try:
+            return node.get_child_count()
+        except Exception:
+            return 0
 
     def children(self, node):
         try:
@@ -1328,6 +1339,20 @@ def _norm(text):
     return " ".join((text or "").split()).casefold()
 
 
+def frame_origin(size, rect, surface, origin):
+    """Where a Wayland window's accessible coordinates start. Toolkits measure from different
+    corners of a window drawn with its own shadow: GTK 3 from the surface (shadow included),
+    GTK 4 from the window's geometry inside it. The top-level accessible's own size says which:
+    the geometry's size means the geometry's corner."""
+    if not size or not surface:
+        return origin
+    width, height = size
+    near = lambda box: abs(width - box["width"]) <= 2 and abs(height - box["height"]) <= 2
+    if near(rect) and not near(surface):
+        return (rect["x"], rect["y"])
+    return origin
+
+
 def match_frame(tree, app, screen, wid, active):
     """The application's top-level accessible for window `wid`, and the app's open popups:
     ((index, accessible, origin) or None, [(index, accessible, bounds, origin)], rect)."""
@@ -1383,6 +1408,8 @@ def match_frame(tree, app, screen, wid, active):
         best = showing[0]
     frame_index = best[0] if best else None
     popups = [popup for popup in popups if popup[0] != frame_index]
+    if best is not None and origin is not None and rect is not None:
+        origin = frame_origin(tree.window_size(best[1]), rect, expected, origin)
     scale = x11_scale(screen, wid, tree, best[1]) if best else None
     if scale is not None:
         origin = scale
@@ -1416,6 +1443,9 @@ def top_origin(screen, wid, pid, tree, top):
         return origin
     size = tree.window_size(top)
     frame = screen.frame_rect(wid)
+    rect = screen.rect(wid)
+    if size and rect and frame_origin(size, rect, frame, origin) != origin:
+        return (rect["x"], rect["y"])
     if size and not (frame and abs(frame["width"] - size[0]) <= 2 and abs(frame["height"] - size[1]) <= 2):
         popup = screen.popup_origin(pid, size)
         if popup is not None:
@@ -1506,6 +1536,13 @@ def collect(target, query=None, role=None):
     def visit(node, path, node_role, states):
         if len(found) >= MAX_ELEMENTS:
             return False
+        if query is None and (node_role == tree.Atspi.Role.SCROLL_PANE or node_role in tree.content_roles):
+            box = tree.bounds(node, origin[0])
+            if box is not None and intersects(box, clip[0]):
+                if node_role == tree.Atspi.Role.SCROLL_PANE:
+                    panes.append(clipped(box, clip[0]))
+                elif tree.child_count(node) or node_role in tree.text_content_roles:
+                    content.append(box)
         if query is None:
             wanted = tree.interesting(node, node_role, states)
             if wanted is False:
@@ -1544,12 +1581,49 @@ def collect(target, query=None, role=None):
         return True
 
     clip, origin = [None], [None]
+    panes, content = [], []  # scroll panes; documents, texts and filled lists, readable as such
     for path, root, rect, at in target.roots():
         clip[0], origin[0] = rect, at
         tree.walk(root, path, visit)
         if len(found) >= MAX_ELEMENTS:
             break
+    if query is None and len(found) < MAX_ELEMENTS:
+        target.unread = unread_regions(panes, [e["bounds"] for e in found] + content)
     return found
+
+
+UNREAD_AREA = 160 * 120  # smaller scrolled areas are not worth reading from pixels
+UNREAD_COVER = 0.15  # the share of a scrolled area its exposed controls must cover
+
+
+def clipped(box, clip):
+    if clip is None:
+        return box
+    x, y = max(box["x"], clip["x"]), max(box["y"], clip["y"])
+    right = min(box["x"] + box["width"], clip["x"] + clip["width"])
+    bottom = min(box["y"] + box["height"], clip["y"] + clip["height"])
+    return {"x": x, "y": y, "width": max(0, right - x), "height": max(0, bottom - y)}
+
+
+def unread_regions(panes, boxes, limit=3):
+    """Scrolled areas whose content the application draws but does not expose: a large
+    scroll pane in which the exposed controls cover almost nothing (a list or icon view a
+    toolkit leaves out of its tree, a custom canvas). Innermost first, at most `limit`, as
+    [x, y, width, height] in seat coordinates."""
+    def covered(pane):
+        area = 0
+        for box in boxes:
+            part = clipped(box, pane)
+            area += part["width"] * part["height"]
+        return area / (pane["width"] * pane["height"])
+    regions = []
+    for pane in sorted(panes, key=lambda p: p["width"] * p["height"]):
+        if pane["width"] * pane["height"] < UNREAD_AREA or covered(pane) >= UNREAD_COVER:
+            continue
+        if any(intersects(pane, r) for r in regions):
+            continue
+        regions.append(pane)
+    return [[r["x"], r["y"], r["width"], r["height"]] for r in regions[:limit]]
 
 
 EMBED = "\ufffc"  # AT-SPI's object replacement character: an embedded child in a text
@@ -2211,6 +2285,8 @@ def execute(args):
                 result["elements"] = [e for e in target.wine if (q is None or q in _norm(e["name"])) and role_matches(e["role"], role)]
             else:
                 result["elements"] = collect(target, query, role) if target.app is not None else []
+            if getattr(target, "unread", None):
+                result["unread"] = target.unread
             if target.app is not None and target.tree.partial:
                 result["partial"] = (f"{len(target.tree.partial)} large container(s) ({', '.join(str(c) for c in target.tree.partial[:3])} children) "
                                      "are read in part: their selected children and the first few")
