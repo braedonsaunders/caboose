@@ -48,6 +48,9 @@ public:
         deliveredBytes_.fetch_add(bytes, std::memory_order_relaxed);
         deliveries_.fetch_add(ranges, std::memory_order_relaxed);
     }
+    // Application invalidates of memory nothing sent since its allocation could have made the
+    // device write (device_work.h): answered without reading.
+    void unwrittenInvalidates(uint64_t ranges) { unwrittenInvalidates_.fetch_add(ranges, std::memory_order_relaxed); }
     // A range the coherent upkeep flushes: the blocks written since the last flush (`watched`,
     // write_watch.h), or the whole mapping where writes are not recorded.
     void considered(bool watched, uint64_t bytes) {
@@ -89,7 +92,8 @@ public:
         const uint64_t largest = largestInvalidate_.exchange(0, std::memory_order_relaxed);
         const uint64_t deliveredBytes = deliveredBytes_.exchange(0, std::memory_order_relaxed);
         const uint64_t deliveries = deliveries_.exchange(0, std::memory_order_relaxed);
-        moved += deliveredBytes;
+        const uint64_t unwritten = unwrittenInvalidates_.exchange(0, std::memory_order_relaxed);
+        moved += deliveredBytes + unwritten;
         const uint64_t sent = sentBytes_.exchange(0, std::memory_order_relaxed);
         const uint64_t received = receivedBytes_.exchange(0, std::memory_order_relaxed);
         const uint64_t watched = watchedBytes_.exchange(0, std::memory_order_relaxed);
@@ -118,14 +122,16 @@ public:
             " coherent_watched_bytes=%" PRIu64 " coherent_whole_bytes=%" PRIu64 " staging_flushed_bytes=%" PRIu64
             " pieces_unchanged=%" PRIu64 " pieces_named=%" PRIu64 " pieces_stored=%" PRIu64
             " copied_considered_bytes=%" PRIu64 " copied_sent_bytes=%" PRIu64
-            " hashed_considered_bytes=%" PRIu64 " hashed_sent_bytes=%" PRIu64 " unshadowed_bytes=%" PRIu64,
+             " hashed_considered_bytes=%" PRIu64 " hashed_sent_bytes=%" PRIu64 " unshadowed_bytes=%" PRIu64
+            " app_unwritten_invalidates=%" PRIu64,
             nowMs - start, sent, received,
             flushedBytes[application], flushes[application], flushedBytes[coherent], flushes[coherent],
             invalidatedBytes[application], invalidates[application],
             invalidatedBytes[coherent], invalidates[coherent], deliveredBytes, deliveries, largest,
             marked[copyImageToBuffer], marked[copyBuffer], marked[copyQueryResults],
             watched, whole, staged, pieces[unchangedPiece], pieces[namedPiece], pieces[storedPiece],
-            considered[copied], shadowSent[copied], considered[hashed], shadowSent[hashed], considered[unshadowed]);
+            considered[copied], shadowSent[copied], considered[hashed], shadowSent[hashed], considered[unshadowed],
+            unwritten);
         return line;
     }
 
@@ -142,7 +148,7 @@ private:
     std::atomic<uint64_t> flushedBytes_[kOrigins]{}, flushes_[kOrigins]{};
     std::atomic<uint64_t> invalidatedBytes_[kOrigins]{}, invalidates_[kOrigins]{};
     std::atomic<uint64_t> largestInvalidate_{0};
-    std::atomic<uint64_t> deliveredBytes_{0}, deliveries_{0};
+    std::atomic<uint64_t> deliveredBytes_{0}, deliveries_{0}, unwrittenInvalidates_{0};
     std::atomic<uint64_t> markedBytes_[kMarks]{};
     std::atomic<uint64_t> sentBytes_{0}, receivedBytes_{0};
     std::atomic<uint64_t> watchedBytes_{0}, wholeBytes_{0}, stagedBytes_{0};

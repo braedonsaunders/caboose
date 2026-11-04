@@ -49,6 +49,9 @@ int main() {
     // Delivered ranges alone are a window with something to report.
     counters.delivered(8);
     assert(has(counters.take(21000), " coherent_delivered_bytes=8 coherent_delivered=1 "));
+    // Invalidates answered without reading (device_work.h) alone are one too.
+    counters.unwrittenInvalidates(6);
+    assert(has(counters.take(26000), " app_unwritten_invalidates=6"));
     // Coherent upkeep is the driver's origin while it lasts, and nests.
     assert(currentOrigin() == application);
     {

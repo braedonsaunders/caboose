@@ -2,6 +2,7 @@
 #include "static_query_cache.h"
 #include <cassert>
 #include <cstdlib>
+#include <cstring>
 #include <chrono>
 #include <dirent.h>
 #include <sys/stat.h>
@@ -210,6 +211,22 @@ int main() {
         assert(!after.lookup(Cache::key(uint32_t(30004),uint64_t(0x53),uint32_t(78)),&out));
         assert(std::chrono::steady_clock::now()-own<std::chrono::milliseconds(100));
     }
+    // A peek never claims: a question peeked and not found holds no other process back, and
+    // an answer another process stored is found.
+    {
+        const auto peeked=[](uint64_t handle){ return Cache::key(uint32_t(30005),handle,uint32_t(1)); };
+        Cache peeker; identify(peeker,0x54,identity,directory);
+        std::string bytes;
+        assert(!peeker.peekBytes(peeked(0x54),&bytes) && peeker.claims()==0);
+        Cache asker; identify(asker,0x55,identity,directory);
+        const auto before=std::chrono::steady_clock::now();
+        Answer none{};
+        assert(!asker.lookup(peeked(0x55),&none));
+        assert(std::chrono::steady_clock::now()-before<std::chrono::milliseconds(100));
+        asker.store(peeked(0x55),Answer{0,{9,0,0,0}});
+        assert(peeker.peekBytes(peeked(0x54),&bytes) && bytes.size()==sizeof(Answer));
+        Answer seen{}; std::memcpy(&seen,bytes.data(),sizeof(seen)); assert(seen.values[0]==9);
+    }
     assert(!unlink(path.c_str()));
     // The instance scope: answers asked before any physical device (the executor's instance
     // version) are shared by the session's processes, in a log named apart from the formats
@@ -256,5 +273,5 @@ int main() {
         assert(!unlinkat(dirfd(contents),entry->d_name,0));
     }
     closedir(contents); assert(!rmdir(directory.c_str()));
-    std::puts("static capabilities: exact keys, process reuse, identity/protocol isolation, instance scope, bounds, locks, append-only writes, single flight and corruption passed");
+    std::puts("static capabilities: exact keys, process reuse, identity/protocol isolation, instance scope, bounds, locks, append-only writes, single flight, peeks and corruption passed");
 }

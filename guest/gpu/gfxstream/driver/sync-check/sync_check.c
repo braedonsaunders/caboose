@@ -332,6 +332,53 @@ static void completionCase(void) {
            batchUs / 1000.0 / rounds);
 }
 
+// Memory nothing was sent since its allocation could have written is invalidated without
+// reading (device_work.h): what the process wrote stays. Once a fill was sent, the invalidate
+// after vkQueueWaitIdle (which must wait for that fill) reads the device's bytes.
+static void unwrittenMemoryCase(void) {
+    VkBufferCreateInfo bufferInfo = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    bufferInfo.size = 65536;
+    bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    VkBuffer buffer;
+    CHECK(vkCreateBuffer(device, &bufferInfo, NULL, &buffer));
+    VkMemoryRequirements req;
+    vkGetBufferMemoryRequirements(device, buffer, &req);
+    VkMemoryAllocateInfo alloc = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    alloc.allocationSize = req.size;
+    alloc.memoryTypeIndex = memoryType(req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+    VkDeviceMemory memory;
+    CHECK(vkAllocateMemory(device, &alloc, NULL, &memory));
+    CHECK(vkBindBufferMemory(device, buffer, memory, 0));
+    volatile uint8_t* mapped = NULL;
+    CHECK(vkMapMemory(device, memory, 0, VK_WHOLE_SIZE, 0, (void**)&mapped));
+    const VkMappedMemoryRange range = {VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, NULL, memory, 0, VK_WHOLE_SIZE};
+    memset((void*)mapped, 0xA5, (size_t)bufferInfo.size);
+    CHECK(vkFlushMappedMemoryRanges(device, 1, &range));
+    const uint64_t start = nowUs();
+    for (int i = 0; i < 16; ++i) CHECK(vkInvalidateMappedMemoryRanges(device, 1, &range));
+    const uint64_t unwrittenUs = nowUs() - start;
+    int kept = 1;
+    for (VkDeviceSize i = 0; i < bufferInfo.size; i += 4093) kept &= mapped[i] == 0xA5;
+    begin();
+    vkCmdFillBuffer(cb, buffer, 0, VK_WHOLE_SIZE, 0x5A5A5A5Au);
+    CHECK(vkEndCommandBuffer(cb));
+    VkSubmitInfo submit = {VK_STRUCTURE_TYPE_SUBMIT_INFO};
+    submit.commandBufferCount = 1;
+    submit.pCommandBuffers = &cb;
+    CHECK(vkQueueSubmit(queue, 1, &submit, VK_NULL_HANDLE));
+    CHECK(vkQueueWaitIdle(queue));
+    CHECK(vkInvalidateMappedMemoryRanges(device, 1, &range));
+    int filled = 1;
+    for (VkDeviceSize i = 0; i < bufferInfo.size; i += 4093) filled &= mapped[i] == 0x5A;
+    // The queue is idle now and nothing was sent since: a second wait has nothing to wait for.
+    CHECK(vkQueueWaitIdle(queue));
+    vkUnmapMemory(device, memory);
+    vkDestroyBuffer(device, buffer, NULL);
+    vkFreeMemory(device, memory, NULL);
+    report("unwritten_memory", kept && filled, "kept=%d filled=%d unwritten_invalidates_us=%llu", kept, filled,
+           (unsigned long long)unwrittenUs);
+}
+
 // Surface formats and present modes enumerated the usual way, a count and then an array of
 // that size, from the moment a window's surface exists (while it binds to the phone, whose
 // answers then replace the local defaults): every enumeration must succeed with the count
@@ -1543,6 +1590,7 @@ int main(int argc, char** argv) {
     RUN("surface_enumeration", surfaceCase());
     RUN("free_after_wait", freeCase());
     RUN("completion_after_gpu", completionCase());
+    RUN("unwritten_memory", unwrittenMemoryCase());
     RUN("pool_capacity", poolCapacityCase());
     RUN("unwritten_sets", unwrittenSetsCase());
     RUN("threaded_set_frees", threadedSetFreesCase());
