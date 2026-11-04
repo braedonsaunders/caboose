@@ -218,8 +218,9 @@ only known names, lowercased and sorted: `guest-handles`, `guest-handle-arrays`,
 `completion-feed`, `ordered-present`, `guest-images`, `guest-query-pools`,
 `shader-cache`, `executor-resume`, `zstd-stream` ([Compressed commands](#compressed-commands)),
 `upload-cache` ([Upload cache](#upload-cache)), `guest-buffer-views`,
-`batched-descriptor-sets` ([Batched descriptor sets](#batched-descriptor-sets)) and
-`guest-set-ids` ([Guest-chosen set ids](#guest-chosen-set-ids)).
+`batched-descriptor-sets` ([Batched descriptor sets](#batched-descriptor-sets)),
+`guest-set-ids` ([Guest-chosen set ids](#guest-chosen-set-ids)) and `completion-payloads`
+([Completion payloads](#completion-payloads)).
 The broker reads them from the authenticated upgrade request.
 
 A local process on the indexed v4 path may offer optional features in its 48-byte
@@ -228,12 +229,14 @@ hello by setting bits above the required mask `0x70`: `0x80` (guest-assigned han
 `0x200` (completion feed), `0x400` (ordered presents), `0x800` (guest-owned swapchain
 images), `0x1000` (guest-assigned query pools; requires `0x80`) and `0x2000` (shader
 cache), `0x8000` (upload cache), `0x10000` (guest-assigned buffer views; requires `0x80`),
-`0x40000` (batched descriptor sets) and `0x100000` (guest-chosen set ids; requires `0x80`).
+`0x40000` (batched descriptor sets), `0x100000` (guest-chosen set ids; requires `0x80`) and
+`0x200000` (completion payloads; requires `0x200`).
 The broker replies with the required mask plus the offered bits whose capability
 the phone declared (`guest-handles`, `guest-handle-arrays`, `completion-feed`,
 `ordered-present`, `guest-images`, `guest-query-pools`, `shader-cache`, `upload-cache`,
-`guest-buffer-views`, `batched-descriptor-sets`, `guest-set-ids` respectively); it drops `0x100`, `0x1000`,
-`0x10000` and `0x100000` when it does not grant `0x80`. An offer with unknown bits, one of those without `0x80`, or any other difference from the v4
+`guest-buffer-views`, `batched-descriptor-sets`, `guest-set-ids`, `completion-payloads` respectively); it drops `0x100`, `0x1000`,
+`0x10000` and `0x100000` when it does not grant `0x80`, and `0x200000` when it does not grant `0x200`.
+An offer with unknown bits, one of those without `0x80`, `0x200000` without `0x200`, or any other difference from the v4
 hello closes the local connection. A process falls back to offering fewer features.
 
 ### Batched descriptor sets
@@ -327,7 +330,7 @@ completion commands use the ordinary 8-byte packet header, little-endian:
 | COMPLETION_WATCH | `0x4342FE02` | 24 | boxed queue u64, serial u64 (both nonzero) |
 | COMPLETION_ORDER | `0x4342FE03` | 16 | order serial u64 (nonzero) |
 | WAIT_SERIAL | `0x4342FE04` | 16 | watch serial u64 (nonzero) |
-| COMPLETION_WATCH2 | `0x4342FE05` | 32 + 32·n | queue u64, serial u64, n u32 (at most 256), flags u32 = 0, then n captures |
+| COMPLETION_WATCH2 | `0x4342FE05` | 32 + 32 × count | boxed queue u64, serial u64, count u32, flags u32 = 0, then the entries ([Completion payloads](#completion-payloads)) |
 | REPLY_MODE | `0x4342FE06` | 16 | mode u32 = 1 (silent success), reserved u32 = 0 |
 
 After each queue submission that signals a fence or timeline semaphore, sets or resets an
@@ -341,9 +344,11 @@ device alive until a watcher thread has waited for and destroyed that fence. Eac
 has its own watcher, so a record is written as soon as its queue's work completes, whatever
 another queue is still doing. Queues of
 another process and virtually shared queues are not watched. On the feed stream the
-phone writes one 16-byte record per watch: serial u64, status i32 and payload bytes u32,
-zero except for captures (below). Status 0 means the work completed, `-4` the device was lost, and `1` the queue
-cannot be watched. Records may arrive in any order. Watches made before the feed stream
+phone writes one record per watch: serial u64, status i32 and payload bytes u32, which is
+zero except for a COMPLETION_WATCH2 watch, followed by that many bytes. Status 0 means the
+work completed, `-4` the device was lost, and `1` the queue cannot be watched. Records may
+arrive in any order. A record with serial 0 is not a completion; a process skips one it does
+not know, payload included. Watches made before the feed stream
 attaches are kept for it. Further bytes from the process on the feed stream are a
 protocol error; its end, or process stop, ends the feed. Watches still outstanding are
 waited for, and their records discarded.
@@ -354,23 +359,6 @@ record (its marker completed, its device was lost, or its queue cannot be watche
 work the process sends after it reaches the GPU after the work the watch names, without the
 process waiting for the feed. A serial above the process's last watch is a protocol error
 that ends the stream; process stop ends the wait.
-
-With `0x200000` a process may send `COMPLETION_WATCH2` in place of a watch. Each 32-byte
-capture is kind u32 (1 a query range, 2 a memory range), reserved u32 = 0, the boxed query
-pool or device memory u64, then first query and count, or offset and size (u64 each, the
-count or size nonzero). Once the marker completes, and before it releases the device, the
-phone captures each range and puts it in that watch's record: a record's last u32 is the
-number of payload bytes that follow it (0 for every record of a plain watch), and the
-payload holds one entry per capture, a 32-byte header (kind u32, the capture's VkResult
-i32, handle, and the two u64s as sent) and its data padded to 8 bytes. Query data is a
-value u64 and an availability u64 per query, read 64-bit with availability and without
-waiting; memory data is the range's bytes from the phone's mapping, invalidated first, with
-the device, mapping and bounds checked under the decoder lock. A record whose payload would
-pass 1 MiB, or that would take the process's unwritten payloads past 16 MiB, and a lost
-device's record, carry none; the process then asks as before. A process captures only query
-pools of the watched queue's device whose queries return one value each (occlusion,
-timestamp), and destroys such a pool only after every record capturing it has arrived: the
-decoder destroys query pools without holding them for captures.
 
 With `0x800000` a process may send `REPLY_MODE(1)` once on a device stream, which needs the
 process's completion feed (without one the stream ends). From then on the commands listed in
@@ -385,13 +373,55 @@ operations it has seen, of its events, and whether each query's result is availa
 `vkGetFenceStatus`, `vkWaitForFences`, `vkGetSemaphoreCounterValue`, `vkWaitSemaphores` and
 `vkGetEventStatus` resolve locally, waiting for feed records without holding the device
 stream; `vkGetQueryPoolResults` without `WAIT` asks the device only once the result is
-available. Frees and destroys of memory, buffers, images and their views are held until
+available, and not at all for queries the records capture ([Completion
+payloads](#completion-payloads)). Frees and destroys of memory, buffers, images and their views are held until
 every submission sent before them has completed, so work still running on any queue never
 loses an object it keeps resident. A fence or semaphore whose payload is
 imported or exportable, a fence signaled by the presentation engine's acquire, sparse
 binding signals and unwatched queues are asked about on the device stream as before.
 A reported timeline value can trail the device's actual value, as a status query on any
 device can; it never exceeds it.
+
+### Completion payloads
+
+With `0x200000` (granted with `0x200`) a watch also names what the phone captures for its
+record: the queries a batch ends and the coherent memory it writes. A batch with either is
+watched with COMPLETION_WATCH2 instead of COMPLETION_WATCH. Its size counts the 8-byte header,
+like every completion command: `32 + 32 × count`, little-endian, with boxed queue u64, serial
+u64 (both nonzero), count u32 (1 to 256) and flags u32 = 0, then from byte 32 `count` entries of
+32 bytes: kind u32, reserved u32 = 0, handle u64, a u64 and b u64.
+
+| Kind | Handle | a | b | Captured data |
+| --- | --- | --- | --- | --- |
+| 1, query range | boxed `VkQueryPool` | first query | query count | b × {value u64, availability u64}: `vkGetQueryPoolResults` with 64-bit results and availability |
+| 2, memory range | boxed `VkDeviceMemory` | offset | size | b bytes of the allocation |
+
+Once the watch's marker has completed, the phone captures each entry and the record's
+payload holds, per entry in order, a 32-byte head (kind u32, status i32, the capture's
+`VkResult`, handle u64, a u64, b u64) and its data, padded to 8 bytes. A reader stops at a kind
+it does not know. A record carries at most 1 MiB of payload, and a process at most 16 MiB of
+records not yet written; past either, the record's payload bytes are 0 and nothing was
+captured; a lost device's record carries none either. A capture whose status is neither `VK_SUCCESS` nor, for queries, `VK_NOT_READY` holds
+nothing usable.
+
+The process names only what the phone can capture safely. A query range names a pool of the
+watched queue's device whose queries report one value each (occlusion and timestamp pools);
+pipeline statistics, transform feedback and other pools are asked about on the device as
+before. The phone destroys a query pool without a lock against capturing it, so the process
+holds `vkDestroyQueryPool` until every record that captures the pool has arrived. A memory
+range names coherent memory the batch's commands write on the GPU (copies into a buffer,
+query results copied into one); the phone validates and captures it under its decoder lock,
+so a free needs no hold.
+
+`vkGetQueryPoolResults` for captured queries is answered in the process: every flag (64- or
+32-bit, availability, `PARTIAL`, `WAIT`, which waits for the records) and any stride and size
+that fit, without the device stream; a batch an idle wait reported complete keeps its
+queries pending until its record arrives. A query captured unavailable (later work reset
+it), one whose record came without a payload, and any range the process cannot answer are
+asked on the device as before. Captured memory is stored in the allocation's guest shadow, where an invalidate would
+write it, before the watch's submission is reported complete; a capture of memory a later
+batch also writes, or whose submission an idle wait already reported complete, is not stored.
+An invalidate still reads the bytes from the phone.
 
 ### Ordered presents
 
