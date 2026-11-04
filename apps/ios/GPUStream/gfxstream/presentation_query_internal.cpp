@@ -1,6 +1,7 @@
 // Copyright 2026 Caboose contributors. SPDX-License-Identifier: Apache-2.0
 #include "presentation_query_internal.h"
 #include "metal_surface_internal.h"
+#include "presentation_driver_lock.h"
 #include "vk_decoder_global_state.h"
 #include <new>
 #include <utility>
@@ -16,6 +17,7 @@ VkResult queryPresentationSurface(gfxstream::host::vk::CaboosePresentationPhysic
     auto get = runtimeInstanceProcAddr();
     if (!out || !get || !physical.instance || !physical.physicalDevice || !surface)
         return VK_ERROR_INITIALIZATION_FAILED;
+    DriverLock driver;
     auto capabilities = reinterpret_cast<PFN_vkGetPhysicalDeviceSurfaceCapabilitiesKHR>(
         get(physical.instance, "vkGetPhysicalDeviceSurfaceCapabilitiesKHR"));
     auto formats = reinterpret_cast<PFN_vkGetPhysicalDeviceSurfaceFormatsKHR>(

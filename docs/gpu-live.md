@@ -555,6 +555,12 @@ to an executor belongs to its generation:
   of it is answered after its loss. A registration of a buffer another process registered
   first (the compositor importing a client's buffer) registers nothing and ends nothing, and
   a generation admits up to 64 processes.
+- **Executor.** A new generation reaches the executor as many processes at once (the
+  compositor, the capability warm-up and every application making a new instance). The
+  Vulkan loader's tables of instances and drivers are not safe for that, so the executor
+  makes and destroys instances and devices and enumerates physical devices (the fork) and
+  makes surfaces, surface queries and swapchains (`presentation_driver_lock.h`) under one
+  driver lock. It never waits for a presentation while holding the lock.
 - **Compositor.** A ready executor supersedes a previous one whose loss or retirement report
   never arrived; a stale loss, retirement or buffer release is ignored instead of restarting
   the broker. It never composes a client's phone-resident buffer (its pixels exist only in
