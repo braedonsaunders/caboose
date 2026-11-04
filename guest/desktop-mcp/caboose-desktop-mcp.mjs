@@ -184,6 +184,38 @@ async function windowWords() {
     await rm(dir, { recursive: true, force: true })
   }
 }
+// Scrolled areas the application draws but leaves out of its tree (a11y.py's `unread`: a
+// list or icon view a toolkit does not expose): their words read from the window's pixels.
+async function unreadWords(regions) {
+  const listing = await seat('windows')
+  const window = listing.windows.find(w => w.id === listing.focused)
+  if (!window) return ''
+  const dir = await mkdtemp(join(tmpdir(), 'caboose-shot-'))
+  try {
+    const file = join(dir, 'window.png')
+    const shot = await seat('screenshot', '--out', file, '--window', String(window.id))
+    const png = await readFile(file)
+    const [x0, y0, w, h] = shot.rect ?? [0, 0, png.readUInt32BE(16), png.readUInt32BE(20)]
+    const sx = png.readUInt32BE(16) / w, sy = png.readUInt32BE(20) / h
+    const lines = []
+    for (const [index, [x, y, rw, rh]] of regions.entries()) {
+      const crop = { x: Math.max(0, Math.round((x - x0) * sx)), y: Math.max(0, Math.round((y - y0) * sy)), w: Math.round(rw * sx), h: Math.round(rh * sy) }
+      if (crop.w < 8 || crop.h < 8) continue
+      const out = join(dir, `region-${index}.png`)
+      const done = await new Promise(resolve => {
+        const child = spawn('convert', [file, '-crop', `${crop.w}x${crop.h}+${crop.x}+${crop.y}`, '+repage', '-colorspace', 'Gray', '-resize', '200%', out], { stdio: 'ignore' })
+        child.on('error', () => resolve(false))
+        child.on('close', code => resolve(code === 0))
+      })
+      if (!done) continue
+      const words = await read(out, [x, y, rw, rh], crop.w * 2, crop.h * 2)
+      if (words) lines.push(`In ${x},${y},${rw}x${rh}, drawn but not exposed by the application (read from pixels; x,y are each line's centre):\n${words}`)
+    }
+    return lines.join('\n')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+}
 // Small interface text reads better enlarged and in grey (ImageMagick, where installed), and
 // as sparse text rather than a page (tesseract --psm 11).
 function enlarge(file) {
@@ -210,8 +242,9 @@ function read(file, rect, width, height) {
       const lines = new Map()
       for (const row of out.split('\n').slice(1)) {
         const f = row.split('\t')
-        // Words only: textures and icons read as stray symbols at low confidence.
-        if (f.length < 12 || Number(f[10]) < 70 || !/[\p{L}]{3,}|\p{N}{2,}/u.test(f[11])) continue
+        // Words only: textures and icons read as stray symbols at low confidence. A short
+        // name with digits ("p1") counts when it is read with high confidence.
+        if (f.length < 12 || Number(f[10]) < 70 || !(/[\p{L}]{3,}|\p{N}{2,}/u.test(f[11]) || (Number(f[10]) >= 85 && /\p{L}[\p{L}\p{N}]|\p{N}\p{L}/u.test(f[11])))) continue
         const key = `${f[2]}.${f[3]}.${f[4]}`
         const line = lines.get(key) ?? { words: [], left: Infinity, top: Infinity, right: 0, bottom: 0 }
         line.words.push(f[11].trim())
@@ -470,6 +503,10 @@ const handlers = {
           + `act {"steps":[{"run":${JSON.stringify(name)},"texts":[…]}]}, with texts in this order (last time ${JSON.stringify(r.texts ?? [])}). `
           + 'Use it when the task is the same.'
       }).join('\n'))
+      if (lastState?.unread?.length) {
+        const words = await unreadWords(lastState.unread).catch(() => '')
+        if (words) parts.push(words)
+      }
       if (lastState?.note && !(lastState.elements ?? []).length && lastState.window) {
         const pictured = await pixelFallback().catch(() => [])
         if (pictured.length) return [{ type: 'text', text: parts.join('\n') }, ...pictured]

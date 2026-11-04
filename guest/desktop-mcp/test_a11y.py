@@ -121,6 +121,39 @@ class StaleCacheTests(unittest.TestCase):
                 worker.wait()
 
 
+class FrameOriginTests(unittest.TestCase):
+    surface = {"x": -61, "y": -55, "width": 722, "height": 602}
+    rect = {"x": 0, "y": 0, "width": 600, "height": 480}
+
+    def test_a_frame_the_size_of_the_window_geometry_measures_from_its_corner(self):
+        self.assertEqual(a11y.frame_origin((600, 480), self.rect, self.surface, (-61, -55)), (0, 0))
+
+    def test_a_frame_the_size_of_the_surface_measures_from_the_surface(self):
+        self.assertEqual(a11y.frame_origin((722, 602), self.rect, self.surface, (-61, -55)), (-61, -55))
+
+    def test_a_window_without_a_shadow_keeps_its_origin(self):
+        rect = {"x": 10, "y": 20, "width": 600, "height": 480}
+        self.assertEqual(a11y.frame_origin((600, 480), rect, dict(rect), (10, 20)), (10, 20))
+        self.assertEqual(a11y.frame_origin(None, rect, dict(rect), (10, 20)), (10, 20))
+
+
+class UnreadTests(unittest.TestCase):
+    pane = {"x": 0, "y": 100, "width": 600, "height": 380}
+
+    def test_a_scrolled_area_with_only_its_column_headers_exposed_is_unread(self):
+        headers = [{"x": 0, "y": 100, "width": 600, "height": 31}]
+        self.assertEqual(a11y.unread_regions([self.pane], headers), [[0, 100, 600, 380]])
+
+    def test_a_scrolled_area_whose_items_are_exposed_is_read(self):
+        rows = [{"x": 0, "y": 100 + 30 * i, "width": 600, "height": 30} for i in range(6)]
+        self.assertEqual(a11y.unread_regions([self.pane], rows), [])
+
+    def test_small_areas_and_outer_panes_of_an_unread_one_are_left_out(self):
+        small = {"x": 0, "y": 0, "width": 100, "height": 100}
+        outer = {"x": 0, "y": 0, "width": 800, "height": 600}
+        self.assertEqual(a11y.unread_regions([outer, small, self.pane], []), [[0, 100, 600, 380]])
+
+
 class CoverTests(unittest.TestCase):
     def screen(self, *windows):
         screen = a11y.SeatScreen.__new__(a11y.SeatScreen)

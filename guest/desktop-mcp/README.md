@@ -92,8 +92,16 @@ seat's pointer and keyboard.
 A window with no accessibility tree (SDL, games, custom-drawn toolkits) is still described:
 `look` returns its picture and, with Tesseract installed, the lines of text OCR finds in it
 with their centres in seat coordinates, both marked as read from pixels. `look` with `ocr`
-adds those lines for any window, for areas its controls leave out (icon views, canvases). The
-picture is enlarged and greyed first (ImageMagick) and read as sparse text. An X11 window that
+adds those lines for any window, for areas its controls leave out (icon views, canvases).
+Without being asked, `look` also reads from pixels each large scrolled area in which the
+exposed controls cover less than 15% and no document, text, terminal or filled list or table
+is exposed: a list or icon view a toolkit leaves out of its tree, such as GTK 4's column view
+in GTK 4.18, whose rows are drawn but not exposed. `elements` names those areas as `unread`.
+The picture is enlarged and greyed first (ImageMagick) and read as sparse text.
+
+A Wayland window that draws its own shadow is measured from the corner its toolkit uses:
+GTK 3 reports positions from the surface, shadow included, and GTK 4 from the window inside
+it. The top-level accessible's size says which. An X11 window that
 does not report its process is matched to the one application with a window of its title.
 
 These tools are the seat's assistive technology, and say so: before the first read and
