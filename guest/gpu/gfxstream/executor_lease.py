@@ -6,7 +6,11 @@ never equates a transport disconnect with native generation completion.
 from collections import deque
 from threading import Lock
 
-MAX_QUEUED_BYTES = 1024 * 1024
+# The broker's queue toward the phone holds as many bytes as its resume window (8 MiB), in
+# at most MAX_QUEUED_FRAMES frames: room for that many bytes of 64 KiB DATA reads and their
+# controls. Other bounded queues take at most MAX_QUEUED_MESSAGES messages.
+MAX_QUEUED_BYTES = 8 * 1024 * 1024
+MAX_QUEUED_FRAMES = 256
 MAX_QUEUED_MESSAGES = 64
 
 

@@ -22,7 +22,7 @@ import signal
 import time
 
 import buffer_presentation as buffers
-from executor_lease import ExecutorLease, MAX_QUEUED_BYTES, MAX_QUEUED_MESSAGES
+from executor_lease import ExecutorLease, MAX_QUEUED_BYTES, MAX_QUEUED_FRAMES, MAX_QUEUED_MESSAGES
 from gpu_admission import MAX_REQUEST, MAX_TOKEN, admit, features as admission_features
 from gpu_websocket import Decoder as WebSocketDecoder, server_frame
 from ipc_handoff import receive_record
@@ -574,7 +574,7 @@ class Session:
         self.bindings = ProcessBindings()
         self.binding_generation = self.bindings.begin()
         self.sequence = 1
-        self.pending = asyncio.Queue(maxsize=MAX_QUEUED_MESSAGES)
+        self.pending = asyncio.Queue(maxsize=MAX_QUEUED_FRAMES)
         self.pending_bytes = 0
         self.pending_count = 0
         self.reserved_bytes = 0
@@ -663,7 +663,7 @@ class Session:
                 if self.failed or self.closing_ws or self.draining or self.sender_stopped:
                     raise ConnectionError('session failed or draining')
                 if (self.credit_waiters[0] is waiter and
-                    self.pending_count + self.reserved_count < MAX_QUEUED_MESSAGES - CONTROL_HEADROOM_MESSAGES and
+                    self.pending_count + self.reserved_count < MAX_QUEUED_FRAMES - CONTROL_HEADROOM_MESSAGES and
                     DATA_CREDIT_BYTES <= MAX_QUEUED_BYTES - CONTROL_HEADROOM_BYTES - self.pending_bytes - self.reserved_bytes):
                     credit = DataCredit(self)
                     self.reserved_count += 1
@@ -686,7 +686,7 @@ class Session:
                 raise RuntimeError('invalid data credit')
             # No await between releasing the reservation and publishing its frame.
             credit.release()
-        if self.pending_count + self.reserved_count >= MAX_QUEUED_MESSAGES or charge > MAX_QUEUED_BYTES - self.pending_bytes - self.reserved_bytes:
+        if self.pending_count + self.reserved_count >= MAX_QUEUED_FRAMES or charge > MAX_QUEUED_BYTES - self.pending_bytes - self.reserved_bytes:
             raise BufferError('executor queue full')
         self.pending.put_nowait((frame, charge))
         self.pending_sequences.append(sequence)

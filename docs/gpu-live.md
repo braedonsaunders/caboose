@@ -11,8 +11,10 @@ describes.
 The host route is `/v1/gpu`, without query parameters, using the exact WebSocket
 subprotocol `caboose.gpu.live.v1`. It relays to the owner's display service `/gpu`
 on its existing port. There is no agent-seat GPU route. WebSocket messages are
-binary, uncompressed, at most 256 KiB, with at most 1 MiB and 64 pending messages
-in each direction. Vulkan replies use this connection independently of media.
+binary, uncompressed, at most 256 KiB. The broker queues at most 8 MiB, as much as its
+resume window holds, in 256 messages toward the phone; a local stream reads its next 64 KiB
+only once that much of the queue is free. Vulkan replies use this connection independently
+of media.
 
 The host sends the current per-wake display token as upstream `Authorization:
 Bearer …`, together with host-created `X-Caboose-GPU-Executor` UUID and
