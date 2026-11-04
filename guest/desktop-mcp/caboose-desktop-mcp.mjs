@@ -417,6 +417,7 @@ async function step(s) {
     if (s.args !== undefined && (typeof s.args !== 'object' || s.args === null || Array.isArray(s.args))) throw new Error('args must be an object')
     if (DIRECT_GROUPS.test(name)) {
       if (!DIRECT_TOOLS) throw new Error('direct tools are off (CABOOSE_DESKTOP_DIRECT_TOOLS=0)')
+      if (name.startsWith('terminal.')) return `${name}: ${await terminalTool(name, s.args ?? {})}`
       const { result } = await workerRequest(directWorker, { op: 'call', window: await focusedWindow(), name, args: s.args ?? {} })
       return `${name}: ${String(result).slice(0, 20000)}`
     }
@@ -437,7 +438,7 @@ async function step(s) {
 
 // Direct tools (direct.py): what the focused window's application, or the system, does
 // without its GUI, as typed tools. Their names start with a group; page tools have none.
-const DIRECT_GROUPS = /^(files|app|win|desktop|media|folder|settings|doc|browser)\./
+const DIRECT_GROUPS = /^(files|app|win|kde|desktop|media|folder|settings|doc|browser|chooser|terminal)\./
 const DIRECT_TOOLS = env.CABOOSE_DESKTOP_DIRECT_TOOLS !== '0'
 async function focusedWindow() {
   const listing = await seat('windows')
@@ -450,7 +451,47 @@ async function directTools() {
   if (!DIRECT_TOOLS) return []
   const window = await focusedWindow()
   if (!window) return []
-  return (await workerRequest(directWorker, { op: 'list', window })).tools ?? []
+  const tools = (await workerRequest(directWorker, { op: 'list', window })).tools ?? []
+  return [...tools, ...(await hasTerminal() ? TERMINAL_TOOLS : [])]
+}
+// A terminal in the focused window (VTE and other toolkits' terminal role): its session as
+// text, and a command run in it with its output back once the output stops changing.
+const TERMINAL_TOOLS = [
+  { name: 'terminal.read', params: { 'tail?': 'integer' }, description: "The terminal's text (its last tail characters, default 4000)" },
+  { name: 'terminal.run', params: { command: 'string', 'timeout?': 'seconds' },
+    description: 'Type a command and Return in this terminal; returns its output once the terminal stops changing (or timeout, default 30)' },
+]
+async function hasTerminal() {
+  const { elements } = JSON.parse((await a11y('elements', {}))[0].text)
+  return (elements ?? []).some(e => e.role === 'terminal')
+}
+async function terminalText() {
+  return JSON.parse((await a11y('text', {}))[0].text).text ?? ''
+}
+async function terminalTool(name, args) {
+  if (!await hasTerminal()) throw new Error('the focused window has no terminal')
+  if (name === 'terminal.read') {
+    const tail = Number.isInteger(args.tail) && args.tail > 0 ? Math.min(args.tail, 20000) : 4000
+    return (await terminalText()).trimEnd().slice(-tail)
+  }
+  if (name !== 'terminal.run') throw new Error(`no direct tool ${name}`)
+  const command = text(args.command, 'command', 10000)
+  if (command.includes('\n')) throw new Error('command must be one line')
+  const timeout = Math.min(Math.max(Number(args.timeout) || 30, 1), 600) * 1000
+  const before = await terminalText()
+  await step({ type: command + '\n' })
+  const deadline = performance.now() + timeout
+  let last = before, stableSince = performance.now(), changed = false
+  while (performance.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, 250))
+    const now = await terminalText()
+    if (now !== last) { last = now; stableSince = performance.now(); changed = true }
+    else if (changed && performance.now() - stableSince > 1000) break
+  }
+  const at = last.lastIndexOf(command)
+  const output = (at >= 0 ? last.slice(at + command.length) : last.slice(before.length)).replace(/^\s*\n/, '').trimEnd()
+  const finished = performance.now() < deadline
+  return (finished ? '' : `(still running after ${timeout / 1000} s) `) + (output.slice(-8000) || '(no output)')
 }
 const toolLine = t => `${t.name}(${Object.entries(t.params ?? {}).map(([k, v]) => `${k}: ${v}`).join(', ')}) — ${t.description}`
 // The focused application's direct tools, in full the first time `look` shows them.
@@ -463,8 +504,8 @@ async function directLines() {
   const names = tools.map(t => t.name).join(' ')
   if (shownDirect.get(key) === names) return `Direct tools of ${window?.app_id ?? 'this app'}: the ${tools.length} listed before.`
   shownDirect.set(key, names)
-  const actions = tools.filter(t => /^(app|win)\./.test(t.name))
-  const others = tools.filter(t => !/^(app|win)\./.test(t.name))
+  const actions = tools.filter(t => /^(app|win|kde)\./.test(t.name))
+  const others = tools.filter(t => !/^(app|win|kde)\./.test(t.name))
   const lines = [`Direct tools of ${window?.app_id ?? 'this app'} (no GUI needed; act {"tool":name,"args":{…}}):`, ...others.map(toolLine)]
   if (actions.length) {
     // Grouped by their name up to the last dot, each with its argument: (state) for a toggle
@@ -476,11 +517,19 @@ async function directLines() {
       const key = t.name.slice(0, at)
       groups.set(key, [...(groups.get(key) ?? []), t.name.slice(at + 1) + arg])
     }
-    const parts = [...groups].map(([prefix, names]) => names.length > 1 ? `${prefix}.{${names.join(',')}}` : `${prefix}.${names[0]}`)
+    // Within about 1500 characters; a group too long for the room left shows its first names.
     let shown = '', left = 0
-    for (const part of parts) if (shown.length + part.length < 1500) shown += (shown ? ' ' : '') + part; else left++
-    lines.push(`D-Bus actions (no args; (state) takes {"state":true|false}, (type) {"value":…}): ${shown}`
-      + (left ? ` and ${left} more groups (look find lists them)` : ''))
+    for (const [prefix, names] of groups) {
+      const room = 1500 - shown.length
+      if (room < 80) { left += names.length; continue }
+      let kept = names
+      const render = list => list.length > 1 ? `${prefix}.{${list.join(',')}${list.length < names.length ? ',…' : ''}}` : `${prefix}.${list[0]}`
+      while (kept.length > 1 && render(kept).length > room) kept = kept.slice(0, Math.max(1, Math.floor(kept.length * 0.8)))
+      shown += (shown ? ' ' : '') + render(kept)
+      left += names.length - kept.length
+    }
+    lines.push(`D-Bus actions (GApplication, KDE; no args; (state) takes {"state":true|false}, (type) {"value":…}): ${shown}`
+      + (left ? ` and ${left} more (look find lists them)` : ''))
   }
   return lines.join('\n')
 }
@@ -557,7 +606,7 @@ const handlers = {
         }
         const began = performance.now()
         const note = await step(s); if (note) notes.push(note); done++
-        timing.push(`${Object.keys(s ?? {})[0]}:${Math.round(performance.now() - began)}`)
+        timing.push(`${Object.keys(s ?? {})[0]}${s && typeof s.tool === 'string' ? `=${s.tool}` : ''}:${Math.round(performance.now() - began)}`)
         after = s && typeof s === 'object' && 'type' in s ? 'type'
           : s && typeof s === 'object' && typeof s.key === 'string' && /(^|\+)(ctrl|alt|super|control|meta)\+/i.test(s.key) ? 'shortcut' : undefined
       } catch (e) { error = e.message; break }

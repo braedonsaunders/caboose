@@ -75,7 +75,11 @@ COPY guest/ports ./guest/ports
 COPY guest/bridge ./guest/bridge
 COPY guest/flatpak ./guest/flatpak
 COPY guest/game ./guest/game
-COPY guest/gpu/install.sh ./guest/gpu/
+COPY guest/gpu ./guest/gpu
+COPY guest/webmcp ./guest/webmcp
+COPY guest/ai ./guest/ai
+COPY guest/memory ./guest/memory
+COPY guest/wine ./guest/wine
 COPY guest/apps/install.sh guest/apps/caboose-app guest/apps/appcore.py guest/apps/net.py guest/apps/remote.py guest/apps/page.js guest/apps/world.js guest/apps/guide.md guest/apps/apps-mcp.mjs ./guest/apps/
 COPY guest/container/caboose-seccomp.json ./guest/container/caboose-seccomp.json
 COPY guest/catalog/catalog.json ./guest/catalog/catalog.json

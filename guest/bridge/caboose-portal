@@ -6,6 +6,9 @@ answered from the phone (docs/native-bridge.md § File chooser); otherwise, and 
 phone hands a request back, xdg-desktop-portal-gtk shows the computer's own dialog.
 Settings: org.freedesktop.appearance and org.gnome.desktop.interface from the phone's
 appearance, so applications follow the phone live.
+On the agent seat, com.caboose.FileChooserAnswers (/com/caboose/FileChooser) lets the
+seat's desktop tools answer an open request without its dialog: Pending lists the open
+requests, Answer replies with paths (and closes the dialog), Cancel cancels one.
 """
 import os
 import pathlib
@@ -41,6 +44,13 @@ XML = f'''<node>
   </interface>
 </node>'''
 REQUEST_XML = f'<node><interface name="{REQUEST}"><method name="Close"/></interface></node>'
+ANSWERS = 'com.caboose.FileChooserAnswers'
+ANSWERS_PATH = '/com/caboose/FileChooser'
+ANSWERS_XML = f'''<node><interface name="{ANSWERS}">
+  <method name="Pending"><arg type="a(sssbb)" name="requests" direction="out"/></method>
+  <method name="Answer"><arg type="o" name="handle" direction="in"/><arg type="as" name="paths" direction="in"/></method>
+  <method name="Cancel"><arg type="o" name="handle" direction="in"/></method>
+</interface></node>'''
 
 
 def address():
@@ -64,6 +74,9 @@ class Portal:
         self.values = self.settings()
         for interface in self.info.interfaces:
             bus.register_object(PATH, interface, self.method, self.get_property, None)
+        if not self.owner:
+            answers = Gio.DBusNodeInfo.new_for_xml(ANSWERS_XML).interfaces[0]
+            bus.register_object(ANSWERS_PATH, answers, self.answers, None, None)
         if self.owner:
             monitor = Gio.File.new_for_path(str(core.APPEARANCE)).monitor_file(Gio.FileMonitorFlags.WATCH_MOVES, None)
             monitor.connect('changed', lambda *_: self.appearance_changed())
@@ -122,7 +135,7 @@ class Portal:
             handle, app, _parent, title, options = params.unpack()
             kind = {'OpenFile': 'file.open', 'SaveFile': 'file.save'}.get(method)
             pending = {'method': method, 'params': params, 'invocation': invocation, 'delegated': False,
-                       'registration': self.export_request(handle)}
+                       'registration': self.export_request(handle), 'title': title, 'options': options}
             self.open[handle] = pending
             if kind is None or not self.owner or not core.present():
                 self.hand_back(handle)
@@ -130,6 +143,64 @@ class Portal:
             self.ask(handle, pending, kind, app, title, options)
         except Exception as error:  # a malformed call must not take the backend down
             invocation.return_dbus_error('org.freedesktop.portal.Error.Failed', str(error)[:300])
+
+    # Answers from the agent seat's desktop tools --------------------------------------------
+
+    def answers(self, _bus, _sender, _path, _interface, method, params, invocation):
+        try:
+            if method == 'Pending':
+                rows = [(handle, p['method'], p.get('title') or '', bool((p.get('options') or {}).get('directory')),
+                         bool((p.get('options') or {}).get('multiple'))) for handle, p in self.open.items()]
+                invocation.return_value(GLib.Variant('(a(sssbb))', (rows,)))
+                return
+            handle = params.unpack()[0]
+            pending = self.open.get(handle)
+            if pending is None:
+                invocation.return_dbus_error('org.freedesktop.portal.Error.NotFound', 'no such open request')
+                return
+            if method == 'Cancel':
+                self.answered(handle, pending, 1, {})
+                invocation.return_value(None)
+                return
+            paths = [os.path.abspath(p) for p in params.unpack()[1]]
+            results = self.chosen_paths(pending, paths)
+            self.answered(handle, pending, 0, results)
+            invocation.return_value(None)
+        except ValueError as error:
+            invocation.return_dbus_error('org.freedesktop.portal.Error.InvalidArgument', str(error))
+        except Exception as error:
+            invocation.return_dbus_error('org.freedesktop.portal.Error.Failed', str(error)[:300])
+
+    @staticmethod
+    def chosen_paths(pending, paths):
+        """The results for `paths` answering `pending`, or ValueError saying why they cannot."""
+        options = pending.get('options') or {}
+        if not paths:
+            raise ValueError('give at least one path')
+        if pending['method'] == 'OpenFile':
+            if len(paths) > 1 and not options.get('multiple'):
+                raise ValueError('this request takes one path')
+            for path in paths:
+                if not (os.path.isdir(path) if options.get('directory') else os.path.isfile(path)):
+                    raise ValueError(f"{path} is not an existing {'folder' if options.get('directory') else 'file'}")
+            return {'uris': GLib.Variant('as', [Gio.File.new_for_path(p).get_uri() for p in paths])}
+        if pending['method'] == 'SaveFile':
+            if len(paths) != 1:
+                raise ValueError('a save takes one path')
+            if not os.path.isdir(os.path.dirname(paths[0])):
+                raise ValueError(f'{os.path.dirname(paths[0])} is not an existing folder')
+            return {'uris': GLib.Variant('as', [Gio.File.new_for_path(paths[0]).get_uri()]), 'writable': GLib.Variant('b', True)}
+        raise ValueError(f"{pending['method']} cannot be answered with paths")
+
+    def answered(self, handle, pending, response, results):
+        """Reply to the caller now; a dialog showing for the request closes."""
+        delegated = pending['delegated']
+        pending['answered'] = True
+        if not delegated and pending.get('request'):
+            core.withdraw(pending['request']['id'])
+        self.reply(handle, response, results)
+        if delegated:
+            self.bus.call(GTK, handle, REQUEST, 'Close', None, None, Gio.DBusCallFlags.NONE, -1, None, None, None)
 
     # File chooser -------------------------------------------------------------------------
 
@@ -233,6 +304,12 @@ class Portal:
         self.share_environment()
 
         def done(bus, result):
+            if pending.get('answered'):  # answered without the dialog; it has closed
+                try:
+                    bus.call_finish(result)
+                except GLib.Error:
+                    pass
+                return
             self.open.pop(handle, None)
             if pending.get('registration'):
                 bus.unregister_object(pending['registration'])

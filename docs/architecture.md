@@ -2603,7 +2603,9 @@ code: its results are the page's word, like its text.
 
 **Direct tools.** `look` also lists what the focused application offers through its own
 interfaces, and the same `tool` step calls it, so an agent can skip the GUI: its GApplication
-actions on its D-Bus names, its desktop entry's actions, its MPRIS player, `FileManager1`, its
+and KDE main-window actions on its D-Bus names, its desktop entry's actions, its terminal as
+text with a typed `run`, an open portal file dialog answered without the dialog (caboose-portal
+on the agent seat), its MPRIS player, `FileManager1`, its
 GSettings schemas and xfconf channel (typed and range-checked), its document through
 LibreOffice's UNO (the launcher opens the seat's UNO pipe), and, in Chromium, its tabs and a
 DevTools `evaluate` through the extension (`chrome.debugger`, attached for the one command).

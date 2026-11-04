@@ -59,7 +59,10 @@ and acts only in the agent seat's session (its bus, its profile's home and setti
 
 | Tools | From | Offered when |
 | --- | --- | --- |
+| `terminal.read`, `terminal.run` | the focused window's terminal as text; `run` types one command line and Return and returns the output once the terminal has not changed for a second (or after `timeout`, default 30 s) | the window has a terminal |
+| `chooser.answer`, `chooser.cancel` | an open portal file dialog, answered with a path in the agent's home without the dialog (caboose-portal's `com.caboose.FileChooserAnswers`) | a portal file request is open on the seat |
 | `files.list`, `read`, `write`, `copy`, `move`, `mkdir`, `trash`, `extract` | the file system, inside the agent's home only (symbolic links resolved; `trash`, never delete; archive entries that would leave the target refused) | always |
+| `kde.*` | a KDE application's main-window actions (`org.kde.KMainWindow` `actions`, `activateAction`) on the names it owns or that carry its id (a sandboxed application's belong to its bus proxy) | it has one main window |
 | `app.*`, `win.*` | the application's GApplication actions (`org.gtk.Actions` on the D-Bus names its process owns); `win.*` those of its one exported window; `{"state": …}` sets a toggle, `{"value": …}` passes an argument | the application exports actions |
 | `desktop.*` | its desktop entry's actions, started through the launcher | its entry has actions |
 | `media.play`, `pause`, `play_pause`, `next`, `previous`, `stop`, `status`, `open` | its MPRIS player | it owns `org.mpris.MediaPlayer2.*` |

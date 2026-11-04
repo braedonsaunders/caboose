@@ -24,6 +24,9 @@ from general mechanisms, found for whichever application has the window:
   (which opens the seat's UNO pipe);
 - browser.*: its tabs through the Caboose WebMCP extension (the DevTools protocol), for
   Chromium on the agent seat;
+- kde.*: the actions of a KDE application's main window (org.kde.KMainWindow);
+- chooser.answer, chooser.cancel: an open portal file dialog, answered with a path in the
+  agent's home without the dialog (caboose-portal's com.caboose.FileChooserAnswers);
 - files.*: files in the agent's home, for every window; trash, never delete.
 
 Everything acts in the agent seat's session only: its bus, its profile's home."""
@@ -71,13 +74,18 @@ def dbus_call(name, path, interface, method, args=None, reply=None, timeout=5000
     return result.unpack() if result is not None else None
 
 
-def names_of(pid):
-    """Well-known names on the session bus owned by process `pid`."""
+def names_of(pid, app_id=None):
+    """Well-known names on the session bus of the application: those its process `pid` owns,
+    and those named after its id (a sandboxed application's names belong to its bus proxy:
+    the id itself, or the id with a suffix, as KDE's org.kde.kate-1234)."""
     if not pid:
         return []
     found = []
     for name in dbus_call('org.freedesktop.DBus', '/org/freedesktop/DBus', 'org.freedesktop.DBus', 'ListNames', None, '(as)')[0]:
         if name.startswith(':'):
+            continue
+        if app_id and (name == app_id or name.startswith(app_id + '.') or name.startswith(app_id + '-')):
+            found.append(name)
             continue
         try:
             owner = dbus_call('org.freedesktop.DBus', '/org/freedesktop/DBus', 'org.freedesktop.DBus',
@@ -311,6 +319,92 @@ def gtk_call(spec, args):
     values = [GLib.Variant('v', to_variant(param, args.get('value')))] if param else []
     bus().call_sync(name, path, 'org.gtk.Actions', 'Activate',
                     GLib.Variant.new_tuple(GLib.Variant('s', action), GLib.Variant('av', values), empty), None, 0, 5000, None)
+    return f'Activated {action}.'
+
+
+# --- Portal file chooser requests ------------------------------------------------------------
+
+PORTAL = 'org.freedesktop.impl.portal.desktop.caboose'
+
+
+def chooser_requests():
+    try:
+        return dbus_call(PORTAL, '/com/caboose/FileChooser', 'com.caboose.FileChooserAnswers', 'Pending', None, '(a(sssbb))')[0]
+    except Exception:
+        return []
+
+
+def chooser_tools(window):
+    requests = chooser_requests()
+    if not requests:
+        return {}
+    handle, method, title, directory, multiple = chooser_request(window, requests)
+    what = 'a folder' if directory else 'files' if multiple else 'a file'
+    verb = 'save to' if method == 'SaveFile' else f'open ({what})'
+    return {'chooser.answer': ({'path': 'string', 'paths?': 'string list'}, f'Answer the file dialog "{title}" with the path to {verb}, without the dialog', ('chooser',)),
+            'chooser.cancel': ({}, f'Cancel the file dialog "{title}"', ('chooser',))}
+
+
+def chooser_request(window, requests):
+    titled = [r for r in requests if r[2] and r[2] == window.get('title')]
+    return (titled or requests)[-1]
+
+
+def chooser_call(window, name, args):
+    requests = chooser_requests()
+    if not requests:
+        raise Failure('no file dialog is open')
+    handle = chooser_request(window, requests)[0]
+    if name == 'chooser.cancel':
+        dbus_call(PORTAL, '/com/caboose/FileChooser', 'com.caboose.FileChooserAnswers', 'Cancel', _v('(o)', (handle,)))
+        return 'Cancelled the dialog.'
+    paths = args.get('paths') or ([args['path']] if args.get('path') else [])
+    if not isinstance(paths, list) or not paths:
+        raise Failure('give path (or paths)')
+    resolved = [inside(p) for p in paths]
+    _, GLib = _gi()
+    try:
+        dbus_call(PORTAL, '/com/caboose/FileChooser', 'com.caboose.FileChooserAnswers', 'Answer', _v('(oas)', (handle, resolved)))
+    except GLib.Error as error:
+        raise Failure(error.message.split(': ', 1)[-1] if hasattr(error, 'message') else str(error))
+    return f'Answered the dialog with {", ".join(resolved)}.'
+
+
+# --- KDE main window actions ---------------------------------------------------------------
+
+def kde_actions(names):
+    """The actions of a KDE application's one main window (org.kde.KMainWindow: its menus and
+    toolbars' actions, by name)."""
+    tools = {}
+    for name in names:
+        try:
+            top = dbus_call(name, '/', 'org.freedesktop.DBus.Introspectable', 'Introspect', None, '(s)')[0]
+        except Exception:
+            continue
+        windows = []
+        for node in re.findall(r'<node name="([^"]+)"', top):
+            try:
+                xml = dbus_call(name, f'/{node}', 'org.freedesktop.DBus.Introspectable', 'Introspect', None, '(s)')[0]
+            except Exception:
+                continue
+            windows += [f'/{node}/{child}' for child in re.findall(r'<node name="(MainWindow_\d+)"', xml)]
+        if len(windows) != 1:
+            continue
+        try:
+            actions = dbus_call(name, windows[0], 'org.kde.KMainWindow', 'actions', None, '(as)')[0]
+        except Exception:
+            continue
+        for action in actions:
+            if action and re.fullmatch(r'[\w.-]+', action):
+                tools[f'kde.{action}'] = ({}, 'KDE main window action', ('kde', name, windows[0], action))
+    return tools
+
+
+def kde_call(spec, _args):
+    _, name, path, action = spec
+    if not dbus_call(name, path, 'org.kde.KMainWindow', 'actionIsEnabled', _v('(s)', (action,)), '(b)')[0]:
+        raise Failure(f'{action} is disabled now')
+    dbus_call(name, path, 'org.kde.KMainWindow', 'activateAction', _v('(s)', (action,)), '(b)')
     return f'Activated {action}.'
 
 
@@ -776,11 +870,12 @@ def tools_for(window):
     tools = {}
     names = []
     try:
-        names = names_of(window.get('pid'))
+        names = names_of(window.get('pid'), window.get('app_id'))
     except Exception:
         pass
-    for group in (lambda: gtk_actions(names), lambda: desktop_actions(window), lambda: media_tools(names), lambda: folder_tools(names),
-                  lambda: settings_tools(window), lambda: office_tools(window), lambda: browser_tools(window)):
+    for group in (lambda: gtk_actions(names), lambda: kde_actions(names), lambda: desktop_actions(window), lambda: media_tools(names), lambda: folder_tools(names),
+                  lambda: settings_tools(window), lambda: office_tools(window), lambda: browser_tools(window),
+                  lambda: chooser_tools(window)):
         try:
             tools.update(group())
         except Exception:
@@ -797,6 +892,8 @@ def call(window, name, args):
         return settings_get(window, args) if name == 'settings.get' else settings_set(window, args)
     if name.startswith('doc.'):
         return office_call(window, name, args)
+    if name.startswith('chooser.'):
+        return chooser_call(window, name, args)
     if name.startswith('browser.'):
         if not browser_socket(window.get('pid')):
             raise Failure('the focused window is not a browser with the Caboose WebMCP extension')
@@ -809,6 +906,8 @@ def call(window, name, args):
         return gtk_call(spec, args)
     if spec[0] == 'desktop':
         return desktop_call(spec, args)
+    if spec[0] == 'kde':
+        return kde_call(spec, args)
     if spec[0] == 'mpris':
         return media_call(spec, args)
     if spec[0] == 'fm':

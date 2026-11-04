@@ -7,7 +7,7 @@ shares it; `caboose-scan` scans a document with the phone.
 
 | File | What |
 | --- | --- |
-| `caboose-portal` | The xdg-desktop-portal backend `org.freedesktop.impl.portal.desktop.caboose`: `FileChooser` (answered from the phone, or by `xdg-desktop-portal-gtk`) and `Settings` (`org.freedesktop.appearance`, `org.gnome.desktop.interface`, `org.gnome.desktop.wm.preferences`). D-Bus activated on each seat's session bus. |
+| `caboose-portal` | The xdg-desktop-portal backend `org.freedesktop.impl.portal.desktop.caboose`: `FileChooser` (answered from the phone, or by `xdg-desktop-portal-gtk`) and `Settings` (`org.freedesktop.appearance`, `org.gnome.desktop.interface`, `org.gnome.desktop.wm.preferences`). D-Bus activated on each seat's session bus. On the agent seat it also serves `com.caboose.FileChooserAnswers` at `/com/caboose/FileChooser` (`Pending`, `Answer(handle, paths)`, `Cancel(handle)`), through which desktop MCP's `chooser.*` tools answer an open request without its dialog: an open path must exist, a save path's folder must. |
 | `caboose-bridge` | The host's commands (`drain`, `respond`, `appearance`) and the owner seat's daemon (`daemon`): MPRIS to `now-playing.json` and commands back, the appearance in GTK's `settings.ini` for X11 applications, and the display's environment for D-Bus-activated services. |
 | `caboose-scan` | `caboose-scan [--format pdf\|jpeg] [--output PATH]`: the phone scans a document; prints each file's path. |
 | `bridgecore.py` | Validation and the logic both share, without D-Bus. |
