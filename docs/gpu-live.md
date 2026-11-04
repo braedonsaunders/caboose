@@ -404,7 +404,9 @@ it), one whose record came without a payload, and any range the process cannot a
 asked on the device as before. Captured memory is stored in the allocation's guest shadow, where an invalidate would
 write it, before the watch's submission is reported complete; a capture of memory a later
 batch also writes, or whose submission an idle wait already reported complete, is not stored.
-An invalidate still reads the bytes from the phone.
+The driver's invalidate after a wait does not read stored ranges from the phone again; it
+reads only the GPU-written ranges no record stored (left out of a record for size, captured
+for an older batch, failed, or written without completion payloads).
 
 ### Ordered presents
 

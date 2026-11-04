@@ -157,6 +157,7 @@ Each patch is one feature. Several change Mesa's generated encoder
 | 0084 event-status-recheck | A reset event the tracker keeps answering locally is asked about on the device every 250 ms while it is polled |
 | 0085 guest-chosen-set-ids | With hello `0x100000`, a batched descriptor pool takes 1 + maxSets consecutive guest handles, its own and its sets' ids, and never asks the phone for them (`../bounded-memory/guest_set_ids.h`) |
 | 0086 completion-payloads | With hello `0x200000`, a batch's ended occlusion and timestamp queries and its GPU writes of coherent memory are watched with `COMPLETION_WATCH2`; the records' captures answer `vkGetQueryPoolResults` locally (every flag, a WAIT by waiting for the record) and fill the memory's shadow; a pool's destroy waits for the records that capture it (`../bounded-memory/completion_payloads.h`) |
+| 0088 local-invalidate | The invalidate after a wait skips the coherent ranges the batch's completion record stored in the shadow and reads only the rest; GPU writes are kept as up to eight spans per allocation and read as separate ranges unless one range takes no more round trips; a copy from an image marks the bytes of its texel blocks instead of 16 per texel (`../bounded-memory/gpu_writes.h`) |
 
 The patch messages describe each change. To change the driver, prepare a tree, commit
 the prepared state, edit, and regenerate the affected patch with `git format-patch`

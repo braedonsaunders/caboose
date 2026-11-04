@@ -129,7 +129,8 @@ lines carry no payloads, handles or identities.
 Each process's driver also writes `CABOOSE_GPU_MEMORY_TRAFFIC` to its standard error
 every five seconds in which anything moved: the bytes its sockets sent and received, the
 mapped memory it flushed and read back (the application's own flushes and invalidates apart
-from the driver's upkeep of its host-coherent type), the readback ranges copies into buffers
+from the driver's upkeep of its host-coherent type), the GPU-written ranges completion records
+delivered so the upkeep did not read them back, the readback ranges copies into buffers
 marked, the coherent upkeep's written blocks and whole mappings, staging uploads,
 upload-cache pieces, and what the copied and hashed shadows considered and sent
 (`bounded-memory/memory_traffic.h`).

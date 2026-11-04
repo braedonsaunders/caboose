@@ -23,6 +23,7 @@ transfer and reply handling, so it can be tested without Mesa.
 | `static_query_cache.h` | Answers of physical-device format queries, which cannot change, by their exact parameters |
 | `query_results.h` | Query results without a round trip: a no-wait vkGetQueryPoolResults returns what its earlier identical request found, and resets drop stale results |
 | `completion_feed.h` | The completion feed's wire format, its record reader, and the tracker of every fence, timeline semaphore, event and query the process follows, with the query values and memory captures records bring; the pause-on-loss waits: a paused process holds a loss until a new executor's socket appears, including a loss the phone replies with and a device stream that ends before the broker removes the old socket (`test_pause_on_loss.cpp`) |
+| `gpu_writes.h` | The GPU's writes of coherent memory: up to eight disjoint spans per allocation, what an invalidate reads of them (each span its own atom-aligned range unless one range takes no more 64 KiB round trips), and the bytes a copy from an image writes in its buffer, from the texel block size |
 | `completion_payloads.h` | Completion payloads with hello `0x200000` (docs/gpu-live.md, "Completion payloads"): `COMPLETION_WATCH2`, the captures in a record's payload, which query pools are captured, and `vkGetQueryPoolResults`' output written from captured values for every flag and layout |
 | `guest_set_ids.h` | Set ids a batched descriptor pool chooses with hello `0x100000`: the guest handles after the pool's own, in one block of the handle counter, and the create flag that tells the decoder so (docs/gpu-live.md, "Guest-chosen set ids") |
 | `handles.h` | Vulkan handles as 64-bit keys and back, without the cast through `uintptr_t` that drops the upper half of a non-dispatchable handle in 32-bit builds |
@@ -41,6 +42,13 @@ The first failed packet's result is returned and no later packet is sent; a part
 or a failed reply read invalidates the stream. An invalidate retains every chunk until
 all ranges succeed, then publishes them in their original order, overlaps included;
 budget exhaustion or a failed chunk publishes nothing.
+
+The host-coherent type's upkeep reads back after a wait what copies into its buffers wrote
+on the GPU (`gpu_writes.h`): each command buffer and each watched submission keeps up to
+eight disjoint spans per allocation, and a copy from an image marks the bytes of the copied
+aspect's texel blocks. The invalidate after a wait reads the spans of the submissions that
+completed, less what their completion records delivered (below), in one call: each span as
+its own range, unless reading neighbours as one range takes no more 64 KiB round trips.
 
 ## Command buffers and replies
 
@@ -103,10 +111,14 @@ captures give each query its value, which `vkGetQueryPoolResults` writes in ever
 call asks for without the device; a `WAIT` waits for the records. A reset, or a later batch
 that ends the query again, drops the value. A batch an idle wait completes keeps its queries
 pending until the record arrives, and `vkDestroyQueryPool` waits until every record that
-captures the pool has. Captured memory is copied into the allocation's shadow, under the
-tracker's lock and before the watch completes, then the flush shadow notes that the host
-holds those bytes and the write watch forgets the copy; memory a later batch also writes, or
-whose batch an idle wait already completed, is left alone.
+captures the pool has. Captured memory is copied into the allocation's shadow under the
+tracker's lock, then the flush shadow notes that the host holds those bytes and the write
+watch forgets the copy, and only then does the watch complete (an idle wait meanwhile waits
+for it); memory a later batch also writes, or whose batch an idle wait already completed, is
+left alone. The ranges stored are delivered: the invalidate after the wait takes them
+(`takeDelivered`) and does not read them from the phone. Ranges a record left out, a failed
+capture, and writes without the feed or the grant are read back as before; at most 4096
+allocations' delivered ranges wait to be taken, the oldest dropped first (then read back).
 
 ## Deferred frees
 
@@ -218,7 +230,10 @@ held destroys across queues, devices and executors, event status replies, the bl
 guest-chosen descriptor set ids, and completion payloads: `COMPLETION_WATCH2`'s bytes, payload
 parsing (padding, unknown kinds, truncation), query results written from captured values,
 and the tracker fed records through a socket, fault reports, idle waits, held pool destroys
-and memory stored in a shadow included. They exercise
+and memory stored in a shadow included; delivered memory (`test_delivered_memory.cpp`): which
+stored ranges count as delivered, notes before completion, idle waits during a store, and
+what the invalidate still reads; and GPU writes (`test_gpu_writes.cpp`): bounded spans,
+subtraction, invalidate ranges and image copy sizes. They exercise
 the headers, not the generated encoder or a device. `test_requirements_cache.cpp` needs
 Vulkan's headers on the include path (`test.sh` uses Mesa's, or
 `CABOOSE_VULKAN_INCLUDE`).
