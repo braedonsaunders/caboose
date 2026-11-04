@@ -244,14 +244,13 @@ class Seat:
             self.sh(f"pkill -{signal} -f '{self.dir}/'", check=False)
             time.sleep(2)
         os.makedirs(os.path.join(self.o.out, 'seat'), exist_ok=True)
-        # Only while no other Steam runs: a directory made meanwhile could be its.
-        others = self.sh('for p in $(pgrep -u caboose -f "bwrap.*com.valvesoftware.Steam"); do tr "\\0" "\\n" < /proc/$p/environ 2>/dev/null | '
-                         f'grep -qx CABOOSE_CHAOS_SEAT={os.getpid()} || echo $p; done', user='caboose', check=False).split()
-        if others:
-            print(f'left {len(self.shm() - getattr(self, "shm_before", set()))} shared-memory directories: another Steam runs', flush=True)
-        else:
-            for path in sorted(self.shm() - getattr(self, 'shm_before', set())):
-                self.sh(f'rm -rf {shlex.quote(path)}', check=False)
+        # Ending Steam with signals leaves its Flatpak shared-memory directory behind. A directory
+        # made during the run that no process maps or holds open is removed; one in use (another
+        # Steam's) is left.
+        for path in sorted(self.shm() - getattr(self, 'shm_before', set())):
+            name = shlex.quote(os.path.basename(path))
+            self.sh(f'for p in /proc/[0-9]*; do grep -qs {name} $p/maps && exit 0; ls -l $p/fd 2>/dev/null | grep -qs {name} && exit 0; done; '
+                    f'rm -rf {shlex.quote(path)}', check=False)
         for f in self.sh(f'cd {self.dir} && ls *.log', check=False).split():
             with open(os.path.join(self.o.out, 'seat' if f not in ('display.log', 'probe.log') else '', f), 'w') as out:
                 out.write(self.sh(f'cat {self.dir}/{f}', check=False))
