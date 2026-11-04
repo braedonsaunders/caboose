@@ -1,5 +1,5 @@
 From: Caboose <caboose@local>
-Subject: [PATCH 90/90] Count a pool's capacity when its sets' handles are guest-assigned
+Subject: [PATCH 90/91] Count a pool's capacity when its sets' handles are guest-assigned
 
 With guest-assigned descriptor set handles (hello 0x100) an allocation never waits for the
 device's result, and the decoder put sets a full pool could not hold in overflow pools of
