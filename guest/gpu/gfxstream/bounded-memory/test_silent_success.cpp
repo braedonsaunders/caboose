@@ -60,7 +60,8 @@ int main() {
 
     // The listed commands, and none of the others the guest defers or waits for.
     assert(silent::silentOpcode(20018) && silent::silentOpcode(20050) && silent::silentOpcode(275454371u));
-    assert(!silent::silentOpcode(20090) && !silent::silentOpcode(20091));  // a staged begin and end
+    assert(silent::silentOpcode(20090) && silent::silentOpcode(20091));  // command buffer begin and end
+    assert(!silent::silentOpcode(20092));  // vkResetCommandBuffer
     assert(!silent::silentOpcode(20034) && !silent::silentOpcode(20036));  // flush, fence reset
     assert(!silent::silentOpcode(0));
 
@@ -106,7 +107,11 @@ int main() {
     }
 
     auto& mode = silent::replyMode();
-    int a = 0, b = 0;
+    int a = 0, b = 0, device = 0, staging = 0, recorder = 0;
+    mode.deviceStream(&device, true);
+    mode.encoderMade(&a, &device);
+    mode.encoderMade(&b, &device);
+    mode.encoderMade(&recorder, &staging);
     // Nothing switches before the grant, before the feed runs, or after the executor left.
     assert(!mode.due(&a, true) && !mode.silent(&a));
     mode.granted(true);
@@ -117,9 +122,11 @@ int main() {
     // Once per stream and connection generation.
     assert(mode.due(&a, true) && mode.silent(&a) && !mode.silent(&b) && mode.anySilent());
     assert(!mode.due(&a, true));
+    // An encoder recording a command buffer locally never switches.
+    assert(!mode.due(&recorder, true) && !mode.silent(&recorder));
 
-    // A silent stream queues no reply for a listed create, and one fewer result for a staged
-    // submit: its command buffers' begins and ends still reply.
+    // A silent stream queues no reply for a listed create, nor for a staged submit: its command
+    // buffers' begins and ends and the submit itself.
     {
         memory::DeferredReplies table;
         memory::lastOpcode = 20050;  // vkCreateBuffer
@@ -128,21 +135,21 @@ int main() {
         assert(mode.takeUnconfirmed(&a) && !mode.takeUnconfirmed(&a));
         memory::lastOpcode = 20018;  // vkQueueSubmit with two staged command buffers
         table.addCheckedResults(&a, 5, 4096);
-        assert(table.pending() == 4);
+        assert(table.pending() == 0);
         memory::lastOpcode = 20028;  // vkBindBufferMemory
         table.addCheckedResult(&a, 32);
-        assert(table.pending() == 4);
+        assert(table.pending() == 0);
         // A command not listed still queues its reply, and so does the same command on a stream
         // that has not switched.
         memory::lastOpcode = 20036;  // vkResetFences
         table.addCheckedResult(&a, 32);
-        assert(table.pending() == 5);
+        assert(table.pending() == 1);
         memory::lastOpcode = 20050;
         table.addHandleCreate(&b, 0xCA00000100000002ull, 64);
-        assert(table.pending() == 6 && !mode.takeUnconfirmed(&b));
-        // The drain reads only what the device writes: four begin and end results and the reset.
+        assert(table.pending() == 2 && !mode.takeUnconfirmed(&b));
+        // The drain reads only what the device writes: the reset's result.
         ByteStream replies;
-        for (int i = 0; i < 5; ++i) replies.put(int32_t(0));
+        replies.put(int32_t(0));
         assert(table.drain(&a, &replies) && replies.next == replies.bytes.size() && !replies.invalidated);
         assert(table.pending() == 1);
         ByteStream created;
@@ -176,6 +183,11 @@ int main() {
     }
     assert(mode.due(&a, true) && mode.silent(&a));
 
+    // A gone encoder forgets its switch; its address made again on a device stream starts over.
+    mode.encoderGone(&a);
+    assert(!mode.silent(&a));
+    mode.encoderMade(&a, &device);
+    assert(mode.due(&a, true));
     // A FAULT is the loss of the process's device.
     assert(!completion::executorLost.load());
     silent::fault(20065, -3);

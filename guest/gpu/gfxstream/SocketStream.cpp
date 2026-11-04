@@ -295,8 +295,12 @@ static const unsigned char* lostReply(unsigned char* data, size_t len) {
     for (size_t i = 0; i < len; ++i) data[i] = reinterpret_cast<const unsigned char*>(&lost)[i % sizeof(lost)];
     return data;
 }
-CabooseSocketStream::CabooseSocketStream(size_t size) : IOStream(size) {}
+// Encoders made on this stream may switch it to silent success (silent_success.h).
+CabooseSocketStream::CabooseSocketStream(size_t size) : IOStream(size) {
+    caboose::silent::replyMode().deviceStream(static_cast<gfxstream::guest::IOStream*>(this), true);
+}
 CabooseSocketStream::~CabooseSocketStream() {
+    caboose::silent::replyMode().deviceStream(static_cast<gfxstream::guest::IOStream*>(this), false);
     // Do not flush during teardown: an interrupted session must not send stale work.
     CabooseSocketStream* self = this;
     firstStream.compare_exchange_strong(self, nullptr);

@@ -1,5 +1,6 @@
 // Generated from the guest encoder (commands whose reply the guest defers: guest-assigned
-// creates and allocates, submits, flushes, binds, descriptor updates). Under silent-success
+// creates and allocates, submits with their staged command buffer begins and ends, binds,
+// host event operations). Under silent-success
 // (hello 0x800000) the decoder writes no reply for these on VK_SUCCESS (docs/gpu-live.md).
 20018u, // vkQueueSubmit
 20021u, // vkAllocateMemory
@@ -28,6 +29,8 @@
 20085u, // vkCreateCommandPool
 20088u, // vkAllocateCommandBuffers
 20089u, // vkFreeCommandBuffers
+20090u, // vkBeginCommandBuffer
+20091u, // vkEndCommandBuffer
 20138u, // vkBindBufferMemory2
 20139u, // vkBindImageMemory2
 20225u, // vkCreateRenderPass2KHR

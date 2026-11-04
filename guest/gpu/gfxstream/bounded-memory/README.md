@@ -63,9 +63,9 @@ that failure, so the device is lost. Only the first encoder of a process may def
 second encoder turns deferral off for the process. Before the WSI surface socket names
 objects or work from the stream, `drainObjects` reads replies through the last pending
 create or submit and leaves later fence waits and plain results pending. On a stream switched
-to silent success (`silent_success.h`) the creates, allocations, binds, submits and event
-operations it lists queue no reply, and a staged submit queues only its command buffers'
-begin and end results; the encoder then follows `drainObjects` with one round trip when such
+to silent success (`silent_success.h`) the creates, allocations, binds, submits (with their
+staged command buffer begins and ends), command buffer begins and ends and event operations
+it lists queue no reply; the encoder then follows `drainObjects` with one round trip when such
 a command went out since the last.
 
 Without the completion feed, a submit that signals a fence is followed by a bounded

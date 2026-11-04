@@ -645,9 +645,10 @@ command of that list without a result counts as succeeded. They are the commands
 does not wait for: guest-assigned creates and allocations (memory, fences, semaphores, query
 pools, buffers, images and views, buffer views, shader modules, pipeline caches, graphics and
 compute pipelines, pipeline layouts, samplers, descriptor set layouts and pools, descriptor
-sets, framebuffers, render passes, command pools and command buffers), queue submits, buffer
-and image binds, and host event sets and resets. A staged submit's command buffer begins and
-ends are not in the list and still reply. A command of the list that fails writes no reply
+sets, framebuffers, render passes, command pools and command buffers), queue submits with
+their staged command buffer begins and ends, buffer and image binds, and host event sets and
+resets. Only an encoder on a device stream switches; one recording a command buffer into
+local staging never sends REPLY_MODE. A command of the list that fails writes no reply
 either: the decoder sends one FAULT record on the process's feed, 24 bytes, little-endian:
 
 | Field | Value |

@@ -196,11 +196,10 @@ public:
     void addCheckedResult(const void* encoder, uint64_t bytes) {
         addCheckedResults(encoder, 1, bytes);
     }
-    // Under silent success the last of them, the command's own, never comes (silent_success.h);
-    // the others (a staged submit's command buffer begins and ends) still do.
+    // Every result is a listed command's (a staged submit's command buffer begins and ends, then
+    // the submit): under silent success none of them comes (silent_success.h).
     void addCheckedResults(const void* encoder, uint32_t results, uint64_t bytes) {
-        if (results && silentReply(encoder)) --results;
-        if (!results) return;
+        if (!results || silentReply(encoder)) return;
         std::lock_guard<decltype(mutex_)> lock(mutex_);
         auto& entry = pending_[encoder];
         entry.replies.insert(entry.replies.end(), results, Reply{0, 0, 0, true, 1, 0, nullptr});

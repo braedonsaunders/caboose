@@ -8,6 +8,7 @@
 #include <iterator>
 #include <mutex>
 #include <unordered_map>
+#include <unordered_set>
 
 #include "completion_feed.h"
 
@@ -69,6 +70,8 @@ inline constexpr uint32_t kOpcodes[] = {
     20085u,      // vkCreateCommandPool
     20088u,      // vkAllocateCommandBuffers
     20089u,      // vkFreeCommandBuffers (no reply either way)
+    20090u,      // vkBeginCommandBuffer (a staged submit's, or one sent alone)
+    20091u,      // vkEndCommandBuffer
     20138u,      // vkBindBufferMemory2
     20139u,      // vkBindImageMemory2
     20225u,      // vkCreateRenderPass2KHR
@@ -133,9 +136,30 @@ template <class Read> bool readRecord(Read&& read, Record& record) {
 
 // Which device streams have switched, per encoder (each encoder writes one stream). A switch
 // holds for the executor connection generation it was made under; a stream reconnected to a
-// new executor switches again. Callers hold the encoder's lock.
+// new executor switches again. Only an encoder made on a device stream (the socket transport
+// registers its streams) switches; one that records a command buffer locally never does.
+// Callers hold the encoder's lock.
 class ReplyMode {
 public:
+    // A device stream was made or is gone (SocketStream.cpp).
+    void deviceStream(const void* stream, bool present) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (present) deviceStreams_.insert(stream);
+        else deviceStreams_.erase(stream);
+    }
+    // An encoder was made on `stream`, or is gone.
+    void encoderMade(const void* encoder, const void* stream) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (deviceStreams_.count(stream)) eligible_.insert(encoder);
+        else eligible_.erase(encoder);
+        states_.erase(encoder);
+    }
+    void encoderGone(const void* encoder) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        eligible_.erase(encoder);
+        states_.erase(encoder);
+    }
+
     // The executor connection's hello: whether silent success and everything it needs were
     // granted (guest-assigned handles, handle arrays, query pools and buffer views, and the feed).
     void granted(bool value) { granted_.store(value, std::memory_order_release); }
@@ -148,6 +172,7 @@ public:
         if (!granted() || !feedRunning || completion::executorLost.load(std::memory_order_acquire)) return false;
         const uint64_t generation = completion::connectionGeneration.load(std::memory_order_acquire);
         std::lock_guard<std::mutex> lock(mutex_);
+        if (!eligible_.count(encoder)) return false;
         State& state = states_[encoder];
         if (state.generation == generation) return false;
         state = State{generation, false};
@@ -196,6 +221,7 @@ private:
     std::atomic<bool> active_{false};
     mutable std::mutex mutex_;
     std::unordered_map<const void*, State> states_;
+    std::unordered_set<const void*> deviceStreams_, eligible_;
 };
 
 // Never destroyed, like the tracker: the feed reader may run during static destruction.

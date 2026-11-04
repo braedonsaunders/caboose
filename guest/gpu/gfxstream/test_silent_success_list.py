@@ -38,16 +38,23 @@ void VkEncoder::vkFreeCommandBuffers(VkDevice device, uint32_t doLock) {
     uint32_t opcode_vkFreeCommandBuffers = OP_vkFreeCommandBuffers;
 }
 
+VkResult VkEncoder::vkEndCommandBuffer(VkCommandBuffer commandBuffer, uint32_t doLock) {
+    const bool cabooseSilent = caboose::silent::replyMode().silent(this);
+    uint32_t opcode_vkEndCommandBuffer = OP_vkEndCommandBuffer;
+    if (!cabooseSilent) caboose_read_profile::read(stream, &result, sizeof(VkResult));
+}
+
 VkResult VkEncoder::vkResetFences(VkDevice device, uint32_t doLock) {
     uint32_t opcode_vkResetFences = OP_vkResetFences;
     caboose::memory::deferredReplies.add(this, 1, packetSize_vkResetFences);
 }
 '''
-        defines = '#define OP_vkCreateBuffer 20050\n#define OP_vkFreeCommandBuffers 20089\n#define OP_vkResetFences 20036\n'
+        defines = ('#define OP_vkCreateBuffer 20050\n#define OP_vkFreeCommandBuffers 20089\n'
+                   '#define OP_vkEndCommandBuffer 20091\n#define OP_vkResetFences 20036\n')
         deferred, void = check_silent_success.encoder_commands(encoder, defines)
         self.assertEqual(deferred, {20050: 'vkCreateBuffer'})
-        self.assertEqual(void, {20089})
-        self.assertEqual(check_silent_success.differences(deferred, void, {20050, 20089}), [])
+        self.assertEqual(void, {20089, 20091})
+        self.assertEqual(check_silent_success.differences(deferred, void, {20050, 20089, 20091}), [])
         self.assertTrue(check_silent_success.differences(deferred, void, {20050}) == [])
         self.assertIn('vkCreateBuffer', ' '.join(check_silent_success.differences(deferred, void, {20089})))
         self.assertTrue(check_silent_success.differences(deferred, void, {20050, 20036}))

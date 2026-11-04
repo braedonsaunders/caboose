@@ -283,6 +283,14 @@ int main() {
         Broker broker(1, [](const Hello&) { return hello(0x8113F0); });
         CabooseSocketStream stream(1024);
         assert(stream.connect(broker.path.c_str()) == 0 && caboose::silent::replyMode().granted());
+        // An encoder on this device stream may switch; one on any other stream may not.
+        int onSocket = 0, onStaging = 0, staging = 0;
+        auto& mode = caboose::silent::replyMode();
+        mode.encoderMade(&onSocket, static_cast<gfxstream::guest::IOStream*>(&stream));
+        mode.encoderMade(&onStaging, &staging);
+        assert(mode.due(&onSocket, true) && !mode.due(&onStaging, true));
+        mode.encoderGone(&onSocket);
+        mode.encoderGone(&onStaging);
     }
     {
         Broker broker(1, [](const Hello&) { return hello(0x8013F0); });

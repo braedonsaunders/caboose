@@ -5,7 +5,8 @@ Under hello 0x800000 the decoder writes no reply for the commands in
 caboose-bounded-memory/silent_success.h (kOpcodes, the decoder's
 silent-success-opcodes.inc; docs/gpu-live.md, "Silent success"). In a prepared driver
 tree every encoder command that registers a deferred handle or checked result must be
-listed, and every listed command must either register one or read no reply at all.
+listed, and every listed command must register one, read its reply only when its stream
+is not silent, or read no reply at all.
 compile.sh runs this before every build.
 
 usage: check_silent_success.py PREPARED_MESA_TREE
@@ -20,6 +21,8 @@ GUEST = 'src/gfxstream/guest/vulkan_enc/caboose-bounded-memory/silent_success.h'
 # Registrations of replies silent success leaves out (deferred_replies.h).
 SILENCEABLE = re.compile(r'deferredReplies\.(addHandleCreates?|addCheckedResults?)\(')
 READS = re.compile(r'\bread\(stream|tryRead\(|stream->read\(')
+# A command that reads its reply only when its stream has not switched.
+SILENCED = 'caboose::silent::replyMode().silent(this)'
 
 
 def guest_opcodes(header):
@@ -29,8 +32,9 @@ def guest_opcodes(header):
 
 
 def encoder_commands(encoder, defines):
-    """({opcode: name} of commands that defer a silenceable reply, {opcodes of void commands
-    that read no reply}) in the generated encoder."""
+    """({opcode: name} of commands that defer a silenceable reply, {opcodes of commands that
+    read no reply on a silent stream: void ones that never read one, and ones that read it
+    only when their stream is not silent}) in the generated encoder."""
     values = {name: int(value) for name, value in re.findall(r'^#define OP_(vk\w+) (\d+)$', defines, re.M)}
     deferred, void = {}, set()
     starts = [m for m in re.finditer(r'^(\w[\w:<>* ]*?)\s+VkEncoder::(\w+)\(', encoder, re.M)]
@@ -43,7 +47,7 @@ def encoder_commands(encoder, defines):
             opcode = values[name]
             if SILENCEABLE.search(body):
                 deferred[opcode] = name
-            elif start.group(1).strip() == 'void' and not READS.search(body):
+            elif SILENCED in body or (start.group(1).strip() == 'void' and not READS.search(body)):
                 void.add(opcode)
     return deferred, void
 
