@@ -13,9 +13,11 @@
 # without them; an older phone's), and the triangle runs through Proton with DRIVER (the guest
 # driver under test, loaded for that process only) for SECONDS (default 20). Each case requires
 # DXVK to report the device without skipping it, a D3D11 device, a swapchain and presented
-# frames, and the executor to end without a fault.
+# frames, and the executor to end without a fault. PORT (default 14660) and DISPLAY_ENV (default
+# /run/caboose/display.env) pick the broker port and the display; only the Wine processes in
+# BENCH_DIR's own prefix are ended, so checks with separate BENCH_DIRs can share a computer.
 set -eu
-[ $# -ge 4 ] && [ $# -le 5 ] || { sed -n '4,16p' "$0" >&2; exit 2; }
+[ $# -ge 4 ] && [ $# -le 5 ] || { sed -n '4,19p' "$0" >&2; exit 2; }
 computer=$1
 work=$(cd "$2" && pwd)
 driver=$(realpath "$3")
@@ -30,10 +32,18 @@ steam=${STEAM_ROOT:-$(dirname "$bench")/.local/share/Steam}
 seconds=${SECONDS_RUNNING:-20}
 name=caboose-dxvk-check-$$
 dir=$bench/.check-$$
-port=14660
+port=${PORT:-14660}
+# The display the triangle presents on (DISPLAY_ENV, the owner seat's by default).
+display=${DISPLAY_ENV:-/run/caboose/display.env}
+# This check's own Wine processes: those running in its compatibility prefix. Nothing else on
+# the computer (other checks, the owner's games) is waited for or ended.
+prefix=$bench/compat/0
+ours() {
+  docker exec "$computer" sh -c "for e in /proc/[0-9]*/environ; do tr '\\0' '\\n' < \$e 2>/dev/null | grep -qx 'STEAM_COMPAT_DATA_PATH=$prefix' && { p=\${e#/proc/}; echo \${p%/environ}; }; done" 2>/dev/null
+}
 cleanup() {
   docker rm -f "$name" > /dev/null 2>&1 || true
-  docker exec "$computer" pkill -KILL -f "$bench/triangle.exe" > /dev/null 2>&1 || true
+  pids=$(ours); [ -z "$pids" ] || docker exec "$computer" kill -KILL $pids > /dev/null 2>&1 || true
   docker exec "$computer" pkill -TERM -f "$dir/" > /dev/null 2>&1 || true
   docker exec "$computer" rm -rf "$dir" > /dev/null 2>&1 || true
 }
@@ -61,7 +71,7 @@ for case in phone unbatched older; do
     /repo/apps/ios/GPUStream/gfxstream/linux-executor/executor.py --connect 127.0.0.1:$port --token-file /tmp/token \
     --library /build/libcaboose_gpu_executor.so --features $features --no-checksums" > /dev/null
   i=0; until docker logs "$name" 2>&1 | grep -q 'session ready'; do i=$((i + 1)); [ $i -le 150 ] || fail "$case: executor readiness"; sleep 0.2; done
-  docker exec -u caboose "$computer" sh -c "set -a; . /run/caboose/display.env; set +a
+  docker exec -u caboose "$computer" sh -c "set -a; . $display; set +a
     CABOOSE_GFXSTREAM_SOCKET=$dir/gpu-$case/gpu.sock CABOOSE_GFXSTREAM_SURFACE_SOCKET=$dir/gpu-$case/surface.sock \
     DXVK_LOG_LEVEL=info DXVK_LOG_PATH=none timeout $((seconds + 60)) flatpak run --env=VK_DRIVER_FILES=$dir/icd.json \
     --env=VK_ICD_FILENAMES=$dir/icd.json '--env=VK_LOADER_LAYERS_DISABLE=*' --command=sh com.valvesoftware.Steam -c '
@@ -69,11 +79,11 @@ for case in phone unbatched older; do
     mkdir -p $bench/compat/0
     exec $proton waitforexitandrun $bench/triangle.exe'" > "$out/$case.log" 2>&1 &
   sleep "$seconds"
-  docker exec "$computer" pkill -TERM -f "$bench/triangle.exe" > /dev/null 2>&1 || true
+  pids=$(ours); [ -z "$pids" ] || docker exec "$computer" kill -TERM $pids > /dev/null 2>&1 || true
   wait || true
   # Wine winds down before the next case starts in the same prefix.
-  i=0; while docker exec "$computer" pgrep -u caboose -f 'wineserver|triangle.exe' > /dev/null 2>&1; do
-    i=$((i + 1)); [ $i -le 30 ] || { docker exec "$computer" pkill -KILL -u caboose -f 'wineserver|triangle.exe' > /dev/null 2>&1 || true; break; }; sleep 1; done
+  i=0; while pids=$(ours); [ -n "$pids" ]; do
+    i=$((i + 1)); [ $i -le 30 ] || { docker exec "$computer" kill -KILL $pids > /dev/null 2>&1 || true; break; }; sleep 1; done
   docker exec "$computer" cat "$dir/broker-$case.log" > "$out/broker-$case.log" 2>/dev/null || true
   docker logs "$name" > "$out/executor-$case.log" 2>&1 || true
   log=$out/$case.log
