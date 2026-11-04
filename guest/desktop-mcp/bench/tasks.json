@@ -291,6 +291,50 @@
       "setup": "export XDG_CONFIG_HOME=$HOME/.config; mkdir -p $HOME/Documents; printf 'heron-basalt-42\\nheron-basalt-42\\n' | keepassxc-cli db-create -p $HOME/Documents/vault.kdbx >/dev/null 2>&1; printf 'heron-basalt-42\\n' | keepassxc-cli add -q -u iris-harbor $HOME/Documents/vault.kdbx Mail >/dev/null 2>&1; mkdir -p $(dirname $HOME/Documents/login.html); cat > $HOME/Documents/login.html <<'HTML'\n<!doctype html><title>Login</title><form onsubmit=\"event.preventDefault(); document.title = 'Hello ' + document.getElementById('u').value\"><label for=u>Username</label> <input id=u> <button>Sign in</button></form>\nHTML\nstart python3 -m http.server 18761 --bind 127.0.0.1 --directory $HOME/Documents; sleep 0.5; start keepassxc $HOME/Documents/vault.kdbx",
       "prompt": "In the open KeePassXC window, unlock the database with the password \"heron-basalt-42\" and find the username of the Mail entry. Then open http://127.0.0.1:18761/login.html in Chromium (chromium http://127.0.0.1:18761/login.html), enter that username and press Sign in.",
       "verify": "window_title 'Hello iris-harbor - Chromium'"
+    },
+    {
+      "id": "direct-mousepad-wrap",
+      "app": "Mousepad",
+      "setup": "gsettings reset org.xfce.mousepad.preferences.view word-wrap; start mousepad",
+      "prompt": "Make Mousepad wrap long lines in every document, as a preference that stays on.",
+      "verify": "test \"$(gsettings get org.xfce.mousepad.preferences.view word-wrap)\" = true",
+      "reset": "gsettings reset org.xfce.mousepad.preferences.view word-wrap"
+    },
+    {
+      "id": "direct-thunar-hidden",
+      "app": "Thunar",
+      "setup": "xfconf-query -c thunar -p /last-show-hidden -r 2>/dev/null; mkdir -p $HOME/Documents; printf 'x\\n' > $HOME/Documents/.hidden-note; start thunar $HOME/Documents",
+      "prompt": "Make the file manager show hidden files, and keep showing them.",
+      "verify": "test \"$(xfconf-query -c thunar -p /last-show-hidden)\" = true",
+      "reset": "xfconf-query -c thunar -p /last-show-hidden -r 2>/dev/null; true"
+    },
+    {
+      "id": "direct-calc-table",
+      "app": "libreoffice-calc",
+      "setup": "mkdir -p $HOME/Documents; start soffice --norestore --nologo --calc",
+      "prompt": "In the open spreadsheet, enter 12, 30, 8 and 50 in A1 to A4 and a formula for their sum in A5, then save it in ODF format as totals.ods in the Documents folder of the home directory.",
+      "verify": "x=$(unzip -p $HOME/Documents/totals.ods content.xml) && echo \"$x\" | grep -q 'of:=SUM(\\[.A1:.A4\\])' && echo \"$x\" | grep -q '>100<'"
+    },
+    {
+      "id": "direct-writer-replace",
+      "app": "libreoffice-writer",
+      "setup": "mkdir -p $HOME/Documents; printf 'The colour of the hull.\\nA second colour coat.\\nColour charts follow; colour is checked.\\n' > $HOME/Documents/memo.txt; start soffice --norestore --nologo --writer $HOME/Documents/memo.txt",
+      "prompt": "In the open document, change every \"colour\" to \"color\" (keep \"Colour\" at a sentence start capitalised as \"Color\"), then save it in its current format.",
+      "verify": "! grep -qi colour $HOME/Documents/memo.txt && test \"$(grep -o -i color $HOME/Documents/memo.txt | wc -l)\" = 4 && grep -q '^Color charts' $HOME/Documents/memo.txt"
+    },
+    {
+      "id": "direct-files-sort",
+      "app": "Thunar",
+      "setup": "mkdir -p $HOME/Downloads $HOME/Documents; for f in alpha beta gamma; do printf \"$f\\n\" > $HOME/Downloads/$f.txt; done; printf '%%PDF-1.4\\n' > $HOME/Downloads/plan.pdf; start thunar $HOME/Downloads",
+      "prompt": "Move every .txt file in the Downloads folder into a new folder named notes inside Documents (both in the home directory). Leave other files where they are.",
+      "verify": "for f in alpha beta gamma; do test -f $HOME/Documents/notes/$f.txt && test ! -e $HOME/Downloads/$f.txt || exit 1; done; test -f $HOME/Downloads/plan.pdf"
+    },
+    {
+      "id": "direct-browser-total",
+      "app": "Chromium",
+      "setup": "mkdir -p $HOME/Documents; printf '<!doctype html><title>Invoice</title><h1>Invoice 1187</h1><table><tr><th>Item</th><th>Price</th></tr><tr><td>Rope</td><td>12.50</td></tr><tr><td>Cleats</td><td>8.75</td></tr><tr><td>Fenders</td><td>31.00</td></tr><tr><td>Shackle</td><td>9.00</td></tr></table>' > $HOME/Documents/invoice.html; start chromium --no-first-run --no-default-browser-check --user-data-dir=$HOME/chromium file://$HOME/Documents/invoice.html",
+      "prompt": "Add up the prices in the table on the open page and write the total, just the number with two decimals, into a new text file total.txt in the Documents folder of the home directory.",
+      "verify": "test \"$(tr -d ' \\n' < $HOME/Documents/total.txt)\" = 61.25"
     }
   ]
 }

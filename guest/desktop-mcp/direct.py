@@ -515,7 +515,7 @@ def office_tools(window):
         'doc.set_cells': ({'at': 'string', 'values': 'rows of values', 'sheet?': 'string'},
                           'Write rows of values from a cell; text starting with = is a formula', ('doc',)),
         'doc.append': ({'text': 'string', 'bold?': 'boolean'}, 'Add a paragraph at the end of a text document', ('doc',)),
-        'doc.replace': ({'search': 'string', 'replace': 'string'}, 'Replace every occurrence; says how many', ('doc',)),
+        'doc.replace': ({'search': 'string', 'replace': 'string', 'any_case?': 'boolean'}, 'Replace every occurrence (matching case unless any_case); says how many', ('doc',)),
         'doc.slide': ({'index': 'integer', 'title?': 'string', 'body?': 'string'}, "Set a slide's title and body text (1 = first)", ('doc',)),
         'doc.save': ({'path?': 'string'}, 'Save; with a path, save as that file (its extension picks the format: odt, docx, pdf, ods, xlsx, csv, odp, pptx)', ('doc',)),
     }
@@ -670,6 +670,7 @@ def office_call(window, name, args):
             raise Failure('doc.replace is for text documents and spreadsheets')
         descriptor = target.createReplaceDescriptor()
         descriptor.setSearchString(search); descriptor.setReplaceString(str(args.get('replace') or ''))
+        descriptor.SearchCaseSensitive = not args.get('any_case')
         return f'Replaced {target.replaceAll(descriptor)} occurrences.'
     if name == 'doc.slide':
         if what != 'presentation':
