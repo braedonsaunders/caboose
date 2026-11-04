@@ -403,6 +403,10 @@ agent state is reused, while unknown versions fail with an explicit migration er
 No owner profiles, SQLite databases, WAL files, cookies or extensions are copied.
 Agent sign-ins persist in the agent profile; owner browser sign-ins are not imported.
 
+`CABOOSE_AGENT_PROFILE`, in the server's environment, names another private directory to
+hold the profile (its `home`), for a run that resets its own state; the desktop benchmark
+uses it.
+
 The task runner retains its existing owner HOME and CLI authentication configuration.
 Applications an agent starts with desktop MCP's `launch` run on the agent seat in that
 private profile, whatever the application; a program the runner starts itself keeps the

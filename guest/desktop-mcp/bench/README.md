@@ -21,8 +21,11 @@ application on it between tasks.
 ```sh
 python3 run.py --mode native --model claude-sonnet-5-5 --output native.jsonl \
   --exec 'ssh HOST docker exec -i -u caboose CONTAINER bash -s' \
-  --mcp "ssh HOST \"docker exec -i -u caboose CONTAINER bash -c 'set -a; . /run/caboose/agent-display.env; set +a; exec node /opt/caboose/desktop-mcp.mjs'\""
+  --mcp "ssh HOST \"docker exec -i -u caboose CONTAINER bash -c 'set -a; . /run/caboose/agent-display.env; set +a; CABOOSE_AGENT_PROFILE=/tmp/caboose-bench exec node /opt/caboose/desktop-mcp.mjs'\""
 ```
+
+`CABOOSE_AGENT_PROFILE=/tmp/caboose-bench` makes the run directory the server's agent profile,
+so an application the agent launches has the same home as the task's files.
 
 `--trace FILE` names the `CABOOSE_DESKTOP_TRACE` file the `--mcp` server writes inside the
 computer; each task's record then has `server` (tool milliseconds, reply characters,

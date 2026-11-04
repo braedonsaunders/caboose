@@ -38,6 +38,14 @@ class Profiles(unittest.TestCase):
             self.assertTrue((home / '.config/SingletonLock').is_symlink())
             self.assertEqual((owner / '.config/Cookies').read_bytes(), b'synthetic-owner-sign-in')
 
+    def test_another_profile_root_holds_the_home(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / 'run'
+            env = profile.environment('/nonexistent-owner', root)
+            self.assertEqual(env['HOME'], str(root / 'home'))
+            self.assertEqual((root / 'version').read_text(), '1\n')
+            self.assertEqual(root.stat().st_mode & 0o077, 0)
+
     def test_kernel_releases_initialization_lock_after_crash(self):
         with tempfile.TemporaryDirectory() as directory:
             env = profile.environment(directory)
