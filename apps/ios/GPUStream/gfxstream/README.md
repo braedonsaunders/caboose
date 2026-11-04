@@ -35,7 +35,12 @@ it holds a submitted `vkCmdSetEvent` on a timeline wait until the host has reset
 and requires the event set once the GPU gets there; a stock MoltenVK 1.4.2 fails that case. `sh provider-patches/tests/check-msl-type-names.sh /path/to/spirv-cross` checks
 the type-name patch with a SPIRV-Cross command-line build: a shader whose variables, block
 and member are named `sampler`, `texture2d`, `array`, `float4` and `half` must convert to
-Metal source that compiles for iOS, with and without argument buffers. Its Mesa development
+Metal source that compiles for iOS, with and without argument buffers. MoltenVK's pipeline
+compilers also outlive their Metal submissions: Metal may run a compile's completion before the
+call that submitted it returns, so a compiler is deleted only once its compile is done and every
+submission of it has returned, and each render or compute compile works on its own copy of the
+descriptor rather than the caller's. `sh provider-patches/tests/check-compile-lifetime.sh
+[/path/to/moltenvk]` checks that patch. Its Mesa development
 dependency is `541c56aa3fd24027ed46ae350287d21dcd56c901`. The guest source checks
 are in [guest/gpu/gfxstream](../../../../guest/gpu/gfxstream/README.md).
 Matching opcode values does not establish compatible marshaling or execution.
