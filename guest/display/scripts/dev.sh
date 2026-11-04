@@ -1,6 +1,7 @@
 #!/bin/sh
 # Runs a command in the caboose-display dev container (guest/display/Dockerfile) with
-# this directory at /src, as the calling user, with a persistent cargo registry.
+# this directory at /src (and guest/gpu at /gpu, whose headers the compositor's tests read),
+# as the calling user, with a persistent cargo registry.
 #
 #   guest/display/scripts/dev.sh cargo test
 #   CABOOSE_DISPLAY_DRI=1 guest/display/scripts/dev.sh ...   # pass /dev/dri through
@@ -15,7 +16,7 @@ image=${CABOOSE_DISPLAY_IMAGE:-caboose-display-dev}
 set -- --rm -i --init \
   --user "$(id -u):$(id -g)" -e HOME=/tmp -e CARGO_BUILD_JOBS="${CABOOSE_DISPLAY_CPUS:-6}" -e CARGO_INCREMENTAL=0 \
   --cpus "${CABOOSE_DISPLAY_CPUS:-6}" --memory "${CABOOSE_DISPLAY_MEMORY:-6g}" \
-  -v "$here:/src" -w /src \
+  -v "$here:/src" -w /src -v "$here/../gpu:/gpu:ro" \
   -v "$cache/registry:/opt/cargo/registry" -v "$cache/git:/opt/cargo/git" \
   ${CABOOSE_DISPLAY_DOCKER_ARGS:-} "$image" "$@"
 if [ "${CABOOSE_DISPLAY_DRI:-0}" = 1 ] && [ -d /dev/dri ]; then
