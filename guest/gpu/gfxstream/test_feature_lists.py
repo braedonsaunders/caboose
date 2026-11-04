@@ -7,7 +7,7 @@ from pathlib import Path
 import gpu_features
 
 REPO = Path(__file__).resolve().parents[3]
-FILES = (gpu_features.SWIFT, gpu_features.EXECUTOR, gpu_features.CHECK_DXVK, gpu_features.RELAY,
+FILES = (gpu_features.SWIFT, gpu_features.EXECUTOR, gpu_features.CHECK_DXVK, gpu_features.CHECK_RELEASE, gpu_features.RELAY,
          gpu_features.ADMISSION, gpu_features.BROKER, gpu_features.DRIVER, gpu_features.SILENT)
 
 

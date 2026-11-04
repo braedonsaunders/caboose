@@ -22,6 +22,7 @@ REQUIRED = 0x70  # the hello's required mask, never a feature
 SWIFT = 'apps/ios/CabooseKit/Sources/CabooseKit/LiveGPUConnection.swift'
 EXECUTOR = 'apps/ios/GPUStream/gfxstream/linux-executor/executor.py'
 CHECK_DXVK = 'apps/ios/GPUStream/gfxstream/linux-executor/check-dxvk.sh'
+CHECK_RELEASE = 'apps/ios/GPUStream/gfxstream/linux-executor/check.sh'
 RELAY = 'apps/host/src/gpu-relay.ts'
 ADMISSION = 'guest/gpu/gfxstream/gpu_admission.py'
 BROKER = 'guest/gpu/gfxstream/caboose-gpu-broker'
@@ -57,8 +58,8 @@ def executor(repo):
     return set(''.join(re.findall(r"'([^']*)'", _block(text, 'FEATURES = (', ')', EXECUTOR))).split(','))
 
 
-def check_dxvk(repo):
-    text = (Path(repo) / CHECK_DXVK).read_text()
+def check_dxvk(repo, path=CHECK_DXVK):
+    text = (Path(repo) / path).read_text()
     return set(re.search(r'^phone=([a-z0-9,-]+)$', text, re.M).group(1).split(','))
 
 
@@ -136,6 +137,7 @@ def problems(repo, features=None):
     compare(f'phone app ({SWIFT})', phone_app(repo), phone)
     compare(f'Linux executor ({EXECUTOR} FEATURES)', executor(repo), phone)
     compare(f'DXVK check ({CHECK_DXVK} phone=)', check_dxvk(repo), phone)
+    compare(f'release check ({CHECK_RELEASE} phone=)', check_dxvk(repo, CHECK_RELEASE), phone)
     compare(f'host relay ({RELAY} GPU_FEATURES)', relay(repo), names)
     compare(f'broker admission ({ADMISSION} FEATURES)', admission(repo), names)
     broker_bits, needs = broker(repo)
