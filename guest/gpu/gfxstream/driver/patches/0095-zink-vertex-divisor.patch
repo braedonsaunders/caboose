@@ -1,0 +1,25 @@
+From: Caboose <caboose@local>
+Subject: [PATCH 95/95] Offer VK_EXT_vertex_attribute_divisor alongside the KHR name
+
+The device extension list passed VK_KHR_vertex_attribute_divisor but not the EXT name it
+was promoted from. Zink takes vertex attribute divisors from the EXT name alone, so on the
+driver it had no instanced arrays: OpenGL 3.2 and OpenGL ES 2.0, where the same zink on
+the same Vulkan implementation has 4.6 and ES 3.2. An application that asks for ES 3.0
+without falling back, such as Chromium's and CEF's GPU process, then failed to start
+(eglCreateContext: EGL_BAD_ATTRIBUTE). The EXT name is passed when the host has it; its
+structures are the KHR ones' aliases, which the encoder already carries.
+---
+diff --git a/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp b/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp
+--- a/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp
++++ b/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp
+@@ -2561,6 +2561,8 @@
+         "VK_EXT_depth_clip_enable",
+         "VK_KHR_create_renderpass2",
+         "VK_KHR_vertex_attribute_divisor",
++        // Caboose: zink takes divisors from the EXT name only (GL 3.3 and ES 3.0 need them).
++        "VK_EXT_vertex_attribute_divisor",
+         "VK_EXT_host_query_reset",
+         "VK_EXT_blend_operation_advanced",
+         "VK_EXT_frame_boundary",
+-- 
+2.43.0
