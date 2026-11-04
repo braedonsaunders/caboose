@@ -710,13 +710,8 @@ profile allows the mount calls only with that capability. The tradeoff: `CAP_SYS
 the container's root mount and administer inside its own namespaces, a wider surface than
 FUSE alone, in exchange for Flatpak apps receiving the files chosen for them. On a host whose
 Docker applies AppArmor's default profile (which denies `mount`), the computer's spec adds
-`apparmor=unconfined`. A container created before this has neither until it is created
-again; meanwhile the host runs `<computer>-fuse` beside it, a privileged sidecar in its process
-namespace running `caboose-fuse-broker`, which mounts FUSE only on a directory the caller owns
-under `/run/user/<uid>` (`nosuid`, `nodev`, the options `fusermount3` gives a user) for the
-computer's `fusermount3`, `caboose-fusermount`; libfuse opens `/dev/fuse` itself first, so the
-broker leaves an empty placeholder there. Where `/dev/fuse` is a real device,
-`caboose-fusermount` runs the original `fusermount3`.
+`apparmor=unconfined`. A container created without `/dev/fuse` has no FUSE until it is
+created again, so its Flatpak apps cannot open the files chosen for them.
 
 **System Flatpak.** A container computer's `/var/lib/flatpak` is a volume of its own
 (`<computer>-flatpak`), filled from the image on first use, so system-wide Flatpak apps
