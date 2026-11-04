@@ -15,6 +15,8 @@ int main() {
     counters.flushed(coherent, 28);
     counters.invalidated(coherent, 64);
     counters.invalidated(application, 1 << 20);
+    counters.delivered(4096);
+    counters.delivered(100, 2);
     counters.marked(copyImageToBuffer, 5000);
     counters.marked(copyQueryResults, 16);
     counters.sent(9000);
@@ -29,7 +31,8 @@ int main() {
     const auto line = counters.take(6000);
     assert(has(line, "CABOOSE_GPU_MEMORY_TRAFFIC elapsed_ms=5000 sent_bytes=9000 received_bytes=2000 "));
     assert(has(line, " app_flushed_bytes=4096 app_flushes=1 coherent_flushed_bytes=128 coherent_flushes=2 "));
-    assert(has(line, " app_invalidated_bytes=1048576 app_invalidates=1 coherent_invalidated_bytes=64 coherent_invalidates=1 "));
+    assert(has(line, " app_invalidated_bytes=1048576 app_invalidates=1 coherent_invalidated_bytes=64 coherent_invalidates=1 "
+                     "coherent_delivered_bytes=4196 coherent_delivered=3 "));
     assert(has(line, " largest_invalidate_bytes=1048576 "));
     assert(has(line, " marked_copy_image_bytes=5000 marked_copy_buffer_bytes=0 marked_query_bytes=16 "));
     assert(has(line, " coherent_watched_bytes=16384 coherent_whole_bytes=4194304 staging_flushed_bytes=8192 "));
@@ -39,10 +42,13 @@ int main() {
     counters.sent(1);
     const auto next = counters.take(11000);
     assert(has(next, "elapsed_ms=5000 sent_bytes=1 received_bytes=0 app_flushed_bytes=0 "));
-    assert(has(next, "largest_invalidate_bytes=0 "));
+    assert(has(next, "coherent_delivered_bytes=0 coherent_delivered=0 largest_invalidate_bytes=0 "));
     assert(has(next, "coherent_watched_bytes=0 coherent_whole_bytes=0 staging_flushed_bytes=0 pieces_unchanged=0 "));
     // A window in which nothing moved writes nothing.
     assert(counters.take(16000).empty());
+    // Delivered ranges alone are a window with something to report.
+    counters.delivered(8);
+    assert(has(counters.take(21000), " coherent_delivered_bytes=8 coherent_delivered=1 "));
     // Coherent upkeep is the driver's origin while it lasts, and nests.
     assert(currentOrigin() == application);
     {
