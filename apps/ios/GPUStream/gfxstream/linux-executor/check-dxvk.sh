@@ -68,9 +68,15 @@ app_pattern=$(printf '%s/%s' "$bench" "$app" | sed -e 's/[.]/[.]/g' -e 's#/#[/\\
 ours() {
   docker exec "$computer" pgrep -u caboose -f "$app_pattern" 2>/dev/null || true
 }
+# Every process of this check's Wine prefix (wineserver, explorer and services outlive a program
+# whose batch file ended): read as caboose, which may read its own sandboxed processes' environment.
+prefix_pids() {
+  docker exec -u caboose "$computer" sh -c "for e in /proc/[0-9]*/environ; do tr '\\0' '\\n' < \$e 2>/dev/null | grep -qx 'WINEPREFIX=$bench/compat/0/pfx/\\?' && { p=\${e#/proc/}; echo \${p%/environ}; }; done" 2>/dev/null || true
+}
 cleanup() {
   docker rm -f "$name" > /dev/null 2>&1 || true
   pids=$(ours); [ -z "$pids" ] || docker exec "$computer" kill -KILL $pids > /dev/null 2>&1 || true
+  pids=$(prefix_pids); [ -z "$pids" ] || docker exec "$computer" kill -KILL $pids > /dev/null 2>&1 || true
   docker exec "$computer" pkill -TERM -f "$dir/" > /dev/null 2>&1 || true
   docker exec "$computer" rm -rf "$dir" "$sockets" > /dev/null 2>&1 || true
 }
@@ -123,6 +129,10 @@ for case in ${CASES:-phone setids poolids unbatched older}; do
   # Wine winds down before the next case starts in the same prefix.
   i=0; while pids=$(ours); [ -n "$pids" ]; do
     i=$((i + 1)); [ $i -le 30 ] || { docker exec "$computer" kill -KILL $pids > /dev/null 2>&1 || true; break; }; sleep 1; done
+  # The rest of the prefix's Wine is given 10 s to end with the program, then ended, so the next
+  # case starts a fresh wineserver and nothing of this case keeps running beside it.
+  i=0; while pids=$(prefix_pids); [ -n "$pids" ]; do
+    i=$((i + 1)); [ $i -le 10 ] || { docker exec "$computer" kill -KILL $pids > /dev/null 2>&1 || true; break; }; sleep 1; done
   docker exec "$computer" cat "$dir/broker-$case.log" > "$out/broker-$case.log" 2>/dev/null || true
   docker logs "$name" > "$out/executor-$case.log" 2>&1 || true
   log=$out/$case.log
