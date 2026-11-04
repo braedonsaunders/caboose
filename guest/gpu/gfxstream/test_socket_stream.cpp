@@ -280,7 +280,7 @@ int main() {
         assert(broker.offers.size() == 2 && broker.offers[1] == hello(0x270));
     }
     // Completion payloads (0x200000) are taken only with the feed; the feed reads each record's
-    // payload: a fault report (serial 0) it does not know is skipped, and a capture of an
+    // payload: a serial-0 record of a kind it does not know is skipped (a FAULT is the device lost, tested below), and a capture of an
     // occlusion query answers vkGetQueryPoolResults without the device.
     {
         namespace p = caboose::completion::payloads;
@@ -299,7 +299,7 @@ int main() {
             for (int i = 0; i < 500 && !serial; ++i) usleep(10000);
             const uint64_t watched = serial;
             std::vector<uint8_t> bytes(16 + 8, 0);
-            const int32_t fault = p::kFaultStatus;
+            const int32_t fault = p::kFaultStatus + 1;  // not a FAULT: unknown, skipped
             const uint32_t eight = 8;
             std::memcpy(bytes.data() + 8, &fault, 4);
             std::memcpy(bytes.data() + 12, &eight, 4);
