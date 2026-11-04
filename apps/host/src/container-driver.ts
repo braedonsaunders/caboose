@@ -366,31 +366,6 @@ export function createContainerController(config: Config, dependencies: { docker
     ]
   }
 
-  /**
-   * The FUSE broker beside the computer (guest/flatpak/caboose-fuse-broker): a privileged
-   * sidecar in the computer's process namespace that makes the FUSE mounts the computer may
-   * not, for its users and under their runtime directories only. It runs the broker from the
-   * computer's own files and ends with the computer. Idempotent.
-   */
-  async function ensureFuseBroker(): Promise<void> {
-    const broker = `${name}-fuse`
-    // A computer created with /dev/fuse (fuseArgs) mounts by itself.
-    const devices = await docker(['inspect', '-f', '{{json .HostConfig.Devices}}', name], 15_000).catch(() => '')
-    if (devices.includes('"/dev/fuse"')) return
-    let status = ''
-    try { status = (await docker(['inspect', '-f', '{{.State.Status}} {{index .Config.Labels "caboose.fuse-broker-for"}}', broker], 15_000)).trim() } catch {}
-    if (status) {
-      const [current, owner] = status.split(' ')
-      if (owner !== name) throw new Error(`${broker} exists and is not this computer's FUSE broker`)
-      if (current === 'running') return
-      await docker(['rm', '-f', broker], 30_000)
-    }
-    const image = (await docker(['inspect', '-f', '{{.Config.Image}}', name], 15_000)).trim()
-    await docker(['run', '-d', '--rm', '--name', broker, '--label', `caboose.fuse-broker-for=${name}`,
-      '--privileged', `--pid=container:${name}`, '--network', 'none', '--memory', '64m',
-      '--entrypoint', 'python3', image, '/proc/1/root/opt/caboose/flatpak/caboose-fuse-broker'], 60_000)
-  }
-
   /** The spec the existing container was created with, read from Docker; null when there is none. */
   async function existingSpec(): Promise<ContainerSpec | null> {
     let inspect: ContainerInspect
@@ -558,7 +533,6 @@ export function createContainerController(config: Config, dependencies: { docker
           await exec('root', '/bin/sh', ['-c', WRITE_TOKEN_SCRIPT, 'sh', displayToken])
         }
         await ensureWritableCgroups()
-        await ensureFuseBroker().catch(error => console.error(`FUSE broker for ${name}: ${error instanceof Error ? error.message : String(error)}`))
         if (mode === 'interactive') { progress('display'); await ownerDisplay() }
         void networkTask(() => Promise.all([tailnet?.ensure(), lan?.ensure()]))
         void pulseKsmMergeBoost().catch(() => {})

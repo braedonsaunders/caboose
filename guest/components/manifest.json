@@ -74,8 +74,6 @@
   "flatpak/caboose-depot.conf",
   "flatpak/var-lib-caboose-depot.mount",
   "flatpak/caboose-bwrap",
-  "flatpak/caboose-fusermount",
-  "flatpak/caboose-fuse-broker",
   "flatpak/caboose-documents-forwarder",
   "flatpak/org.freedesktop.portal.Documents.agent.service",
   "agentd/caboose-agentd.mjs",
