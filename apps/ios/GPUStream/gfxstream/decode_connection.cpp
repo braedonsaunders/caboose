@@ -111,8 +111,12 @@ int decodeConnection(int fd, size_t max_packet, size_t max_reply_buffer,
         if (!auditTiming) return;
         DecodeTimingSnapshot periodSnap{};
         uint64_t periodElapsedUs = 0;
-        if (timingAggregate.pollPeriod(nowUs, periodSnap, periodElapsedUs)) {
-            const unsigned ordinal = periodAggregateBudget.take();
+        if (timingAggregate.pollPeriod(nowUs, periodSnap, periodElapsedUs, 1000000ull)) {
+            // Every second for a stream that decoded at least 1% of it (a busy stream's time
+            // splits into decode, waiting for the guest's next data, and the rest); the
+            // budget holds only the quiet streams' lines.
+            const bool busy = periodSnap.decode_all.sum_us * 100 >= periodElapsedUs;
+            const unsigned ordinal = busy ? 0 : periodAggregateBudget.take();
             if (ordinal < 128) {
                 printAggregateLine("CABOOSE_GPU_DECODE_PERIOD", ordinal, timingStream,
                                    periodElapsedUs, periodSnap, DecodeStage::decoder, 0);
