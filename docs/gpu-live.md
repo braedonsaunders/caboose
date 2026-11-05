@@ -9,13 +9,14 @@ describes.
 ## Connection and authority
 
 The host route is `/v1/gpu`, without query parameters, using the exact WebSocket
-subprotocol `caboose.gpu.live.v1`. It relays either to the owner's display service `/gpu`
-on its existing port, which hands the connection to that display's own broker, or to the
-computer's shared broker, which accepts `/gpu` itself ([Seats](#seats)). There is one
-executor per computer and one GPU route. WebSocket messages are
-binary, uncompressed, at most 256 KiB. The broker queues at most 8 MiB in 256 messages
-toward the phone ([Priority toward the phone](#priority-toward-the-phone)). Vulkan replies
-use this connection independently of media.
+subprotocol `caboose.gpu.live.v1`. It relays to `/gpu` on the computer's GPU broker
+service (port 14602), one broker shared by both seats ([Seats](#seats)), where the guest runs
+it (the host connects only once a listener answers there); otherwise to the owner's display
+service `/gpu` on its existing port, whose own broker serves the owner's seat alone. The phone
+never names a seat or a destination. There is one executor per computer and one GPU route.
+WebSocket messages are binary, uncompressed, at most 256 KiB. The broker queues at most 8 MiB
+in 256 messages toward the phone ([Priority toward the phone](#priority-toward-the-phone)).
+Vulkan replies use this connection independently of media.
 
 The host sends the current per-wake display token as upstream `Authorization:
 Bearer …`, together with host-created `X-Caboose-GPU-Executor` UUID and

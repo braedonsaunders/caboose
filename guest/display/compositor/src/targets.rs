@@ -2,7 +2,7 @@
 //! client that aims touches at them (docs/display.md, "Touch targets").
 //!
 //! While a client that asked for `targets` is connected, the compositor runs the provider,
-//! `guest/desktop-mcp/caboose-targets.py serve`, with the seat's launch environment. It
+//! `/usr/libexec/caboose/touch-targets serve` (guest/computer-use), with the seat's launch environment. It
 //! prints one JSON line whenever the focused window's controls change, rectangles in the
 //! seat's logical space:
 //!
@@ -28,8 +28,8 @@ use std::path::Path;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::time::{Duration, Instant};
 
-/// Where guest/desktop-mcp/install.sh puts the provider.
-pub const PROVIDER: &str = "/opt/caboose/caboose-targets.py";
+/// The provider, from the caboose-computer-use package.
+pub const PROVIDER: &str = "/usr/libexec/caboose/touch-targets";
 /// The most controls kept for one window, and the longest line read from the provider.
 const MAX_TARGETS: usize = 1024;
 const MAX_LINE: usize = 1 << 20;

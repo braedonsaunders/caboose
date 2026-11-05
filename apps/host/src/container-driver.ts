@@ -25,7 +25,7 @@ function pairs(args: readonly string[]): string[] {
 import { TailnetNode, dockerInputCli, tailnetHostname, type DockerInput, type TailnetStatus } from './tailnet.js'
 import { TERMINAL_PORT } from './terminal.js'
 import { AI_PORT } from './ai.js'
-import { AGENT_DISPLAY_PORT, DISPLAY_ENV_PATH, OWNER_DISPLAY_PORT, WRITE_TOKEN_SCRIPT, parseEnvFile } from './display.js'
+import { AGENT_DISPLAY_PORT, DISPLAY_ENV_PATH, GPU_BROKER_PORT, OWNER_DISPLAY_PORT, WRITE_TOKEN_SCRIPT, parseEnvFile } from './display.js'
 import { pulseKsmMergeBoost, reclaimCgroupMemory } from './ksm.js'
 import type { BootReport } from './boot.js'
 import { LEGACY_COMPUTER } from './computers.js'
@@ -453,11 +453,13 @@ export function createContainerController(config: Config, dependencies: { docker
     componentsWarning: () => filesPortWarning,
     get displayUrl() { return `ws://127.0.0.1:${place.ports.display}/` },
     get agentDisplayUrl() { return `ws://127.0.0.1:${place.ports.agent}/` },
+    // On the computer's bridge address: a port the computer publishes nothing on.
+    gpuBrokerUrl: async () => { const address = await bridgeAddress(); return address ? `ws://${address}:${GPU_BROKER_PORT}/` : undefined },
     fileService: () => ({ url: `http://127.0.0.1:${place.ports.files}`, token: displayToken }),
     terminalService: () => ({ url: terminalUrl, token: displayToken }),
     aiService: () => aiUrl && displayToken ? { url: aiUrl, token: displayToken } : undefined,
     async ensureAgentSeat() {
-      await exec('root', '/usr/local/libexec/caboose-agent-seat', [], 180_000)
+      await exec('root', '/usr/libexec/caboose/agent-seat', [], 180_000)
     },
     guest() {
       if (!running) return undefined

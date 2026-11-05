@@ -1,0 +1,20 @@
+Package: caboose-computer-use
+Version: @VERSION@
+Architecture: all
+Maintainer: Braedon Saunders <bsaunders@rassaun.com>
+Section: utils
+Priority: optional
+Depends: nodejs (>= 18), python3 (>= 3.11), python3-gi, gir1.2-atspi-2.0, gir1.2-glib-2.0, gir1.2-gdkpixbuf-2.0, at-spi2-core, libglib2.0-bin, libx11-6, libxres1, x11-utils, xdotool, imagemagick, tesseract-ocr, tesseract-ocr-eng, sudo
+Recommends: chromium, python3-uno, libatk-wrapper-java-jni, flatpak
+Suggests: caboose-computer-use-wine
+Installed-Size: @SIZE@
+Homepage: https://github.com/braedonsaunders/caboose
+Description: Caboose computer use: agents drive applications on their own seat
+ An MCP server (caboose-computer-use, stdio) with three tools, look, act and
+ screenshot, that read and operate the applications on the computer's agent seat
+ through their accessibility trees, typed direct tools (D-Bus actions, GSettings,
+ LibreOffice UNO, MPRIS, the portal file chooser, files in the agent's home) and
+ page tools (WebMCP), with OCR for what an application leaves out of its tree.
+ Also the agent seat's start (/usr/libexec/caboose/agent-seat) and profile
+ (/usr/libexec/caboose/agent-profile) entry points, and the touch targets the
+ phone aims with.

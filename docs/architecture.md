@@ -135,8 +135,9 @@ The image contains:
   Capture rebuilds after route or media-service changes, resumes interruptions only when
   iOS permits, and reports failures. Physical-device echo suppression remains unverified.
 - **Agent runner.** `caboose-agentd` at `/opt/caboose/agentd` (Node with the pinned ACP
-  TypeScript SDK), `uv` for agents published as Python packages, and the desktop tools
-  (`/opt/caboose/desktop-mcp.mjs`, `/opt/caboose/a11y.py`). See [Agents](#5-agents).
+  TypeScript SDK), `uv` for agents published as Python packages, and computer use, the
+  `caboose-computer-use` package (`/usr/bin/caboose-computer-use` and its helpers). See
+  [Computer use](#computer-use).
 - **Agent apps.** `caboose-app` and WebKitGTK 4.1, which run the web apps agents make as
   applications of their own ([Agent apps](#agent-apps)).
 - **Services.** The file service, the notification endpoints and phone handoff
@@ -499,7 +500,7 @@ Agent GUI applications use a separate persistent home and XDG profile directorie
 `~/.local/share/caboose/agent-seat/home`. Their profile locks, cookies and editor state
 are independent of owner applications. No owner profile snapshot or sign-in import occurs.
 The task runner retains owner CLI authentication settings and selects the isolated GUI
-launch environment through browser/editor wrappers and desktop MCP. This is routing
+launch environment through browser/editor wrappers and the computer-use launch step. This is routing
 within the existing shared Unix user, not an arbitrary-command security boundary.
 
 Each instance writes its launch environment once it is ready: `WAYLAND_DISPLAY`,
@@ -545,7 +546,7 @@ also see as their root window's.
 | `close ID` | Asks the window to close, as its own close button would: `xdg_toplevel.close` for Wayland, `WM_DELETE_WINDOW` (else destroying the window) for X11, `popup_done` for a popup |
 | `frames [SINCE]` | `{ now_us, windows: [{ id, commits: [t], sent: [[t, pts, bytes, refined]] }], input: [[t, kind]] }`: what happened after `SINCE` (CLOCK_MONOTONIC µs, default 0), each list the newest 1024 entries: every window's commits, the pictures sent to the client (when, the commit time of their content, encoded bytes, and whether it only sharpened content already sent), and input from the client or this socket (`pointer`, `scroll`, `touch`, `key`, `text`). Frame lab (`guest/framelab`) reads it |
 
-`guest/desktop-mcp/seat.py` is its client, as a library and a command.
+`guest/computer-use/helpers/seat.py` is its client, as a library and a command (`/usr/libexec/caboose/seat`).
 
 Each instance serves one client at a time; a new authenticated client replaces the
 previous one. Its readiness probe is:
@@ -787,6 +788,19 @@ installed version with its latest release and each game's with the version its p
 (`latestVersion`), and runs an ordinary `update` operation for each.
 `updateAvailable` reports what the last check found and `update` installs it at once.
 
+**The Library record.** The host keeps each computer's Library applications whose files live
+in its root file system: Debian applications, Craft releases and games (a game's directory is
+in the home, its desktop entry and icon are not). Flathub apps are not listed; the computer's
+Flatpak volume keeps them. The record is `library-apps.json` in the computer's state
+(`src/library-record.ts`): each app's catalog id, and for a Debian application found through
+AppStream its package, AppStream identity, desktop id, name, summary and licence, so it can be
+installed again without the guest's own operation record. A finished `install` or `update` adds
+the app and a finished `remove` takes it off; an app the guest reports installed by an earlier
+Library operation joins it at the next listing. At every wake, once the guest components are
+current, the host runs an ordinary `install` for each recorded app the computer lacks, so a
+container created again from its image gets back everything the owner chose. An app the owner
+removes outside the Library stays recorded and is installed again at the next wake.
+
 The host runs the installer (`guest-catalog.py`) as root through the guest channel on both
 runtimes. A Craft release downloads directly from the guest and is size- and SHA-256-checked
 before APT installs it with `mesa-vulkan-drivers` and `libgl1-mesa-dri`; the `.deb` is deleted
@@ -994,7 +1008,8 @@ Host state lives in `CABOOSE_IMAGE_ROOT`, each file replaced atomically with mod
   `phones.json` (phone sign-ins, by SHA-256 of their tokens), `agent-registry.json` and
   `host.json` (the host's name and default computer, below).
 - Each computer's own `caboose.json` (settings), `push-devices.json`, `activities.json`,
-  `agent-profiles.json`, `mcp-library.json`, `keyring-secret` and `commands/` (one
+  `agent-profiles.json`, `mcp-library.json`, `library-apps.json` (the Library record, under
+  Catalog), `keyring-secret` and `commands/` (one
   `<id>.json` per command, directory mode 0700) in `computers/<id>/`; a container computer's
   `container.json` (its container settings, under Computers) beside its `caboose.json`.
 - For microVMs, `overlays/<id>.raw` (the disk), `overlays/<id>.snapshot` (parked memory)
@@ -1206,7 +1221,7 @@ The computer has one state: `parked`, `waking`, `running`, `frozen`, `parking`, 
   snapshot cannot be restored is reported as an error rather than cold-booted.
 - **Headless wake.** Agent tasks and routines wake the computer without starting the owner's
   display. Guest components and the file service are prepared before admitting the task.
-  Desktop MCP tools and `app_open` start the agent seat on demand; an owner display request or
+  Computer-use tools and `app_open` start the agent seat on demand; an owner display request or
   app launch promotes a headless computer to an interactive one. A memory restore retains any
   display already running in the snapshot; headless wake does not stop existing applications.
 - **Leases.** Each open display, terminal or foreground control WebSocket holds a lease, as do running agent
@@ -1405,7 +1420,7 @@ guest answer 409 while it is not running.
 | `POST` | `/v1/session/park` | Park now → `{ state }`. 409 while a catalog operation, Craft job or command runs |
 | `GET` | `/v1/display` | **WebSocket**, subprotocol `binary` (required). Relay to the owner's display, port 14600 |
 | `GET` | `/v1/display?seat=agent` | **WebSocket**, subprotocol `binary`. Starts the agent seat if needed, then relays to port 14601; closes with 1011 `agent seat unavailable` if it does not start |
-| `GET` | `/v1/gpu` | **WebSocket**, exact subprotocol `caboose.gpu.live.v1`. Bounded binary relay to `/gpu` on the owner's existing display service; no query parameters or agent seat. One pending/connected executor per computer; a second returns 409. Requires a matching guest GPU service; does not advertise driver capabilities |
+| `GET` | `/v1/gpu` | **WebSocket**, exact subprotocol `caboose.gpu.live.v1`. Bounded binary relay to `/gpu` on the computer's GPU broker service (port 14602, shared by both seats) where the guest runs one, else on the owner's existing display service; no query parameters or seat selection. One pending/connected executor per computer; a second returns 409. Requires a matching guest GPU service; does not advertise driver capabilities |
 | `GET` | `/v1/control` | **WebSocket.** JSON events (below). `?foreground=1` marks the app's foreground connection; `?phone=1` subscribes to phone handoff events; with it, `?scan=1` says the app answers scan requests |
 | `GET` | `/v1/apps` | Launchable applications from the guest's desktop entries: `[{ id, name, icon (PNG data URL), categories, exec, actions, startupWMClass }]`. `startupWMClass` is the entry’s declared window class (at most 256 characters), or null; older hosts may omit it. The phone matches this class as well as desktop IDs. `actions` is the entry's desktop actions (`Actions=` with a `[Desktop Action …]` group, a Name, and an Exec unless the entry is D-Bus activated): at most 16 `{ id, name }`, ids `[A-Za-z0-9-]{1,64}`, names at most 100 characters |
 | `POST` | `/v1/apps/:id/launch` | Start a desktop entry on the owner's display with its launch environment → `{ launched: true }`. An optional `{ action }` runs one of its `actions` instead (GLib runs its Exec or activates it over D-Bus); 400 for an invalid id, 404 for an entry or action the computer does not have |
@@ -1994,7 +2009,7 @@ without pixels:
 | `POST` | `/v1/screen/keys` | `{ keys }` → `{ ok: true }`: up to 10 space-separated combinations such as `ctrl+s` or `ctrl+shift+t Return`; common names (`enter`, `esc`, `cmd`, `pageup`, …) map to keysym names |
 
 Element ids are opaque and valid until the window changes. Bounds are in the seat's logical
-coordinates. The routes run `/opt/caboose/a11y.py` and `/opt/caboose/seat.py` as `caboose`
+coordinates. The routes run `/usr/libexec/caboose/a11y` and `/usr/libexec/caboose/seat` as `caboose`
 with the owner display's launch environment. They take the windows, the focused one and
 each window's process from the seat's [control socket](#displays), read Wayland and X11
 applications alike through AT-SPI, and type and press keys with the seat's own keyboard.
@@ -2556,10 +2571,13 @@ The app shows the seat in its Agent space, view-only. **Take Over** pauses the r
 tasks and gives the owner input; **Hand Back**, or leaving the window, resumes them, so the
 owner and an agent never type into the same application at once.
 
-### Desktop tools
+### Computer use
 
-The agent drives the seat with these tools itself; no model inside the computer chooses
-its actions. Their observation and action contract:
+Agents use applications on the computer through `caboose-computer-use`
+([guest/computer-use](../guest/computer-use/README.md)), one Debian package that every image
+build and every component update installs with APT. The agent drives the seat with its tools
+itself; no model inside the computer chooses its actions. Their observation and action
+contract:
 
 - **Controls come from AT-SPI.** An observation is the focused window's accessibility
   subtree, joined to its window record from the compositor by process and geometry; each
@@ -2583,16 +2601,33 @@ its actions. Their observation and action contract:
   never at positions read from pixels. A target is re-resolved by its id before input goes
   in, and a changed control is refused.
 
-`caboose-desktop-mcp` is a stdio MCP server. The runner passes it to every agent as
-`caboose-desktop` in ACP `session/new`, with the seat's launch environment:
+**The contract.** `/usr/bin/caboose-computer-use` is an MCP server over stdio
+(newline-delimited JSON-RPC 2.0, protocol `2025-06-18`), named `caboose-desktop` in
+`initialize`. The runner passes it to every agent, whatever its provider, as `caboose-desktop`
+in ACP `session/new`, `session/load` and `session/resume`, with the seat's launch environment:
 `CABOOSE_AGENT_DISPLAY` (the seat's `DISPLAY`), `WAYLAND_DISPLAY`, `CABOOSE_DISPLAY_CONTROL`,
-`XAUTHORITY`, `XDG_RUNTIME_DIR`, `DBUS_SESSION_BUS_ADDRESS`, the toolkit backends and the VA-API driver variables.
+`XAUTHORITY`, `XDG_RUNTIME_DIR`, `DBUS_SESSION_BUS_ADDRESS`, the toolkit backends and the VA-API
+driver variables. Where the package is not installed, the chat gets a notice that it cannot use
+applications on the computer. With every prompt the runner tells the agent to use these tools
+for applications, on its own display, which the owner can watch from the chat; the server's
+`instructions` say the same. The tools, their arguments and their replies are stable:
 
-| Tool | Does |
-| --- | --- |
-| `look` | The focused window's controls (id, role, name, value, states), optionally only those whose name matches, with its readable text, or with every window |
-| `act` | 1–30 steps in order (press, set, key, type, click, scroll, drag, focus, wait, launch, tool), stopping at the first failure, then what changed |
-| `screenshot` | PNG of the seat or one window; `marks` numbers the controls on it and lists their ids and centres |
+| Tool | Arguments | Replies |
+| --- | --- | --- |
+| `look` | `find?: string`, `text?: boolean`, `windows?: boolean`, `ocr?: boolean` | The focused window's controls, one line each (`e14 text "Name" = "notes.txt" [editable, focused]`), then the page's tools, `Its files: …`, the app's direct tools and words read from pixels where its tree leaves areas out; `find` keeps the controls and direct tools whose name contains it; `text` adds the window's readable text; `windows` every window with its id and position; `ocr` the window's words with their centres. A window with no tree comes back as its picture and its words |
+| `act` | `steps: object[]` (1–30), `observe?: boolean` | `Done.` or `Did N of M; stopped: reason`, then what changed: windows opened, closed, retitled or focused, controls added (`+`), changed (`~`) or removed (`-`) |
+| `screenshot` | `window?: integer`, `marks?: boolean` | A PNG of the seat or one window, in the seat's logical pixels; `marks` numbers the controls on it and lists each mark's id, role, name and centre |
+
+A step is one of `{"press": id}`, `{"set": id, "text": t}`, `{"key": "ctrl+s"}`,
+`{"type": t}`, `{"click": [x, y], "button": 1-3, "count": 1-3}`, `{"scroll": [x, y], "dx": n,
+"dy": n}`, `{"drag": [x1, y1, x2, y2]}`, `{"focus": window}`, `{"wait": ms}` (10–5000),
+`{"launch": "command"}` and `{"tool": name, "args": {...}}`. A control is given by the short
+id a read listed, or by `{"name": n, "role": r}`, found when the step runs. A step whose id no
+longer names its control, or whose window lost focus, does nothing and fails as a `stale id`,
+so a retry after a new `look` is safe; any other failure is a sentence the model can act on,
+returned as a tool error. `tool` calls a page tool (a name without a group) or a direct tool,
+named `group.name`, where the group is one of `files`, `app`, `win`, `kde`, `desktop`,
+`media`, `folder`, `settings`, `doc`, `browser`, `chooser` and `terminal`.
 
 Three tools with short definitions, because they go to the model on every turn; the
 accessibility reads need no screenshot. They use `a11y.py`, which reads only applications
@@ -2611,12 +2646,12 @@ An element step rejects a changed focused window as well as a stale id. Observat
 the current state without guaranteeing navigation has completed.
 
 **Page tools.** Chromium on the agent seat runs with its WebMCP (`WebMCPTesting`) and the
-Caboose WebMCP extension (`guest/webmcp`). The extension lists and runs the tools the focused
+Caboose WebMCP extension (`guest/computer-use/webmcp`). The extension lists and runs the tools the focused
 tab declares through `document.modelContext` (imperative `registerTool` and declarative
 `<form toolname>`), and derives general tools from every page's semantics: one per form
 (fill its fields, press its button), following a link, and pressing a button outside forms.
 Its native messaging host listens on `$XDG_RUNTIME_DIR/caboose-webmcp/<browser pid>.sock`;
-desktop MCP reaches it through the focused window's process, so `look` lists the page's
+the server reaches it through the focused window's process, so `look` lists the page's
 tools and an `act` step `{"tool": name, "args": {...}}` calls one. A page's tool is the page's
 code: its results are the page's word, like its text.
 
@@ -3252,7 +3287,8 @@ one normal display close request, leaving unsaved-change handling to the applica
 keeping the tile until the server removes the window. Releasing a close drag does not
 open the window. A changed session, connection generation or window cancels the drag.
 
-`caboose://task/<id>` opens a task, `caboose://command/<id>` a command (its id is 32
+`caboose://task/<id>` opens a task, `caboose://task/<id>/watch` the same with its agent's newest
+seat window full screen once it has one, `caboose://command/<id>` a command (its id is 32
 lowercase hex digits) and `caboose://airplay` runs Home's AirPlay action.
 Pinned and recent apps are kept on the phone per computer.
 

@@ -180,7 +180,7 @@ def update_latency(seat, window, truth, path, rounds=6):
 def run_app(name, config, port, reports, scratch, clicks, repeat, targets_log=None):
     from seat import Seat, SeatError
     import importlib.util
-    spec = importlib.util.spec_from_file_location("caboose_targets", os.path.join(os.path.dirname(HERE), "..", "desktop-mcp", "caboose-targets.py"))
+    spec = importlib.util.spec_from_file_location("caboose_targets", os.path.join(os.path.dirname(HERE), "..", "computer-use", "helpers", "touch_targets.py"))
     targets = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(targets)
 
@@ -288,7 +288,7 @@ def survey(names, scratch, repeat):
     """Each real application: launch it, wait for its window, read its targets."""
     from seat import Seat
     import importlib.util
-    spec = importlib.util.spec_from_file_location("caboose_targets", os.path.join(os.path.dirname(HERE), "..", "desktop-mcp", "caboose-targets.py"))
+    spec = importlib.util.spec_from_file_location("caboose_targets", os.path.join(os.path.dirname(HERE), "..", "computer-use", "helpers", "touch_targets.py"))
     targets = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(targets)
     seat = Seat()

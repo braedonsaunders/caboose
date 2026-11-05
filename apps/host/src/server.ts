@@ -29,6 +29,7 @@ import { crossSite } from './cross-site.js'
 import { dropUntrustedForwarding, type TrustedProxies } from './proxies.js'
 import { AgentCatalog } from './agent-catalog.js'
 import { AppCatalog, craftMcpServers } from './app-catalog.js'
+import { LibraryRecord } from './library-record.js'
 import type { Architecture } from './app-catalog-data.js'
 import type { FlathubIndex } from './flathub.js'
 import { McpLibrary } from './mcp-library.js'
@@ -75,7 +76,7 @@ import { type AgentToolJournal, type ToolDispatcher } from './agent-tools-journa
 import { type AgentRoutines, type RoutineOptions, type RoutineTask } from './agent-routines.js'
 import { AgentProfiles, prepareProfileStart, profileContext } from './agent-profiles.js'
 import { MAX_TERMINALS, TerminalGoneError, TerminalServiceError, guestTerminalUrl, hangupTerminal, listTerminalSessions, parseTerminalQuery, relayTerminal, type TerminalQuery, type TerminalService } from './terminal.js'
-import { GPU_PROTOCOL, GPU_MAX_MESSAGE, startGPURelay, gpuFeatures, declaredGPUFeatures, droppedGPUFeaturesLine, type GPURelay } from './gpu-relay.js'
+import { GPU_PROTOCOL, GPU_MAX_MESSAGE, startGPURelay, gpuFeatures, gpuServiceURL, declaredGPUFeatures, droppedGPUFeaturesLine, type GPURelay } from './gpu-relay.js'
 
 export interface App { id: string; name: string; icon: string; categories: string[]; exec: string; actions: AppAction[]; startupWMClass?: string | null }
 export interface Session { state: string; display: { path: string; token: string; protocol: DisplayProtocol }; computer: { name: string; image: string; memoryMb: number; vcpus: number } }
@@ -97,6 +98,8 @@ export interface Controller extends ComputerDriver<Session> {
   displayUrl: string
   /** The agent seat's caboose-display, started on demand by ensureAgentSeat. */
   agentDisplayUrl: string
+  /** The computer's GPU broker service, shared by both seats, while the computer runs. */
+  gpuBrokerUrl?(): Promise<string | undefined>
   ensureAgentSeat(): Promise<void>
   /** Root command runner in the running computer, or undefined while parked. */
   guest(): AgentGuest | undefined
@@ -149,7 +152,7 @@ export type Principal =
   | { kind: 'phone'; phoneId: string; computerId: string }
 
 /** What one computer is made of: its settings, its runtime, and the notifications its phones get. */
-export interface ComputerPieces { /** A container computer's image, folders, devices and options (container-spec.ts). */ containerSpec?: ContainerSpecStore; /** Phone backups and shared storage (storage.ts). */ storage?: ComputerStorage; /** Commands' results, kept in the host's state (commands/). */ commands?: CommandStore; snapshotPath?: string; snapshotTier?: SnapshotTierOptions; /** The computer's MCP Library record (mcp-library.json), private to the host. */ mcpLibraryFile?: string; /** Whether the computer has autostart services (running-apps.ts). */ serviceMemory?: ServiceMemory; prepareKeyring?: () => Promise<void>; /** How long a launch waits for keyring preparation (KEYRING_WAIT_MS). */ keyringWaitMs?: number; settings: SettingsStore; controller: Controller; push?: PushService; activities?: ActivityService; profiles?: AgentProfiles; openRoutines?: (options: RoutineOptions) => Promise<AgentRoutines>; openToolJournal?: (dispatch: ToolDispatcher) => Promise<AgentToolJournal>; /** The steps of the computer's start, reported by its controller (boot.ts). */ boot?: BootProgress; /** Waits for the computer's image, reporting the download; resolves at once when it is present. */ ensureImage?: (report: BootReport) => Promise<void> }
+export interface ComputerPieces { /** A container computer's image, folders, devices and options (container-spec.ts). */ containerSpec?: ContainerSpecStore; /** Phone backups and shared storage (storage.ts). */ storage?: ComputerStorage; /** Commands' results, kept in the host's state (commands/). */ commands?: CommandStore; snapshotPath?: string; snapshotTier?: SnapshotTierOptions; /** The computer's MCP Library record (mcp-library.json), private to the host. */ mcpLibraryFile?: string; /** What the owner installed through the Library outside the Flatpak volume (library-apps.json, library-record.ts). */ libraryFile?: string; /** Whether the computer has autostart services (running-apps.ts). */ serviceMemory?: ServiceMemory; prepareKeyring?: () => Promise<void>; /** How long a launch waits for keyring preparation (KEYRING_WAIT_MS). */ keyringWaitMs?: number; settings: SettingsStore; controller: Controller; push?: PushService; activities?: ActivityService; profiles?: AgentProfiles; openRoutines?: (options: RoutineOptions) => Promise<AgentRoutines>; openToolJournal?: (dispatch: ToolDispatcher) => Promise<AgentToolJournal>; /** The steps of the computer's start, reported by its controller (boot.ts). */ boot?: BootProgress; /** Waits for the computer's image, reporting the download; resolves at once when it is present. */ ensureImage?: (report: BootReport) => Promise<void> }
 
 
 /**
@@ -250,6 +253,17 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
       .then(() => prepareKeyringFor(generation))
       .finally(() => { upgrading = false; release() })
   }
+  /**
+   * Once the components are current, installs what the Library record lists and the computer
+   * lacks: a container created again starts from its image.
+   */
+  function reapplyLibrary(): void {
+    void (upgradeWork ?? Promise.resolve()).catch(() => {}).then(async () => {
+      if (computer.state !== 'running' || upgrading || craftBusy || appCatalog.busy) return
+      const started = await appCatalog.reapply()
+      if (started.length) console.log(`Reinstalling from the Library record: ${started.join(', ')}`)
+    }).catch(error => console.error('Cannot reinstall from the Library record:', error instanceof Error ? error.message : error))
+  }
   /** A failed upgrade is tried again by what needs the components, without a park and wake. */
   function retryFailedUpgrade(): void {
     if (upgrade?.state === 'failed' && computer.state === 'running' && Date.now() - upgradeStarted >= UPGRADE_RETRY_MS) startUpgrade()
@@ -262,7 +276,7 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
   }
   const home = new HomeOwnership()
   const catalog = new AgentCatalog(shared.registry, () => controller.guest(), settings, home)
-  const appCatalog = new AppCatalog(() => controller.guest(), broadcast, () => computer.acquire(), { ...shared.library, computer: id })
+  const appCatalog = new AppCatalog(() => controller.guest(), broadcast, () => computer.acquire(), { ...shared.library, computer: id, ...(pieces.libraryFile ? { record: new LibraryRecord(pieces.libraryFile) } : {}) })
   const mcp = shared.library?.mcp && pieces.mcpLibraryFile
     ? new McpLibrary({ file: pieces.mcpLibraryFile, tag: `${shared.library.mcp.hostId}/${id}`, catalog: shared.library.mcp.catalog, guest: () => controller.guest(), emit: broadcast, ...(shared.library.mcp.request ? { request: shared.library.mcp.request } : {}),
       // Through the computer's file service, so a token never travels on a command line.
@@ -624,7 +638,7 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
     if (state === 'parking') closeSockets()
     broadcast({ type: 'computer.state', state })
     if (state !== 'running' && state !== 'frozen') { keyringGeneration++; keyring = null }
-    if (state === 'running' && !resumed) startUpgrade()
+    if (state === 'running' && !resumed) { startUpgrade(); reapplyLibrary() }
     guestEvents.setRunning(state === 'running')
     ai.setRunning(state === 'running')
     if (state === 'running') { agents.resume(); commands.resume(); if (!resumed) bridgeWake() }
@@ -1299,11 +1313,13 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
     }
     pendingGPUSockets.set(socket, principal.phoneId)
     socket.once('close', () => { pendingGPUSockets.delete(socket); if (!upgraded) finish() })
-    void computer.wake().then(session => {
+    void computer.wake().then(async session => {
       if (socket.destroyed) return finish()
       if (!computer.acceptsConnections || session.display.protocol !== 'caboose-display') {
         refuse('409 Conflict'); finish(); return
       }
+      const upstream = await gpuServiceURL(await controller.gpuBrokerUrl?.().catch(() => undefined), controller.displayUrl)
+      if (socket.destroyed) return finish()
       try {
         gpuWss.handleUpgrade(request, socket, head, client => {
           upgraded = true
@@ -1320,7 +1336,7 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
             const declared = declaredGPUFeatures(request.headers['x-caboose-gpu-features'])
             const dropped = droppedGPUFeaturesLine(declared)
             if (dropped) console.error(dropped)
-            const relay = startGPURelay(client, { displayURL: controller.displayUrl, displayToken: session.display.token,
+            const relay = startGPURelay(client, { displayURL: upstream, displayToken: session.display.token,
               computer: id, executor: randomUUID(), features, declared, resumable: credential !== undefined })
             if (credential !== undefined) gpuResume = { credential: Buffer.from(credential, 'base64url'), phoneId: principal.phoneId, relay }
             void relay.done.then(() => {

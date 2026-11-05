@@ -19,11 +19,11 @@ describe('screen', () => {
     const guest = { ownerEnv: ['DISPLAY=:110'], run: async (command: string, args: string[]) => { runs.push([command, ...args]); return '0\n{"window":{"title":"","app":""},"elements":[],"note":"No window is open on this display."}' } }
     expect(await screenElements(guest)).toEqual({ window: { title: '', app: '' }, elements: [], note: 'No window is open on this display.' })
     expect(runs[0]!.slice(0, 4)).toEqual(['/usr/sbin/runuser', '-u', 'caboose', '--'])
-    expect(runs[0]!.slice(4)).toEqual(['/usr/bin/env', 'DISPLAY=:110', '/bin/sh', '-c', ON_DISPLAY, 'sh', ':110', '/usr/bin/python3', '/opt/caboose/a11y.py', 'elements', '--display', ':110'])
+    expect(runs[0]!.slice(4)).toEqual(['/usr/bin/env', 'DISPLAY=:110', '/bin/sh', '-c', ON_DISPLAY, 'sh', ':110', '/usr/bin/python3', '/usr/libexec/caboose/a11y', 'elements', '--display', ':110'])
     await screenType(guest, { text: '-rf is just text' })
-    expect(runs[1]!.slice(-4)).toEqual(['/opt/caboose/seat.py', 'type', '--', '-rf is just text'])
+    expect(runs[1]!.slice(-4)).toEqual(['/usr/libexec/caboose/seat', 'type', '--', '-rf is just text'])
     await screenKeys(guest, { keys: 'ctrl+shift+T Enter' })
-    expect(runs[2]!.slice(-5)).toEqual(['/opt/caboose/seat.py', 'key', '--', 'ctrl+shift+t', 'Return'])
+    expect(runs[2]!.slice(-5)).toEqual(['/usr/libexec/caboose/seat', 'key', '--', 'ctrl+shift+t', 'Return'])
   })
 
   it('preserves optional field values from the accessibility helper', async () => {
@@ -40,7 +40,7 @@ describe('screen', () => {
     const guest = { ownerEnv: env, run: async (command: string, args: string[]) => { runs.push([command, ...args]); return '0\n{"ok":true}' } }
     await screenAct(guest, { element: '0.1', action: 'press' })
     expect(runs[0]!.slice(4, 8)).toEqual(['/usr/bin/env', ...env])
-    expect(runs[0]!.slice(11, 17)).toEqual(['sh', ':110', '/usr/bin/python3', '/opt/caboose/a11y.py', 'act', '--display'])
+    expect(runs[0]!.slice(11, 17)).toEqual(['sh', ':110', '/usr/bin/python3', '/usr/libexec/caboose/a11y', 'act', '--display'])
     expect(runs[0]![17]).toBe(':110')
   })
 

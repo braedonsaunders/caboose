@@ -2,7 +2,7 @@
 
 How often a finger tapping a desktop control on the phone presses that control, without and
 with aiming ([docs/display.md, "Touch targets"](../../docs/display.md#touch-targets)). The
-provider is `guest/desktop-mcp/caboose-targets.py`; the aiming is
+provider is `guest/computer-use/helpers/touch_targets.py`; the aiming is
 `apps/ios/CabooseKit/Sources/CabooseKit/Input/TouchTargeting.swift`.
 
 | File | Is |

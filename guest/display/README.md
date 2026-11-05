@@ -257,8 +257,8 @@ over 5 s of idle, and per-glyph damage and uploaded bytes across 20 typed charac
 `foot` and `xterm`.
 
 Two scripted checks outside this directory exercise both instances together:
-`guest/desktop-mcp/check-a11y.sh` runs the owner's display and the agent seat in Docker
-and drives them with the desktop tools, and `apps/host/scripts/e2e.sh` checks a hello on
+`guest/computer-use/check/check-a11y.sh` runs the owner's display and the agent seat in Docker
+and drives them with the computer-use tools, and `apps/host/scripts/e2e.sh` checks a hello on
 both seats against a real host.
 
 ## Run
@@ -358,15 +358,15 @@ microseconds, for [frame lab](../framelab/README.md)). Requests are single
 lines and answers single JSON lines (a screenshot's is followed by the PNG); the full list is
 in [docs/architecture.md § Displays](../../docs/architecture.md#displays) and the code in
 `compositor/src/control.rs`. Its path is in the launch environment as
-`CABOOSE_DISPLAY_CONTROL`, and [`guest/desktop-mcp/seat.py`](../desktop-mcp/seat.py) is its
+`CABOOSE_DISPLAY_CONTROL`, and [`guest/computer-use/helpers/seat.py`](../computer-use/helpers/seat.py) is its
 client:
 
 ```sh
 set -a; . /run/caboose/display.env; set +a
-python3 /opt/caboose/seat.py windows
-python3 /opt/caboose/seat.py click 640 360
-python3 /opt/caboose/seat.py key ctrl+s
-python3 /opt/caboose/seat.py screenshot --out /tmp/seat.png
+/usr/libexec/caboose/seat windows
+/usr/libexec/caboose/seat click 640 360
+/usr/libexec/caboose/seat key ctrl+s
+/usr/libexec/caboose/seat screenshot --out /tmp/seat.png
 ```
 
 ## In the guest

@@ -91,7 +91,7 @@ def verify_windows(agent_count, check_id):
     assert os.environ.get('CABOOSE_DISPOSABLE_ACCEPTANCE') == check_id
     assert Path('/home/caboose/.caboose-synthetic-seat-acceptance').read_text() == check_id
     assert agent_count in (1, 2)
-    spec = importlib.util.spec_from_file_location('acceptance_seat', '/opt/caboose/seat.py')
+    spec = importlib.util.spec_from_file_location('acceptance_seat', '/usr/lib/caboose/computer-use/helpers/seat.py')
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     seats = {name: module.Seat('/run/user/1000/caboose-display/wayland-caboose-' + suffix + '/control.sock')
@@ -162,8 +162,8 @@ def inside(phase, check_id):
     browser_logs = []
     try:
         def launch(seat):
-            # The agent seat starts applications in its profile, as desktop MCP's launch does.
-            command = ['/usr/bin/chromium'] if seat == 'owner' else ['/usr/bin/python3', '/opt/caboose/agent-profile.py', 'exec', '/usr/bin/chromium']
+            # The agent seat starts applications in its profile, as the computer-use launch step does.
+            command = ['/usr/bin/chromium'] if seat == 'owner' else ['/usr/libexec/caboose/agent-profile', 'exec', '/usr/bin/chromium']
             envfile = '/run/caboose/' + ('display.env' if seat == 'owner' else 'agent-display.env')
             args = ['runuser', '-u', 'caboose', '--', 'env', 'HOME=/home/caboose',
                 'DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/' + ('bus' if seat == 'owner' else 'agent-bus'),

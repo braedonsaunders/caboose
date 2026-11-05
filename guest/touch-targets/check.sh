@@ -25,14 +25,15 @@ if [[ ${1:-} != --here ]]; then
   fi
   exec docker run --rm -i --init --network none --cpus "${CABOOSE_CHECK_CPUS:-4}" --memory "${CABOOSE_CHECK_MEMORY:-4g}" \
     --security-opt seccomp="$here/../container/caboose-seccomp.json" \
-    -v "$here:/tt/touch-targets:ro" -v "$here/../desktop-mcp/caboose-targets.py:/opt/caboose/caboose-targets.py:ro" \
-    -v "$here/../desktop-mcp:/tt/desktop-mcp:ro" "${mounts[@]}" \
+    -v "$here:/tt/touch-targets:ro" -v "$here/../computer-use/helpers:/tt/helpers:ro" "${mounts[@]}" \
     -e CABOOSE_CHECK_DISPLAY="${CABOOSE_CHECK_DISPLAY:-1920x1080@60x1}" \
     -v "$out:/out" "$image" bash /tt/touch-targets/check.sh --here /out "$@"
 fi
 
 shift
 out=$1; shift
+# The provider where the compositor runs it, as the caboose-computer-use package links it.
+install -d /usr/libexec/caboose && ln -sf /tt/helpers/touch_targets.py /usr/libexec/caboose/touch-targets
 [[ ${1:-} == -- ]] && shift
 fail() { echo "FAIL: $*" >&2; [[ -f $out/display.log ]] && tail -n 20 "$out/display.log" >&2; exit 1; }
 [[ $(id -u) == 0 ]] || fail 'run as root'
@@ -66,7 +67,7 @@ owner caboose-display-probe --url ws://127.0.0.1:14690/ --token-file "$dir/token
 pids+=($!)
 # The seat's accessibility bus, before any app, as caboose-session starts it.
 owner env HOME=/home/caboose XDG_RUNTIME_DIR="$rt" DBUS_SESSION_BUS_ADDRESS="unix:path=$rt/bus" /bin/sh -c \
-  'set -a; . "$0"; exec python3 /tt/desktop-mcp/a11y.py bus --display "$DISPLAY" --wait 30' "$out/display.env" > "$out/a11y-bus.json" ||
+  'set -a; . "$0"; exec python3 /tt/helpers/a11y.py bus --display "$DISPLAY" --wait 30' "$out/display.env" > "$out/a11y-bus.json" ||
   fail 'no accessibility bus'
 owner env HOME=/home/caboose XDG_RUNTIME_DIR="$rt" ACCESSIBILITY_ENABLED=1 GNOME_ACCESSIBILITY=1 \
   python3 /tt/touch-targets/bench/bench-guest.py --env "$out/display.env" --out "$out" --targets-log "$out/targets.jsonl" "$@"

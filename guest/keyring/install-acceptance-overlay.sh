@@ -19,16 +19,12 @@ for program in caboose-display caboose-display-probe; do
 done
 install -Dm755 "$src/guest/display/caboose-display-ready" /usr/local/bin/caboose-display-ready
 install -Dm755 "$src/guest/container/caboose-session" /usr/local/bin/caboose-session
-for name in agent-profile.py a11y.py seat.py; do
-  install -Dm755 "$src/guest/desktop-mcp/$name" "/opt/caboose/$name"
-done
-install -Dm755 "$src/guest/desktop-mcp/caboose-agent-seat" /usr/local/libexec/caboose-agent-seat
-install -Dm755 "$src/guest/desktop-mcp/caboose-desktop-mcp.mjs" /opt/caboose/desktop-mcp.mjs
-install -Dm644 "$src/guest/desktop-mcp/ensure-agent-seat.mjs" /opt/caboose/ensure-agent-seat.mjs
-install -Dm644 "$src/guest/desktop-mcp/ensure-agent-seat.mjs" /opt/caboose/desktop-mcp/ensure-agent-seat.mjs
+# Computer use as the computer has it: its packages, built from this checkout.
+sh "$src/guest/computer-use/install.sh"
 install -Dm755 "$src/guest/apps/apps-mcp.mjs" /opt/caboose/apps/apps-mcp.mjs
 sh "$src/guest/keyring/install.sh"
 install -Dm644 "$src/guest/notifications/caboose-agent-bus.service" /etc/systemd/system/caboose-agent-bus.service
 install -Dm644 "$src/guest/display/systemd/caboose-display-agent.service" /etc/systemd/system/caboose-display-agent.service
-# No apt/npm, service starts, owner-home writes, or components.version stamp.
+# APT installs only the packages built here; no npm, service starts, owner-home writes, or
+# components.version stamp.
 printf '%s\n' 'Acceptance overlay installed; full component upgrade is not claimed'

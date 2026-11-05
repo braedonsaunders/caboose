@@ -12,7 +12,7 @@ import { PRESENTATION_GUIDANCE, chooseOption, describeToolCall, Draft, isStaleLo
 
 const RUNNER = new URL('../caboose-agentd.mjs', import.meta.url).pathname
 const STAND_IN = new URL('./stand-in-agent.mjs', import.meta.url).pathname
-const DESKTOP_MCP = new URL('../../desktop-mcp/caboose-desktop-mcp.mjs', import.meta.url).pathname
+const DESKTOP_MCP = new URL('../../computer-use/server/main.mjs', import.meta.url).pathname
 const APPS_MCP = new URL('../../apps/apps-mcp.mjs', import.meta.url).pathname
 const cleanup = []
 afterEach(async () => {

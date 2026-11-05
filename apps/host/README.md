@@ -422,8 +422,10 @@ stream. Every open WebSocket holds a lease that keeps the computer awake.
 `/v1/gpu` is a separate binary WebSocket with the exact subprotocol
 `caboose.gpu.live.v1`. It uses the same computer authorization and revocation
 fences, rejects all query parameters (including agent-seat selection), and admits
-one pending or connected executor per computer. It relays to `/gpu` on the owner's
-existing display service using the current per-wake display token. The host supplies
+one pending or connected executor per computer. It relays to `/gpu` on the computer's GPU
+broker service (port 14602, on a container's bridge address or through a microVM's port relay,
+once the guest has a listener there), else on the owner's existing display service, using the
+current per-wake display token. The host supplies
 `X-Caboose-GPU-Computer` and a fresh `X-Caboose-GPU-Executor` UUID; client versions of
 these headers and the phone/owner bearer token are never forwarded. The guest must
 authenticate the display token before trusting the host identities.
@@ -501,8 +503,8 @@ address.
 
 `/v1/screen/elements`, `act`, `type` and `keys` (`src/screen.ts`, `docs/architecture.md`
 § Screen) read and drive the owner's display, Wayland and X11 applications alike. They run
-`/opt/caboose/a11y.py` and `/opt/caboose/seat.py`
-([`guest/desktop-mcp`](../../guest/desktop-mcp/README.md)) as `caboose` with the owner
+`/usr/libexec/caboose/a11y` and `/usr/libexec/caboose/seat`
+([`guest/computer-use`](../../guest/computer-use/README.md)) as `caboose` with the owner
 display's launch environment, which names its control socket.
 
 ## Notifications and Live Activities
@@ -537,7 +539,9 @@ installed application; `GET /v1/catalog/discover?q=&category=&offset=` ranks the
 at a time without a running computer. `src/flathub.ts` keeps Flathub's index and icons in
 `CABOOSE_IMAGE_ROOT/flathub`, `src/releases.ts` the latest verified Craft releases in
 `CABOOSE_IMAGE_ROOT/releases`, and `src/depot.ts` the shared runtime depot's record in
-`CABOOSE_IMAGE_ROOT/depot.json` (`docs/architecture.md` § Runtime depot). On the container
+`CABOOSE_IMAGE_ROOT/depot.json` (`docs/architecture.md` § Runtime depot). `src/library-record.ts`
+keeps each computer's `library-apps.json`, the Library apps outside its Flatpak volume, which the
+host installs again at a wake when the computer lacks them. On the container
 runtime the depot is the Docker volume `caboose-depot` and its builder runs `src/depot-builder.py`
 in a throwaway container from `CABOOSE_CONTAINER_IMAGE`. Linux microVM hosts can set
 `CABOOSE_VM_DEPOT` to share a host directory read-only via virtio-fs; otherwise each
@@ -649,7 +653,7 @@ approvals, cancel, restore after a host restart, sign-in, attachments and Downlo
 Debian 13 container where the real `caboose-agentd`, installed by its own `install.sh`,
 drives a stand-in ACP agent.
 
-`guest/desktop-mcp/check-a11y.sh` covers the accessibility helper behind the screen routes,
+`guest/computer-use/check/check-a11y.sh` covers the accessibility helper behind the screen routes,
 `guest/files/check-service.py` the file service, and `guest/terminal/check-service.py` the terminal service; see their READMEs.
 
 Agent profiles are private per-computer records in `agent-profiles.json`, with identity,

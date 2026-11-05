@@ -1,3 +1,4 @@
+import { connect } from 'node:net'
 import { WebSocket, type RawData } from 'ws'
 
 export const GPU_PROTOCOL = 'caboose.gpu.live.v1'
@@ -48,7 +49,27 @@ export function droppedGPUFeaturesLine(declared: readonly string[]): string {
   return dropped.length ? `CABOOSE_GPU_RELAY_FEATURES dropped=${dropped.join(',')} forwarded=${declared.filter(name => known.has(name)).join(',')}` : ''
 }
 
-/** The owner's existing guest service; never a client-supplied destination. */
+/** Whether a TCP listener answers at a ws: or wss: URL's host and port, within `timeout`. */
+export function reachable(url: string, timeout = 1500): Promise<boolean> {
+  const { hostname, port, protocol } = new URL(url)
+  return new Promise(resolve => {
+    const socket = connect({ host: hostname, port: Number(port) || (protocol === 'wss:' ? 443 : 80) })
+    const done = (answer: boolean) => { socket.destroy(); resolve(answer) }
+    socket.setTimeout(timeout, () => done(false))
+    socket.once('connect', () => done(true))
+    socket.once('error', () => done(false))
+  })
+}
+
+/**
+ * Where the phone's executor goes: the computer's GPU broker service, shared by both seats,
+ * where the guest runs it; else the owner's display, whose own broker serves that seat alone.
+ */
+export async function gpuServiceURL(brokerURL: string | undefined, displayURL: string, answers = reachable): Promise<string> {
+  return brokerURL && await answers(brokerURL) ? brokerURL : displayURL
+}
+
+/** The guest's GPU service at a guest URL; never a client-supplied destination. */
 export function gpuUpstreamURL(displayURL: string): string {
   const url = new URL(displayURL)
   if (!['ws:', 'wss:'].includes(url.protocol) || url.username || url.password) throw new Error('Invalid guest display URL')

@@ -12,8 +12,8 @@ to fit ([display.md](../../docs/display.md)).
 
 The prefixes are `~/.wine`, winetricks' (`~/.local/share/wineprefixes/*`) and every prefix a
 running Wine process on the owner's display names in `WINEPREFIX` (a prefix running on another
-seat follows that seat; processes on the agent seat, `CABOOSE_SEAT=agent`, whose windows desktop
-MCP reads as they are, never count), which the service remembers in
+seat follows that seat; processes on the agent seat, `CABOOSE_SEAT=agent`, whose windows the
+computer-use server reads as they are, never count), which the service remembers in
 `~/.local/state/caboose/wine-prefixes`. It checks every 10 s. A prefix gets the settings once
 Wine has made its `user.reg`; a running Wine keeps the values it read at start and picks up a
 change at its next launch.

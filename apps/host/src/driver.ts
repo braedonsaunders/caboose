@@ -9,7 +9,7 @@ import { readBundle } from './components.js'
 import { vmPaths } from './vm-paths.js'
 import { buildDeskLaunchPlan, createDeskHost, createCloudHypervisorBackend, createVirtualizationBackend, listenDeskPort, type DeskHandle, type DeskBackend, type DeskHost, type DeskHostOptions } from '@braedonsaunders/appkit-desk'
 import type { Config } from './config.js'
-import { AGENT_DISPLAY_PORT, DISPLAY_ENV_PATH, OWNER_DISPLAY_PORT, WRITE_TOKEN_SCRIPT, parseEnvFile } from './display.js'
+import { AGENT_DISPLAY_PORT, DISPLAY_ENV_PATH, GPU_BROKER_PORT, OWNER_DISPLAY_PORT, WRITE_TOKEN_SCRIPT, parseEnvFile } from './display.js'
 import { TERMINAL_PORT } from './terminal.js'
 import { AI_PORT } from './ai.js'
 import { configureGuest, ensureNetwork, invalidateNetwork, networkSlot, removeNetwork } from './network.js'
@@ -259,6 +259,11 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
     },
     get displayUrl() { return endpoint(OWNER_DISPLAY_PORT, 'ws') },
     get agentDisplayUrl() { return endpoint(AGENT_DISPLAY_PORT, 'ws') },
+    // The port's relay here always accepts; whether the guest's broker does is asked inside it.
+    gpuBrokerUrl: async () => {
+      await command('/usr/bin/env', ['bash', '-c', `exec 3<>/dev/tcp/127.0.0.1/${GPU_BROKER_PORT}`], 5_000)
+      return endpoint(GPU_BROKER_PORT, 'ws')
+    },
     fileService: () => ({ url: endpoint(14700, 'http'), token: displayToken }),
     terminalService: () => ({ url: endpoint(TERMINAL_PORT, 'http'), token: displayToken }),
     aiService: () => {
@@ -266,7 +271,7 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
       try { return { url: endpoint(AI_PORT, 'http'), token: displayToken } } catch { return undefined }
     },
     async ensureAgentSeat() {
-      await command('/usr/local/libexec/caboose-agent-seat', [], 180_000)
+      await command('/usr/libexec/caboose/agent-seat', [], 180_000)
     },
     guest() {
       if (!desk) return undefined
@@ -376,7 +381,7 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
         await configureGuest(desk, slot, nativeMac ? { host: '10.0.2.2', guest: '10.0.2.15', prefix: 24 } : undefined)
         if (!nativeMac && !relays.size) serviceVsock = await probeServiceVsock(desk)
         if ((nativeMac || serviceVsock) && !relays.size) {
-          for (const port of [OWNER_DISPLAY_PORT, AGENT_DISPLAY_PORT, 14700, TERMINAL_PORT, AI_PORT]) {
+          for (const port of [OWNER_DISPLAY_PORT, AGENT_DISPLAY_PORT, GPU_BROKER_PORT, 14700, TERMINAL_PORT, AI_PORT]) {
             relays.set(port, await listenDeskPort(nativeMac ? desk : { connect: (target) => desk!.connect(target, { transport: 'vsock' }) }, port))
           }
         }

@@ -30,7 +30,7 @@ docker build -t caboose-computer -f guest/container/Dockerfile guest
 The image contains Debian 13 with Mesa (OpenGL, VA-API drivers), Xwayland, PulseAudio,
 `caboose-display`, `caboose-display-probe` and `caboose-display-ready`, the Caboose VA-API
 driver ([`guest/vaapi`](../vaapi/README.md)), the app lineup from `guest/image/apps.sh`, the
-desktop MCP server and accessibility helper ([`guest/desktop-mcp`](../desktop-mcp/README.md)),
+computer-use package ([`guest/computer-use`](../computer-use/README.md)),
 the agent runner ([`guest/agentd`](../agentd/README.md)), the file service
 ([`guest/files`](../files/README.md)), the terminal service
 ([`guest/terminal`](../terminal/README.md)), notifications
@@ -95,6 +95,14 @@ owner's session and printing begin on interactive promotion.
 | `ready` | Waits up to 120 s for the owner's display to answer a hello with the host's token, publishes its display variables to its session bus, then starts its accessibility bus. |
 | `start-agent` | Starts the agent seat: its own session bus (`/run/user/1000/agent-bus`) and notification endpoint, and a Caboose Display on port 14601 with Wayland socket `wayland-caboose-agent`, Xwayland `:101`, `--no-audio`, launch environment in `/run/caboose/agent-display.env`. Waits until it is ready, then starts its accessibility bus. |
 
+The phone's GPU, where the broker and the phone's driver are installed: a broker that serves as
+the computer's service (it has `--listen`) is started before either display, supervised as they
+are, on port 14602 for the phone's executor and with a directory of sockets per seat under
+`/run/user/1000/caboose-gpu`; each display is its client on its own seat's sockets, the agent
+seat's too, so Watch gets the agent's pictures over the same executor and neither seat reaches the
+other's windows. An older broker is the owner display's own child and serves the owner's seat
+alone.
+
 Each display is supervised: if it exits with a failure (a crash), `caboose-session` starts it
 again at once, or after a back-off of up to 30 s when it fails within its first minute, and
 notes the exit in its log. A display stopped with SIGTERM exits cleanly and stays stopped. `caboose-session stop-display`
@@ -108,7 +116,7 @@ container is created or restarted.
 Apps launched on either seat prefer Wayland and fall back to X11 through Xwayland; on the
 owner's display they play sound through the `PULSE_SERVER` in its launch environment. Each
 seat's own accessibility bus and control socket keep the desktop tools and `/v1/screen`
-reading and driving one seat at a time (see [`guest/desktop-mcp`](../desktop-mcp/README.md)).
+reading and driving one seat at a time (see [`guest/computer-use`](../computer-use/README.md)).
 
 The displays and notification processes log to `/home/caboose/.cache/<name>.log`
 (`caboose-display.log`, `caboose-display-agent.log`, …).
@@ -178,7 +186,7 @@ Other checks for this image:
   handoff against a private display instance.
 - `guest/notifications/check-container.sh` checks the owner's notification endpoint, its
   actions and replies, and the separate session buses in a disposable container.
-- `guest/desktop-mcp/check-a11y.sh` runs both Caboose Display instances and the
+- `guest/computer-use/check/check-a11y.sh` runs both Caboose Display instances and the
   accessibility helper in Docker.
 
 ## Architecture
@@ -203,5 +211,5 @@ install the current `caboose-session` script for container computers. Run
 Agent display and session-bus processes start through `agent-profile.py` with persistent
 private GUI state. The agent bus uses the dedicated credential activation configuration;
 its live daemon must already use that configuration or startup requests an explicit
-restart. Owner session state is unchanged. See [agent GUI profiles](../desktop-mcp/README.md#persistent-agent-gui-profiles)
+restart. Owner session state is unchanged. See [agent GUI profiles](../computer-use/README.md#persistent-agent-gui-profiles)
 and [credential routing](../keyring/README.md#agent-credential-routing).
