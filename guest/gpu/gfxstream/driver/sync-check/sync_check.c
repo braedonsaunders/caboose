@@ -2100,6 +2100,145 @@ static void oneWayCases(const char* only) {
     }
 }
 
+
+// device_answers child: what a fresh process learns about its physical device, as one line.
+// mode 0 asks only counts (queue families and the Vulkan 1.4 layout lists) and stops; mode 1
+// asks everything once; mode 2 makes two instances and asks everything through the second
+// (as Wine and DXVK do: several instances per process); mode 3 enumerates twice and asks
+// through the second list.
+static int answersChild(int mode) {
+    VkApplicationInfo app = {VK_STRUCTURE_TYPE_APPLICATION_INFO};
+    app.pApplicationName = "caboose-sync-check-answers";
+    app.apiVersion = VK_API_VERSION_1_3;
+    VkInstanceCreateInfo info = {VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
+    info.pApplicationInfo = &app;
+    VkInstance first, use;
+    if (vkCreateInstance(&info, NULL, &first) != VK_SUCCESS) return 3;
+    use = first;
+    if (mode == 2 && vkCreateInstance(&info, NULL, &use) != VK_SUCCESS) return 3;
+    VkPhysicalDevice physicals[4];
+    for (VkInstance each = first;; each = use) {
+        uint32_t count = 0;
+        if (vkEnumeratePhysicalDevices(each, &count, NULL) != VK_SUCCESS || !count) { printf("ANSWERS devices=0\n"); return 4; }
+        if (count > 4) count = 4;
+        VkResult result = vkEnumeratePhysicalDevices(each, &count, physicals);
+        if (result != VK_SUCCESS && result != VK_INCOMPLETE) return 3;
+        if (each == use) break;
+    }
+    if (mode == 3) {
+        // Enumerating again (as DXVK does per adapter query) must give the same, working handles.
+        uint32_t again = 4;
+        VkPhysicalDevice second[4];
+        VkResult result = vkEnumeratePhysicalDevices(use, &again, second);
+        if (result != VK_SUCCESS && result != VK_INCOMPLETE) return 3;
+        if (second[0] != physicals[0]) printf("ANSWERS_NOTE handles_differ %p %p\n", (void*)physicals[0], (void*)second[0]);
+        physicals[0] = second[0];
+    }
+    VkPhysicalDevice physical = physicals[0];
+    uint32_t families = 0, families2 = 0;
+    vkGetPhysicalDeviceQueueFamilyProperties(physical, &families, NULL);
+    vkGetPhysicalDeviceQueueFamilyProperties2(physical, &families2, NULL);
+    VkPhysicalDeviceVulkan14Properties v14 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_4_PROPERTIES};
+    VkPhysicalDeviceProperties2 countOnly = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, &v14};
+    vkGetPhysicalDeviceProperties2(physical, &countOnly);
+    if (mode == 0) {
+        printf("ANSWERS counts families=%u families2=%u layouts=%u/%u\n", families, families2,
+               v14.copySrcLayoutCount, v14.copyDstLayoutCount);
+        return 0;
+    }
+    VkQueueFamilyProperties family[16];
+    VkQueueFamilyProperties2 family2[16];
+    if (families > 16) families = 16;
+    if (families2 > 16) families2 = 16;
+    for (uint32_t i = 0; i < 16; ++i) family2[i] = (VkQueueFamilyProperties2){VK_STRUCTURE_TYPE_QUEUE_FAMILY_PROPERTIES_2};
+    vkGetPhysicalDeviceQueueFamilyProperties(physical, &families, family);
+    vkGetPhysicalDeviceQueueFamilyProperties2(physical, &families2, family2);
+    VkPhysicalDeviceDriverProperties driver = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};
+    VkPhysicalDeviceVulkan11Properties v11 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_PROPERTIES, &driver};
+    VkPhysicalDeviceVulkan12Properties v12 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_PROPERTIES, &v11};
+    VkPhysicalDeviceVulkan13Properties v13 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_PROPERTIES, &v12};
+    VkPhysicalDeviceProperties2 full = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, &v13};
+    vkGetPhysicalDeviceProperties2(physical, &full);
+    VkPhysicalDeviceProperties plain;
+    vkGetPhysicalDeviceProperties(physical, &plain);
+    uint32_t flags = 0, flags2 = 0;
+    for (uint32_t i = 0; i < families; ++i) flags |= family[i].queueFlags;
+    for (uint32_t i = 0; i < families2; ++i) flags2 |= family2[i].queueFamilyProperties.queueFlags;
+    printf("ANSWERS full api=%u.%u plain_api=%u.%u driver=\"%s\" info=\"%s\" families=%u/%u flags=%x/%x "
+           "subgroup=%u maxUbo=%u v13inline=%u name=\"%s\"\n",
+           VK_API_VERSION_MAJOR(full.properties.apiVersion), VK_API_VERSION_MINOR(full.properties.apiVersion),
+           VK_API_VERSION_MAJOR(plain.apiVersion), VK_API_VERSION_MINOR(plain.apiVersion), driver.driverName,
+           driver.driverInfo, families, families2, flags, flags2, v11.subgroupSize,
+           full.properties.limits.maxUniformBufferRange, v13.maxInlineUniformBlockSize, full.properties.deviceName);
+    if (use != first) vkDestroyInstance(use, NULL);
+    vkDestroyInstance(first, NULL);
+    return 0;
+}
+// mode 4: a process that already made an instance forks (as a zygote does), and the forked
+// child asks everything from instances of its own while the parent keeps its own alive.
+static int answersForkChild(void) {
+    VkApplicationInfo app = {VK_STRUCTURE_TYPE_APPLICATION_INFO};
+    app.apiVersion = VK_API_VERSION_1_3;
+    VkInstanceCreateInfo info = {VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
+    info.pApplicationInfo = &app;
+    VkInstance parentInstance;
+    if (vkCreateInstance(&info, NULL, &parentInstance) != VK_SUCCESS) return 3;
+    uint32_t count = 1;
+    VkPhysicalDevice parentPhysical;
+    vkEnumeratePhysicalDevices(parentInstance, &count, &parentPhysical);
+    fflush(stdout);
+    pid_t child = fork();
+    if (child == 0) _exit(answersChild(1));
+    int status = 0;
+    waitpid(child, &status, 0);
+    // The parent's own device answers still hold after the child.
+    uint32_t families = 0;
+    vkGetPhysicalDeviceQueueFamilyProperties(parentPhysical, &families, NULL);
+    vkDestroyInstance(parentInstance, NULL);
+    if (!families) { printf("ANSWERS parent families=0 after fork\n"); return 4; }
+    return WIFEXITED(status) ? WEXITSTATUS(status) : 4;
+}
+static int runAnswersChild(int mode, char* line, size_t size) {
+    char command[256];
+    snprintf(command, sizeof(command), "/proc/%d/exe --answers-child %d", (int)getpid(), mode);
+    FILE* pipe = popen(command, "r");
+    if (!pipe) return -1;
+    line[0] = 0;
+    char buffer[1024];
+    while (fgets(buffer, sizeof(buffer), pipe))
+        if (!strncmp(buffer, "ANSWERS ", 8)) snprintf(line, size, "%s", buffer + 8);
+    const int status = pclose(pipe);
+    size_t n = strlen(line);
+    if (n && line[n - 1] == '\n') line[n - 1] = 0;
+    return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+}
+// device_answers: every fresh process of a session sees its device's real properties and
+// queue families, whatever earlier processes asked (counts only, everything, a second
+// instance), from the phone or from any cache: the same answers each time, never empty.
+static void deviceAnswersCase(void) {
+    static const int modes[] = {1, 0, 1, 2, 3, 4, 0, 1, 2, 3, 4, 1};
+    char reference[1024] = "", line[1024];
+    int ok = 1, runs = 0;
+    for (size_t i = 0; i < sizeof(modes) / sizeof(modes[0]); ++i) {
+        const int status = runAnswersChild(modes[i], line, sizeof(line));
+        ++runs;
+        if (status != 0) { ok = 0; printf("CABOOSE_SYNC_CHECK device_answers run %zu mode %d status %d %s\n", i, modes[i], status, line); continue; }
+        if (modes[i] == 0) continue;
+        unsigned major = 0, minor = 0, families = 0;
+        const char* api = strstr(line, "api=");
+        const char* fam = strstr(line, "families=");
+        if (api) sscanf(api, "api=%u.%u", &major, &minor);
+        if (fam) sscanf(fam, "families=%u", &families);
+        const int sane = (major > 1 || (major == 1 && minor >= 3)) && families > 0 && !strstr(line, "driver=\"\"");
+        if (!reference[0] && sane) snprintf(reference, sizeof(reference), "%s", line);
+        if (!sane || strcmp(line, reference)) {
+            ok = 0;
+            printf("CABOOSE_SYNC_CHECK device_answers run %zu mode %d differs:\n  got  %s\n  want %s\n", i, modes[i], line, reference);
+        }
+    }
+    report("device_answers", ok, "runs=%d %s", runs, reference);
+}
+
 int main(int argc, char** argv) {
     if (argc>1 && !strcmp(argv[1],"--lifetime-child")) {
         for (int i=0;i<32;++i) {
@@ -2115,6 +2254,7 @@ int main(int argc, char** argv) {
     }
     if (argc > 3 && !strcmp(argv[1], "--exit-child")) return exitChild(atoi(argv[2]), atoi(argv[3]));
     if (argc > 3 && !strcmp(argv[1], "--map-window")) return mapWindowChild((xcb_window_t)strtoul(argv[2], NULL, 10), atoi(argv[3]));
+    if (argc > 2 && !strcmp(argv[1], "--answers-child")) return atoi(argv[2]) == 4 ? answersForkChild() : answersChild(atoi(argv[2]));
     if (argc > 2 && !strcmp(argv[1], "--one-way-child"))
         return atoi(argv[2]) == 2 ? lostReplyChild() : oneWayChild(atoi(argv[2]));
     const int abandon = argc > 1 && !strcmp(argv[1], "--abandon");
@@ -2227,6 +2367,7 @@ int main(int argc, char** argv) {
     RUN("concurrent_coherent_writes", concurrentCoherentWritesCase());
     RUN("exit_latency", exitLatencyCase());
     RUN("abandoned_work", abandonedWorkCase());
+    RUN("device_answers", deviceAnswersCase());
     if (!only || strstr("one_way_start", only) || strstr("one_way_misprediction", only) ||
         strstr("lost_reply_stand_ins", only))
         oneWayCases(only);

@@ -2161,6 +2161,29 @@ class SeatTests(unittest.IsolatedAsyncioTestCase):
                 await asyncio.wait_for(task, 15)
 
     @unittest.skipUnless(sys.platform == 'linux', 'Linux AF_UNIX SOCK_SEQPACKET')
+    def test_a_stale_seat_socket_is_removed_and_a_live_one_kept(self):
+        import socket as socket_module
+        with tempfile.TemporaryDirectory() as directory:
+            root = broker.private_directory(Path(directory) / 'owner')
+            for kind in (socket_module.SOCK_STREAM, socket_module.SOCK_SEQPACKET):
+                # A socket an earlier broker left: bound, then closed without unlinking.
+                stale = root / f'stale-{kind}.sock'
+                left = socket_module.socket(socket_module.AF_UNIX, kind); left.bind(str(stale)); left.close()
+                self.assertTrue(broker.remove_stale_socket(stale, kind))
+                self.assertFalse(stale.exists())
+                # A socket something still listens on stays, and is not this broker's to take.
+                live = root / f'live-{kind}.sock'
+                holder = socket_module.socket(socket_module.AF_UNIX, kind); holder.bind(str(live)); holder.listen(1)
+                try:
+                    self.assertFalse(broker.remove_stale_socket(live, kind))
+                    self.assertTrue(live.exists())
+                finally:
+                    holder.close()
+            plain = root / 'plain'
+            plain.write_text('not a socket')
+            self.assertFalse(broker.remove_stale_socket(plain))
+            self.assertTrue(plain.exists())
+
     def test_the_shared_broker_makes_a_private_directory_and_control_socket_per_seat(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / 'caboose-gpu'

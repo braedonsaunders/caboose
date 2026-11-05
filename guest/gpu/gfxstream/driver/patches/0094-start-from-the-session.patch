@@ -305,11 +305,14 @@ index dbeac45..476c95f 100644
      size_t count = 0;
      size_t* countPtr = &count;
      {
-@@ -1770,6 +1791,9 @@ void VkEncoder::vkGetPhysicalDeviceMemoryProperties(
+@@ -1770,6 +1791,12 @@ void VkEncoder::vkGetPhysicalDeviceMemoryProperties(
          streamPtrPtr);
      unmarshal_VkPhysicalDeviceMemoryProperties(
          stream, VK_STRUCTURE_TYPE_MAX_ENUM, (VkPhysicalDeviceMemoryProperties*)(pMemoryProperties));
-+    if (pMemoryProperties && !caboose::completion::executorLost.load(std::memory_order_acquire))
++    // A device with no memory types or heaps is no real answer (an object the phone does not
++    // know writes nothing): never kept, so no later process reads it.
++    if (pMemoryProperties && pMemoryProperties->memoryTypeCount && pMemoryProperties->memoryHeapCount &&
++        !caboose::completion::executorLost.load(std::memory_order_acquire))
 +        caboose::memory::staticQueryCache.store(cabooseKey, *pMemoryProperties);
 +    }
      if (pMemoryProperties) {

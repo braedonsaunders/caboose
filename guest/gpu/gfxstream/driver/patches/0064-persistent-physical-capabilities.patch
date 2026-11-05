@@ -21,7 +21,7 @@ diff --git a/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp b/src/gfxstream/
  
  #include "CommandBufferStagingStream.h"
  #include "DescriptorSetVirtualization.h"
-@@ -2876,7 +2878,46 @@
+@@ -2876,7 +2878,48 @@
          __vk_append_struct(pProperties, &driverPropsLocal);
      }
  
@@ -36,7 +36,9 @@ diff --git a/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp b/src/gfxstream/
      enc->vkGetPhysicalDeviceProperties2(physicalDevice, pProperties, false /* no lock */);
 +    // Physical capability answers belong to the actual backend identity before the
 +    // guest-facing driver name/version is projected below. Never key by a process handle.
-+    if (!caboose::completion::executorLost.load(std::memory_order_acquire)) {
++    // An empty answer (no API version or device name: an object the phone does not know) names no identity.
++    if (!caboose::completion::executorLost.load(std::memory_order_acquire) && pProperties->properties.apiVersion &&
++        pProperties->properties.deviceName[0]) {
 +        const auto& props=pProperties->properties;
 +        std::string identity="caboose-format-cache-v1:" CABOOSE_DRIVER_SOURCE_ID;
 +        auto put=[&identity](const auto& value) {
