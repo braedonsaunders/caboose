@@ -8,9 +8,11 @@ export DEBIAN_FRONTEND=noninteractive
 out=$(mktemp -d /tmp/caboose-computer-use.XXXXXXXX)
 log=$out/apt.log
 trap 'rm -rf "$out"' EXIT
-# The Wine reader is cross-built only by the image builds. A computer that has the one Caboose
-# installed by hand before this package keeps it, as the Wine package.
-if [ ! -f "$here/wine/caboose-msaa.exe" ] && [ -f /opt/caboose/caboose-msaa.exe ]; then
+# The Wine reader is cross-built only by the image builds, beside its source (so it is no
+# file of the host's bundle). A computer that has the one Caboose installed by hand before this
+# package keeps it, as the Wine package.
+reader=$here/wine/caboose-msaa.exe
+if [ ! -f "$reader" ] && [ -f /opt/caboose/caboose-msaa.exe ]; then
   export CABOOSE_MSAA=/opt/caboose/caboose-msaa.exe
 fi
 python3 "$here/package.py" "$out" >/dev/null
