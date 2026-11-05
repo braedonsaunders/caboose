@@ -95,6 +95,14 @@ owner's session and printing begin on interactive promotion.
 | `ready` | Waits up to 120 s for the owner's display to answer a hello with the host's token, publishes its display variables to its session bus, then starts its accessibility bus. |
 | `start-agent` | Starts the agent seat: its own session bus (`/run/user/1000/agent-bus`) and notification endpoint, and a Caboose Display on port 14601 with Wayland socket `wayland-caboose-agent`, Xwayland `:101`, `--no-audio`, launch environment in `/run/caboose/agent-display.env`. Waits until it is ready, then starts its accessibility bus. |
 
+The phone's GPU, where the broker and the phone's driver are installed: a broker that serves as
+the computer's service (it has `--listen`) is started before either display, supervised as they
+are, on port 14602 for the phone's executor and with a directory of sockets per seat under
+`/run/user/1000/caboose-gpu`; each display is its client on its own seat's sockets, the agent
+seat's too, so Watch gets the agent's pictures over the same executor and neither seat reaches the
+other's windows. An older broker is the owner display's own child and serves the owner's seat
+alone.
+
 Each display is supervised: if it exits with a failure (a crash), `caboose-session` starts it
 again at once, or after a back-off of up to 30 s when it fails within its first minute, and
 notes the exit in its log. A display stopped with SIGTERM exits cleanly and stays stopped. `caboose-session stop-display`

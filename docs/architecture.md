@@ -1420,7 +1420,7 @@ guest answer 409 while it is not running.
 | `POST` | `/v1/session/park` | Park now → `{ state }`. 409 while a catalog operation, Craft job or command runs |
 | `GET` | `/v1/display` | **WebSocket**, subprotocol `binary` (required). Relay to the owner's display, port 14600 |
 | `GET` | `/v1/display?seat=agent` | **WebSocket**, subprotocol `binary`. Starts the agent seat if needed, then relays to port 14601; closes with 1011 `agent seat unavailable` if it does not start |
-| `GET` | `/v1/gpu` | **WebSocket**, exact subprotocol `caboose.gpu.live.v1`. Bounded binary relay to `/gpu` on the owner's existing display service; no query parameters or agent seat. One pending/connected executor per computer; a second returns 409. Requires a matching guest GPU service; does not advertise driver capabilities |
+| `GET` | `/v1/gpu` | **WebSocket**, exact subprotocol `caboose.gpu.live.v1`. Bounded binary relay to `/gpu` on the computer's GPU broker service (port 14602, shared by both seats) where the guest runs one, else on the owner's existing display service; no query parameters or seat selection. One pending/connected executor per computer; a second returns 409. Requires a matching guest GPU service; does not advertise driver capabilities |
 | `GET` | `/v1/control` | **WebSocket.** JSON events (below). `?foreground=1` marks the app's foreground connection; `?phone=1` subscribes to phone handoff events; with it, `?scan=1` says the app answers scan requests |
 | `GET` | `/v1/apps` | Launchable applications from the guest's desktop entries: `[{ id, name, icon (PNG data URL), categories, exec, actions, startupWMClass }]`. `startupWMClass` is the entry’s declared window class (at most 256 characters), or null; older hosts may omit it. The phone matches this class as well as desktop IDs. `actions` is the entry's desktop actions (`Actions=` with a `[Desktop Action …]` group, a Name, and an Exec unless the entry is D-Bus activated): at most 16 `{ id, name }`, ids `[A-Za-z0-9-]{1,64}`, names at most 100 characters |
 | `POST` | `/v1/apps/:id/launch` | Start a desktop entry on the owner's display with its launch environment → `{ launched: true }`. An optional `{ action }` runs one of its `actions` instead (GLib runs its Exec or activates it over D-Bus); 400 for an invalid id, 404 for an entry or action the computer does not have |
@@ -3284,7 +3284,8 @@ one normal display close request, leaving unsaved-change handling to the applica
 keeping the tile until the server removes the window. Releasing a close drag does not
 open the window. A changed session, connection generation or window cancels the drag.
 
-`caboose://task/<id>` opens a task, `caboose://command/<id>` a command (its id is 32
+`caboose://task/<id>` opens a task, `caboose://task/<id>/watch` the same with its agent's newest
+seat window full screen once it has one, `caboose://command/<id>` a command (its id is 32
 lowercase hex digits) and `caboose://airplay` runs Home's AirPlay action.
 Pinned and recent apps are kept on the phone per computer.
 

@@ -28,6 +28,8 @@ final class AppModel {
     private(set) var phase: Phase
     private(set) var agents = AgentCenter()
     var notificationTaskID: String?
+    /// A task whose agent's seat window opens full screen as soon as it has one (`caboose://task/<id>/watch`).
+    var watchTaskID: String?
     /// A command to show, from its link, notification or Live Activity.
     var notificationCommandID: String?
     var askFocusRequested = false
@@ -1786,6 +1788,7 @@ final class AppModel {
         switch link {
         case .tab(let tab): selectedTab = tab == .terminal && !TerminalSlot.isFilled ? .home : tab
         case .task(let id): notificationTaskID = id
+        case .watch(let id): notificationTaskID = id; watchTaskID = id
         case .command(let id): notificationCommandID = id
         case .airPlay: selectedTab = .home; airPlay.connect()
         }

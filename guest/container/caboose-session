@@ -125,10 +125,13 @@ start_display() {
   # A supervised display between two runs (restarting after a crash) is not started twice.
   if supervisor_pid "$name" >/dev/null; then return; fi
   install -d -m 0755 /run/caboose
-  # The broker refuses sockets a stopped display left; no display serves them now.
-  if [[ " $* " == *" --private-gpu-stream-socket "* ]]; then
+  # The broker a display spawns refuses sockets a stopped display left; no display serves
+  # them now. The computer's shared broker owns its sockets itself.
+  local cleanup=:
+  if [[ " $* " == *" --private-gpu-stream-socket "* ]] && ! shared_broker; then
     install -d -o caboose -g caboose -m 0700 "$PHONE_GPU_DIR"
-    rm -f -- "$PHONE_GPU_DIR/gpu.sock" "$PHONE_GPU_DIR/surface.sock"
+    cleanup=remove_display_gpu_sockets
+    "$cleanup"
   fi
   install -o caboose -g caboose -m 0644 /dev/null "$envfile"
   local wrapper=()
@@ -138,27 +141,31 @@ start_display() {
   local log="$CABOOSE_HOME/.cache/$name.log"
   # The redirect below is opened by this root shell, so the log must already be caboose's.
   touch "$log" && chown caboose:caboose "$log"
-  # Supervised: a display that crashes is started again, so the computer never sits
-  # without one; one stopped on purpose (SIGTERM, exit 0) stays stopped.
+  supervise "$name" "$log" "$cleanup" runuser -u caboose -- env HOME="$CABOOSE_HOME" XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" \
+    DBUS_SESSION_BUS_ADDRESS="unix:path=$bus" LD_LIBRARY_PATH="$libs" \
+    "${wrapper[@]}" setsid --wait caboose-display --env-file "$envfile" "$@"
+}
+
+# The sockets a display's own broker made: that broker refuses them once its display stopped.
+remove_display_gpu_sockets() { rm -f -- "$PHONE_GPU_DIR/gpu.sock" "$PHONE_GPU_DIR/surface.sock"; }
+
+# Runs COMMAND supervised as NAME, logging to LOG: one that crashes is started again (at once
+# after running a minute, else backing off to 30 s, running CLEANUP first), so the computer
+# never sits without it; one stopped on purpose (SIGTERM, exit 0) stays stopped.
+supervise() {
+  local name=$1 log=$2 cleanup=$3; shift 3
   (
     echo "$BASHPID" > "/run/caboose/$name.supervisor"
     delay=1
     while :; do
       started=$SECONDS
-      runuser -u caboose -- env HOME="$CABOOSE_HOME" XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" \
-        DBUS_SESSION_BUS_ADDRESS="unix:path=$bus" LD_LIBRARY_PATH="$libs" \
-        "${wrapper[@]}" setsid --wait caboose-display --env-file "$envfile" "$@" >>"$log" 2>&1 < /dev/null \
-        && status=0 || status=$?
+      "$@" >>"$log" 2>&1 < /dev/null && status=0 || status=$?
       [ "$status" -eq 0 ] && break
-      # A display that ran a while restarts at once; one failing at start backs off.
       if [ $((SECONDS - started)) -ge 60 ]; then delay=1; fi
       echo "caboose-session: $name exited with status $status; starting it again in ${delay}s" >>"$log"
       sleep "$delay"
       delay=$((delay < 30 ? delay * 2 : 30))
-      # The broker refuses the sockets the dead display left (see above).
-      if [[ " $* " == *" --private-gpu-stream-socket "* ]]; then
-        rm -f -- "$PHONE_GPU_DIR/gpu.sock" "$PHONE_GPU_DIR/surface.sock"
-      fi
+      "$cleanup"
     done
     rm -f "/run/caboose/$name.supervisor"
   ) </dev/null >/dev/null 2>&1 &
@@ -196,14 +203,41 @@ bridge_daemon() {
     /bin/sh -c 'echo $$ > "$0"; exec python3 /opt/caboose/bridge/caboose-bridge daemon' "$pidfile" >>"$log" 2>&1 < /dev/null &
 }
 
-# The phone's GPU (docs/gpu-live.md): with the broker and the phone's driver installed, the
-# owner's display serves the broker's sockets and routes its applications to that GPU.
-# Prints the display's options for it.
+# The phone's GPU (docs/gpu-live.md), with the broker and the phone's driver installed. One
+# broker per computer, a service of its own (start_gpu), serves both seats over one phone
+# executor: each display is its client on that seat's sockets, so neither seat reaches the
+# other's windows. A broker without the service (`--listen`) is the owner display's own child,
+# serving the owner's seat alone.
 PHONE_GPU_DIR=$XDG_RUNTIME_DIR/caboose-gpu
+GPU_BROKER=/usr/local/libexec/caboose-gpu-broker
+GPU_BROKER_PORT=14602
+phone_gpu() { [ -x "$GPU_BROKER" ] && [ -f /usr/local/lib/caboose-gpu-live/icd.json ]; }
+shared_broker() { phone_gpu && "$GPU_BROKER" --help 2>/dev/null | grep -q -- '--listen'; }
+# Prints seat SEAT's display options for the phone's GPU.
 phone_gpu_args() {
-  [ -x /usr/local/libexec/caboose-gpu-broker ] && [ -f /usr/local/lib/caboose-gpu-live/icd.json ] || return 0
-  echo --private-gpu-stream-socket "$PHONE_GPU_DIR/gpu.sock" \
-    --private-gpu-surface-socket "$PHONE_GPU_DIR/surface.sock" --private-gpu-indexed
+  phone_gpu || return 0
+  if shared_broker; then
+    echo --private-gpu-stream-socket "$PHONE_GPU_DIR/$1/gpu.sock" \
+      --private-gpu-surface-socket "$PHONE_GPU_DIR/$1/surface.sock" --private-gpu-indexed
+  elif [ "$1" = owner ]; then
+    echo --private-gpu-stream-socket "$PHONE_GPU_DIR/gpu.sock" \
+      --private-gpu-surface-socket "$PHONE_GPU_DIR/surface.sock" --private-gpu-indexed
+  fi
+}
+
+# The computer's GPU broker service: started before either display, supervised as they are
+# (started again after a crash), and listening for the phone's executor on GPU_BROKER_PORT.
+start_gpu() {
+  shared_broker || return 0
+  supervisor_pid caboose-gpu-broker >/dev/null && return
+  install -d -o caboose -g caboose -m 0700 "$PHONE_GPU_DIR"
+  local log="$CABOOSE_HOME/.cache/caboose-gpu-broker.log"
+  touch "$log" && chown caboose:caboose "$log"
+  supervise caboose-gpu-broker "$log" : runuser -u caboose -- env HOME="$CABOOSE_HOME" XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" \
+    setsid --wait "$GPU_BROKER" --listen "0.0.0.0:$GPU_BROKER_PORT" --token-file "$TOKEN" --dir "$PHONE_GPU_DIR" --private-indexed
+  # The displays connect to its sockets; it makes them at once.
+  for _ in $(seq 1 50); do [ -S "$PHONE_GPU_DIR/owner/surface.sock" ] && [ -S "$PHONE_GPU_DIR/agent/surface.sock" ] && return; sleep 0.1; done
+  echo 'caboose-session: the GPU broker did not make its sockets' >&2
 }
 
 start_owner() {
@@ -224,7 +258,8 @@ start_owner() {
     [ "$(basename "$(readlink -f "/sys/class/drm/${node##*/}/device")")" = vgem ] || continue
     chgrp caboose "$node" && chmod 0660 "$node"
   done
-  start_display caboose-display 14600 "$bus" /run/caboose/display.env $(phone_gpu_args)
+  start_gpu
+  start_display caboose-display 14600 "$bus" /run/caboose/display.env $(phone_gpu_args owner)
   bridge_daemon "$bus"
 }
 
@@ -232,9 +267,12 @@ start_agent() {
   local bus="$XDG_RUNTIME_DIR/agent-bus"
   session_bus "$bus"
   notification_endpoint caboose-agent-notification-daemon "$bus" /opt/caboose/notifications/daemon.py
-  # Agents see and drive its apps through its control socket; it plays no sound.
+  # Agents see and drive its apps through its control socket; it plays no sound. Its picture
+  # reaches the phone (Watch) through the computer's shared GPU broker, as the owner's does.
+  start_gpu
   start_display caboose-display-agent 14601 "$bus" /run/caboose/agent-display.env \
-    --listen 0.0.0.0:14601 --socket wayland-caboose-agent --x-display 101 --no-audio --no-games --no-devices
+    --listen 0.0.0.0:14601 --socket wayland-caboose-agent --x-display 101 --no-audio --no-games --no-devices \
+    $(phone_gpu_args agent)
 }
 
 start_printing() {

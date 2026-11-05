@@ -422,8 +422,10 @@ stream. Every open WebSocket holds a lease that keeps the computer awake.
 `/v1/gpu` is a separate binary WebSocket with the exact subprotocol
 `caboose.gpu.live.v1`. It uses the same computer authorization and revocation
 fences, rejects all query parameters (including agent-seat selection), and admits
-one pending or connected executor per computer. It relays to `/gpu` on the owner's
-existing display service using the current per-wake display token. The host supplies
+one pending or connected executor per computer. It relays to `/gpu` on the computer's GPU
+broker service (port 14602, on a container's bridge address or through a microVM's port relay,
+once the guest has a listener there), else on the owner's existing display service, using the
+current per-wake display token. The host supplies
 `X-Caboose-GPU-Computer` and a fresh `X-Caboose-GPU-Executor` UUID; client versions of
 these headers and the phone/owner bearer token are never forwarded. The guest must
 authenticate the display token before trusting the host identities.

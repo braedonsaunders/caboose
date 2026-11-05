@@ -9,8 +9,11 @@ describes.
 ## Connection and authority
 
 The host route is `/v1/gpu`, without query parameters, using the exact WebSocket
-subprotocol `caboose.gpu.live.v1`. It relays to the owner's display service `/gpu`
-on its existing port. There is no agent-seat GPU route. WebSocket messages are
+subprotocol `caboose.gpu.live.v1`. It relays to `/gpu` on the computer's GPU broker
+service (port 14602), one broker shared by both seats, where the guest runs it (the host
+connects only once a listener answers there); otherwise to the owner's display service `/gpu`
+on its existing port, whose own broker serves the owner's seat alone. The phone never names a
+seat or a destination. WebSocket messages are
 binary, uncompressed, at most 256 KiB, with at most 1 MiB and 64 pending messages
 in each direction. Vulkan replies use this connection independently of media.
 
