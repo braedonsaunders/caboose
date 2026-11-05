@@ -250,7 +250,7 @@ struct DesktopPanelButton: View {
 /// The phone's own desktop, edge to edge. Beside a vertical bar it takes the full height and
 /// everything up to the bar; with horizontal bars, the space between them; in full screen,
 /// the whole display. The computer is configured for exactly that size.
-private struct DesktopStage: View {
+struct DesktopStage: View {
     @Environment(AppModel.self) private var model
     @Environment(\.toolbarVerticalEdgeIfAvailable) private var barEdge
     @Environment(\.laptopInputOwned) private var laptopInputOwned
@@ -287,8 +287,10 @@ private struct DesktopStage: View {
                                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
                                 .padding(.bottom, model.desktop.detachedChrome ? 8 * model.desktop.ui : model.desktop.dockBottomInset)
                         }
-                        if model.desktop.detachedChrome {
-                            // Laptop draws its questions once, over its upper screen (`LaptopContainer`).
+                        if model.desktop.detachedChrome && !laptopInputOwned {
+                            // LaptopContainer owns both menus and cursor while its overlay is
+                            // active. A second menu here would overwrite its row hit regions
+                            // using the desktop's smaller scale.
                             SceneMenuView(menu: model.desktop.menu, space: "desktop", bounds: CGRect(origin: .zero, size: proxy.size),
                                           ui: model.desktop.ui, showsPrompts: false)
                             if model.desktop.showsCursor {

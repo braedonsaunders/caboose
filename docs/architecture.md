@@ -2888,6 +2888,9 @@ view's bounds, including while a resize stretches the previous picture.
   same ready session, and is cancelled when its desktop leaves the screen, a card is shown,
   the app leaves the foreground or the session changes.
   Launchpad pages through the available apps, with its controls above the dock.
+  In Laptop mode, the outer Laptop overlay alone draws the desktop menu and cursor
+  and measures the menu's pointer hit regions. The desktop stage underneath does not
+  register a second set of menu rows at its smaller UI scale.
   An external display scene supplies its current size and scale to the shared desktop;
   changes reconfigure the display without transferring geometry ownership to an app card.
   The green title-bar button maximizes above the dock: its title bar meets the desktop's

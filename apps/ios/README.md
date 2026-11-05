@@ -1195,6 +1195,12 @@ Trackpad Gestures guide with the mappings and platform limitations. With a conne
 monitor, the phone shows window previews above its keyboard/trackpad and leaves the monitor's
 workspace intact. Book posture and compact screens keep the ordinary layout.
 
+The Laptop overlay draws and measures the far-right dock menu once, at the same scale
+as its visible rows. `CabooseGeometryTests/DesktopPanelPointerTests` renders the desktop
+under that overlay and checks every row from bottom to top at three desktop scales.
+On a paired phone, open the far-right dock menu in Laptop mode and move the trackpad
+pointer from Terminal up through Trackpad: the row under the pointer stays highlighted.
+
 ### On-screen controller
 
 Laptop's Gamepad mode and a TV's Gamepad draw the same controller, aimed at the window the
