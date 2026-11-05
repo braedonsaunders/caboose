@@ -5,7 +5,11 @@ ordered file names and bytes identically. `install.sh` installs missing dependen
 updates system-owned files (including the agent runner and its pinned npm dependencies), configures services and writes the version marker only after
 success. It never modifies the owner's home. Both image builders call it in image mode;
 the host calls it through root guest exec in `vm` or `container` mode after wake, including
-headless wakes.
+headless wakes. The GPU and display stack ships only in sealed releases
+([guest/release](../release/README.md)): on a computer with a release installed
+(`/etc/caboose-release`), the installer leaves the GPU broker and driver (`gpu/install.sh`) and
+`caboose-session` as the release installed them; image builds and computers without a release
+get the bundle's.
 The installer provides AppStream and its Python introspection bindings, which rediscover Debian apps installed through the Library's earlier AppStream search, and Flatpak with its introspection bindings for Flathub apps ([`guest/flatpak`](../flatpak/README.md)). It also provides GTK 3's introspection data for `caboose-game-run` ([guest/game](../game/README.md)). It refreshes APT metadata after adding AppStream.
 The installer preserves working `node` and `npm` commands, including npm bundled with
 NodeSource's `nodejs`. It installs Node when unusable, then checks npm again before
