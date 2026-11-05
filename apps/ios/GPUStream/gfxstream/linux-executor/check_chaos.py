@@ -344,6 +344,14 @@ def main():
                 f'tr "\\0" " " < /proc/$b/cmdline 2>/dev/null | grep -qF -- "waitforexitandrun {o.triangle}" || continue; echo $b; '
                 f'ps -u caboose -o pid=,ppid= | awk -v root=$b \'{{ parent[$1]=$2 }} END {{ for (p in parent) '
                 f'{{ q=p; while (q in parent && q != root && q > 1) q=parent[q]; if (q == root) print p }} }}\'; done | sort -u')
+        # Proton's waitforexitandrun first waits for the prefix's wineserver to exit, and every
+        # sandbox shares the computer's /tmp, where that server lives: a server a killed session
+        # left running (or still winding down) holds the next start before Wine starts at all.
+        # It is the process whose working directory is the prefix's server directory.
+        pfx = f'{os.path.dirname(o.triangle)}/compat/1/pfx'
+        server = (f'd=/tmp/.wine-$(id -u caboose)/server-$(printf "%x-%x" $(stat -c "%d %i" {pfx} 2>/dev/null)); '
+                  f'for p in /proc/[0-9]*; do [ "$(readlink $p/cwd 2>/dev/null)" = "$d" ] && echo ${{p#/proc/}}; done')
+        tree = f'{{ {tree}; {server}; }} | sort -u'
         for attempt in range(30):
             alive = seat.sh(tree, check=False).split()
             if not alive:
