@@ -4,6 +4,7 @@
 #include "memory_traffic.h"
 #include "ranges.h"
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <memory>
 #include <mutex>
@@ -23,6 +24,14 @@ inline constexpr size_t shadowMaxHashBytes = 16 * 1024 * 1024;
 // A known block with a copy sends the words that differ; changed bytes this close together go
 // as one run, since a flush fragment's overhead (flush_packet.h) costs more than the gap.
 inline constexpr uint64_t fineWordBytes = 8, fineGapBytes = 40;
+// CABOOSE_SHADOW_WORDS=0 sends every changed known block whole instead, for diagnosis.
+inline bool fineWords() {
+    static const bool on = [] {
+        const char* value = std::getenv("CABOOSE_SHADOW_WORDS");
+        return !(value && std::strcmp(value, "0") == 0);
+    }();
+    return on;
+}
 
 // XXH64 of one block (Yann Collet's xxHash, seed 0).
 inline uint64_t blockHash(const uint8_t* p, size_t size) {
@@ -134,7 +143,7 @@ public:
             if (entry->bytes) {
                 const bool changed = !known ||
                     std::memcmp(entry->bytes.get() + block, base + block, size_t(blockStop - block)) != 0;
-                if (changed && !known) {
+                if (changed && (!known || !fineWords())) {
                     result = add(block, blockStop);
                 } else if (changed) {
                     for (uint64_t word = block; word < blockStop && result == success; word += fineWordBytes) {

@@ -36,7 +36,7 @@ OWNED = {
                     'deferred_destroys.h', 'presentation_retirement.h', 'event_status.h', 'memory_traffic.h',
                     'lost_memory.h', 'lock_order.h', 'guest_set_ids.h', 'completion_payloads.h',
                     'silent_success.h', 'gpu_writes.h', 'device_answers.h', 'device_work.h', 'launch_timeline.h',
-                    'one_way_start.h')},
+                    'one_way_start.h', 'feature_mask.h')},
     **{f'dmabuf/{name}': f'src/gfxstream/guest/vulkan_enc/caboose-dmabuf/{name}'
        for name in ('dmabuf.h', 'registration.h', 'remote_images.h', 'sync_file.h')},
     **{f'media/{name}': f'src/gfxstream/guest/vulkan_enc/caboose-media/{name}'

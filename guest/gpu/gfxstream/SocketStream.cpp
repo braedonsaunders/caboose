@@ -17,6 +17,7 @@
 #include <unistd.h>
 #include "caboose-bounded-memory/completion_feed.h"
 #include "caboose-bounded-memory/deferred_replies.h"
+#include "caboose-bounded-memory/feature_mask.h"
 #include "caboose-bounded-memory/launch_timeline.h"
 #include "caboose-bounded-memory/memory_traffic.h"
 #include "caboose-bounded-memory/silent_success.h"
@@ -369,7 +370,15 @@ int CabooseSocketStream::connect(const char* path) {
 #if defined(CABOOSE_GFXSTREAM_PRIVATE_INDEXED_WSI)
     const char* optOut = std::getenv("CABOOSE_GFXSTREAM_GUEST_HANDLES");
     if (!(optOut && std::strcmp(optOut, "0") == 0)) {
-        for (uint32_t offer : kOffers) {
+        const uint32_t dropped = caboose::features::droppedFromEnvironment();
+        uint32_t tried[sizeof(kOffers) / sizeof(kOffers[0])];
+        size_t triedCount = 0;
+        for (uint32_t full : kOffers) {
+            const uint32_t offer = caboose::features::offered(full, dropped);
+            bool repeat = false;
+            for (size_t i = 0; i < triedCount; ++i) repeat = repeat || tried[i] == offer;
+            if (repeat) continue;
+            tried[triedCount++] = offer;
             result = connectWith(path, helloWith(offer).data(), true);
             if (result == 0 || errno != EPROTO) break;
         }
