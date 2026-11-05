@@ -265,6 +265,7 @@ inline bool onFault(void (*hook)()) {
 }
 inline void fault(uint32_t opcode, int32_t result) {
     std::fprintf(stderr, "CABOOSE_GPU_SILENT_FAULT opcode=%u result=%d\n", opcode, result);
+    completion::processFaulted.store(true, std::memory_order_release);
     completion::markExecutorLost();
     std::vector<void (*)()> hooks;
     {

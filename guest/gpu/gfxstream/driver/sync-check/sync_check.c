@@ -2079,6 +2079,8 @@ static void oneWayCases(const char* only) {
     if (!only || strstr("one_way_misprediction", only)) {
         int sent = 0;
         const int status = runOneWayChild(1, &sent, &granted);
+        static char mispredictedHead[sizeof(oneWayChildHead)];
+        snprintf(mispredictedHead, sizeof(mispredictedHead), "%s", oneWayChildHead);
         // Without one-way start the instance is asked, and refused.
         // The executor and every other process carry on: this probe's own device still runs a
         // batch, and a new process starts and completes one.
@@ -2096,6 +2098,7 @@ static void oneWayCases(const char* only) {
         report("one_way_misprediction", ok,
                "granted=%d status=%d sent_one_way=%d (5: device lost; 6: refused; -1: hung) probe=%d next_process=%d",
                granted, status, sent, parent, after);
+        if (!ok) printf("CABOOSE_SYNC_CHECK one_way_misprediction child wrote:\n%s\n", mispredictedHead);
     }
     if (!only || strstr("lost_reply_stand_ins", only)) {
         int sent = 0;

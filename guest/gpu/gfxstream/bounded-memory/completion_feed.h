@@ -1719,14 +1719,24 @@ template <typename Done> inline bool withinDepartureGrace(Done done) {
 }
 // The broker makes its socket when it has a ready executor and removes it when the
 // executor leaves.
+// A loss that is the process's own (a FAULT: the phone refused one of its commands while the
+// executor stays), so nothing waits for an executor to return.
+inline std::atomic<bool> processFaulted{false};
 inline void awaitExecutorReturn() {
     if (!pauseOnLoss() || !executorLost.load(std::memory_order_acquire)) return;
+    if (processFaulted.load(std::memory_order_acquire)) return;
     if (!std::getenv("CABOOSE_GFXSTREAM_SOCKET")) return;
     // A device stream can end before the broker has removed the executor's socket. A
     // socket that is still the same once the grace has passed means one stream failed
-    // while the executor stayed: nothing returns, and the loss is reported at once.
-    if (lostSocketInode.load() &&
-        !withinDepartureGrace([] { return socketInode() != lostSocketInode.load(); })) return;
+    // while the executor stayed: nothing returns, and the loss is reported at once, by this
+    // read and by every later one of the same loss (which waits no grace of its own).
+    static std::atomic<uint64_t> stayed{0};
+    const uint64_t lost = lostSocketInode.load();
+    if (lost && stayed.load() == lost) return;
+    if (lost && !withinDepartureGrace([] { return socketInode() != lostSocketInode.load(); })) {
+        stayed.store(lost);
+        return;
+    }
     static std::atomic<bool> noted{false};
     if (!noted.exchange(true)) std::fprintf(stderr, "CABOOSE_GPU_EXECUTOR_PAUSED until a phone executor returns\n");
     for (;;) {
@@ -1832,6 +1842,7 @@ inline void executorConnected() {
         lostCallsTold().clear();
     }
     tracker().revive();
+    processFaulted.store(false, std::memory_order_release);
     executorLost.store(false, std::memory_order_release);
 }
 // A result the executor returned. VK_ERROR_DEVICE_LOST from a phone whose app is closing
