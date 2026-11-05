@@ -33,14 +33,25 @@ export function gpuFeatures(header: string | string[] | undefined): string[] {
   return [...new Set(values.map(value => value.trim().toLowerCase()).filter(value => known.has(value)))].sort()
 }
 
-/** Whether a TCP listener answers at a ws: or wss: URL's host and port, within `timeout`. */
+/**
+ * Whether an HTTP server answers `/gpu` at a ws: URL's host and port within `timeout`: a plain
+ * GET, with no upgrade and no credentials, which a broker refuses with a status line and which
+ * opens no executor session. A TCP accept alone proves nothing: a port forwarder accepts with
+ * nothing behind it.
+ */
 export function reachable(url: string, timeout = 1500): Promise<boolean> {
   const { hostname, port, protocol } = new URL(url)
   return new Promise(resolve => {
     const socket = connect({ host: hostname, port: Number(port) || (protocol === 'wss:' ? 443 : 80) })
+    let reply = ''
     const done = (answer: boolean) => { socket.destroy(); resolve(answer) }
     socket.setTimeout(timeout, () => done(false))
-    socket.once('connect', () => done(true))
+    socket.once('connect', () => socket.write(`GET /gpu HTTP/1.1\r\nHost: ${hostname}\r\nConnection: close\r\n\r\n`))
+    socket.on('data', chunk => {
+      reply += chunk.toString('latin1')
+      if (reply.length >= 12) done(/^HTTP\/1\.[01] [1-5][0-9][0-9]/.test(reply))
+    })
+    socket.once('end', () => done(/^HTTP\/1\.[01] [1-5][0-9][0-9]/.test(reply)))
     socket.once('error', () => done(false))
   })
 }
