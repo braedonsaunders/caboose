@@ -78,6 +78,16 @@ struct AgentThreadView: View {
         .background { AgentReadingBackground() }
         // Again once the task list arrives, for a thread opened from a notification before it did.
         .task(id: "\(taskID):\(agents.tasks.contains { $0.id == taskID })") { await agents.loadThread(taskID) }
+        // A watch link opens the agent's newest seat window full screen once there is one.
+        .task(id: "\(model.watchTaskID ?? ""):\(watchedWindow?.id ?? -1)") {
+            guard model.watchTaskID == taskID, let window = watchedWindow else { return }
+            model.watchTaskID = nil
+            model.presentAgentWindow(window.id)
+        }
+    }
+
+    private var watchedWindow: RemoteWindow? {
+        model.agents.seat?.windows.values.filter { !$0.isAuxiliary }.max { $0.id < $1.id }
     }
 
     @ToolbarContentBuilder private func toolbar(_ task: AgentCenter.Task) -> some ToolbarContent {
