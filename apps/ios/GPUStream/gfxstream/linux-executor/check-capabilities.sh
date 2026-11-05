@@ -73,8 +73,13 @@ else
     cp /tmp/icd.json /usr/local/lib/caboose-gpu-live/icd.json
     caboose-session start >/dev/null
     install -d -m700 -o caboose -g caboose /shared/gpu
-    ln -s /run/user/1000/caboose-gpu/gpu.sock /shared/gpu/gpu.sock
-    ln -s /run/user/1000/caboose-gpu/surface.sock /shared/gpu/surface.sock
+    # A session that runs the broker as a per-computer service gives each seat its own
+    # directory; the owner seat is the one this check speaks for.
+    gpu=/run/user/1000/caboose-gpu
+    i=0; while [ ! -d "$gpu/owner" ] && [ $i -lt 50 ] && grep -q -- "--listen" "$(command -v caboose-session)" 2>/dev/null; do i=$((i + 1)); sleep 0.2; done
+    [ ! -d "$gpu/owner" ] || gpu=$gpu/owner
+    ln -s "$gpu/gpu.sock" /shared/gpu/gpu.sock
+    ln -s "$gpu/surface.sock" /shared/gpu/surface.sock
   '
 fi
 app() { # as the seat user, on the guest driver, with the broker's sockets and the display
