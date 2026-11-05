@@ -23,8 +23,7 @@
 // (0xCA handles), and the commands that make them may go without their reply: the device
 // stream switches to REPLY_MODE(3) for the one command and back to REPLY_MODE(1) after it. The
 // process sends such a command one-way only when an identical one succeeded earlier in the
-// executor session, so it predicts the answer (success, the number of physical devices, a
-// queue that exists); a prediction the phone does not bear out is a FAULT on the feed, and the
+// executor session, so it predicts the answer (success, a queue that exists); a prediction the phone does not bear out is a FAULT on the feed, and the
 // process's device is lost (silent_success.h, fault). The first command of its kind in a
 // session is asked as before, and its success is kept in the session's instance scope
 // (static_query_cache.h), which a new executor connection starts empty.
@@ -88,8 +87,7 @@ template <class Clock = std::chrono::steady_clock> inline bool awaitFeed(typenam
 }
 
 // The questions kept in the session's instance scope: an identical command that succeeded.
-inline constexpr uint32_t kInstanceMade = 0xCAB00010u, kDeviceMade = 0xCAB00011u, kQueueNamed = 0xCAB00012u,
-                          kPhysicalsListed = 0xCAB00013u;
+inline constexpr uint32_t kInstanceMade = 0xCAB00010u, kDeviceMade = 0xCAB00011u, kQueueNamed = 0xCAB00012u;
 
 // An instance's creation parameters: its flags, application, layers, extensions (sorted) and
 // API version. False when the creation chains a structure other than the loader's own, which
@@ -147,22 +145,12 @@ inline std::string queueKey(const memory::DeviceFingerprints::Fingerprint& finge
     return memory::StaticQueryCache::key(kQueueNamed, memory::StaticQueryCache::kInstanceScope, fingerprint.high,
                                          fingerprint.low, flags, family, index);
 }
-inline std::string physicalsKey() {
-    return memory::StaticQueryCache::key(kPhysicalsListed, memory::StaticQueryCache::kInstanceScope);
-}
 
 // Whether an identical command succeeded earlier in the session.
 inline bool succeededBefore(const std::string& key, memory::StaticQueryCache& cache = memory::staticQueryCache) {
     if (policy() == Policy::predict) return true;
     std::string value;
     return cache.peekBytes(key, &value) && value == std::string(1, '\1');
-}
-// The number of physical devices an earlier list in the session found, or 0.
-inline uint32_t listedBefore(memory::StaticQueryCache& cache = memory::staticQueryCache) {
-    std::string value;
-    uint32_t count = 0;
-    if (cache.peekBytes(physicalsKey(), &value) && value.size() == sizeof(count)) std::memcpy(&count, value.data(), sizeof(count));
-    return count;
 }
 
 // Keeps an asked command's success for the session it was asked in: `epoch` is the cache's
@@ -177,9 +165,6 @@ inline void keep(const std::string& key, const std::string& value, uint64_t epoc
 }
 inline void succeeded(const std::string& key, uint64_t epoch, memory::StaticQueryCache& cache = memory::staticQueryCache) {
     keep(key, std::string(1, '\1'), epoch, cache);
-}
-inline void listed(uint32_t count, uint64_t epoch, memory::StaticQueryCache& cache = memory::staticQueryCache) {
-    if (count) keep(physicalsKey(), std::string(reinterpret_cast<const char*>(&count), sizeof(count)), epoch, cache);
 }
 
 }  // namespace caboose::one_way

@@ -985,8 +985,8 @@ commands that start a process's Vulkan, whose handles the process chooses itself
 On success the decoder writes nothing for them; a failure is a FAULT record with the opcode and
 that result, as for silent success. A decoder without one-way start ends a stream that sends
 `REPLY_MODE(3)` (`EPROTO`), so a process sends it only with `0x1000000` granted. The process
-predicts each answer from an identical call that succeeded earlier in the session (a
-vkEnumeratePhysicalDevices count, a device's queues); a prediction the phone does not bear out
+predicts each answer from an identical call that succeeded earlier in the session (an
+instance, a device's queues); a prediction the phone does not bear out
 is a FAULT, and the device lost. `apps/ios/GPUStream/gfxstream/silent_replies.h` holds the mode
 and the commands; `caboose_gpu_native_one_way_start` checks them against the real decoder
 (`apps/ios/GPUStream/gfxstream/README.md`).
@@ -998,8 +998,11 @@ in order on the stream, only when an identical one succeeded earlier in the exec
 An instance is identical when its flags, application, layers and extensions are (the loader's
 own structures aside; any other chained structure is always asked); a device when its
 fingerprint is ([Physical capability cache](#physical-capability-cache)) on the session's one
-GPU; a queue when its device's fingerprint, flags, family and index are; a list of physical
-devices when it asks for as many as the session's earlier list found. The first of each is asked
+GPU; a queue when its device's fingerprint, flags, family and index are. A list of physical
+devices names them but is always asked: the phone keeps the handle it first gave a physical
+device, so only its answer says which handles the process may use, and a list sent without it
+could leave the process with a physical device the phone does not know (no queue families, no
+properties). The first of each is asked
 and waited for, and its success is kept in the session's instance scope, so every process after
 it in the session starts without those round trips; a new executor connection starts with none.
 A process's first start command may come before its feed runs: it waits up to 100 ms for the

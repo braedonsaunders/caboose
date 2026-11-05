@@ -1980,6 +1980,9 @@ static char oneWayChildLine[256];
 static size_t oneWayChildBytes;  // what the last one-way child wrote to its diagnostics
 static char oneWayChildHead[2048];  // its first lines, printed when a one-way case fails
 static int lostReplyLostCalls;
+// Physical-device lists sent without their reply (CABOOSE_ONE_WAY_START opcode=20002): none may
+// be, since only the phone's answer says which handles a process may use.
+static int oneWayLists;
 // Runs oneWayChild in a new process with the driver's diagnostics, and returns its exit status
 // (-1 when it did not exit within 40 s, and was killed), how many commands it sent one-way, and
 // whether its executor granted one-way start.
@@ -2011,6 +2014,7 @@ static int runOneWayChild(int mispredict, int* oneWay, int* granted) {
     oneWayChildBytes = 0;
     oneWayChildHead[0] = 0;
     lostReplyLostCalls = 0;
+    oneWayLists = 0;
     const uint64_t start = nowUs();
     for (;;) {
         const int64_t left = 40000 - (int64_t)((nowUs() - start) / 1000);
@@ -2030,6 +2034,7 @@ static int runOneWayChild(int mispredict, int* oneWay, int* granted) {
             line[used] = 0;
             used = 0;
             if (strstr(line, "CABOOSE_ONE_WAY_START opcode=")) ++oneWayLines;
+            if (strstr(line, "CABOOSE_ONE_WAY_START opcode=20002")) ++oneWayLists;
             if (strstr(line, "CABOOSE_GPU_LOST_CALL")) ++lostReplyLostCalls;
             const char* lost = strstr(line, "CABOOSE_SYNC_CHECK_LOST_REPLY ");
             if (lost) snprintf(oneWayChildLine, sizeof(oneWayChildLine), "%s", lost + 30);
@@ -2066,9 +2071,9 @@ static void oneWayCases(const char* only) {
         const size_t firstBytes = oneWayChildBytes;
         const int second = runOneWayChild(0, &secondSent, &grantedAgain);
         // Instance, device and queue at least; the list too once the session knows its count.
-        const int ok = first == 0 && second == 0 && (!granted || secondSent >= 3);
-        report("one_way_start", ok, "granted=%d first=%d second=%d sent_one_way=%d/%d diagnostics_bytes=%zu/%zu", granted,
-               first, second, firstSent, secondSent, firstBytes, oneWayChildBytes);
+        const int ok = first == 0 && second == 0 && (!granted || secondSent >= 3) && oneWayLists == 0;
+        report("one_way_start", ok, "granted=%d first=%d second=%d sent_one_way=%d/%d lists_one_way=%d diagnostics_bytes=%zu/%zu",
+               granted, first, second, firstSent, secondSent, oneWayLists, firstBytes, oneWayChildBytes);
         if (!ok) printf("CABOOSE_SYNC_CHECK one_way_start second child wrote:\n%s\n", oneWayChildHead);
     }
     if (!only || strstr("one_way_misprediction", only)) {

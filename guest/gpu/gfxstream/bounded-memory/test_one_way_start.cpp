@@ -95,17 +95,8 @@ void keptForTheSession() {
     epoch = cache.epoch();
     completion::executorLost.store(true);
     one_way::succeeded(queueKey, epoch, cache);
-    one_way::listed(1, epoch, cache);
     completion::executorLost.store(false);
     assert(!one_way::succeededBefore(queueKey, cache));
-    assert(one_way::listedBefore(cache) == 0);
-
-    one_way::listed(1, epoch, cache);
-    assert(one_way::listedBefore(cache) == 1);
-    one_way::listed(0, epoch, cache);  // none found is never kept
-    assert(one_way::listedBefore(cache) == 1);
-    cache.connection("session-c", 9);
-    assert(one_way::listedBefore(cache) == 0);
     std::puts("pass kept for the session");
 }
 
