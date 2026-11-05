@@ -177,5 +177,18 @@ class Dependencies(unittest.TestCase):
         self.assertIn('require working node and npm', error)
 
 
+class ReleaseStack(unittest.TestCase):
+    def test_a_computer_with_a_sealed_release_keeps_its_gpu_and_session_files(self):
+        """caboose-release alone changes the GPU broker and driver and caboose-session of a
+        computer that has a release (/etc/caboose-release): every installer line that writes
+        them is behind that check."""
+        lines = INSTALLER.read_text().splitlines()
+        for needle in ('"$root/gpu/install.sh"', '"$root/container/caboose-session"'):
+            [index] = [n for n, line in enumerate(lines) if needle in line]
+            guarded = 'if [ ! -e /etc/caboose-release ]' in lines[index] or (
+                index > 0 and lines[index - 1].strip() == 'if [ ! -e /etc/caboose-release ]; then')
+            self.assertTrue(guarded, f'{needle} is installed whatever release the computer has')
+
+
 if __name__ == '__main__':
     unittest.main()

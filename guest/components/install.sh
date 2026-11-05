@@ -72,7 +72,12 @@ sh "$root/bridge/install.sh"
 sh "$root/flatpak/install.sh" "$mode"
 sh "$root/keyring/install.sh"
 sh "$root/game/install.sh"
-sh "$root/gpu/install.sh"
+# The GPU and display stack (the GPU broker and driver, caboose-session) ships in sealed
+# releases (guest/release): a computer that has one installed keeps it, and only caboose-release
+# changes it. Image builds and computers without a release get the bundle's.
+if [ ! -e /etc/caboose-release ]; then
+  sh "$root/gpu/install.sh"
+fi
 sh "$root/agentd/install.sh"
 sh "$root/apps/install.sh"
 sh "$root/memory/install.sh"
@@ -80,7 +85,7 @@ bash "$root/devices/install.sh" "$mode"
 sh "$root/wine/install.sh" "$mode"
 install -d -m 0755 /usr/local/share/caboose
 if [[ "$mode" = *container ]]; then
-  install -Dm755 "$root/container/caboose-session" /usr/local/bin/caboose-session
+  if [ ! -e /etc/caboose-release ]; then install -Dm755 "$root/container/caboose-session" /usr/local/bin/caboose-session; fi
   install -Dm755 "$root/components/container-services.sh" /usr/local/libexec/caboose-components-services
   sh "$root/scopes/install.sh"
 else
