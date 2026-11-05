@@ -396,13 +396,19 @@ describe('the GPU service the phone reaches', () => {
     expect(answered).toEqual(['ws://172.18.0.2:14602/', 'ws://172.18.0.2:14603/'])
   })
 
-  it('answers whether a listener is there', async () => {
+  it('counts only an HTTP answer, not a listener that accepts with nothing behind it', async () => {
     const { createServer } = await import('node:net')
-    const server = createServer(socket => socket.destroy())
-    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
-    const port = (server.address() as { port: number }).port
-    expect(await reachable(`ws://127.0.0.1:${port}/`)).toBe(true)
-    await new Promise(resolve => server.close(resolve))
-    expect(await reachable(`ws://127.0.0.1:${port}/`, 500)).toBe(false)
+    const listen = async (server: import('node:net').Server) => {
+      await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+      return `ws://127.0.0.1:${(server.address() as { port: number }).port}/`
+    }
+    const forwarder = createServer(socket => socket.destroy())
+    const silent = createServer(() => {})
+    const broker = createServer(socket => socket.once('data', () => socket.end('HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n')))
+    const [dead, quiet, live] = [await listen(forwarder), await listen(silent), await listen(broker)]
+    expect(await reachable(dead)).toBe(false)
+    expect(await reachable(quiet, 300)).toBe(false)
+    expect(await reachable(live)).toBe(true)
+    for (const server of [forwarder, silent, broker]) server.close()
   })
 })
