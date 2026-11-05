@@ -734,8 +734,16 @@ impl State {
             self.gpu_grants.as_ref().is_some_and(|grants| grants.buffer_window(matches[0])) {
             self.yield_window(matches[0]);
         }
+        let peer = (bind.uid, bind.pid, bind.start_ticks, bind.object);
         let grant = self.gpu_grants.as_mut().and_then(|grants|
-            grants.bind(bind.process, bind.space, (bind.uid, bind.pid, bind.start_ticks, bind.object), &matches).ok());
+            grants.bind(bind.process, bind.space, peer, &matches).ok());
+        if grant.is_none() && since.is_none() {
+            // Every refused bind says why (the X11 lookup has said so already when nothing matched).
+            let reason = self.gpu_grants.as_ref().map_or("no GPU grants", |grants| grants.refusal(bind.process, peer, &matches));
+            if bind.pid != std::process::id() && !(bind.space == gpu_control::X11_WINDOW && matches.is_empty()) {
+                tracing::info!("GPU bind of {:#x} by process {} refused: {reason}", bind.object, bind.pid);
+            }
+        }
         // A child made for this bind lives only with its grant.
         if let Some(child) = self.gpu_bind_new_child.take().filter(|_| grant.is_none()) {
             self.children.remove(child);

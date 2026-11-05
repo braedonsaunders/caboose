@@ -217,6 +217,22 @@ impl Grants {
         Ok(grant)
     }
 
+    /// Why `bind` would refuse these arguments, for the log: every refused bind says why, so a
+    /// window left without its phone surface can be told from the log alone.
+    pub fn refusal(&self, process: u64, peer: (u32, u32, u64, u32), matches: &[u64]) -> &'static str {
+        if self.phase != Phase::Ready { return "no executor is serving"; }
+        if process == 0 { return "no process"; }
+        if matches.is_empty() || matches[0] == 0 { return "no window of the bound process matches"; }
+        if matches.len() > 1 { return "the bind matches more than one window"; }
+        match self.windows.get(&matches[0]) {
+            Some((_, GrantPhase::Active)) => return "the window has a grant already",
+            Some(_) => return "the window's previous grant is still retiring",
+            None => {}
+        }
+        if self.windows.values().any(|(grant, _)| grant.peer == peer) { return "the surface is bound to another window"; }
+        "the grant could not be made"
+    }
+
     /// Mark a destroyed/unmapped surface as unavailable before sending revoke.
     pub fn begin_revoke(&mut self, window: u64) -> Option<Grant> {
         let (grant, phase) = self.windows.get_mut(&window)?;
@@ -281,6 +297,24 @@ mod tests {
         // A live grant asked with another generation is still refused.
         let next = grants.bind(1, 0, (5, 6, 7, 8), &[8]).unwrap();
         assert!(grants.request_revoke(next.epoch, next.token, next.generation + 1).is_err());
+    }
+    #[test]
+    fn a_refused_bind_says_why() {
+        let mut grants = Grants::new().unwrap();
+        assert_eq!(grants.refusal(1, (1, 2, 3, 4), &[7]), "no executor is serving");
+        grants.ready([1; 16], 1).unwrap();
+        assert_eq!(grants.refusal(1, (1, 2, 3, 4), &[]), "no window of the bound process matches");
+        assert_eq!(grants.refusal(1, (1, 2, 3, 4), &[7, 8]), "the bind matches more than one window");
+        // The compositor's own images in window 7 stand aside for an application's bind: until
+        // their grant retires, the application's bind is refused, and says so.
+        let own = grants.bind(9, crate::gpu_control::BUFFER_WINDOW, (1, 99, 3, 7), &[7]).unwrap();
+        assert_eq!(grants.refusal(1, (1, 2, 3, 4), &[7]), "the window has a grant already");
+        assert_eq!(grants.begin_revoke(7), Some(own));
+        assert!(grants.bind(1, 0, (1, 2, 3, 4), &[7]).is_err());
+        assert_eq!(grants.refusal(1, (1, 2, 3, 4), &[7]), "the window's previous grant is still retiring");
+        grants.revoke_sent(own).unwrap();
+        grants.surface_retired(own).unwrap();
+        assert!(grants.bind(1, 0, (1, 2, 3, 4), &[7]).is_ok());
     }
     #[test]
     fn ambiguous_wayland_connections_cannot_receive_a_grant() {
