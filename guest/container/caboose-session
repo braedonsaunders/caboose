@@ -217,7 +217,9 @@ shared_broker() { phone_gpu && "$GPU_BROKER" --help 2>/dev/null | grep -q -- '--
 phone_gpu_args() {
   phone_gpu || return 0
   if shared_broker; then
-    echo --private-gpu-stream-socket "$PHONE_GPU_DIR/$1/gpu.sock" \
+    # The display joins the service at its seat's control socket and starts no broker itself.
+    echo --private-gpu-broker "$PHONE_GPU_DIR/$1/control.sock" \
+      --private-gpu-stream-socket "$PHONE_GPU_DIR/$1/gpu.sock" \
       --private-gpu-surface-socket "$PHONE_GPU_DIR/$1/surface.sock" --private-gpu-indexed
   elif [ "$1" = owner ]; then
     echo --private-gpu-stream-socket "$PHONE_GPU_DIR/gpu.sock" \
@@ -235,8 +237,9 @@ start_gpu() {
   touch "$log" && chown caboose:caboose "$log"
   supervise caboose-gpu-broker "$log" : runuser -u caboose -- env HOME="$CABOOSE_HOME" XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" \
     setsid --wait "$GPU_BROKER" --listen "0.0.0.0:$GPU_BROKER_PORT" --token-file "$TOKEN" --dir "$PHONE_GPU_DIR" --private-indexed
-  # The displays connect to its sockets; it makes them at once.
-  for _ in $(seq 1 50); do [ -S "$PHONE_GPU_DIR/owner/surface.sock" ] && [ -S "$PHONE_GPU_DIR/agent/surface.sock" ] && return; sleep 0.1; done
+  # The displays join at their seats' control sockets, which it makes at once (the stream and
+  # surface sockets follow with each executor session).
+  for _ in $(seq 1 50); do [ -S "$PHONE_GPU_DIR/owner/control.sock" ] && [ -S "$PHONE_GPU_DIR/agent/control.sock" ] && return; sleep 0.1; done
   echo 'caboose-session: the GPU broker did not make its sockets' >&2
 }
 
