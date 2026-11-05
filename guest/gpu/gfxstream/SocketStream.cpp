@@ -342,11 +342,30 @@ static const unsigned char* lostReply(unsigned char* data, size_t len, bool awai
     for (size_t i = 0; i < len; ++i) data[i] = reinterpret_cast<const unsigned char*>(&lost)[i % sizeof(lost)];
     return data;
 }
+// Every open stream's socket, so a FAULT ends them all at once: a FAULT on the feed
+// (a command the phone refused without a reply, silent_success.h) loses the process's device
+// while a thread may be reading a reply the phone will never send for it; ending the sockets
+// returns that read as lost (lostReply) instead of leaving it waiting.
+static std::mutex& openMutex = *new std::mutex;
+static std::set<int*>& openSockets = *new std::set<int*>;
+static void endOpenSockets() {
+    std::lock_guard<std::mutex> lock(openMutex);
+    for (int* fd : openSockets)
+        if (*fd >= 0) shutdown(*fd, SHUT_RDWR);
+}
+static const bool endOpenSocketsOnFault = caboose::silent::onFault(&endOpenSockets);
 // Encoders made on this stream may switch it to silent success (silent_success.h).
 CabooseSocketStream::CabooseSocketStream(size_t size) : IOStream(size) {
+    (void)endOpenSocketsOnFault;
     caboose::silent::replyMode().deviceStream(static_cast<gfxstream::guest::IOStream*>(this), true);
+    std::lock_guard<std::mutex> lock(openMutex);
+    openSockets.insert(&fd_);
 }
 CabooseSocketStream::~CabooseSocketStream() {
+    {
+        std::lock_guard<std::mutex> lock(openMutex);
+        openSockets.erase(&fd_);
+    }
     caboose::silent::replyMode().deviceStream(static_cast<gfxstream::guest::IOStream*>(this), false);
     {
         std::lock_guard<std::mutex> lock(auxiliaryMutex);

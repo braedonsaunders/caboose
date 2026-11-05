@@ -7,6 +7,7 @@
 #include <cstring>
 #include <iterator>
 #include <mutex>
+#include <vector>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -246,9 +247,31 @@ inline ReplyMode& replyMode() {
 // A FAULT record: a silent command failed, and what the process has since built on it does not
 // exist on the device. The process's device is lost, as when the executor ends its streams
 // (docs/gpu-live.md, "Invalid commands"); an application that recovers creates a new instance.
+// What a FAULT ends besides marking the loss: the process's open streams register here
+// (SocketStream.cpp), so a thread reading a reply the phone will not send for a refused
+// command is answered as lost instead of waiting.
+inline std::vector<void (*)()>& faultHooks() {
+    static auto* hooks = new std::vector<void (*)()>;
+    return *hooks;
+}
+inline std::mutex& faultHooksMutex() {
+    static auto* mutex = new std::mutex;
+    return *mutex;
+}
+inline bool onFault(void (*hook)()) {
+    std::lock_guard<std::mutex> lock(faultHooksMutex());
+    faultHooks().push_back(hook);
+    return true;
+}
 inline void fault(uint32_t opcode, int32_t result) {
     std::fprintf(stderr, "CABOOSE_GPU_SILENT_FAULT opcode=%u result=%d\n", opcode, result);
     completion::markExecutorLost();
+    std::vector<void (*)()> hooks;
+    {
+        std::lock_guard<std::mutex> lock(faultHooksMutex());
+        hooks = faultHooks();
+    }
+    for (auto hook : hooks) hook();
 }
 
 }  // namespace caboose::silent

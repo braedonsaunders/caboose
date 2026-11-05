@@ -196,10 +196,14 @@ int main() {
     assert(!mode.silent(&a));
     mode.encoderMade(&a, &device);
     assert(mode.due(&a, true));
-    // A FAULT is the loss of the process's device.
+    // A FAULT is the loss of the process's device, and ends what registered for it (the
+    // process's streams, whose blocked reads then return as lost).
+    static int faultHookRuns = 0;
+    silent::onFault([] { ++faultHookRuns; });
     assert(!completion::executorLost.load());
     silent::fault(20065, -3);
     assert(completion::executorLost.load());
+    assert(faultHookRuns == 1);
     assert(!mode.due(&b, true));
     std::printf("silent success: ok\n");
 }
