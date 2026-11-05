@@ -1759,6 +1759,52 @@ class ExecutorSuspendTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.gather(sender, return_exceptions=True)
             session.bindings.finish(session.binding_generation)
 
+    async def test_a_long_suspension_releases_the_compositor_but_holds_applications(self):
+        """The compositor's own streams end once a suspension outlasts COMPOSITOR_HOLD_SECONDS, and
+        it is told (lifecycle 11) and told again on the resume (12); applications stay held."""
+        class Stream(Writer):
+            def __init__(self): super().__init__(); self.aborted = False
+            def abort(self): self.aborted = True
+            def is_closing(self): return self.aborted
+        reported = []
+        class Owner:
+            compositor_pid, compositor_start = 4242, 7
+            async def report_lifecycle(self, session, kind): reported.append(kind)
+        session = broker.Session(Owner(), self.executor, 1, None, Writer(), indexed=True,
+                                 features={'executor-resume'})
+        session.processes[1] = {'pid': 4242, 'start': 7, 'streams': {10}}
+        session.processes[2] = {'pid': 5000, 'start': 7, 'streams': {20}}
+        compositor, application = Stream(), Stream()
+        session.streams[10] = {'process': 1, 'writer': compositor, 'reader': None}
+        session.streams[20] = {'process': 2, 'writer': application, 'reader': None}
+        sender = asyncio.create_task(session.send_loop())
+        try:
+            with mock.patch.object(broker, 'COMPOSITOR_HOLD_SECONDS', 0.05), mock.patch('builtins.print'):
+                await session.message(self.phone(Kind.EXECUTOR_SUSPEND, 1))
+                await asyncio.sleep(0.02)
+                self.assertFalse(compositor.aborted)  # a short suspension holds it like the rest
+                await asyncio.sleep(0.1)
+                self.assertTrue(compositor.aborted and session.streams[10]['discard_reply'])
+                self.assertFalse(application.aborted)
+                self.assertEqual(reported, [11])
+                await session.message(self.phone(Kind.QUIESCED, 2))
+                await session.message(self.phone(Kind.EXECUTOR_RESUME, 3, struct.pack('<II', 0, 0)))
+                for _ in range(10): await asyncio.sleep(0)
+                self.assertEqual(reported, [11, 12])
+                # A short suspension that resumes in time neither ends nor reports anything.
+                compositor.aborted = False; session.streams[10]['discard_reply'] = False
+                await session.message(self.phone(Kind.EXECUTOR_SUSPEND, 4))
+                await asyncio.sleep(0.01)
+                await session.message(self.phone(Kind.QUIESCED, 5))
+                await session.message(self.phone(Kind.EXECUTOR_RESUME, 6, struct.pack('<II', 0, 0)))
+                await asyncio.sleep(0.1)
+                self.assertFalse(compositor.aborted)
+                self.assertEqual(reported, [11, 12])
+        finally:
+            sender.cancel()
+            await asyncio.gather(sender, return_exceptions=True)
+            session.bindings.finish(session.binding_generation)
+
     async def test_waits_for_the_phone_do_not_run_out_while_it_is_suspended(self):
         session = broker.Session(None, self.executor, 1, None, Writer(), indexed=True, features={'executor-resume'})
         try:

@@ -1160,9 +1160,15 @@ resumable session last at least the host's longest hold, since the phone may be 
 while the relay holds its transport. A process or stream the phone has not yet opened is
 never given up on alone: the phone would then receive its surfaces and further openings
 under identities it does not know. Local
-processes keep their streams and bindings throughout; nothing is reported to the
-compositor, whose grants stay as they were, unless the relay's hold expires and the executor
-is lost.
+processes keep their streams and bindings throughout, and the compositor's grants stay as they
+were, unless the relay's hold expires and the executor is lost. The compositor itself is held
+only briefly: its main thread draws and also accepts every client, so a call of its renderer
+the gate holds would leave every new application waiting for the phone. Once a suspension
+outlasts 3 s (`COMPOSITOR_HOLD_SECONDS`) the broker ends the streams of its parent process,
+the compositor, which then sees its device lost quietly, and sends it executor lifecycle record
+11 (CGB1, the layout of records 4 to 6); the compositor drops its renderer and draws nothing.
+On EXECUTOR_RESUME the broker sends record 12 and the compositor makes its renderer again on
+the phone. A compositor that connects later is told only the executor's state (4, 5 or 6).
 
 ## Window identity boundary
 

@@ -121,6 +121,8 @@ ACK_DELAY = 0.05
 # The host's longest hold of a phone's transport (apps/host/src/gpu-relay.ts, the suspended
 # hold), with a margin.
 RESUME_HOLD_SECONDS = 31 * 60
+# How long a suspension may hold the compositor's own streams before they are ended.
+COMPOSITOR_HOLD_SECONDS = 3
 
 
 class IndexedSurface:
@@ -762,6 +764,12 @@ class Session:
         self.guest_reads = 0
         self.guest_reads_done = asyncio.Event()
         self.suspended = False
+        # The compositor is not an application the suspension may hold: its main thread draws
+        # and also accepts every client. Once a suspension outlasts COMPOSITOR_HOLD_SECONDS its
+        # own streams are ended (it sees its device lost, quietly) and it is told (lifecycle 11);
+        # on the resume it is told again (12) and makes its renderer anew.
+        self.compositor_released = False
+        self.compositor_release = None
         self.ws = WebSocketDecoder()
         self.bindings = ProcessBindings()
         self.binding_generation = self.bindings.begin()
@@ -1055,13 +1063,42 @@ class Session:
             await self.guest_reads_done.wait()
         self.send(Kind.QUIESCE)
         print('CABOOSE_GPU_BROKER executor suspending: guest streams held', file=sys.stderr, flush=True)
+        if self.compositor_release is None or self.compositor_release.done():
+            self.compositor_release = asyncio.create_task(self.release_compositor())
+
+    def compositor_streams(self):
+        """The local streams of the compositor's own process (the broker's parent)."""
+        if self.broker is None or self.broker.compositor_pid is None: return []
+        pid, start = self.broker.compositor_pid, self.broker.compositor_start
+        return [(stream_id, stream) for stream_id, stream in self.streams.items()
+                if (process := self.processes.get(stream['process'])) is not None
+                and process['pid'] == pid and process['start'] == start]
+
+    async def release_compositor(self):
+        """Ends the compositor's own streams once the suspension outlasts COMPOSITOR_HOLD_SECONDS.
+        A call of its renderer the gate holds would otherwise block its main thread, and with it
+        every Wayland client's connection, for as long as the phone stays away."""
+        await asyncio.sleep(COMPOSITOR_HOLD_SECONDS)
+        if not self.suspended or self.failed or self.broker is None: return
+        streams = self.compositor_streams()
+        for stream_id, stream in streams:
+            if not stream.get('discard_reply'): self.end_unread_stream(stream_id, stream, 'the executor is suspended')
+        self.compositor_released = True
+        print(f'CABOOSE_GPU_BROKER executor suspended {COMPOSITOR_HOLD_SECONDS} s: ended {len(streams)} '
+              'compositor streams so it keeps serving', file=sys.stderr, flush=True)
+        await self.broker.report_lifecycle(self, 11)
 
     def resume_executor(self, payload):
         mode, reserved = struct.unpack('<II', payload)
         if not self.suspended or mode not in (0, 1) or reserved: raise ValueError('unexpected EXECUTOR_RESUME')
         self.suspended = False
         self.guest_open.set()
+        if self.compositor_release is not None: self.compositor_release.cancel()
         print(f'CABOOSE_GPU_BROKER executor resumed {"in place" if mode == 0 else "from a snapshot"}', file=sys.stderr, flush=True)
+        if self.compositor_released:
+            self.compositor_released = False
+            task = asyncio.create_task(self.broker.report_lifecycle(self, 12))
+            self.lifecycle_tasks.add(task); task.add_done_callback(self.lifecycle_tasks.discard)
 
     def fail(self, reason):
         """Ends the executor session from inside, saying why (its reader then sees the end)."""
@@ -1373,13 +1410,15 @@ class Session:
             del held[largest]
         stream['writer'].write(payload)
 
-    def end_unread_stream(self, stream_id, stream):
-        """Ends one local stream whose process stopped reading: its queued bytes are dropped,
-        the process sees its device stream end, and the phone's further bytes for it are
-        discarded until its FIN, as for a process that exited."""
+    def end_unread_stream(self, stream_id, stream, why=None):
+        """Ends one local stream whose process stopped reading (or, with `why`, that must not
+        wait): its queued bytes are dropped, the process sees its device stream end, and the
+        phone's further bytes for it are discarded until its FIN, as for a process that exited."""
         transport = stream['writer'].transport
-        print(f'CABOOSE_GPU_BROKER ended unread stream {stream_id} of process {stream["process"]}: '
-              f'{transport.get_write_buffer_size()} bytes not read', file=sys.stderr, flush=True)
+        what = 'stream' if why else 'unread stream'
+        why = why or f'{transport.get_write_buffer_size()} bytes not read'
+        print(f'CABOOSE_GPU_BROKER ended {what} {stream_id} of process {stream["process"]}: {why}',
+              file=sys.stderr, flush=True)
         stream['discard_reply'] = True
         transport.abort()
         if stream.get('reader') is not None: stream['reader'].shutdown()
@@ -1966,7 +2005,8 @@ class Broker:
     async def report_lifecycle(self, session, kind):
         if kind == 5 and session.lost_reported: return
         data = control_protocol.encode_lifecycle(control_protocol.ExecutorLifecycle(kind, session.executor, session.generation))
-        self.lifecycle = data
+        # A compositor that connects later is told the executor's state, not a suspension's.
+        if kind in (4, 5, 6): self.lifecycle = data
         await self.send_control(data)
         if kind == 4: session.ready_reported = True
         if kind == 5: session.lost_reported = True

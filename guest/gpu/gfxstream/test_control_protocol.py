@@ -13,6 +13,8 @@ class ControlProtocolTests(unittest.TestCase):
                   (p.ExecutorLifecycle(4, b'e'*16, 1), p.encode_lifecycle, 48, 0),
                   (p.ExecutorLifecycle(5, b'e'*16, 1), p.encode_lifecycle, 48, 0),
                   (p.ExecutorLifecycle(6, b'e'*16, 1), p.encode_lifecycle, 48, 0),
+                  (p.ExecutorLifecycle(11, b'e'*16, 1), p.encode_lifecycle, 48, 0),
+                  (p.ExecutorLifecycle(12, b'e'*16, 1), p.encode_lifecycle, 48, 0),
                   (p.BufferPresent(1, 7, 0x10, 2**40, 1920, 1080), p.encode_buffer_present, 56, 0),
                   (p.BufferReleased(1, 0), p.encode_buffer_released, 32, 0),
                   (p.BufferReleased(2, 11), p.encode_buffer_released, 32, 0)]

@@ -107,7 +107,7 @@ pub fn receive(socket: &UnixStream) -> io::Result<Record> {
             if request == 0 || status < 0 { return Err(invalid()); }
             Ok(Record::BufferReleased { request, status })
         }
-        kind @ 4..=6 if data.len() == 48 && fds.is_empty() && u64_at(data, 40) == 0 => {
+        kind @ (4..=6 | 11 | 12) if data.len() == 48 && fds.is_empty() && u64_at(data, 40) == 0 => {
             let executor: [u8; 16] = data[16..32].try_into().unwrap();
             let generation = u64_at(data, 32);
             if executor == [0; 16] || generation == 0 { return Err(invalid()); }
@@ -183,6 +183,19 @@ mod tests {
             }
             _ => panic!("expected lifecycle"),
         }
+        // The suspension records (compositor released, executor resumed) share the layout.
+        for kind in [11u16, 12] {
+            packet[6..8].copy_from_slice(&kind.to_le_bytes());
+            sender.write_all(&packet).unwrap();
+            match receive(&receiver).unwrap() {
+                Record::Lifecycle { kind: got, .. } => assert_eq!(got, kind),
+                _ => panic!("expected lifecycle"),
+            }
+        }
+        packet[6..8].copy_from_slice(&13u16.to_le_bytes());
+        sender.write_all(&packet).unwrap();
+        assert_eq!(receive(&receiver).unwrap_err().kind(), io::ErrorKind::InvalidData);
+        packet[6..8].copy_from_slice(&4u16.to_le_bytes());
         sender.write_all(&packet[..47]).unwrap();
         assert_eq!(receive(&receiver).unwrap_err().kind(), io::ErrorKind::InvalidData);
     }
