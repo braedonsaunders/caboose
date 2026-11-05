@@ -132,19 +132,28 @@ public:
             const bool whole = block == first && blockStop == blockEnd(first, allocation);
             int result = success;
             if (entry->bytes) {
-                const bool changed = !known ||
-                    std::memcmp(entry->bytes.get() + block, base + block, size_t(blockStop - block)) != 0;
+                // The app may write the mapping while this runs (another thread filling the next
+                // frame's slot). Compare and record one snapshot of the block: the shadow then
+                // never holds a value newer than what was compared, so a word written after the
+                // snapshot differs from the shadow and is sent next time. Runs are emitted from
+                // the live mapping after the snapshot, so the host never holds older bytes than
+                // the shadow records.
+                uint8_t snapshot[shadowBlockBytes];
+                const size_t length = size_t(blockStop - block);
+                std::memcpy(snapshot, base + block, length);
+                uint8_t* const shadow = entry->bytes.get() + block;
+                const bool changed = !known || std::memcmp(shadow, snapshot, length) != 0;
                 if (changed && !known) {
                     result = add(block, blockStop);
                 } else if (changed) {
                     for (uint64_t word = block; word < blockStop && result == success; word += fineWordBytes) {
                         const uint64_t wordStop = word + fineWordBytes < blockStop ? word + fineWordBytes : blockStop;
-                        if (std::memcmp(entry->bytes.get() + word, base + word, size_t(wordStop - word)) != 0)
+                        if (std::memcmp(shadow + (word - block), snapshot + (word - block), size_t(wordStop - word)) != 0)
                             result = add(word, wordStop);
                     }
                 }
                 if (changed) {
-                    std::memcpy(entry->bytes.get() + block, base + block, size_t(blockStop - block));
+                    std::memcpy(shadow, snapshot, length);
                     countBlock(block, blockStop);
                 }
                 // A partially sent block is only known on the host where it was sent.

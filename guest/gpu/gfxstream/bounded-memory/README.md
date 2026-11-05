@@ -46,7 +46,10 @@ application rewrites with the bytes it already held is not sent again. Of a bloc
 copy only the 8-byte words that differ are sent, joined into one run where they are less than a
 fragment's 40 bytes of overhead apart: DXVK places each dynamic constant buffer in its own
 256-byte-aligned slot and rewrites the few words it holds. A block known by its hash, or not
-known, is sent whole.
+known, is sent whole. Each block is compared and recorded from one snapshot taken before any of
+its words are sent: the application may write the mapping while a flush runs (another thread
+filling the next frame's slot), and the shadow never records a value newer than the one
+compared, so a word written meanwhile differs from the shadow and goes in the next flush.
 The first failed packet's result is returned and no later packet is sent; a partial send
 or a failed reply read invalidates the stream. An invalidate retains every chunk until
 all ranges succeed, then publishes them in their original order, overlaps included;

@@ -222,6 +222,29 @@ int main() {
                             "considered_bytes=1024 sent_bytes=56 runs=3 block_bytes=512 block_runs=1") != std::string::npos);
         measured.forget(9);
     }
+    // A word the app writes while a flush runs (after the flush compared it, before the flush
+    // recorded the block) is sent by the next flush: the shadow records what was compared,
+    // never a newer value the host did not get.
+    {
+        FlushShadow racing{budget};
+        std::vector<uint8_t> app(512, 0);
+        Remote phone{512};
+        assert(racing.emitChanged(11, app.data(), 512, 0, 512, phone.sender(app)) == success);
+        app[0] = 1; app[200] = 1;  // two runs in block 0: the first is sent while block 0 is open
+        bool wrote = false;
+        auto send = [&](uint64_t offset, uint64_t length) {
+            if (!wrote) { app[100] = 7; wrote = true; }  // the app writes word 96..104 meanwhile
+            std::memcpy(phone.bytes.data() + offset, app.data() + offset, size_t(length));
+            phone.sends.emplace_back(offset, length);
+            return int(success);
+        };
+        assert(racing.emitChanged(11, app.data(), 512, 0, 512, send) == success);
+        assert(wrote);
+        phone.sends.clear();
+        assert(racing.emitChanged(11, app.data(), 512, 0, 512, phone.sender(app)) == success);
+        assert(phone.bytes == app);
+        racing.forget(11);
+    }
     // XXH64 of the empty input and of "abc", as published.
     assert(blockHash(nullptr, 0) == 0xEF46DB3751D8E999ull);
     assert(blockHash(reinterpret_cast<const uint8_t*>("abc"), 3) == 0x44BC2CF5AD770999ull);
