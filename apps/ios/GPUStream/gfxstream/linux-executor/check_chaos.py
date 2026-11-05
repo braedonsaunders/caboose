@@ -474,11 +474,13 @@ def main():
             wanted['fresh gl'] = lambda w, h: (w, h) in ((320, 240), (1280, 800), (800, 1280))
             if 'fresh dxvk' in fresh:
                 # Wine's windows for it are the triangle's at whatever size Wine and the
-                # compositor gave them (in a Wine desktop, or a top-level of its own).
+                # compositor gave them: a top-level of its own (steam_proton), or, on a display
+                # smaller than Wine's minimum (a folded phone's portrait), the Wine virtual
+                # desktop it draws in (explorer.exe).
                 def dxvk_sizes():
                     tree = seat.sh(f'. {seat.dir}/client; xwininfo -root -tree 2>/dev/null', user='caboose', check=False)
                     return {(int(m.group(1)), int(m.group(2))) for m in
-                            re.finditer(r'\("steam_proton" "steam_proton"\)\s+(\d+)x(\d+)\+', tree)
+                            re.finditer(r'\("(?:steam_proton|explorer\.exe)" "(?:steam_proton|explorer\.exe)"\)\s+(\d+)x(\d+)\+', tree)
                             if int(m.group(1)) >= 600}
                 triangle_sizes, looked = set(TRIANGLE), [0.0]
                 def dxvk(w, h):
