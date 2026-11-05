@@ -1184,7 +1184,7 @@ Hide Keyboard returns to the trackpad. Gamepad fills the lower panel with the [o
 the hinge. Each window on the upper desktop keeps a thin Caboose title bar with its
 controls and the shared window outline, and shows in its snap down to the hinge: a window
 still at another size, or one that cannot grow, is fitted inside the snap, never cut off. Its pointer reaches both the app and relocated dock. Launchpad, from the dock's grid button, opens over the
-upper screen with the dock still in front and its grid and page dots above the dock; it fades
+upper screen with a search field above the grid, the dock still in front and its grid and page dots above the dock. Search filters names across all pages and resets to page one; clear restores all apps. It fades
 and settles in from a little larger over a quarter second, and back out (a fade alone with
 Reduce Motion), on every desktop. Tablet
 mode retains its saved arrangement. One-finger movement, tap/double-tap, two-finger

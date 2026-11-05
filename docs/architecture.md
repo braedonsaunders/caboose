@@ -4022,3 +4022,6 @@ for diagnostic launches.
 Desktop Launchpad retains its page-arrow hit regions while changing pages. Repeated
 pointer clicks advance through the available pages; an arrow at either end consumes
 the click without dismissing Launchpad or moving beyond the page range.
+Its search field stays above the grid, filters app names across all pages, and returns
+to the first page when the query changes. Search and clear controls accept pointer
+clicks without dismissing the launcher. Closing Launchpad clears the query.

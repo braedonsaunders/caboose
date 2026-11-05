@@ -25,6 +25,8 @@ final class DesktopModel {
         case panelButton
         case launcher(String)
         case launcherPage(Int)
+        case launcherSearch
+        case launcherClearSearch
         case content(Int, CGPoint)  // window id, point in window pixels
         case resize(Int)
         /// A window in the open Quick Switch strip, and its Stay Here.
@@ -301,6 +303,21 @@ final class DesktopModel {
     var launcherPage = 0
     var launcherPageCount = 1
     var launcherPageFrames: [Int: CGRect] = [:]
+    var launcherSearch = "" {
+        didSet {
+            guard launcherSearch != oldValue else { return }
+            launcherPage = 0
+            launcherFrames = [:]
+        }
+    }
+    var launcherSearchFocused = false
+    var launcherSearchFrame: CGRect = .null
+    var launcherClearSearchFrame: CGRect = .null
+
+    func matchingLauncherApps(_ apps: [HostClient.App]) -> [HostClient.App] {
+        let query = launcherSearch.trimmingCharacters(in: .whitespacesAndNewlines)
+        return query.isEmpty ? apps : apps.filter { $0.name.localizedStandardContains(query) }
+    }
     /// The floating dock's bar, in the desktop's space: Launchpad stays above it.
     var dockBarFrame: CGRect = .null
 
@@ -527,6 +544,8 @@ final class DesktopModel {
             for (id, frame) in dockFrames where frame.contains(point) { return .dock(id) }
         }
         if launchpadOpen {
+            if launcherClearSearchFrame.contains(point) { return .launcherClearSearch }
+            if launcherSearchFrame.contains(point) { return .launcherSearch }
             for (direction, frame) in launcherPageFrames where frame.contains(point) { return .launcherPage(direction) }
             for (id, frame) in launcherFrames where frame.contains(point) { return .launcher(id) }
             return .none
@@ -684,6 +703,11 @@ final class DesktopModel {
             turnLauncherPage(direction)
             return
         }
+        if hit == .launcherSearch || hit == .launcherClearSearch {
+            if hit == .launcherClearSearch { launcherSearch = "" }
+            launcherSearchFocused = true
+            return
+        }
         if launchpadOpen, hit != .launchpadButton, hit != .panelButton {
             // Opening an app closes Launchpad once the app is in front (`AppModel.openOnDesktop`).
             if case .launcher(let id) = hit {
@@ -709,7 +733,7 @@ final class DesktopModel {
         case .launcher(let id):
             laptopDockPinned = false
             open(id)
-        case .launcherPage: break
+        case .launcherPage, .launcherSearch, .launcherClearSearch: break
         case .dock(let id):
             if button == 3 {
                 _ = openPointerMenu(dockMenu?(id))

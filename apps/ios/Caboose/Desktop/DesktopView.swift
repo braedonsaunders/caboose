@@ -473,11 +473,11 @@ struct Launchpad: View {
     @GestureState private var pageDrag: CGFloat = 0
     @State private var movingForward = true
     @Environment(AppModel.self) private var model
-    let desktop: DesktopModel
+    @Bindable var desktop: DesktopModel
 
     var body: some View {
         let ui = desktop.ui
-        let apps = model.partitionedApps.main
+        let apps = desktop.matchingLauncherApps(model.partitionedApps.main)
         let reserved = LaunchpadLayout.reservedBottom(dock: desktop.dockBarFrame, height: desktop.size.height,
                                                       fallback: desktop.dockHeight + desktop.dockBottomInset)
         let layout = LaunchpadLayout(size: desktop.size, ui: ui, dockHeight: reserved)
@@ -485,6 +485,37 @@ struct Launchpad: View {
         let columns = Array(repeating: GridItem(.fixed(layout.column), spacing: layout.spacing), count: layout.columns)
         ZStack(alignment: .top) {
             Rectangle().fill(.ultraThinMaterial)
+            HStack(spacing: 10 * ui) {
+                Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                NativeTextInput("Search apps", text: $desktop.launcherSearch,
+                                focus: $desktop.launcherSearchFocused,
+                                capitalization: .none, correction: false)
+                if !desktop.launcherSearch.isEmpty {
+                    Button("Clear search", systemImage: "xmark.circle.fill") {
+                        desktop.launcherSearch = ""
+                        desktop.launcherSearchFocused = true
+                    }
+                    .labelStyle(.iconOnly)
+                    .frame(minWidth: 32 * ui, minHeight: 32 * ui)
+                    .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("desktop")) } action: {
+                        desktop.launcherClearSearchFrame = $0
+                    }
+                    .onDisappear { desktop.launcherClearSearchFrame = .null }
+                }
+            }
+            .padding(.horizontal, 16 * ui)
+            .padding(.vertical, 8 * ui)
+            .frame(width: min(420 * ui, max(1, desktop.size.width - 48 * ui)))
+            .background(.regularMaterial, in: Capsule())
+            .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("desktop")) } action: {
+                desktop.launcherSearchFrame = $0
+            }
+            .padding(.top, 12 * ui)
+            if apps.isEmpty {
+                Text("No apps found")
+                    .foregroundStyle(.secondary)
+                    .padding(.top, layout.top)
+            }
             LazyVGrid(columns: columns, spacing: layout.spacing) {
                 ForEach(Array(apps[range])) { app in
                     let hot = desktop.hovered == .launcher(app.id)
@@ -515,7 +546,7 @@ struct Launchpad: View {
             .padding(.top, layout.top)
             .offset(x: reduceMotion ? 0 : pageDrag)
             .transition(reduceMotion ? .opacity : .asymmetric(insertion: .move(edge: movingForward ? .trailing : .leading), removal: .move(edge: movingForward ? .leading : .trailing)))
-            .id("\(desktop.launcherPage)-\(apps.map(\.id).joined(separator: ","))-\(desktop.size.width)-\(desktop.size.height)")
+            .id("\(desktop.launcherSearch)-\(desktop.launcherPage)-\(apps.map(\.id).joined(separator: ","))-\(desktop.size.width)-\(desktop.size.height)")
             if layout.pageCount(apps.count) > 1 {
                 let pages = layout.pageCount(apps.count)
                 let current = layout.clampedPage(desktop.launcherPage, count: apps.count)
@@ -543,9 +574,11 @@ struct Launchpad: View {
         .contentShape(Rectangle())
         .simultaneousGesture(DragGesture(minimumDistance: 12)
             .updating($pageDrag) { value, state, _ in
+                guard !desktop.launcherSearchFrame.contains(value.startLocation) else { return }
                 if abs(value.translation.width) > abs(value.translation.height) * 1.3 { state = value.translation.width }
             }
             .onEnded { value in
+                guard !desktop.launcherSearchFrame.contains(value.startLocation) else { return }
                 let next = layout.pageAfterSwipe(desktop.launcherPage, count: apps.count,
                     translation: value.translation, predicted: value.predictedEndTranslation)
                 guard next != desktop.launcherPage else { return }
@@ -564,7 +597,15 @@ struct Launchpad: View {
         }
         .onChange(of: apps.map(\.id)) { _, _ in resetFrames(layout: layout, count: apps.count) }
         .onChange(of: desktop.size) { _, _ in resetFrames(layout: layout, count: apps.count) }
-        .onDisappear { desktop.launcherFrames = [:]; desktop.launcherPageFrames = [:]; desktop.launcherPage = 0 }
+        .onDisappear {
+            desktop.launcherFrames = [:]
+            desktop.launcherPageFrames = [:]
+            desktop.launcherPage = 0
+            desktop.launcherSearch = ""
+            desktop.launcherSearchFocused = false
+            desktop.launcherSearchFrame = .null
+            desktop.launcherClearSearchFrame = .null
+        }
     }
 
     private func resetFrames(layout: LaunchpadLayout, count: Int) {
