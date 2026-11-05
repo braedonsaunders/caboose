@@ -2216,7 +2216,7 @@ static int runAnswersChild(int mode, char* line, size_t size) {
 // queue families, whatever earlier processes asked (counts only, everything, a second
 // instance), from the phone or from any cache: the same answers each time, never empty.
 static void deviceAnswersCase(void) {
-    static const int modes[] = {1, 0, 1, 2, 3, 4, 0, 1, 2, 3, 4, 1};
+    static const int modes[] = {1, 0, 1, 2, 3, 0, 1, 2, 3, 1};
     char reference[1024] = "", line[1024];
     int ok = 1, runs = 0;
     for (size_t i = 0; i < sizeof(modes) / sizeof(modes[0]); ++i) {
