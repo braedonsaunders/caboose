@@ -235,6 +235,9 @@ fn apply_gpu_live(env: &mut Vec<(String, String)>, config: &Config, icd: &std::p
     let (Some(stream), Some(surface)) = (&config.private_gpu_stream, &config.private_gpu_surface) else {
         return;
     };
+    // The agent seat's applications draw on the computer: only its compositor's picture
+    // reaches the phone, so its tools never depend on one.
+    if config.gpu_seat() == Some("agent") { return; }
     if !icd.is_file() {
         tracing::warn!("no GPU driver at {}; applications draw on the computer", icd.display());
         return;
@@ -631,9 +634,17 @@ fn run(config: Config) -> Result<(), String> {
     if let (Some(stream), Some(surface)) = (&state.config.private_gpu_stream, &state.config.private_gpu_surface) {
         let grants = gpu_grant::Grants::new().map_err(|e| format!("private GPU entropy: {e}"))?;
         let token = state.config.token_file.as_ref().ok_or("private GPU requires authentication")?;
-        state.net.enable_private_gpu(token, stream, surface, state.config.private_gpu_indexed, &handle)
-            .map_err(|e| format!("private GPU supervisor: {e}"))?;
-        state.gpu_grants = Some(grants);
+        let broker = state.config.private_gpu_broker.clone();
+        match state.net.enable_private_gpu(token, stream, surface, state.config.private_gpu_indexed, broker.as_deref(), &handle) {
+            Ok(()) => state.gpu_grants = Some(grants),
+            // The computer's shared broker may start after this display: it renders on the
+            // computer meanwhile and joins the broker once it is there.
+            Err(error) if broker.is_some() => {
+                eprintln!("caboose-display: the shared GPU broker is not there yet: {error}");
+                state.schedule_gpu_restart();
+            }
+            Err(error) => return Err(format!("private GPU supervisor: {error}").into()),
+        }
     }
 
     if state.config.audio {

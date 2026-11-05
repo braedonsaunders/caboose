@@ -135,13 +135,14 @@ impl Net {
         local_socket: &std::path::Path,
         surface_socket: &std::path::Path,
         indexed: bool,
+        broker: Option<&std::path::Path>,
         handle: &LoopHandle<'static, S>,
     ) -> io::Result<()> {
         if self.gpu_router.is_some() {
             return Err(io::Error::new(io::ErrorKind::AlreadyExists, "GPU router already active"));
         }
         let (tx, rx) = channel::<crate::gpu_supervisor::RouteEvent>();
-        let mut router = crate::gpu_supervisor::GpuRouter::start(token_file, local_socket, surface_socket, indexed, move |event| {
+        let mut router = crate::gpu_supervisor::GpuRouter::start(token_file, local_socket, surface_socket, indexed, broker, move |event| {
             let _ = tx.send(event);
         })?;
         let control = router.clone_control()?;

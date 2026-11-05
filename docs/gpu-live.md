@@ -9,8 +9,10 @@ describes.
 ## Connection and authority
 
 The host route is `/v1/gpu`, without query parameters, using the exact WebSocket
-subprotocol `caboose.gpu.live.v1`. It relays to the owner's display service `/gpu`
-on its existing port. There is no agent-seat GPU route. WebSocket messages are
+subprotocol `caboose.gpu.live.v1`. It relays either to the owner's display service `/gpu`
+on its existing port, which hands the connection to that display's own broker, or to the
+computer's shared broker, which accepts `/gpu` itself ([Seats](#seats)). There is one
+executor per computer and one GPU route. WebSocket messages are
 binary, uncompressed, at most 256 KiB. The broker queues at most 8 MiB in 256 messages
 toward the phone ([Priority toward the phone](#priority-toward-the-phone)). Vulkan replies
 use this connection independently of media.
@@ -1269,6 +1271,46 @@ Neither a WebSocket send, a queue-submit return nor a local cleanup callback mea
 an image was displayed.
 
 
+## Seats
+
+The computer's shared broker serves both displays from one executor. It runs as a service
+beside them:
+
+    caboose-gpu-broker --dir $XDG_RUNTIME_DIR/caboose-gpu --listen 0.0.0.0:14602 \
+        --token-file /run/caboose/display-token --private-indexed
+
+`--dir` is a private directory (mode 0700) with one subdirectory per seat, `owner` and
+`agent`, each also 0700, each holding the seat's `control.sock` (its compositor's channel, a
+Unix sequenced-packet socket of mode 0600) and, while an executor serves, its `gpu.sock` and
+`surface.sock`. The phone's executor connects to `--listen` with `GET /gpu` and the same
+per-wake token, `X-Caboose-GPU-*` headers and resume semantics as through a display.
+`usage.json` is written to `--dir` itself.
+
+A client's seat is the socket it reached, and nothing crosses seats:
+
+- A process belongs to the seat whose `gpu.sock` its first stream reached; a stream of it on
+  the other seat's socket is refused (`CABOOSE_GPU_BROKER refused a cross-seat stream`), and
+  so is a surface connection on the other seat's `surface.sock`.
+- A bind is asked of the process's own seat's compositor, and only that compositor's answer
+  is taken. Its grant's epoch is that compositor's: revokes, retirements and releases of the
+  grant go to it alone, and a revoke from the other seat's compositor is refused.
+- A seat's compositor presents only buffers of its own seat's processes; window IDs are each
+  compositor's own.
+- A seat's compositor going retires that seat's surfaces alone; the executor and the other
+  seat go on. Executor lifecycle records (4, 5, 6, 11, 12) go to every seat's compositor.
+
+The phone routes each surface to its seat's display session from the seat in
+`SURFACE_BIND` ([Surface records](#surface-records)), sent when it declares the transport
+feature `seat-routing`. A phone that does not declare it is shown the owner seat alone: an
+agent-seat bind is refused before its compositor is asked.
+
+A compositor joins the shared broker with `--private-gpu-broker DIR/SEAT/control.sock` and its
+seat's `gpu.sock` and `surface.sock`, and starts no broker of its own. Until the broker is there,
+and whenever no executor serves, it renders on the computer's own device, as without a phone:
+the agent seat's screenshots and computer use never depend on the phone. The agent seat's
+applications always draw on the computer; only its compositor's picture uses the broker. The
+agent seat may take only `DIR/agent`, and the owner seat never takes it.
+
 ## Surface records
 
 Every surface payload starts with the same 40-byte identity: 16 nonzero compositor
@@ -1291,7 +1333,7 @@ The remaining fields follow the common identity, without padding:
 
 | Record | Fields |
 | --- | --- |
-| BIND | Nonzero window uint64, boxed instance uint64, width and height uint32 |
+| BIND | Nonzero window uint64, boxed instance uint64, width and height uint32; for a phone that declared `seat-routing`, then the seat uint32 (0 owner, 1 agent) and a reserved uint32 zero |
 | BOUND | Status |
 | QUERY | Nonzero request ID uint64 and boxed physical-device uint64 |
 | CAPS | Request ID uint64, status, then capability data only on actual success |

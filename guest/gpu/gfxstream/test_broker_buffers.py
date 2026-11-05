@@ -38,7 +38,7 @@ class Harness:
         self.binds = 0
         session = self.session
 
-        async def send_control(data, fd=None):
+        async def send_control(data, fd=None, seat=None):
             record = control_protocol.decode(data, 0)
             if isinstance(record, control_protocol.BufferReleased):
                 self.released.append((record.request, record.status))
@@ -198,7 +198,7 @@ class BrokerBufferTests(unittest.IsolatedAsyncioTestCase):
         instance.session = None
         instance.tasks = set()
         sent = []
-        async def send_control(data, fd=None): sent.append(control_protocol.decode(data, 0))
+        async def send_control(data, fd=None, seat=None): sent.append(control_protocol.decode(data, 0))
         instance.send_control = send_control
         # The control reader's handling, applied directly.
         record = control_protocol.BufferPresent(4, 9, 1, 2, 3, 4)

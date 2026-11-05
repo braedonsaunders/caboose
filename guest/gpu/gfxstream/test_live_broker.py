@@ -1,6 +1,7 @@
 import asyncio
 import contextlib
 import array
+import errno
 import os
 from importlib.machinery import SourceFileLoader
 import importlib.util
@@ -796,7 +797,8 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
         control, peer = socket.socketpair(type=socket.SOCK_SEQPACKET)
         control.setblocking(False); peer.setblocking(False)
         broker_instance = broker.Broker.__new__(broker.Broker)
-        broker_instance.control = control
+        broker_instance.seats = {'owner': broker.Seat('owner', '/unused/gpu.sock', control=control)}
+        broker_instance.epoch_seats = {}; broker_instance.pending_bind_seats = {}
         broker_instance.next_bind = 0
         broker_instance.pending_binds = {}
         broker_instance.bind_send_lock = asyncio.Lock()
@@ -813,7 +815,7 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
         ready = asyncio.Event(); ready.set()
         session.processes = {3: {'ready': ready, 'surfaces': set()}}
         session.surfaces = {}
-        session.surface_epoch = None
+        session.surface_epochs = {}
         session.surface_count = 0
         broker_instance.session = session
         task = asyncio.create_task(broker_instance.request_bind(session, 3, 17, b'e' * 16))
@@ -879,7 +881,7 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
                 key = (b'e' * 16, b'g' * 16, 7)
                 session = mock.Mock()
                 session.surfaces = {key: {}}
-                session.surface_epoch = b'e' * 16
+                session.surface_epochs = {'owner': b'e' * 16}
                 instance.session = session
                 first.close()
                 for _ in range(200):
@@ -888,7 +890,7 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIsNone(instance.control)
                 self.assertFalse(instance.closing.is_set())
                 session.request_surface_retire.assert_called_once_with(control_protocol.RevokeGrant(*key))
-                self.assertIsNone(session.surface_epoch)
+                self.assertNotIn('owner', session.surface_epochs)
                 # Without a compositor grants are dropped and a bind cannot be asked.
                 await instance.send_control(control_protocol.encode_grant_retired(control_protocol.GrantRetired(*key)))
                 with self.assertRaises(ConnectionError):
@@ -910,10 +912,10 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_a_late_bind_answer_is_logged_and_its_grant_handed_back(self):
         broker_instance = broker.Broker.__new__(broker.Broker)
-        broker_instance.pending_binds = {}
+        broker_instance.pending_binds = {}; broker_instance.pending_bind_seats = {}
         broker_instance.tasks = set()
         sent = []
-        async def send_control(data, fd=None): sent.append(data)
+        async def send_control(data, fd=None, seat=None): sent.append(data)
         broker_instance.send_control = send_control
         with mock.patch('builtins.print') as output:
             broker_instance.bind_answered(control_protocol.BindResult(7, 0, b'e' * 16, b'g' * 16, 9, 3))
@@ -975,7 +977,7 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
             priorities.append(priority)
         session.send = mock.Mock(side_effect=send)
         control_records = []
-        async def send_control(data, fd=None):
+        async def send_control(data, fd=None, seat=None):
             control_records.append(control_protocol.decode(data, 0))
         instance = broker.Broker.__new__(broker.Broker)
         instance.send_control = mock.AsyncMock(side_effect=send_control)
@@ -1540,7 +1542,7 @@ class TransportNegotiationTests(unittest.IsolatedAsyncioTestCase):
         session.ready_reported=True; session.lost_reported=True; session.retired_reported=False
         instance=object.__new__(broker.Broker)
         sent=[]
-        async def send_control(data): sent.append(data)
+        async def send_control(data, fd=None, seat=None): sent.append(data)
         instance.send_control=send_control
         await instance.report_lifecycle(session,6)
         self.assertTrue(session.retired_reported)
@@ -1993,3 +1995,179 @@ class PhonePriorityTests(unittest.IsolatedAsyncioTestCase):
             sender.cancel()
             await asyncio.gather(sender, return_exceptions=True)
             session.bindings.finish(session.binding_generation)
+
+
+class SeatTests(unittest.IsolatedAsyncioTestCase):
+    """The computer's shared broker (`--dir`): one executor, a seat per display, and nothing
+    that crosses from one seat to the other."""
+
+    def shared(self, directory):
+        seats = {name: broker.Seat(name, Path(directory) / name / 'gpu.sock', Path(directory) / name / 'surface.sock')
+                 for name in broker.SEATS}
+        return broker.Broker(None, Path(directory) / 'token', None, seats=seats, usage_dir=Path(directory))
+
+    def session(self, instance, features=frozenset()):
+        session = broker.Session(instance, b'a' * 16, 1, None, Writer(), indexed=True, features=features)
+        ready = asyncio.Event(); ready.set()
+        for process_id, seat in ((1, 'owner'), (2, 'agent')):
+            session.processes[process_id] = {'ready': ready, 'pid': 100 + process_id, 'start': 7, 'seat': seat,
+                                             'surfaces': set(), 'streams': set(), 'to_phone': 0, 'from_phone': 0}
+        session.bindings = mock.Mock()
+        read, write = os.pipe(); os.close(write)
+        session.bindings.duplicate_process_identity.side_effect = lambda _g, process: ((0, 100 + process, 7), os.dup(read))
+        self.addCleanup(os.close, read)
+        instance.session = session
+        return session
+
+    async def test_a_bind_asks_its_own_seats_compositor_and_only_a_seat_routing_phone_sees_the_agent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            instance = self.shared(directory)
+            sent = []
+            async def send_control(data, fd=None, seat=None): sent.append((control_protocol.decode(data, 1).request, seat))
+            instance.send_control = send_control
+            plain = self.session(instance)
+            with self.assertRaisesRegex(PermissionError, 'does not show the agent seat'):
+                await instance.request_bind(plain, 2, 9)
+            self.assertEqual(sent, [])
+            routed = self.session(instance, {'seat-routing'})
+            self.enterContext(mock.patch.object(broker, 'pidfd_alive', return_value=True))
+            pids = iter((101, 102))
+            self.enterContext(mock.patch.object(broker, 'pidfd_pid', side_effect=lambda _fd: next(pids)))
+            for process_id, seat, epoch in ((1, 'owner', b'o' * 16), (2, 'agent', b'a' * 16)):
+                task = asyncio.create_task(instance.request_bind(routed, process_id, 9))
+                for _ in range(50):
+                    if instance.pending_binds: break
+                    await asyncio.sleep(0)
+                request, = instance.pending_binds
+                self.assertEqual(instance.pending_bind_seats[request], seat)
+                # An answer from the other seat's compositor is refused and left pending.
+                other = 'agent' if seat == 'owner' else 'owner'
+                answer = control_protocol.BindResult(request, 0, epoch, b'g' * 16, 5, 1)
+                with mock.patch('builtins.print') as output:
+                    instance.bind_answered(answer, other)
+                self.assertIn('cross-seat bind answer', output.call_args.args[0])
+                instance.bind_answered(answer, seat)
+                result = await asyncio.wait_for(task, 1)
+                self.assertEqual(routed.surfaces[(epoch, b'g' * 16, 1)]['seat'], seat)
+                self.assertEqual(instance.epoch_seats[result.epoch], seat)
+            self.assertEqual([seat for _request, seat in sent], ['owner', 'agent'])
+            # SURFACE_BIND tells a seat-routing phone each surface's seat in 8 more bytes.
+            self.assertEqual(routed.seat_suffix({'seat': 'agent'}), struct.pack('<II', 1, 0))
+            self.assertEqual(routed.seat_suffix({'seat': 'owner'}), struct.pack('<II', 0, 0))
+            self.assertEqual(plain.seat_suffix({'seat': 'owner'}), b'')
+
+    @unittest.skipUnless(sys.platform == 'linux', 'Linux AF_UNIX SOCK_SEQPACKET')
+    async def test_records_go_to_the_seat_that_minted_the_grant_and_lifecycle_to_every_seat(self):
+        with tempfile.TemporaryDirectory() as directory:
+            instance = self.shared(directory)
+            peers = {}
+            for name, seat in instance.seats.items():
+                ours, theirs = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+                ours.setblocking(False)
+                seat.control, peers[name] = ours, theirs
+            instance.epoch_seats = {b'a' * 16: 'agent', b'o' * 16: 'owner'}
+            retired = control_protocol.GrantRetired(b'a' * 16, b'g' * 16, 1)
+            await instance.send_control(control_protocol.encode_grant_retired(retired))
+            self.assertEqual(control_protocol.decode(peers['agent'].recv(256), 0), retired)
+            peers['owner'].setblocking(False)
+            with self.assertRaises(BlockingIOError): peers['owner'].recv(256)
+            lifecycle = control_protocol.encode_lifecycle(control_protocol.ExecutorLifecycle(4, b'x' * 16, 2))
+            await instance.send_control(lifecycle)
+            for name in broker.SEATS:
+                self.assertEqual(control_protocol.decode(peers[name].recv(256), 0).kind, 4)
+            for name, seat in instance.seats.items():
+                seat.control.close(); peers[name].close()
+
+    async def test_a_seat_cannot_revoke_present_or_lose_the_other_seats_surfaces(self):
+        with tempfile.TemporaryDirectory() as directory:
+            instance = self.shared(directory)
+            session = self.session(instance)
+            owner_key, agent_key = (b'o' * 16, b'g' * 16, 1), (b'a' * 16, b'g' * 16, 1)
+            session.surfaces = {owner_key: {'seat': 'owner'}, agent_key: {'seat': 'agent'}}
+            session.surface_epochs = {'owner': b'o' * 16, 'agent': b'a' * 16}
+            session.request_surface_retire = mock.Mock()
+            session.has_surface = lambda record: (record.epoch, record.grant, record.generation) in session.surfaces
+            for seat in instance.seats.values(): seat.control = mock.Mock()
+            # A revoke from the agent's compositor of an owner surface is refused.
+            with mock.patch.object(broker, 'receive_record', return_value=control_protocol.RevokeGrant(*owner_key)), \
+                    mock.patch('builtins.print') as output:
+                instance.control_ready('agent')
+            session.request_surface_retire.assert_not_called()
+            self.assertIn('cross-seat revoke', output.call_args.args[0])
+            with mock.patch.object(broker, 'receive_record', return_value=control_protocol.RevokeGrant(*agent_key)):
+                instance.control_ready('agent')
+            session.request_surface_retire.assert_called_once_with(control_protocol.RevokeGrant(*agent_key))
+            # A buffer of an owner process is not presented by the agent's compositor.
+            released = []
+            async def release(pairs, seat='owner'): released.append((pairs, seat))
+            session.release_buffers = release
+            session.buffer_registry = mock.Mock()
+            session.buffer_registry.lookup.return_value = (1, mock.Mock(width=4, height=4))
+            present = control_protocol.BufferPresent(5, 3, 1, 2, 4, 4)
+            with mock.patch('builtins.print') as output:
+                session.present_buffer(present, 'agent')
+                await asyncio.sleep(0)
+            self.assertEqual(released, [([(5, errno.ENOENT)], 'agent')])
+            self.assertEqual(session.buffer_windows, {})
+            # The agent's compositor going retires its own surfaces alone.
+            session.request_surface_retire.reset_mock()
+            with mock.patch('builtins.print'):
+                instance.compositor_lost('test', 'agent')
+            session.request_surface_retire.assert_called_once_with(control_protocol.RevokeGrant(*agent_key))
+            self.assertEqual(session.surface_epochs, {'owner': b'o' * 16})
+            self.assertIsNotNone(instance.seats['owner'].control)
+
+    async def test_a_surface_on_the_other_seats_socket_is_refused(self):
+        instance = mock.Mock()
+        session = broker.Session(instance, b'a' * 16, 1, None, Writer())
+        session.processes[1] = {'seat': 'owner'}
+        session.bindings = mock.Mock(); session.bindings.find_process.return_value = 1
+        sock = mock.Mock()
+        with mock.patch.object(broker.PeerIdentity, 'from_socket', return_value=mock.Mock()), \
+                mock.patch('builtins.print') as output:
+            await broker.Broker.surface_client(instance, session, sock, 'agent')
+        self.assertIn('cross-seat surface', output.call_args_list[0].args[0])
+        sock.recvmsg.assert_not_called()
+
+    async def test_the_phone_connects_to_the_shared_broker_with_the_wake_token(self):
+        import base64
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); root.chmod(0o700)
+            (root / 'token').write_text('secret\n')
+            for name in broker.SEATS: (root / name).mkdir(mode=0o700)
+            phone = broker.phone_listener('127.0.0.1:0')
+            port = phone.getsockname()[1]
+            seats = {name: broker.Seat(name, root / name / 'gpu.sock', root / name / 'surface.sock') for name in broker.SEATS}
+            instance = broker.Broker(None, root / 'token', None, seats=seats, phone_listener=phone, usage_dir=root)
+            task = asyncio.create_task(instance.run())
+            loop = asyncio.get_running_loop()
+            def upgrade(token):
+                return (b'GET /gpu HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer ' + token +
+                        b'\r\nX-Caboose-GPU-Computer: computer-1\r\nX-Caboose-GPU-Executor: 00112233-4455-6677-8899-aabbccddeeff'
+                        b'\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\n'
+                        b'Sec-WebSocket-Key: ' + base64.b64encode(b'k' * 16) + b'\r\nSec-WebSocket-Protocol: caboose.gpu.live.v1\r\n\r\n')
+            async def exchange(token):
+                reader, writer = await asyncio.open_connection('127.0.0.1', port)
+                writer.write(upgrade(token)); await writer.drain()
+                data = await asyncio.wait_for(reader.read(64), 5)
+                writer.close()
+                return data
+            try:
+                with mock.patch('builtins.print'):
+                    self.assertEqual(await exchange(b'wrong'), b'')
+                    self.assertTrue((await exchange(b'secret')).startswith(b'HTTP/1.1 101'))
+            finally:
+                instance.closing.set()
+                await asyncio.wait_for(task, 15)
+
+    @unittest.skipUnless(sys.platform == 'linux', 'Linux AF_UNIX SOCK_SEQPACKET')
+    def test_the_shared_broker_makes_a_private_directory_and_control_socket_per_seat(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / 'caboose-gpu'
+            broker.private_directory(root)
+            self.assertEqual(root.stat().st_mode & 0o777, 0o700)
+            (root / 'agent').mkdir(mode=0o755)
+            with self.assertRaises(SystemExit): broker.private_directory(root / 'agent')
+            listener = broker.control_listener(broker.private_directory(root / 'owner') / 'control.sock')
+            self.assertEqual((root / 'owner' / 'control.sock').stat().st_mode & 0o777, 0o600)
+            listener.close()
