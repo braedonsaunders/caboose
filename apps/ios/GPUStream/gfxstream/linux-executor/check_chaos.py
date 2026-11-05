@@ -333,16 +333,27 @@ def main():
         marker = f'CABOOSE_CHAOS_SEAT={os.getpid()}'
         seat.sh(f'for p in $(pgrep -u caboose -f "triangle.exe"); do tr "\\0" "\\n" < /proc/$p/environ 2>/dev/null | '
                 f'grep -qx {marker} && kill -TERM $p; done', user='caboose', check=False)
+        # Ending Proton's launcher does not end its Wine session: wineserver, explorer and the
+        # services outlive it inside the sandbox, and the next triangle in the same prefix joins
+        # that session, which never shows it if the session hung. The seat's triangle sandboxes
+        # are the bwraps whose command line binds the seat's directory and runs Proton on the
+        # triangle (their environment is not readable from outside; the seat's long-lived Steam
+        # binds the same directories): every process under them is ended, and the next start
+        # waits until none is left.
+        tree = (f'for b in $(pgrep -u caboose -f "bwrap.*{seat.dir}"); do '
+                f'tr "\\0" " " < /proc/$b/cmdline 2>/dev/null | grep -qF -- "waitforexitandrun {o.triangle}" || continue; echo $b; '
+                f'ps -u caboose -o pid=,ppid= | awk -v root=$b \'{{ parent[$1]=$2 }} END {{ for (p in parent) '
+                f'{{ q=p; while (q in parent && q != root && q > 1) q=parent[q]; if (q == root) print p }} }}\'; done | sort -u')
         for attempt in range(30):
-            alive = seat.sh(f'for p in $(pgrep -u caboose -f "waitforexitandrun {o.triangle}"); do '
-                            f'tr "\\0" "\\n" < /proc/$p/environ 2>/dev/null | grep -qx {marker} && echo $p; done',
-                            user='caboose', check=False).split()
+            alive = seat.sh(tree, check=False).split()
             if not alive:
                 return
-            if attempt >= 5:
-                seat.sh(f'kill -KILL {" ".join(alive)}', user='caboose', check=False)
+            seat.sh(f'kill -{"TERM" if attempt < 5 else "KILL"} {" ".join(alive)} 2>/dev/null', check=False)
             time.sleep(1)
-        print('DXVK sandboxes did not end', flush=True)
+        # What is left cannot be ended (uninterruptible): say where each waits in the kernel.
+        stuck = seat.sh(f'for p in $({tree}); do echo "$p $(cat /proc/$p/comm) state=$(cut -d" " -f3 /proc/$p/stat) '
+                        f'wchan=$(cat /proc/$p/wchan)"; head -6 /proc/$p/stack 2>/dev/null; done', check=False)
+        print(f'DXVK sandboxes did not end:\n{stuck}', flush=True)
 
     def judge(since, wanted, wait):
         """Whether every wanted app presented a real picture after `since`, within `wait` seconds."""

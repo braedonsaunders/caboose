@@ -52,3 +52,24 @@ for _ in range(30):
 else:
     raise SystemExit('FAIL packaged GPU admission: ' + last)
 PY
+# One GPU broker per computer: with the shared service the displays are its clients and start
+# none of their own, so a phone's executor can only ever reach the one that serves the seats.
+docker exec -i "$name" python3 - <<'PY'
+import os, time
+def brokers():
+    found = []
+    for pid in filter(str.isdigit, os.listdir('/proc')):
+        try:
+            args = open(f'/proc/{pid}/cmdline', 'rb').read().split(b'\0')
+        except OSError:
+            continue
+        # The broker runs as a Python script (its launcher execs python3 on broker.py).
+        if any(a.endswith((b'caboose-gpu-broker', b'caboose-gpu/broker.py')) for a in args[:3]):
+            found.append((pid, b' '.join(args).decode(errors='replace')[:160]))
+    return found
+time.sleep(3)
+found = brokers()
+if len(found) != 1:
+    raise SystemExit(f'FAIL packaged session: {len(found)} GPU brokers after caboose-session start, not one: {found}')
+print('PASS packaged session: one GPU broker on the computer')
+PY
