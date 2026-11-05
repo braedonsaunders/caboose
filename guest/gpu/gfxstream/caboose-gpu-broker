@@ -2022,6 +2022,8 @@ class Broker:
         # shown another seat's windows.
         seat = session.processes[process_id].get('seat', 'owner')
         if seat != 'owner' and 'seat-routing' not in session.features:
+            print(f'CABOOSE_GPU_BROKER refused the {seat} seat a bind: the phone does not route by seat',
+                  file=sys.stderr, flush=True)
             raise PermissionError(f'the phone does not show the {seat} seat')
         (uid, pid, start), pidfd = session.bindings.duplicate_process_identity(session.binding_generation, process_id)
         self.next_bind += 1

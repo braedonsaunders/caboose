@@ -2026,7 +2026,7 @@ class SeatTests(unittest.IsolatedAsyncioTestCase):
             async def send_control(data, fd=None, seat=None): sent.append((control_protocol.decode(data, 1).request, seat))
             instance.send_control = send_control
             plain = self.session(instance)
-            with self.assertRaisesRegex(PermissionError, 'does not show the agent seat'):
+            with self.assertRaisesRegex(PermissionError, 'does not show the agent seat'), mock.patch('builtins.print'):
                 await instance.request_bind(plain, 2, 9)
             self.assertEqual(sent, [])
             routed = self.session(instance, {'seat-routing'})

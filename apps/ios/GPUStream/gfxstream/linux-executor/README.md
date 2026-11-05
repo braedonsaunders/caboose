@@ -317,6 +317,24 @@ Chromium runs as a Wayland client, so its frames reach the compositor as phone-r
 dma-bufs registered by the driver. `SECONDS_RUNNING` (default 25) is each Chromium's time.
 The release seal runs it, in the computer DXVK's check uses.
 
+## Two seats on the shared broker
+
+```sh
+python3 apps/ios/GPUStream/gfxstream/linux-executor/check_shared_broker.py COMPUTER WORK REPO
+```
+
+In a directory of its own in COMPUTER, starts the computer's shared broker from REPO
+(`--dir`, `--listen` on port 14781), an owner-seat and an agent-seat compositor from REPO's
+release build joined to it (`--private-gpu-broker`, ports 14782 and 14783, X displays :241
+and :242), and the Linux executor of WORK connecting to the broker itself
+([gpu-live.md, Seats](../../../../../docs/gpu-live.md#seats)). It requires that each compositor
+joins its own seat; that with no executor the agent seat's application draws and its
+compositor renders on the computer (a screenshot has a picture); that the executor makes each
+seat's sockets; that, with a viewer on the owner seat, an owner application presents through
+the executor; that the agent seat's bind is refused by an executor without `seat-routing`;
+and that a process whose stream reached the owner's socket is refused a surface on the
+agent's. It ends everything it started and removes its directory (`--keep` keeps it).
+
 ## Executor chaos
 
 ```sh
