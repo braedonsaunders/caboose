@@ -21,7 +21,8 @@ fn broker() -> std::ffi::OsString {
 pub struct GpuSupervisor {
     // None after close: do not leave a live channel across child teardown.
     ipc: Option<UnixStream>,
-    child: Child,
+    // None when joined to the computer's shared broker, which this compositor does not own.
+    child: Option<Child>,
 }
 
 impl GpuSupervisor {
@@ -64,12 +65,38 @@ impl GpuSupervisor {
             .arg("--socket").arg(local_socket).arg("--surface-socket").arg(surface_socket).stdin(input);
         if indexed { command.arg("--private-indexed"); }
         let child = command.spawn()?;
-        Ok(Self { ipc: Some(parent), child })
+        Ok(Self { ipc: Some(parent), child: Some(child) })
+    }
+
+    /// Joins the computer's shared broker as a client at this seat's control socket
+    /// (`DIR/SEAT/control.sock`): nothing is started, and the broker outlives this compositor.
+    pub fn join(control: &Path) -> io::Result<Self> {
+        use std::os::unix::ffi::OsStrExt;
+        let bytes = control.as_os_str().as_bytes();
+        // SAFETY: sockaddr_un is plain data; zeroed is a valid empty address.
+        let mut address: libc::sockaddr_un = unsafe { zeroed() };
+        if bytes.len() >= address.sun_path.len() { return Err(io::Error::other("GPU broker control path too long")); }
+        address.sun_family = libc::AF_UNIX as libc::sa_family_t;
+        for (slot, byte) in address.sun_path.iter_mut().zip(bytes) { *slot = *byte as libc::c_char; }
+        // SAFETY: a new socket descriptor, owned below.
+        let fd = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_SEQPACKET | libc::SOCK_CLOEXEC, 0) };
+        if fd < 0 { return Err(io::Error::last_os_error()); }
+        // SAFETY: fd is a new descriptor owned by exactly this stream.
+        let stream = unsafe { UnixStream::from_raw_fd(fd) };
+        let length = (size_of::<libc::sa_family_t>() + bytes.len() + 1) as libc::socklen_t;
+        // SAFETY: address is a valid sockaddr_un of `length` bytes.
+        if unsafe { libc::connect(stream.as_raw_fd(), (&address as *const libc::sockaddr_un).cast(), length) } < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        stream.set_nonblocking(true)?;
+        Ok(Self { ipc: Some(stream), child: None })
     }
 
     pub fn clone_ipc(&mut self) -> io::Result<UnixStream> {
-        if self.child.try_wait()?.is_some() {
-            return Err(io::Error::new(io::ErrorKind::BrokenPipe, "GPU broker exited"));
+        if let Some(child) = self.child.as_mut() {
+            if child.try_wait()?.is_some() {
+                return Err(io::Error::new(io::ErrorKind::BrokenPipe, "GPU broker exited"));
+            }
         }
         self.ipc.as_ref().ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "GPU broker closed"))?.try_clone()
     }
@@ -170,6 +197,30 @@ mod tests {
     }
 
     #[test]
+    fn joins_a_shared_brokers_seat_without_starting_one() {
+        use std::os::fd::{AsRawFd, FromRawFd};
+        let directory = std::env::temp_dir().join(format!("caboose-join-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir(&directory).unwrap();
+        let path = directory.join("control.sock");
+        assert!(super::GpuSupervisor::join(&path).is_err()); // no broker yet
+        // SAFETY: a new listening socket for the test, owned once.
+        let fd = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_SEQPACKET | libc::SOCK_CLOEXEC, 0) };
+        let listener = unsafe { std::os::unix::net::UnixStream::from_raw_fd(fd) };
+        let mut address: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+        address.sun_family = libc::AF_UNIX as libc::sa_family_t;
+        for (slot, byte) in address.sun_path.iter_mut().zip(std::os::unix::ffi::OsStrExt::as_bytes(path.as_os_str())) { *slot = *byte as libc::c_char; }
+        assert_eq!(unsafe { libc::bind(listener.as_raw_fd(), (&address as *const libc::sockaddr_un).cast(),
+            std::mem::size_of::<libc::sockaddr_un>() as libc::socklen_t) }, 0);
+        assert_eq!(unsafe { libc::listen(listener.as_raw_fd(), 1) }, 0);
+        let mut joined = super::GpuSupervisor::join(&path).unwrap();
+        assert!(joined.child.is_none());
+        assert!(joined.clone_ipc().is_ok());
+        drop(joined); // returns at once: there is no child to wait for
+        let _ = std::fs::remove_dir_all(&directory);
+    }
+
+    #[test]
     fn seqpacket_handoff_transfers_one_connected_tcp_fd() {
         use std::io::{Read, Write};
         use std::os::fd::{AsRawFd, FromRawFd};
@@ -234,10 +285,11 @@ pub fn handoff_wait(ipc: &UnixStream, stream: &std::net::TcpStream, stop: &Atomi
 
 impl Drop for GpuSupervisor {
     fn drop(&mut self) {
-        self.ipc.take(); // EOF requests the owned child to stop.
+        self.ipc.take(); // EOF requests the owned child to stop; a shared broker only loses a client.
+        let Some(child) = self.child.as_mut() else { return };
         let deadline = Instant::now() + Duration::from_secs(12);
         loop {
-            match self.child.try_wait() {
+            match child.try_wait() {
                 Ok(Some(_)) => return,
                 Err(_) => break,
                 Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(10)),
@@ -245,8 +297,8 @@ impl Drop for GpuSupervisor {
             }
         }
         // Only this supervisor's child is stopped; it is always reaped.
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        let _ = child.kill();
+        let _ = child.wait();
     }
 }
 
@@ -314,9 +366,13 @@ impl GpuRouter {
         local_socket: &Path,
         surface_socket: &Path,
         indexed: bool,
+        broker: Option<&Path>,
         deliver: impl Fn(RouteEvent) + Send + Sync + 'static,
     ) -> io::Result<Self> {
-        let mut supervisor = GpuSupervisor::start(token_file, local_socket, surface_socket, indexed)?;
+        let mut supervisor = match broker {
+            Some(control) => GpuSupervisor::join(control)?,
+            None => GpuSupervisor::start(token_file, local_socket, surface_socket, indexed)?,
+        };
         let ipc = supervisor.clone_ipc()?;
         let stop = std::sync::Arc::new(AtomicBool::new(false));
         let deliver: std::sync::Arc<dyn Fn(RouteEvent) + Send + Sync> = std::sync::Arc::new(deliver);
@@ -342,7 +398,9 @@ impl GpuRouter {
     pub fn clone_control(&mut self) -> io::Result<UnixStream> { self.supervisor.clone_ipc() }
 
     /// How the broker ended, if it has.
-    pub fn exit_status(&mut self) -> Option<std::process::ExitStatus> { self.supervisor.child.try_wait().ok().flatten() }
+    pub fn exit_status(&mut self) -> Option<std::process::ExitStatus> {
+        self.supervisor.child.as_mut().and_then(|child| child.try_wait().ok().flatten())
+    }
 
     pub fn fail(&mut self) {
         self.stop.store(true, Ordering::Release);

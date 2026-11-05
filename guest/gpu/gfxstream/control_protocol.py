@@ -90,9 +90,14 @@ class BufferReleased:
     status: int
 
 
+# Executor lifecycle records: ready, lost, retired; and, for a suspended executor, that the
+# compositor's own streams were ended so it keeps serving (11) and that the executor resumed (12).
+LIFECYCLE_KINDS = (4, 5, 6, 11, 12)
+
+
 @dataclass(frozen=True)
 class ExecutorLifecycle:
-    kind: int  # 4 ready, 5 lost, 6 retired
+    kind: int  # 4 ready, 5 lost, 6 retired, 11 suspended (compositor released), 12 resumed
     executor: bytes
     generation: int
 
@@ -156,7 +161,7 @@ def encode_revoke_request(value):
 
 
 def encode_lifecycle(value):
-    if value.kind not in (4, 5, 6) or not _nonzero(value.executor) or not value.generation:
+    if value.kind not in LIFECYCLE_KINDS or not _nonzero(value.executor) or not value.generation:
         raise ControlError('invalid executor lifecycle')
     try:
         return _LIFECYCLE.pack(b'CGB1', 1, value.kind, _LIFECYCLE.size, 0,
@@ -226,7 +231,7 @@ def decode(data, fd_count):
             value = RevokeRequest(epoch, grant, generation)
             encode_revoke_request(value)
         return value
-    if kind in (4, 5, 6):
+    if kind in LIFECYCLE_KINDS:
         if length != _LIFECYCLE.size or fd_count: raise ControlError('invalid lifecycle record')
         _, _, _, _, _, executor, generation, tail = _LIFECYCLE.unpack(data)
         if tail: raise ControlError('nonzero reserved field')

@@ -74,6 +74,15 @@ impl State {
     /// executor's socket away, a new renderer would reach that executor again, and Zink
     /// does not survive objects the lost device fails to create. Nothing renders meanwhile;
     /// a ready executor makes its renderer at once.
+    /// Drops the renderer and draws nothing until `rebuild_gpu`: its device is gone.
+    pub fn drop_gpu(&mut self) {
+        self.gpu_generation += 1;
+        self.gpu = None;
+        for w in self.windows.iter_mut() {
+            w.picture.repaint();
+        }
+    }
+
     pub fn rebuild_gpu_after_loss(&mut self) {
         self.gpu_generation += 1;
         self.gpu = None;

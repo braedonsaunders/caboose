@@ -311,6 +311,7 @@ summary.
 | `--private-gpu-stream-socket PATH` | disabled | Owner-only private live GPU stream socket; requires the surface socket option |
 | `--private-gpu-surface-socket PATH` | disabled | Owner-only private live GPU surface socket; requires the stream socket option |
 | `--private-gpu-indexed` | disabled | Select private indexed v4 transport; requires both private GPU sockets |
+| `--private-gpu-broker PATH` | disabled | Join the computer's shared GPU broker at this seat's control socket (`DIR/SEAT/control.sock`) instead of starting one; the GPU sockets are then that seat's (`DIR/SEAT/gpu.sock`, `surface.sock`), and the agent seat may take its own (`DIR/agent`). See [gpu-live.md, Seats](../../docs/gpu-live.md#seats) |
 | `--audio-bitrate BPS` | `128000` | Opus bitrate |
 | `--env-file PATH` | | Where to write the application environment once ready |
 | `--client-timeout SECS` | `30` | Close a client that has sent nothing for this long; `0` never |

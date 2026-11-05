@@ -19,6 +19,7 @@
     {"name": "silent-success", "bit": "0x800000", "requires": ["guest-handles", "completion-feed"], "phone": true},
     {"name": "one-way-start", "bit": "0x1000000", "requires": ["guest-handles", "completion-feed", "silent-success"], "phone": true},
     {"name": "zstd-stream", "bit": null, "requires": [], "phone": true},
-    {"name": "executor-stats", "bit": null, "requires": [], "phone": true}
+    {"name": "executor-stats", "bit": null, "requires": [], "phone": true},
+    {"name": "seat-routing", "bit": null, "requires": [], "phone": false}
   ]
 }

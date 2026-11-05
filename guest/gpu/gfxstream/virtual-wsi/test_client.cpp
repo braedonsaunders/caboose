@@ -234,6 +234,17 @@ static void exerciseProbeRefusedThenPresentGranted() {
     assert(!Policy::mayBind(false,now,nextBind,now));
     assert(Policy::mayBind(true,now,nextBind,now));
     assert(!Policy::mayBind(true,now,nextBind,now+std::chrono::seconds(1)));  // a phone failure's backoff holds
+    // Refusals in a row space queries out: 100 ms, doubling to at most 1 s.
+    assert(Policy::refusedDelay(1)==std::chrono::milliseconds(100));
+    assert(Policy::refusedDelay(2)==std::chrono::milliseconds(200));
+    assert(Policy::refusedDelay(4)==std::chrono::milliseconds(800));
+    assert(Policy::refusedDelay(5)==std::chrono::milliseconds(1000));
+    assert(Policy::refusedDelay(1000)==std::chrono::milliseconds(1000));
+    {
+        const auto later=now+Policy::refusedDelay(6);
+        assert(!Policy::mayBind(false,now+std::chrono::milliseconds(999),later,now));
+        assert(Policy::mayBind(true,now+std::chrono::milliseconds(999),later,now));  // a frame binds at once
+    }
     client.connect(path.c_str(),deadline);
     client.beginBind(7,0x400003,0,0,deadline,Client::X11Window,false);
     assert(!client.lastBindProbe());

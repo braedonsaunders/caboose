@@ -549,7 +549,7 @@ impl State {
         self.rebuild_gpu_after_loss();
     }
 
-    fn schedule_gpu_restart(&mut self) {
+    pub(crate) fn schedule_gpu_restart(&mut self) {
         if self.gpu_restart_pending || self.config.private_gpu_stream.is_none() { return; }
         self.gpu_restart_pending = true;
         if self.gpu_started_at.elapsed() >= std::time::Duration::from_secs(60) {
@@ -557,7 +557,11 @@ impl State {
         }
         let delay = self.gpu_restart_delay;
         self.gpu_restart_delay = (delay * 2).min(std::time::Duration::from_secs(30));
-        eprintln!("caboose-display: the private GPU broker ended; restarting in {} ms", delay.as_millis());
+        if self.config.joins_gpu_broker() {
+            eprintln!("caboose-display: joining the shared GPU broker in {} ms", delay.as_millis());
+        } else {
+            eprintln!("caboose-display: the private GPU broker ended; restarting in {} ms", delay.as_millis());
+        }
         use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
         let inserted = self.handle.insert_source(Timer::from_duration(delay), |_, _, state: &mut State| {
             state.restart_private_gpu();
@@ -572,8 +576,10 @@ impl State {
             self.config.private_gpu_surface.clone(), self.config.token_file.clone()) else { return };
         // Stops and reaps the previous broker, reporting how it ended.
         self.net.disable_private_gpu();
-        // A broker that died without cleaning up leaves its sockets behind.
-        for path in [&stream, &surface] {
+        let broker = self.config.private_gpu_broker.clone();
+        // A broker that died without cleaning up leaves its sockets behind; a shared broker's
+        // sockets are its own.
+        for path in [&stream, &surface].into_iter().filter(|_| broker.is_none()) {
             use std::os::unix::fs::FileTypeExt;
             if std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_socket()) {
                 let _ = std::fs::remove_file(path);
@@ -584,7 +590,7 @@ impl State {
             Err(error) => { eprintln!("caboose-display: private GPU entropy: {error}"); self.schedule_gpu_restart(); return; }
         };
         let handle = self.handle.clone();
-        match self.net.enable_private_gpu(&token, &stream, &surface, self.config.private_gpu_indexed, &handle) {
+        match self.net.enable_private_gpu(&token, &stream, &surface, self.config.private_gpu_indexed, broker.as_deref(), &handle) {
             Ok(()) => {
                 self.gpu_grants = Some(grants);
                 self.gpu_pending_binds.clear();
@@ -873,6 +879,17 @@ impl State {
                         self.reconnect_for_gpu_epoch();
                         // The phone's GPU is gone: render on the computer until it returns.
                         self.rebuild_gpu_after_loss();
+                    }
+                    11 => {
+                        // The phone suspended for longer than the broker holds the compositor:
+                        // its streams were ended so a held call cannot block this thread. Draw
+                        // nothing until the executor resumes; the device is gone quietly.
+                        tracing::info!("executor suspended: renderer dropped until it resumes");
+                        self.drop_gpu();
+                    }
+                    12 => {
+                        // The executor resumed after the compositor was released: draw on it again.
+                        if self.gpu.is_none() { self.rebuild_gpu(); }
                     }
                     6 => {
                         // A retirement for an executor a later ready already superseded is stale.

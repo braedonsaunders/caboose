@@ -72,6 +72,10 @@ compositor's child, ending with it) or as a socket it listens on (`--control-soc
 a Unix sequenced-packet socket of mode 0600, when it is supervised beside the display), and
 binds the requested local socket only after the executor reports real session readiness.
 
+As the computer's shared broker (`--dir DIR --listen HOST:PORT`) it serves both seats from one
+executor: a subdirectory per seat with that seat's control, stream and surface sockets, and the
+phone's `GET /gpu` accepted on `--listen` with the same token (docs/gpu-live.md, "Seats").
+
 On a control socket the broker outlives its compositor. It serves one at a time, the latest
 to connect, whose process it takes from the connection's credentials; the records and their
 handoffs are those of the inherited channel. When the compositor goes (a display restart),

@@ -22,7 +22,7 @@ FEATURES = frozenset({'guest-handles', 'guest-handle-arrays', 'completion-feed',
                       'shader-cache', 'executor-resume', 'zstd-stream', 'upload-cache', 'guest-buffer-views',
                       'batched-descriptor-sets', 'batched-descriptor-sets-inline',
                       'guest-set-ids', 'completion-payloads', 'wait-serial', 'silent-success', 'one-way-start',
-                      'executor-stats'})
+                      'executor-stats', 'seat-routing'})
 class AdmissionError(ValueError):
     pass
 

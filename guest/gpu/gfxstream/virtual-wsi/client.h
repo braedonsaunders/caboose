@@ -42,6 +42,14 @@ public:
         static bool mayBind(bool carriesFrame, Deadline now, Deadline nextBind, Deadline nextPhoneBind) {
             return (carriesFrame || now >= nextBind) && now >= nextPhoneBind;
         }
+        // How long queries wait before asking again after `refusals` (at least 1) refused binds
+        // in a row: 100 ms, doubling to 1 s. A window that never exists (a toolkit's hidden
+        // surface) then costs one bind a second, not ten; a frame still asks at once.
+        static std::chrono::milliseconds refusedDelay(uint32_t refusals) {
+            const uint32_t shift = refusals < 1 ? 0 : refusals - 1 > 4 ? 4 : refusals - 1;
+            const auto delay = std::chrono::milliseconds(100) * (1u << shift);
+            return delay > std::chrono::milliseconds(1000) ? std::chrono::milliseconds(1000) : delay;
+        }
     };
     Record query(uint64_t request, uint64_t physical, Deadline deadline);
     // Sends a query without waiting; its reply is kept when it arrives (pump or any wait)

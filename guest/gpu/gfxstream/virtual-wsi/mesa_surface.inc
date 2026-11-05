@@ -87,6 +87,8 @@ struct Surface {
     // The last bind was answered by the phone with a failure and is retried: pending
     // swapchain work waits for it instead of ending (kPhoneBindFailuresMax).
     bool phoneRetrying=false;
+    // Binds the compositor refused in a row (the window does not exist yet), for the retry delay.
+    uint32_t refusals=0;
     // The provider's last capability reply, for the physical device it answered.
     Bytes caps;
     uint64_t capsPhysical=0;
@@ -163,7 +165,7 @@ static void logBind(const Surface& surface, const char* outcome, int error, int 
 // kQueryBindWait. A reply that has not arrived is collected by a later call, and a surface
 // destroyed with its bind in flight does not wait for it, so an application that makes a
 // window and ends at once (a launcher's splash) is never held by the phone. A transport error before the reply leaves nothing bound: the broker
-// closed the connection, which it does for a refused bind. Queries (`present` false) retry a refused bind at most every kBindRetry; a present
+// closed the connection, which it does for a refused bind. Queries (`present` false) retry a refused bind after kBindRetry, doubling to 1 s while refusals continue; a present
 // always does, since on Wayland nothing else maps the window (no buffer is ever attached
 // to the wl_surface), so a dropped first frame would leave the application waiting for a
 // frame callback.
@@ -207,7 +209,7 @@ static bool tryBind(Surface& surface, bool present=false,
             if (!surface.client.awaitBind(now+wait,&reply)) return false;
             const auto answer=status(reply.body,48);
             if (apiStatus(answer)==VK_SUCCESS) {
-                surface.bound=true; surface.phoneRetrying=false;
+                surface.bound=true; surface.phoneRetrying=false; surface.refusals=0;
                 if (surface.bindAttempts>1 || surface.phoneFailures) logBind(surface,"bound",0,0);
                 return true;
             }
@@ -219,12 +221,13 @@ static bool tryBind(Surface& surface, bool present=false,
             logBind(surface,"failed",answer.nativeError,answer.hasVk ? answer.vk : 0);
         } catch (const std::system_error& error) {
             surface.phoneRetrying=false;
+            ++surface.refusals;
             probeRefused=surface.client.lastBindProbe();
             logBind(surface,probeRefused ? "refused-probe" : "refused",error.code().value(),0);
         }
         surface.client.reset();
         surface.attempted=false;
-        surface.nextBind=now+kBindRetry;
+        surface.nextBind=now+Client::BindPolicy::refusedDelay(surface.refusals);
         // A frame that found a probe in flight, refused, asks for the window itself at once.
         if (!(carriesFrame && probeRefused)) return false;
     }
