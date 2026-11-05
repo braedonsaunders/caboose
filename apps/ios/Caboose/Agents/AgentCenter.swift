@@ -99,6 +99,8 @@ final class AgentCenter {
     /// The control connection closed: failed, or detached. Its next connection starts with
     /// `computer.state` again.
     var onControlClosed: (() -> Void)?
+    /// The agent seat's display became ready, or closed (`nil`): its GPU presentation follows.
+    var onSeatChanged: ((CabooseDisplaySession?) -> Void)?
 
     private var generation = UUID()
     private var deletedChats: Set<String> = []
@@ -128,6 +130,7 @@ final class AgentCenter {
         if open { onControlClosed?() }
         seat?.disconnect()
         seat = nil
+        onSeatChanged?(nil)
     }
 
     /// Forgets the computer entirely: a different one, or none, is next.
@@ -580,6 +583,10 @@ final class AgentCenter {
         url.queryItems = [URLQueryItem(name: "seat", value: "agent")]
         let session = CabooseDisplaySession(displayURL: url.url!, token: host.token, password: displayToken, capabilities: capabilities)
         session.playsAudio = false // one stream of sound: the owner's display
+        session.onReady = { [weak self, weak session] in
+            guard let self, let session, self.seat === session else { return }
+            self.onSeatChanged?(session)
+        }
         seat = session
         session.connect()
     }

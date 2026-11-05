@@ -19,8 +19,9 @@ touches no display of the computer's. It requires that:
   both compositors (EXECUTOR_READY);
 - with a viewer on the owner seat, an application there binds its surface and presents
   through the executor;
-- an application on the agent seat is refused its surface bind by an executor that does
-  not route by seat, and keeps drawing on the computer;
+- an application on the agent seat has its surface bind sent with its seat; the executor,
+  which shows only the owner's display, answers it ENOENT and drops it, and the application
+  keeps drawing on the computer;
 - a process's stream on the owner socket and its surface on the agent socket is refused.
 """
 import argparse
@@ -186,8 +187,13 @@ class Check:
             self.require(self.wait(lambda: 'presented=' in self.log('broker.log') and
                                    any(int(x) > 0 for x in __import__('re').findall(r'presented=(\d+)', self.log('broker.log'))), 60),
                          'an owner-seat application presents through the executor')
-            self.require(self.wait(lambda: 'refused the agent seat a bind' in self.log('broker.log'), 30),
-                         'an agent-seat bind is refused by an executor that does not route by seat')
+            # The executor routes by seat but shows only the owner's display: the broker sends the
+            # agent seat's bind with its seat, and the executor answers it ENOENT and drops it.
+            def executor_log():
+                done = subprocess.run(['docker', 'logs', self.executor_name], capture_output=True, text=True)
+                return done.stdout + done.stderr
+            self.require(self.wait(lambda: 'surface bind refused' in executor_log() and 'seat=1' in executor_log(), 30),
+                         'an agent-seat bind reaches the executor with its seat and is answered and dropped there')
             # A process whose stream reached the owner's socket offers its surface on the agent's.
             self.app('owner', 'crossing', 'glxgears', phone=True, surface_seat='agent')
             self.require(self.wait(lambda: 'refused a cross-seat surface' in self.log('broker.log'), 30),

@@ -6,7 +6,7 @@ import Darwin
 /// may report retirement until both native GPU retirement and main detach finish.
 protocol LiveGPUSurfaceBackend: AnyObject, Sendable {
     func bind(identity: LiveGPUSurfaceIdentity, processToken: UInt64, window: UInt64,
-              instance: UInt64, width: UInt32, height: UInt32) throws -> LiveGPUSurfaceBinding
+              instance: UInt64, width: UInt32, height: UInt32, seat: LiveGPUSeat) throws -> LiveGPUSurfaceBinding
 }
 struct LiveGPUSurfaceBinding {
     let status: LiveGPUSurfaceStatus
@@ -125,7 +125,8 @@ final class LiveGPUSurfaceController: @unchecked Sendable {
             #endif
             try output(process, LiveGPUSurfaceMessage(identity: identity, body: body))
         }
-        if case let .bind(window, instance, width, height) = message.body {
+        if case let .bind(window, instance, width, height, seatValue) = message.body {
+            let seat = LiveGPUSeat(rawValue: seatValue) ?? .owner
             guard entries[identity.grant] == nil else { throw violation("duplicate grant") }
             // Every replied-to bind keeps its authenticated identity until retirement,
             // even when no native resource was created. Bound rejected identities
@@ -137,7 +138,7 @@ final class LiveGPUSurfaceController: @unchecked Sendable {
             }
             do {
                 let bound = try backend.bind(identity: identity, processToken: token, window: window,
-                                             instance: instance, width: width, height: height)
+                                             instance: instance, width: width, height: height, seat: seat)
                 if let resource = bound.resource {
                     var entry = Entry(process: process, identity: identity, resource: resource)
                     entry.retiring = !bound.status.succeeded

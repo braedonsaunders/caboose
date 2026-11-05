@@ -432,6 +432,8 @@ public final class LiveGPUNativeBinding: LiveGPUByteConsumer, LiveGPURetirementR
     private let backend: LiveGPURuntimeBackend
     private let decoder: LiveGPUEnvelopeDecoder
     private let surfaces: LiveGPUSurfaceController?
+    /// The per-seat presentation routing of an owner executor's surfaces; nil without surfaces.
+    private(set) var seatSurfaces: LiveGPUSeatSurfaces?
     private let maxPacket: Int
     private let maxReply: Int
     private let cacheRoot: URL?
@@ -517,10 +519,12 @@ public final class LiveGPUNativeBinding: LiveGPUByteConsumer, LiveGPURetirementR
                             maxPacket: Int = 16 * 1024 * 1024,
                             maxReplyBuffer: Int = 1024 * 1024) throws {
         #if canImport(CabooseGPULive)
+        let seats = LiveGPUSeatSurfaces(owner: LinkedLiveGPUSurfaces(owners: presentationOwners))
         try self.init(backend: LinkedLiveGPURuntime(), maxPacket: maxPacket,
             maxReplyBuffer: maxReplyBuffer,
-            surfaces: LiveGPUSurfaceController(backend: LinkedLiveGPUSurfaces(owners: presentationOwners)),
+            surfaces: LiveGPUSurfaceController(backend: seats),
             cacheRoot: cacheRoot)
+        seatSurfaces = seats
         #else
         throw LiveGPUError.missingNativeBinding
         #endif

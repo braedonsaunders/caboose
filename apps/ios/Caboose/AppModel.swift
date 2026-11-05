@@ -236,6 +236,10 @@ final class AppModel {
             guard let self, self.connectionRevision == revision else { return }
             self.bridge.controlClosed()
         }
+        agents.onSeatChanged = { [weak self] seat in
+            guard let self, self.connectionRevision == revision else { return }
+            self.liveGPUOwner?.update(agentDisplay: seat)
+        }
     }
 
     /// Applies the owner's hardware switches for the computer paired now.
@@ -1294,7 +1298,7 @@ final class AppModel {
                 liveGPUOwner = nil; liveGPUIdentity = nil
             } else {
                 if liveGPUIdentity != identity { owner.close() }
-                else { owner.update(display: display) }
+                else { owner.update(display: display); owner.update(agentDisplay: agents.seat) }
                 return
             }
         }
@@ -1312,6 +1316,7 @@ final class AppModel {
             liveGPUGeneration = generation; liveGPUIdentity = identity; liveGPUOwner = owner
             liveGPUStartedAt = Date()
             owner.update(display: display)
+            owner.update(agentDisplay: agents.seat)
         } catch {
             // The endpoint may be unavailable for a while (a broker restarting): try again.
             retryLiveGPU()

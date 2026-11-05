@@ -4,7 +4,8 @@ import OSLog
 
 /// The app creates this explicitly for the computer whose display it has open. It is never created
 /// by CabooseDisplaySession, so agent, thumbnail and auxiliary connections cannot
-/// accidentally become a GPU executor. One instance is one executor; a new one replaces it once it ends.
+/// accidentally become a GPU executor. The agent seat's display joins it only through
+/// `update(agentDisplay:)`: its windows then present in that display through this executor. One instance is one executor; a new one replaces it once it ends.
 @MainActor
 public final class LiveGPUOwnerSession {
     private static let log = Logger(subsystem: "org.caboose", category: "LiveGPUOwner")
@@ -15,6 +16,11 @@ public final class LiveGPUOwnerSession {
     private var closesTransportWhenQuiesced = false
     public private(set) var state = State.idle
     public let presentationOwners: LiveGPUPresentationOwners
+    /// The agent seat's windows present here, in the agent seat's own display session (the
+    /// Watch view), never in the owner's (docs/gpu-live.md, "Seats").
+    public let agentPresentationOwners: LiveGPUPresentationOwners
+    private let seatSurfaces: LiveGPUSeatSurfaces?
+    private var agentSeatOpen = false
     /// A new executor may follow once this one has ended. A transport loss never brings the
     /// remote retirement receipt, but the host relay ends only after both of its sides close
     /// and the broker revokes the old lease, so the server fences the old one. Native cleanup
@@ -42,8 +48,13 @@ public final class LiveGPUOwnerSession {
         let owners = LiveGPUPresentationOwners { [reference] identity in
             reference.owner?.executor.requestSurfaceRevocation(identity)
         }
+        let agentOwners = LiveGPUPresentationOwners { [reference] identity in
+            reference.owner?.executor.requestSurfaceRevocation(identity)
+        }
         let cacheRoot = pairing.flatMap { try? LiveGPUCacheRoot.directory(pairing: $0) }
         let binding = try LiveGPUNativeBinding(presentationOwners: owners, cacheRoot: cacheRoot)
+        seatSurfaces = binding.seatSurfaces
+        agentPresentationOwners = agentOwners
         // The transport resumes this executor across a lost socket when the computer offers it.
         executor = try LiveGPUSession(transport: LiveGPUResumableTransport(hostURL: hostURL, phoneToken: phoneToken, route: route),
                                       nativeBinding: binding)
@@ -65,6 +76,7 @@ public final class LiveGPUOwnerSession {
                     Self.log.info("Owner GPU transport opened")
                 case .ended(let cause, let cleanupError):
                     self.presentationOwners.revoke()
+                    self.agentPresentationOwners.revoke()
                     self.state = .ended(cleanupFailed: cleanupError != nil)
                     if Self.retainedExecutor === self {
                         Self.retainedExecutor = nil
@@ -90,6 +102,33 @@ public final class LiveGPUOwnerSession {
             display.liveGPUPresentation = presentationOwners
             presentationOwners.update(epoch: display.server?.gpuLiveEpoch, windows: display.windows, children: display.children)
         case .draining, .ended: break
+        }
+    }
+    /// Call when the agent seat's display (the Watch view's session) is ready or its windows
+    /// change, and with `nil` when it closes. Its windows then present there through this same
+    /// executor; while it is closed the computer's agent-seat binds are refused and nothing of the
+    /// agent seat is shown anywhere.
+    public func update(agentDisplay display: CabooseDisplaySession?) {
+        switch state {
+        case .idle, .connecting, .connected: break
+        case .draining, .ended: return
+        }
+        guard let display, display.state == .ready else {
+            guard agentSeatOpen else { return }
+            agentSeatOpen = false
+            seatSurfaces?.attach(nil, seat: .agent)
+            // Its leases end with the seat's epoch; the registry stays usable for the next one.
+            agentPresentationOwners.update(epoch: nil, windows: [:])
+            return
+        }
+        display.liveGPUPresentation = agentPresentationOwners
+        agentPresentationOwners.update(epoch: display.server?.gpuLiveEpoch, windows: display.windows,
+                                       children: display.children)
+        if !agentSeatOpen {
+            agentSeatOpen = true
+            #if canImport(CabooseGPULive)
+            seatSurfaces?.attach(LinkedLiveGPUSurfaces(owners: agentPresentationOwners), seat: .agent)
+            #endif
         }
     }
     /// Suspends the executor in place as the app leaves the foreground: its objects, memory and
@@ -143,7 +182,7 @@ public final class LiveGPUOwnerSession {
         }
         state = .draining
         Self.log.info("Owner executor drain requested")
-        presentationOwners.revoke()
+        presentationOwners.revoke(); agentPresentationOwners.revoke()
         executor.close()
     }
     /// Used when the app cannot retain a foreground transport. This does not
@@ -152,7 +191,7 @@ public final class LiveGPUOwnerSession {
         switch state { case .ended: return; default: break }
         state = .draining
         Self.log.info("Owner executor abort requested; remote retirement remains unconfirmed")
-        presentationOwners.revoke()
+        presentationOwners.revoke(); agentPresentationOwners.revoke()
         executor.abort()
     }
 }
