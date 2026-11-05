@@ -1883,6 +1883,21 @@ SEATS = ('owner', 'agent')
 SEAT_INDEX = {'owner': 0, 'agent': 1}
 
 
+def unix_socket_listening(path):
+    """Whether a listening Unix socket is bound to `path`, from /proc/net/unix (flags
+    __SO_ACCEPTCON, 0x10000); unknown (True, so nothing is removed) when the table cannot be read."""
+    try:
+        with open('/proc/net/unix', encoding='utf-8', errors='replace') as table:
+            next(table, None)
+            for line in table:
+                fields = line.split()
+                if len(fields) >= 8 and fields[7] == str(path) and int(fields[3], 16) & 0x10000:
+                    return True
+    except (OSError, ValueError):
+        return True
+    return False
+
+
 def remove_stale_socket(path, kind=socket.SOCK_STREAM):
     """Removes `path` when it is a socket of this user that nothing listens on: one an earlier
     broker left behind (killed, or ended without its cleanup). Returns False, removing nothing,
@@ -1893,17 +1908,11 @@ def remove_stale_socket(path, kind=socket.SOCK_STREAM):
         return True
     if not stat.S_ISSOCK(info.st_mode) or info.st_uid != os.getuid():
         return False
-    probe = socket.socket(socket.AF_UNIX, kind | socket.SOCK_CLOEXEC)
-    try:
-        probe.settimeout(1)
-        probe.connect(str(path))
+    # Whether a listener holds it, read from the kernel's socket table rather than by
+    # connecting: a connection would reach the listener (this broker's own earlier session
+    # among them) as a client that sends nothing.
+    if unix_socket_listening(path):
         return False
-    except (ConnectionRefusedError, FileNotFoundError):
-        pass
-    except OSError:
-        return False
-    finally:
-        probe.close()
     with contextlib.suppress(FileNotFoundError):
         os.unlink(path)
     print(f'CABOOSE_GPU_BROKER removed a stale socket {path}', file=sys.stderr, flush=True)

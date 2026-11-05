@@ -2161,6 +2161,7 @@ class SeatTests(unittest.IsolatedAsyncioTestCase):
                 await asyncio.wait_for(task, 15)
 
     @unittest.skipUnless(sys.platform == 'linux', 'Linux AF_UNIX SOCK_SEQPACKET')
+    @unittest.skipUnless(os.path.exists('/proc/net/unix'), 'reads the kernel socket table')
     def test_a_stale_seat_socket_is_removed_and_a_live_one_kept(self):
         import socket as socket_module
         with tempfile.TemporaryDirectory() as directory:
@@ -2177,6 +2178,11 @@ class SeatTests(unittest.IsolatedAsyncioTestCase):
                 try:
                     self.assertFalse(broker.remove_stale_socket(live, kind))
                     self.assertTrue(live.exists())
+                    # Telling never connects: the listener sees no client (a probe would reach
+                    # this broker's own live session as a client that sends nothing).
+                    holder.setblocking(False)
+                    with self.assertRaises(BlockingIOError):
+                        holder.accept()
                 finally:
                     holder.close()
             plain = root / 'plain'
