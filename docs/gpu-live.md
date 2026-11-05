@@ -1302,7 +1302,13 @@ A client's seat is the socket it reached, and nothing crosses seats:
 The phone routes each surface to its seat's display session from the seat in
 `SURFACE_BIND` ([Surface records](#surface-records)), sent when it declares the transport
 feature `seat-routing`. A phone that does not declare it is shown the owner seat alone: an
-agent-seat bind is refused before its compositor is asked.
+agent-seat bind is refused before its compositor is asked. The phone (LiveGPUSeatSurfaces)
+presents an owner-seat surface in the owner's display session and an agent-seat surface in the
+agent seat's display session, the Watch view, through the one executor. While no agent-seat
+session is open it answers an agent-seat bind `ENOENT` and drops it, so a window of one seat is
+never shown in the other's display; a surface bound while the session was open ends with that
+session. The Linux executor shows one display, the owner's, and answers every agent-seat bind
+the same way.
 
 A compositor joins the shared broker with `--private-gpu-broker DIR/SEAT/control.sock` and its
 seat's `gpu.sock` and `surface.sock`, and starts no broker of its own. Until the broker is there,

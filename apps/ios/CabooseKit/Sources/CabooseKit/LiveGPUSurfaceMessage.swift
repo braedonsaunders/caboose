@@ -1,5 +1,9 @@
 import Foundation
 
+/// The computer's seats (docs/gpu-live.md, "Seats"). One executor serves both; each seat's
+/// windows present only in that seat's display session.
+public enum LiveGPUSeat: UInt32, Sendable { case owner = 0, agent = 1 }
+
 /// Process-scoped surface controls carry compositor authority, never a UIKit pointer.
 /// Parsing these records grants no layer access and makes no presentation claim.
 struct LiveGPUSurfaceIdentity: Equatable, Sendable {
@@ -59,7 +63,9 @@ struct LiveGPUSurfaceMessage: Equatable, Sendable {
     enum Disposition: UInt32, Sendable { case rejected, queued, uncertain }
     enum Event: UInt32, Sendable { case submission, deviceLost, failedUnretired }
     enum Body: Equatable, Sendable {
-        case bind(window: UInt64, instance: UInt64, width: UInt32, height: UInt32)
+        /// `seat` names the computer's seat whose display shows the window (docs/gpu-live.md,
+        /// "Seats"): 0 the owner's, 1 the agent seat's. Binds without it (64 bytes) are the owner's.
+        case bind(window: UInt64, instance: UInt64, width: UInt32, height: UInt32, seat: UInt32 = 0)
         case bound(LiveGPUSurfaceStatus)
         case query(request: UInt64, physicalDevice: UInt64)
         case capabilities(request: UInt64, status: LiveGPUSurfaceStatus, value: LiveGPUSurfaceCapabilities?)
@@ -93,7 +99,7 @@ struct LiveGPUSurfaceMessage: Equatable, Sendable {
         if kind.isIndexed { try LiveGPUSwapchainMessage.validateLength(length, kind: kind); return }
         let valid: Bool
         switch kind {
-        case .surfaceBind: valid = length == 64
+        case .surfaceBind: valid = length == 64 || length == 72
         case .surfaceBound, .surfaceQuery, .surfaceRetired: valid = length == 56
         case .surfaceCaps: valid = length == 64 || (length >= 128 && length <= 128 + 4096 * 28 && length % 4 == 0)
         case .present: valid = length >= 96 && length <= 96 + 64 * 8 && (length - 96) % 8 == 0
@@ -120,7 +126,12 @@ struct LiveGPUSurfaceMessage: Equatable, Sendable {
         case .surfaceBind:
             let window = try r.u64(), instance = try r.u64(), width = try r.u32(), height = try r.u32()
             try require(window > 0 && instance > 0 && ((width == 0) == (height == 0)), "surface bind fields")
-            body = .bind(window: window, instance: instance, width: width, height: height)
+            var seat: UInt32 = 0
+            if r.remaining == 8 {
+                seat = try r.u32()
+                try require(try r.u32() == 0 && seat <= LiveGPUSeat.agent.rawValue, "surface bind seat")
+            }
+            body = .bind(window: window, instance: instance, width: width, height: height, seat: seat)
         case .surfaceBound: body = .bound(try r.status())
         case .surfaceQuery:
             let request = try r.u64(), physical = try r.u64()
@@ -185,8 +196,10 @@ struct LiveGPUSurfaceMessage: Equatable, Sendable {
         var w = Writer()
         w.data.append(identity.epoch); w.data.append(identity.grant); w.u64(identity.generation)
         switch body {
-        case let .bind(window, instance, width, height):
+        case let .bind(window, instance, width, height, seat):
             w.u64(window); w.u64(instance); w.u32(width); w.u32(height)
+            // The owner's seat keeps the 64-byte record every broker understands.
+            if seat != 0 { w.u32(seat); w.u32(0) }
         case let .bound(status), let .retired(status): w.status(status)
         case let .query(request, physicalDevice): w.u64(request); w.u64(physicalDevice)
         case let .capabilities(request, status, caps):

@@ -2,8 +2,9 @@
 import UIKit
 import QuartzCore
 
-/// Explicitly owned by the phone's owner session. Agent sessions never receive
-/// this registry. Display epoch and object identity come from the display stream;
+/// Explicitly owned by the phone's owner GPU session, one registry per seat: the owner's display
+/// and the agent seat's (docs/gpu-live.md, "Seats"). A display session receives only its own
+/// seat's registry. Display epoch and object identity come from the display stream;
 /// the guest's grant cannot manufacture a visible UIKit owner.
 ///
 /// Visibility never stalls the guest. While no view can show a bound window (another

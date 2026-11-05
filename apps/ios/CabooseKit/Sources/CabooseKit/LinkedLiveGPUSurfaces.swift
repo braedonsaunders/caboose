@@ -31,7 +31,7 @@ final class LinkedLiveGPUSurfaces: LiveGPUSurfaceBackend, @unchecked Sendable {
     private let owners: LiveGPUPresentationOwners
     init(owners: LiveGPUPresentationOwners) { self.owners = owners }
     func bind(identity: LiveGPUSurfaceIdentity, processToken: UInt64, window: UInt64,
-              instance: UInt64, width: UInt32, height: UInt32) throws -> LiveGPUSurfaceBinding {
+              instance: UInt64, width: UInt32, height: UInt32, seat: LiveGPUSeat) throws -> LiveGPUSurfaceBinding {
         let lease: LiveGPULayerLease
         do {
             lease = try LiveGPUMainResult<LiveGPULayerLease>().performAsync { [owners] complete in

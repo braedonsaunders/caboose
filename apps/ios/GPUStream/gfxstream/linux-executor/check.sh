@@ -33,7 +33,7 @@ shared=$(mktemp -d)
 # replace (static_query_cache.h), and one-way start predicts from those logs.
 chmod 1777 "$shared"
 cpus=${CPUS:-4}
-phone=guest-handles,guest-handle-arrays,completion-feed,ordered-present,guest-images,guest-query-pools,shader-cache,executor-resume,zstd-stream,upload-cache,guest-buffer-views,batched-descriptor-sets-inline,guest-set-ids,completion-payloads,wait-serial,silent-success,one-way-start,executor-stats
+phone=guest-handles,guest-handle-arrays,completion-feed,ordered-present,guest-images,guest-query-pools,shader-cache,executor-resume,zstd-stream,upload-cache,guest-buffer-views,batched-descriptor-sets-inline,guest-set-ids,completion-payloads,wait-serial,silent-success,one-way-start,executor-stats,seat-routing
 cleanup() {
   docker rm -f "$name-executor" "$name-computer" > /dev/null 2>&1 || true
   rm -rf "$shared"

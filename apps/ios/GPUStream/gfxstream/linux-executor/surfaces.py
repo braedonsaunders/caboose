@@ -982,8 +982,14 @@ def parse_surface(kind, payload):
     """A broker-to-phone surface record: (identity bytes, fields)."""
     identity, r = payload[:40], payload[40:]
     if kind == 16:
-        window, instance, width, height = struct.unpack('<QQII', r)
-        return identity, {'window': window, 'instance': instance, 'width': width, 'height': height}
+        # seat-routing: 72 bytes, the seat (0 owner, 1 agent) and a reserved zero after the 64.
+        if len(r) == 32:
+            window, instance, width, height, seat, reserved = struct.unpack('<QQIIII', r)
+            if seat > 1 or reserved:
+                raise ProtocolViolation('surface bind seat')
+        else:
+            (window, instance, width, height), seat = struct.unpack('<QQII', r), 0
+        return identity, {'window': window, 'instance': instance, 'width': width, 'height': height, 'seat': seat}
     if kind == 18:
         request, physical = struct.unpack('<QQ', r)
         return identity, {'request': request, 'physical': physical}
@@ -1062,6 +1068,12 @@ class SurfaceController:
             self.entries[grant] = self._Entry(process, identity, None, retiring=True)
             if len(self.entries) > self.LIMIT:
                 return emit(17, Status(errno.ENOSPC).pack())
+            if fields['seat'] != 0:
+                # This executor shows one display, the owner's: an agent-seat window has no
+                # display session here, so its bind is answered and dropped, as on a phone
+                # with no agent seat open.
+                log(f'surface bind refused window={fields["window"]:#x} seat={fields["seat"]} errno={errno.ENOENT}')
+                return emit(17, Status(errno.ENOENT).pack())
             if self.fail_binds > 0:
                 # A phone whose layer for the window is not ready answers EAGAIN; the grant
                 # stays until its retirement, as after any failed bind.
