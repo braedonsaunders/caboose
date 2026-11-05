@@ -73,16 +73,24 @@ remote retirement retains only bounded numeric identities and owned destroy pack
 
 Toolkits create a surface, query it and create a swapchain before its window exists: GTK
 for a `wl_surface` without an `xdg_toplevel` yet, X11 toolkits for windows not yet
-mapped. The compositor grants a bind only for an existing window, and the broker closes
+mapped. The compositor grants a bind only for an existing window; it holds the bind of
+a window the binding process made that is not mapped yet and answers it when the window maps, within
+4 s ([gpu-live.md](../../../../docs/gpu-live.md#window-identity-boundary)). The broker closes
 the connection of a bind it refused; that close is not executor loss (only a bound
 connection's end is reported to `peerGone`). The surface binds lazily: a query tries
 again at most every 100 ms on a new connection (`Client::reset`), and a present always
-tries. The bind is sent at once and its reply is collected by a later call when it has
+tries. With guest-owned images a bind sent without a frame (by a query or swapchain
+set-up) is a probe, which the compositor refuses so that the window keeps its picture until
+the application has a frame for it; a present, or the pump with frames waiting, binds with a
+frame, at once and again in the same call when it finds its probe refused
+(`Client::BindPolicy`, [gpu-live.md](../../../../docs/gpu-live.md#window-identity-boundary)). The bind is sent at once and its reply is collected by a later call when it has
 not arrived. With guest-owned images, queries and the first present do not wait for the
 bind. A bounded per-surface pump retains accepted frames and consumes bind, creation,
 mapping and presentation replies independently, including when an application presents
 only once. Private semaphore handoffs consume application waits before present returns.
-A refused bind ends the pending swapchain; subsequent acquisition reports out of date.
+A refused bind ends the pending swapchain; subsequent acquisition reports out of date. A bind
+the phone answered with a failure does not: the pending swapchain's frames wait for its retry,
+through up to 8 failures in a row (about 14 s), and only then end as for a refused bind.
 An outstanding bind or presentation does not postpone guest object destruction. Native
 images, memory, private semaphores, devices and instances are retired only after protocol
 proof; their packets contain no application callbacks or guest pointers. Executor generation

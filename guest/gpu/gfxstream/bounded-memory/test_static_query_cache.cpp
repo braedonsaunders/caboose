@@ -2,9 +2,12 @@
 #include "static_query_cache.h"
 #include <cassert>
 #include <cstdlib>
+#include <cstring>
 #include <chrono>
 #include <dirent.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
+#include <unistd.h>
 using caboose::memory::StaticQueryCache;
 using Cache=StaticQueryCache;
 static std::string file(const std::string& directory,const std::string& identity) {
@@ -208,7 +211,58 @@ int main() {
         assert(!after.lookup(Cache::key(uint32_t(30004),uint64_t(0x53),uint32_t(78)),&out));
         assert(std::chrono::steady_clock::now()-own<std::chrono::milliseconds(100));
     }
+    // A peek never claims: a question peeked and not found holds no other process back, and
+    // an answer another process stored is found.
+    {
+        const auto peeked=[](uint64_t handle){ return Cache::key(uint32_t(30005),handle,uint32_t(1)); };
+        Cache peeker; identify(peeker,0x54,identity,directory);
+        std::string bytes;
+        assert(!peeker.peekBytes(peeked(0x54),&bytes) && peeker.claims()==0);
+        Cache asker; identify(asker,0x55,identity,directory);
+        const auto before=std::chrono::steady_clock::now();
+        Answer none{};
+        assert(!asker.lookup(peeked(0x55),&none));
+        assert(std::chrono::steady_clock::now()-before<std::chrono::milliseconds(100));
+        asker.store(peeked(0x55),Answer{0,{9,0,0,0}});
+        assert(peeker.peekBytes(peeked(0x54),&bytes) && bytes.size()==sizeof(Answer));
+        Answer seen{}; std::memcpy(&seen,bytes.data(),sizeof(seen)); assert(seen.values[0]==9);
+    }
     assert(!unlink(path.c_str()));
+    // The instance scope: answers asked before any physical device (the executor's instance
+    // version) are shared by the session's processes, in a log named apart from the formats
+    // logs a next session's warm-up reads, and never by another session.
+    {
+        const auto version=Cache::key(uint32_t(20137),Cache::kInstanceScope);
+        Cache first; first.connection("protocol",8);
+        assert(!first.identified(Cache::kInstanceScope));
+        first.identify(Cache::kInstanceScope,"instance-identity",directory,first.epoch(),"instance");
+        assert(first.identified(Cache::kInstanceScope));
+        uint32_t answer=0; assert(!first.lookup(version,&answer)); first.store(version,uint32_t(0x403000));
+        char name[48]; std::snprintf(name,sizeof(name),"/instance-%016llx.bin",
+                                     (unsigned long long)Cache::digest("protocolinstance-identity"));
+        assert(!access((directory+name).c_str(),F_OK));
+        Cache later; later.connection("protocol",8);
+        later.identify(Cache::kInstanceScope,"instance-identity",directory,later.epoch(),"instance");
+        assert(later.lookup(version,&answer) && answer==0x403000);
+        Cache another; another.connection("other-session",13);
+        another.identify(Cache::kInstanceScope,"instance-identity",directory,another.epoch(),"instance");
+        assert(!another.lookup(version,&answer));
+        // A new connection forgets the scope until it is identified again.
+        later.connection("protocol",8); assert(!later.identified(Cache::kInstanceScope));
+        assert(!unlink((directory+name).c_str()));
+        std::snprintf(name,sizeof(name),"/instance-%016llx.bin",
+                      (unsigned long long)Cache::digest(std::string("other-session")+"instance-identity"));
+        (void)unlink((directory+name).c_str());
+    }
+    // The default directory: beside the executor socket the process was given.
+    {
+        const std::string socket=directory+"/gpu.sock";
+        setenv("CABOOSE_GFXSTREAM_SOCKET",socket.c_str(),1);
+        assert(Cache::defaultDirectory()==directory+"/capabilities");
+        struct stat info{}; assert(!stat((directory+"/capabilities").c_str(),&info) && (info.st_mode&0777)==0700);
+        unsetenv("CABOOSE_GFXSTREAM_SOCKET");
+        assert(!rmdir((directory+"/capabilities").c_str()));
+    }
     // Symlinked cache files are never read or written.
     assert(!symlink("/dev/null",path.c_str()));
     Cache link; identify(link,0x20,identity,directory); assert(!link.lookup(fresh,&out));
@@ -219,5 +273,5 @@ int main() {
         assert(!unlinkat(dirfd(contents),entry->d_name,0));
     }
     closedir(contents); assert(!rmdir(directory.c_str()));
-    std::puts("static capabilities: exact keys, process reuse, identity/protocol isolation, bounds, locks, append-only writes, single flight and corruption passed");
+    std::puts("static capabilities: exact keys, process reuse, identity/protocol isolation, instance scope, bounds, locks, append-only writes, single flight, peeks and corruption passed");
 }

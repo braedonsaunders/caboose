@@ -1,14 +1,18 @@
 // Copyright 2026 Caboose contributors. SPDX-License-Identifier: Apache-2.0
 #include "process_registry.h"
 #include "completion_feed.h"
+#include "executor_stats.h"
 #include "decode_connection.h"
 #include "frame_buffer.h"
 #include "render_thread_info.h"
 #ifdef CABOOSE_GPU_PRESENTATION_LEASE
 #include "process_registry_presentation.h"
-#include "vk_decoder_global_state.h"
 #include <vector>
 #endif
+#include "vk_decoder_global_state.h"
+#include "caboose_teardown.h"
+#include "caboose_pipeline_lane.h"
+#include "pipeline_report.h"
 #include <atomic>
 #include <condition_variable>
 #include <cstdio>
@@ -37,6 +41,9 @@ struct Process {
     // Completion feedback for this guest process, shared by all its streams.
     std::shared_ptr<caboose::gpuv2::CompletionFeed> completions;
     std::atomic_bool stopped{false};
+    // Set when the process is finished: a completion marker still waited for is handed to the
+    // deferred teardown instead of being waited for.
+    std::shared_ptr<std::atomic_bool> abandonMarkers = std::make_shared<std::atomic_bool>(false);
     std::set<int> sockets;
     std::map<int, std::shared_ptr<caboose::gpuv2::DecodeProgress>> progress;
     int64_t stallReportedMs = 0;  // the stall watchdog's own bookkeeping
@@ -58,6 +65,7 @@ struct caboose_gfx_registry {
     bool watchdogStopping = false;
     std::thread watchdog;
 };
+extern "C" void mvkCabooseGetPipelineArchiveStats(uint64_t* hits, uint64_t* misses) __attribute__((weak));
 namespace {
 constexpr int64_t kStallMs = 3000;
 constexpr int64_t kStallRepeatMs = 30000;
@@ -68,7 +76,16 @@ constexpr int64_t kStallRepeatMs = 30000;
 // decoders are doing, and what each queue last submitted and waits on.
 void watchStalls(caboose_gfx_registry* registry) {
     std::unique_lock<std::mutex> wake(registry->watchdogMutex);
+    caboose::gpuv2::PipelineReport pipelines;  // pipeline_report.h, every ten seconds
     while (!registry->watchdogWake.wait_for(wake, std::chrono::seconds(1), [registry] { return registry->watchdogStopping; })) {
+        {
+            const auto t = caboose::gpuv2::PipelineLane::instance().takeTiming();
+            uint64_t hits = 0, misses = 0;
+            if (mvkCabooseGetPipelineArchiveStats) mvkCabooseGetPipelineArchiveStats(&hits, &misses);
+            pipelines.add({t.laneCompiled, t.laneUs, t.longestUs, t.inPlace, t.inPlaceUs, t.waits, t.waitUs}, hits, misses);
+            const std::string line = pipelines.take(caboose::gpuv2::CompletionFeed::nowMs());
+            if (!line.empty()) std::fputs(line.c_str(), stderr);
+        }
         struct Seen { uint64_t token; std::shared_ptr<Process> process; size_t count; std::string streams; };
         std::vector<Seen> seen;
         {
@@ -174,20 +191,56 @@ extern "C" int caboose_gfx_process_open(caboose_gfx_registry* registry, uint64_t
     try {
         auto process = std::make_shared<Process>();
         process->context = context;
+        auto abandon = process->abandonMarkers;
         process->completions = std::make_shared<caboose::gpuv2::CompletionFeed>(
-            [context](uint64_t boxedQueue) -> caboose::gpuv2::CompletionFeed::Waiter {
+            [context, abandon](uint64_t boxedQueue) -> caboose::gpuv2::CompletionFeed::Waiter {
                 auto* state = gfxstream::host::vk::VkDecoderGlobalState::get();
                 std::unique_ptr<gfxstream::host::vk::CabooseCompletionMarker> marker;
                 if (!state || state->submitCabooseCompletionMarker(context,
                         (VkQueue)(uintptr_t)boxedQueue, &marker) != VK_SUCCESS)
                     return {};
                 std::shared_ptr<gfxstream::host::vk::CabooseCompletionMarker> held(std::move(marker));
-                return [held]() -> int32_t {
-                    VkResult result = held->vk->vkWaitForFences(held->device, 1, &held->fence,
-                                                                VK_TRUE, UINT64_MAX);
-                    held->vk->vkDestroyFence(held->device, held->fence, nullptr);
-                    held->fence = VK_NULL_HANDLE;
-                    return result;
+                // Counted from submission until the watch ends, however it ends (executor stats).
+                struct Watched {
+                    uint64_t since = caboose::gpuv2::stats::noteSubmitted();
+                    std::atomic_bool ended{false};
+                    void end(bool done) { if (!ended.exchange(true)) caboose::gpuv2::stats::noteCompleted(since, done); }
+                    ~Watched() { end(false); }
+                };
+                auto watched = std::make_shared<Watched>();
+                return [held, abandon, context, state, watched](const caboose::gpuv2::CompletionFeed::AfterFence& afterFence) -> int32_t {
+                    // Waited in slices: once the process is finished, a marker whose work has
+                    // not completed is handed (with its fence and device lease) to the deferred
+                    // teardown, which frees it when the GPU is done, and the feed goes on.
+                    for (;;) {
+                        VkResult result = held->vk->vkWaitForFences(held->device, 1, &held->fence,
+                                                                    VK_TRUE, 100'000'000ull);
+                        if (result != VK_TIMEOUT) {
+                            watched->end(result == VK_SUCCESS);
+                            // Captures (WATCH2) are taken while the marker still holds the device.
+                            if (result == VK_SUCCESS) {
+                                afterFence([&](const caboose::gpuv2::CompletionFeed::Capture& c, unsigned char* out) -> int32_t {
+                                    if (c.kind == caboose::gpuv2::CompletionFeed::kCaptureQueries)
+                                        return state->captureCabooseQueries(*held, c.handle, (uint32_t)c.a, (uint32_t)c.b, out);
+                                    return state->captureCabooseMemory(*held, c.handle, c.a, c.b, out);
+                                });
+                            }
+                            held->vk->vkDestroyFence(held->device, held->fence, nullptr);
+                            held->fence = VK_NULL_HANDLE;
+                            return result;
+                        }
+                        if (!abandon->load()) continue;
+                        char what[96];
+                        std::snprintf(what, sizeof(what), "context=%u completion-marker", context);
+                        caboose::gpuv2::Teardown::instance().defer(
+                            what,
+                            [held] { return held->vk->vkGetFenceStatus(held->device, held->fence) != VK_NOT_READY; },
+                            [held] {
+                                held->vk->vkDestroyFence(held->device, held->fence, nullptr);
+                                held->fence = VK_NULL_HANDLE;
+                            });
+                        return VK_ERROR_DEVICE_LOST;
+                    }
                 };
             });
         auto [it, inserted] = registry->processes.emplace(puid, process);
@@ -328,6 +381,10 @@ extern "C" int caboose_gfx_process_stop(caboose_gfx_registry* registry, uint64_t
     auto& process = *it->second;
     if (process.stopped.exchange(true)) return 0;
     if (process.completions) process.completions->cancelOrders();
+    // Nothing of the process will signal what its GPU work waits on the host for: release it,
+    // so that work, the presents behind it and the process's teardown are not held.
+    if (auto* state = gfxstream::host::vk::VkDecoderGlobalState::get())
+        state->releaseCabooseProcessWaits(process.context);
     FrameBuffer::getFB()->signalGuestProcessDead(process.context);
     for (int fd : process.sockets) shutdown(fd, SHUT_RDWR);
     // A decoder that has not returned 5 s after its stop holds the process's cleanup, and the
@@ -360,6 +417,10 @@ extern "C" int caboose_gfx_process_wait_order(caboose_gfx_registry* registry, ui
     return completions ? completions->waitOrdered(serial) : ENOTSUP;
 }
 extern "C" int caboose_gfx_process_finish(caboose_gfx_registry* registry, uint64_t puid) {
+    return caboose_gfx_process_finish_context(registry, puid, nullptr);
+}
+extern "C" int caboose_gfx_process_finish_context(caboose_gfx_registry* registry, uint64_t puid,
+                                                  uint32_t* context) {
     if (!registry) return EINVAL;
     std::unique_lock<std::mutex> lock(registry->mutex);
     auto it = registry->processes.find(puid);
@@ -368,11 +429,33 @@ extern "C" int caboose_gfx_process_finish(caboose_gfx_registry* registry, uint64
     // Upstream retains the resources in its asynchronous cleanup closure. IDs
     // are not reused while that cleanup may still be running.
     auto completions = std::move(it->second->completions);
+    it->second->abandonMarkers->store(true);
+    if (context) *context = it->second->context;
     registry->processes.erase(it);
     lock.unlock();
     // Outstanding completion markers each hold their device; they finish with the GPU.
     completions.reset();
     return 0;
+}
+extern "C" void caboose_gfx_registry_report(caboose_gfx_registry* registry) {
+    if (!registry) return;
+    std::string out;
+    {
+        std::lock_guard<std::mutex> lock(registry->mutex);
+        for (const auto& [token, process] : registry->processes) {
+            std::string streams;
+            for (const auto& [fd, p] : process->progress)
+                streams += " fd" + std::to_string(fd) + ":op" + std::to_string(p->opcode.load()) +
+                           "/stage" + std::to_string(p->stage.load());
+            char line[160];
+            std::snprintf(line, sizeof(line), "CABOOSE_GPU_TEARDOWN_PROCESS token=%llu context=%u stopped=%d streams=%zu",
+                          (unsigned long long)token, process->context, process->stopped.load() ? 1 : 0,
+                          process->sockets.size());
+            out += line + streams + "\n";
+        }
+    }
+    if (auto* state = gfxstream::host::vk::VkDecoderGlobalState::get()) out += state->describeCabooseTeardown();
+    std::fputs(out.c_str(), stderr);
 }
 #ifdef CABOOSE_GPU_MEMORY_AUDIT
 extern "C" int caboose_gfx_process_memory_receipts(caboose_gfx_registry* registry, uint64_t token,

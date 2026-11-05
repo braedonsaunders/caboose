@@ -34,7 +34,7 @@ class Releases(unittest.TestCase):
         release.KEY, public = keypair(self.tmp.name, "release")
         os.environ["CABOOSE_RELEASE_PUB"] = str(public)
         release.CHECK_CONF = Path(self.tmp.name) / "check.conf"
-        release.CHECK_CONF.write_text("repo=/r\nimage=caboose-computer:x\nwork=/w\n# a comment\nsync_check=/s\ncapability_probe=/c\n")
+        release.CHECK_CONF.write_text("repo=/r\nimage=caboose-computer:x\nwork=/w\n# a comment\nsync_check=/s\ncapability_probe=/c\ndxvk_computer=/k\ndxvk_bench=/b\nchaos_home=/h\n")
         self.checked = []
         release.run_check = self.passing_check
 
@@ -66,12 +66,29 @@ class Releases(unittest.TestCase):
         with self.assertRaises(release.Failure):
             release.verify(directory)
 
+    def test_add_tree_adds_every_file_at_its_path_with_its_mode(self):
+        root = Path(self.tmp.name) / "staged"
+        (root / "usr/local/lib/caboose-gpu-live/i386").mkdir(parents=True)
+        (root / "usr/local/lib/caboose-gpu-live/i386/libvulkan_gfxstream.so").write_bytes(b"i386")
+        (root / "usr/local/lib/caboose-gpu-live/i386/libvulkan_gfxstream.so").chmod(0o755)
+        (root / "usr/local/lib/caboose-gpu-live/icd.json").write_text("{}")
+        (root / "usr/local/lib/caboose-gpu-live/icd.json").chmod(0o644)
+        release.main(["new", "r1"])
+        release.main(["add-tree", "r1", str(root)])
+        files = release.ROOT / "r1/files/usr/local/lib/caboose-gpu-live"
+        self.assertEqual((files / "i386/libvulkan_gfxstream.so").read_bytes(), b"i386")
+        self.assertEqual((files / "i386/libvulkan_gfxstream.so").stat().st_mode & 0o7777, 0o755)
+        self.assertEqual((files / "icd.json").stat().st_mode & 0o7777, 0o644)
+        (root / "link").symlink_to("usr")
+        with self.assertRaises(release.Failure):
+            release.main(["add-tree", "r1", str(root)])
+
     def test_sealing_runs_the_executor_check_and_keeps_its_result(self):
         release.main(["new", "r1"])
         release.main(["add", "r1", str(self.source), "/" + release.DRIVER, "755"])
         release.main(["seal", "r1", "first"])
         directory = release.ROOT / "r1"
-        self.assertEqual(self.checked, [("r1", {"repo": "/r", "image": "caboose-computer:x", "work": "/w", "sync_check": "/s", "capability_probe": "/c"})])
+        self.assertEqual(self.checked, [("r1", {"repo": "/r", "image": "caboose-computer:x", "work": "/w", "sync_check": "/s", "capability_probe": "/c", "dxvk_computer": "/k", "dxvk_bench": "/b", "chaos_home": "/h"})])
         self.assertEqual((directory / "check/result").read_text(), "PASS\nPASS sync-check: 12 cases\nPASS vkcube: frames=300\n")
         manifest = (directory / "MANIFEST").read_text()
         self.assertIn("check/result", manifest)
@@ -133,6 +150,80 @@ class Releases(unittest.TestCase):
                                                        "sync_check":"s","capability_probe":"c"})
         self.assertEqual(status,4)
         self.assertIn("FAIL packaged cache",summary)
+
+    def test_a_device_dxvk_cannot_use_fails_the_seal_check(self):
+        release.main(["new", "r1"])
+        release.main(["add", "r1", str(self.source), "/" + release.DRIVER, "755"])
+        repo = Path(self.tmp.name) / "repo"
+        for name, body in ((release.CHECK_SCRIPT, 'echo "PASS executor"'),
+                           ("guest/release/check-packaged.sh", 'echo "PASS packaged"'),
+                           ("apps/ios/GPUStream/gfxstream/linux-executor/check-capabilities.sh", 'echo "PASS cache"'),
+                           ("apps/ios/GPUStream/gfxstream/linux-executor/check-dxvk.sh",
+                            'echo "args $1 $2 $3 $4"; echo "FAIL: phone: DXVK skipped the device"; exit 1')):
+            script = repo / name; script.parent.mkdir(parents=True, exist_ok=True); script.write_text(body)
+        status, summary = RUN_CHECK(release.ROOT / "r1", {"repo": str(repo), "image": "i", "work": "w", "sync_check": "s",
+                                                          "capability_probe": "c", "dxvk_computer": "k", "dxvk_bench": "b"})
+        self.assertEqual(status, 1)
+        self.assertIn(f"args k w {release.ROOT / 'r1' / 'files' / release.DRIVER} b", summary)
+        self.assertIn("DXVK skipped the device", summary)
+
+    def test_a_stale_readback_under_the_dxvk_stress_fails_the_seal_check(self):
+        release.main(["new", "r1"])
+        release.main(["add", "r1", str(self.source), "/" + release.DRIVER, "755"])
+        repo = Path(self.tmp.name) / "repo"
+        for name, body in ((release.CHECK_SCRIPT, 'echo "PASS executor"'),
+                           ("guest/release/check-packaged.sh", 'echo "PASS packaged"'),
+                           ("apps/ios/GPUStream/gfxstream/linux-executor/check-capabilities.sh", 'echo "PASS cache"'),
+                           ("apps/ios/GPUStream/gfxstream/linux-executor/check-dxvk.sh",
+                            '[ -z "${APP:-}" ] && { echo "PASS DXVK"; exit 0; }\n'
+                            'echo "app $APP $APP_ARGS $APP_EXPECT $CASES $5"; echo "FAIL: phone: FAIL readback frame 3"; exit 1')):
+            script = repo / name; script.parent.mkdir(parents=True, exist_ok=True); script.write_text(body)
+        status, summary = RUN_CHECK(release.ROOT / "r1", {"repo": str(repo), "image": "i", "work": "w", "sync_check": "s",
+                                                          "capability_probe": "c", "dxvk_computer": "k", "dxvk_bench": "b",
+                                                          "dxvk_stress": "40 4 50"})
+        self.assertEqual(status, 1)
+        self.assertIn("PASS DXVK", summary)
+        self.assertIn(f"app d3d11_stress.exe 40 4 50 frames= phone {release.ROOT / 'r1' / 'check' / 'dxvk-stress'}", summary)
+        self.assertIn("FAIL readback frame 3", summary)
+
+    def test_a_driver_that_presents_noise_after_a_loss_fails_the_seal_check(self):
+        release.main(["new", "r1"])
+        release.main(["add", "r1", str(self.source), "/" + release.DRIVER, "755"])
+        repo = Path(self.tmp.name) / "repo"
+        for name, body in ((release.CHECK_SCRIPT, 'echo "PASS executor"'),
+                           ("guest/release/check-packaged.sh", 'echo "PASS packaged"'),
+                           ("apps/ios/GPUStream/gfxstream/linux-executor/check-capabilities.sh", 'echo "PASS cache"'),
+                           ("apps/ios/GPUStream/gfxstream/linux-executor/check-dxvk.sh", 'echo "PASS DXVK"'),
+                           ("apps/ios/GPUStream/gfxstream/linux-executor/check-loss-pixels.sh",
+                            'echo "args $1 $2 $3"; echo "FAIL: a fresh Chromium drew no real picture"; exit 1')):
+            script = repo / name; script.parent.mkdir(parents=True, exist_ok=True); script.write_text(body)
+        status, summary = RUN_CHECK(release.ROOT / "r1", {"repo": str(repo), "image": "i", "work": "w", "sync_check": "s",
+                                                          "capability_probe": "c", "dxvk_computer": "k", "dxvk_bench": "b"})
+        self.assertEqual(status, 1)
+        self.assertIn("PASS DXVK", summary)
+        self.assertIn(f"args k w {release.ROOT / 'r1' / 'files' / release.DRIVER}", summary)
+        self.assertIn("a fresh Chromium drew no real picture", summary)
+
+    def test_a_release_whose_apps_stop_drawing_after_a_loss_fails_the_seal_check(self):
+        release.main(["new", "r1"])
+        release.main(["add", "r1", str(self.source), "/" + release.DRIVER, "755"])
+        repo = Path(self.tmp.name) / "repo"
+        for name, body in ((release.CHECK_SCRIPT, 'echo "PASS executor"'),
+                           ("guest/release/check-packaged.sh", 'echo "PASS packaged"'),
+                           ("apps/ios/GPUStream/gfxstream/linux-executor/check-capabilities.sh", 'echo "PASS cache"'),
+                           ("apps/ios/GPUStream/gfxstream/linux-executor/check-dxvk.sh", 'echo "PASS DXVK"'),
+                           ("apps/ios/GPUStream/gfxstream/linux-executor/check-loss-pixels.sh", 'echo "PASS loss pixels"'),
+                           ("apps/ios/GPUStream/gfxstream/linux-executor/check_chaos.py",
+                            'import sys\nprint("args", *sys.argv[1:5])\nprint("PASS cycle 1/50 kill")\n'
+                            'print("FAIL cycle 2/50 drop: no real picture from steam")\nsys.exit(1)\n')):
+            script = repo / name; script.parent.mkdir(parents=True, exist_ok=True); script.write_text(body)
+        status, summary = RUN_CHECK(release.ROOT / "r1", {"repo": str(repo), "image": "i", "work": "w", "sync_check": "s",
+                                                          "capability_probe": "c", "dxvk_computer": "k", "dxvk_bench": "b",
+                                                          "chaos_home": "h"})
+        self.assertEqual(status, 1)
+        self.assertIn(f"args k w {release.ROOT / 'r1'}", summary)
+        self.assertNotIn("PASS cycle", summary)
+        self.assertIn("FAIL cycle 2/50 drop", summary)
 
     def test_a_sealed_release_is_final_and_a_new_one_starts_from_it(self):
         release.main(["new", "r1"])

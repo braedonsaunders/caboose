@@ -3,6 +3,7 @@
 
 usage: caboose-release new ID [--from ID]          start a release, a copy of another
        caboose-release add ID SOURCE PATH [MODE]   a file installed at PATH (octal MODE)
+       caboose-release add-tree ID ROOT            every file under ROOT, at its path below ROOT, with its mode
        caboose-release capture ID COMPUTER PATH... files as COMPUTER has them now
        caboose-release deb ID DEB                  a package installed with dpkg
        caboose-release remove ID PATH              a path deleted on install
@@ -42,7 +43,7 @@ CHECK_CONF = Path(os.environ.get("CABOOSE_RELEASE_CHECK", "/root/.config/caboose
 # The release's 64-bit guest driver, which the check runs.
 DRIVER = "usr/local/lib/caboose-gpu-live/libvulkan_gfxstream.so"
 CHECK_SCRIPT = "apps/ios/GPUStream/gfxstream/linux-executor/check.sh"
-CHECK_KEYS = ("repo", "image", "work", "sync_check", "capability_probe")
+CHECK_KEYS = ("repo", "image", "work", "sync_check", "capability_probe", "dxvk_computer", "dxvk_bench", "chaos_home")
 
 
 class Failure(Exception):
@@ -170,7 +171,52 @@ def run_check(directory, settings):
         "sh", str(Path(settings["repo"]) / "apps/ios/GPUStream/gfxstream/linux-executor/check-capabilities.sh"),
         settings["image"], settings["work"], str(driver), settings["capability_probe"],
         str(out / "capabilities"), str(directory)], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-    return capabilities.returncode, summary + capabilities.stdout.decode(errors="replace")
+    summary += capabilities.stdout.decode(errors="replace")
+    if capabilities.returncode:
+        return capabilities.returncode, summary
+    # DXVK must find an adapter and present on the executor with the release's driver under
+    # each negotiation a phone makes: a device that lacks a feature DXVK requires fails here.
+    dxvk = subprocess.run([
+        "sh", str(Path(settings["repo"]) / "apps/ios/GPUStream/gfxstream/linux-executor/check-dxvk.sh"),
+        settings["dxvk_computer"], settings["work"], str(driver), settings["dxvk_bench"], str(out / "dxvk")],
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    summary += dxvk.stdout.decode(errors="replace")
+    if dxvk.returncode:
+        return dxvk.returncode, summary
+    # With dxvk_stress (the stress program's arguments: SECONDS THREADS DRAWS), the multi-threaded
+    # D3D11 load in the bench (d3d11_stress.exe) runs under the phone's negotiation too: every
+    # staging readback it checks must hold the GPU's bytes (no FAIL line) and it must report frames.
+    if settings.get("dxvk_stress"):
+        stress = subprocess.run([
+            "sh", str(Path(settings["repo"]) / "apps/ios/GPUStream/gfxstream/linux-executor/check-dxvk.sh"),
+            settings["dxvk_computer"], settings["work"], str(driver), settings["dxvk_bench"], str(out / "dxvk-stress")],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            env={**os.environ, "APP": "d3d11_stress.exe", "APP_ARGS": settings["dxvk_stress"],
+                 "APP_EXPECT": "frames=", "CASES": "phone"})
+        summary += stress.stdout.decode(errors="replace")
+        if stress.returncode:
+            return stress.returncode, summary
+    # Chromium must draw real pictures (not noise, not blank) through a seat of the check's own
+    # in the same computer, and a fresh Chromium again after the seat's executor was replaced.
+    pixels = subprocess.run([
+        "sh", str(Path(settings["repo"]) / "apps/ios/GPUStream/gfxstream/linux-executor/check-loss-pixels.sh"),
+        settings["dxvk_computer"], settings["work"], str(driver), str(out / "loss-pixels")],
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    summary += pixels.stdout.decode(errors="replace")
+    if pixels.returncode:
+        return pixels.returncode, summary
+    # Fifty random executor losses, replacements, stalls and viewer reconnects through a seat
+    # running the release's compositor, broker and driver: every app must present real
+    # pictures after each.
+    home = settings["chaos_home"]
+    chaos = subprocess.run([
+        "python3", str(Path(settings["repo"]) / "apps/ios/GPUStream/gfxstream/linux-executor/check_chaos.py"),
+        settings["dxvk_computer"], settings["work"], str(directory), str(out / "chaos"), "--cycles", "50",
+        "--steam-home", home, "--triangle", f"{home}/.var/app/com.valvesoftware.Steam/caboose-bench/triangle.exe"],
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    summary += "\n".join(line for line in chaos.stdout.decode(errors="replace").splitlines()
+                         if not line.startswith("PASS cycle")) + "\n"
+    return chaos.returncode, summary
 
 
 def check(directory, run=None):
@@ -370,6 +416,17 @@ def main(argv):
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(args[1], target)
         target.chmod(int(args[3], 8) if len(args) == 4 else 0o644)
+    elif command == "add-tree" and len(args) == 2:
+        directory, root = writable(args[0]), Path(args[1])
+        if not root.is_dir():
+            raise Failure(f"not a directory: {root}")
+        for source in sorted(p for p in root.rglob("*") if p.is_file() or p.is_symlink()):
+            if source.is_symlink() or not source.is_file():
+                raise Failure(f"{source}: a release carries regular files only")
+            target = placed(directory, "/" + str(source.relative_to(root)))
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, target)
+            target.chmod(source.stat().st_mode & 0o7777)
     elif command == "capture" and len(args) >= 3:
         directory = writable(args[0])
         for path in args[2:]:

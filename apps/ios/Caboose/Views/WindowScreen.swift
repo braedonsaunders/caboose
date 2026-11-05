@@ -85,6 +85,7 @@ struct WindowScreen: View {
             .statusBarHidden(!chromeVisible || laptopActive)
             .persistentSystemOverlays(chromeVisible && !laptopActive ? .automatic : .hidden)
         }
+        .overlay(alignment: .topTrailing) { FrameRateOverlay(windowID: model.presentedWindowID) }
         .onAppear { chromeVisible = !model.windowCardBorderless }
         .coordinateSpace(name: "window-controls")
         .background {

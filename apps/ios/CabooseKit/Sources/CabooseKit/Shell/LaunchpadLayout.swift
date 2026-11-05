@@ -20,7 +20,7 @@ public struct LaunchpadLayout: Equatable, Sendable {
         columns = min(7, max(2, Int((width + spacing) / (150 * ui + spacing))))
         column = max(1, min(150 * ui, (width - spacing * CGFloat(columns - 1)) / CGFloat(columns)))
         icon = min(84 * ui, column * 0.78)
-        top = 60 * ui
+        top = 84 * ui
         let rowHeight = icon + 8 * ui + 20 * ui + spacing
         rows = max(1, Int((size.height - top - dockHeight - 84 * ui) / rowHeight))
     }

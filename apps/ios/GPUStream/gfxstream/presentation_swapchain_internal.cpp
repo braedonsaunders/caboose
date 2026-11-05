@@ -1,6 +1,7 @@
 // Copyright 2026 Caboose contributors. SPDX-License-Identifier: Apache-2.0
 #include "presentation_swapchain_internal.h"
 #include "metal_surface_internal.h"
+#include "presentation_driver_lock.h"
 #include "vk_decoder_global_state.h"
 #include <algorithm>
 #include <cerrno>
@@ -36,6 +37,7 @@ VkResult createPresentationSwapchain(gfxstream::host::vk::CaboosePresentationDev
         get(device.instance, "vkGetPhysicalDeviceFormatProperties"));
     if (!support || !capabilities || !formats || !modes || !families || !formatProperties)
         return VK_ERROR_EXTENSION_NOT_PRESENT;
+    DriverLock driver;
     try {
         VkFormatProperties props{};
         formatProperties(device.physicalDevice, format, &props);

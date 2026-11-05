@@ -36,3 +36,8 @@ loader injection and MoltenVK entrypoints so the final link must resolve them. N
 stub window, replacement decoder or fake GPU implementation is linked. The arm64 iOS 26 link succeeds with the pinned fork commit and MoltenVK archive. It
 does not execute Vulkan, validate shaders on a device, or prove decoder runtime
 correctness.
+
+The native runtime disables the optional persistent Metal binary archive by default
+because its lookup path can crash the iOS GPU driver. Shader and Vulkan pipeline
+caches remain enabled. A diagnostic launch can set `CABOOSE_METAL_BINARY_ARCHIVE=1`
+to exercise that path; `CABOOSE_METAL_BINARY_ARCHIVE enabled=0|1` records the choice.

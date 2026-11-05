@@ -9,6 +9,9 @@
 #include <memory>
 #include <mutex>
 #include <thread>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
 
 namespace caboose::gpuv2 {
 
@@ -16,7 +19,9 @@ namespace caboose::gpuv2 {
 //
 // COMPLETION_WATCH(queue, serial) arrives on a device stream right after a queue
 // submission. The watch submits a marker behind that submission and returns without
-// waiting; a watcher thread waits for markers in order and queues one record per watch.
+// waiting. Each queue has its own watcher lane, which waits for that queue's markers in
+// order and queues one record per watch the moment its marker completes, so a queue with
+// long work never holds back the records of another queue.
 // COMPLETION_FEED turns another stream of the same process into the writer of those
 // records. Records queued before the feed stream attaches are kept for it.
 class CompletionFeed {
@@ -24,37 +29,69 @@ public:
     static constexpr uint32_t kFeedOpcode = 0x4342FE01;
     static constexpr uint32_t kWatchOpcode = 0x4342FE02;
     static constexpr uint32_t kOrderOpcode = 0x4342FE03;
+    static constexpr uint32_t kWaitSerialOpcode = 0x4342FE04;
+    static constexpr uint32_t kWatch2Opcode = 0x4342FE05;
     static constexpr uint32_t kFeedVersion = 1;
     static constexpr uint32_t kFeedPacketSize = 16;
     static constexpr uint32_t kWatchPacketSize = 24;
     static constexpr uint32_t kOrderPacketSize = 16;
+    static constexpr uint32_t kWaitSerialPacketSize = 16;
+    // WATCH2: a 32-byte header, then up to kMaxCaptures 32-byte capture entries.
+    static constexpr uint32_t kWatch2HeaderSize = 32;
+    static constexpr uint32_t kCaptureEntrySize = 32;
+    static constexpr uint32_t kMaxCaptures = 256;
+    static constexpr uint32_t kCaptureQueries = 1, kCaptureMemory = 2;
+    // A record's payload is at most this; a larger one is sent empty (the guest asks instead).
+    static constexpr size_t kMaxPayload = 1024 * 1024;
+    // Payload bytes queued for the feed and not yet written; past it payloads are sent empty.
+    static constexpr size_t kMaxUnwrittenPayload = 16 * 1024 * 1024;
+    // A silent command's failure (silent-success replies): serial 0 and this status, with
+    // the opcode and result as its 8-byte payload.
+    static constexpr int32_t kFault = 0x7FFF0001;
     static constexpr size_t kRecordSize = 16;
     static constexpr int32_t kCompleted = 0;
     static constexpr int32_t kDeviceLost = -4;
     static constexpr int32_t kUnwatched = 1;
     // Outstanding watches a process may have; beyond it a watch is reported unwatched.
     static constexpr size_t kMaxOutstanding = 4096;
+    // Watcher lanes (threads) a process may have. A marker of a queue past this joins the
+    // lane with the fewest markers.
+    static constexpr size_t kMaxLanes = 8;
 
     static bool isFeedOpcode(uint32_t opcode) {
-        return opcode == kFeedOpcode || opcode == kWatchOpcode || opcode == kOrderOpcode;
+        return opcode == kFeedOpcode || opcode == kWatchOpcode || opcode == kOrderOpcode ||
+               opcode == kWaitSerialOpcode || opcode == kWatch2Opcode;
     }
     static size_t packetSize(uint32_t opcode) {
-        return opcode == kFeedOpcode ? kFeedPacketSize : opcode == kWatchOpcode ? kWatchPacketSize : kOrderPacketSize;
+        return opcode == kFeedOpcode ? kFeedPacketSize : opcode == kWatchOpcode ? kWatchPacketSize
+             : opcode == kWaitSerialOpcode ? kWaitSerialPacketSize : kOrderPacketSize;
     }
 
     // The marker backend: submits a marker behind `boxedQueue`'s work and returns a waiter
     // that blocks until it completes (returning the VkResult) and then releases it, or an
     // empty function when the queue cannot be watched.
-    using Waiter = std::function<int32_t()>;
+    //
+    // With captures (WATCH2), once the marker completes and before the waiter releases the
+    // device, it calls `afterFence` with a Capturer: it writes one capture's data (the query
+    // values with availability, or the memory bytes) to `out` and returns its VkResult.
+    struct Capture { uint32_t kind = 0; uint64_t handle = 0, a = 0, b = 0; };
+    using Capturer = std::function<int32_t(const Capture&, unsigned char* out)>;
+    using AfterFence = std::function<void(const Capturer&)>;
+    using Waiter = std::function<int32_t(const AfterFence& afterFence)>;
     using Submit = std::function<Waiter(uint64_t boxedQueue)>;
+    // A capture's data bytes: 16 per query (value, availability), or the memory range.
+    static size_t captureBytes(const Capture& c) { return c.kind == kCaptureQueries ? c.b * 16 : c.b; }
 
     explicit CompletionFeed(Submit submit);
     ~CompletionFeed();
     CompletionFeed(const CompletionFeed&) = delete;
     CompletionFeed& operator=(const CompletionFeed&) = delete;
 
-    // From a device stream. Never waits for the GPU.
-    void watch(uint64_t boxedQueue, uint64_t serial);
+    // From a device stream. Never waits for the GPU. Captures (WATCH2) are taken after the
+    // marker completes and carried in the record's payload.
+    void watch(uint64_t boxedQueue, uint64_t serial, std::vector<Capture> captures = {});
+    // A command whose reply is silent failed: a FAULT record for the guest.
+    void fault(uint32_t opcode, int32_t result);
     // From a device stream: every command before this ORDER mark has been decoded.
     void ordered(uint64_t serial);
     // Blocks until the ORDER mark `serial` (or a later one) has been decoded: 0, or
@@ -62,11 +99,18 @@ public:
     int waitOrdered(uint64_t serial);
     // Wakes every order wait with ECANCELED and refuses later ones (process stop).
     void cancelOrders();
+    // WAIT_SERIAL: blocks until the watch `serial` is resolved (its marker completed, its
+    // device was lost, or its queue cannot be watched): 0; ECANCELED once the process stops;
+    // EPROTO for a serial above the process's last watch. A device stream decodes nothing after
+    // the barrier until it returns, so the GPU work the barrier names comes before it there.
+    int waitSerial(uint64_t serial);
+    // Whether the watch `serial` has been made and resolved.
+    bool serialResolved(uint64_t serial);
     // Runs the feed on `fd` until the guest closes it (0), `stop` is set or the socket is
     // shut down (0), or an error (errno). A later feed stream takes over from an earlier one.
     int run(int fd, const std::atomic_bool& stop);
-    // Ends the watcher once outstanding markers complete; called before destruction and
-    // on process stop. Records after this are dropped.
+    // Ends the watcher lanes once outstanding markers complete; called before destruction
+    // and on process stop. Records after this are dropped.
     void close();
 
     // Where completion stands, for a stalled-completion report (process_registry): the oldest
@@ -75,6 +119,7 @@ public:
     struct State {
         uint64_t watches = 0, unwatched = 0;
         size_t outstanding = 0;
+        size_t lanes = 0;
         uint64_t oldestSerial = 0, oldestQueue = 0;
         int64_t oldestWatchedMs = 0;
         uint64_t lastCompletedSerial = 0;
@@ -91,33 +136,60 @@ public:
 
     // Parses a complete WATCH packet; false if malformed.
     static bool parseWatch(const unsigned char* packet, size_t size, uint64_t* queue, uint64_t* serial);
+    // Parses a complete WATCH2 packet; false if malformed. `size` is the packet's declared size.
+    static bool parseWatch2(const unsigned char* packet, size_t size, uint64_t* queue, uint64_t* serial,
+                            std::vector<Capture>* captures);
+    // A WATCH2 packet's size from its first 24 bytes (0 when its count is out of bounds).
+    static size_t watch2Size(const unsigned char* header24);
+    // Parses a complete WAIT_SERIAL packet; false if malformed.
+    static bool parseWaitSerial(const unsigned char* packet, size_t size, uint64_t* serial);
     // Parses a complete ORDER packet; false if malformed.
     static bool parseOrder(const unsigned char* packet, size_t size, uint64_t* serial);
     // Parses a complete FEED packet; false if malformed or an unknown version.
     static bool parseFeed(const unsigned char* packet, size_t size);
 
 private:
-    struct Pending { uint64_t serial = 0; Waiter wait; uint64_t queue = 0; int64_t watchedMs = 0; };
-    struct Record { uint64_t serial; int32_t status; };
-    void watcherLoop();
-    void push(uint64_t serial, int32_t status);
+    struct Pending {
+        uint64_t serial = 0; Waiter wait; uint64_t queue = 0; int64_t watchedMs = 0;
+        std::vector<Capture> captures;
+    };
+    struct Record { uint64_t serial; int32_t status; std::vector<unsigned char> payload; };
+    // The payload of a completed watch with captures, or empty when over the bounds.
+    std::vector<unsigned char> takeCaptures(const std::vector<Capture>& captures, const Capturer& capturer);
+    // One watcher thread and the markers it waits for, in submission order.
+    struct Lane {
+        std::condition_variable changed;
+        std::deque<Pending> markers;
+        Pending waiting;  // the marker the lane waits for (no waiter), serial 0 when none
+        std::thread thread;
+    };
+    Lane& laneForLocked(uint64_t queue);
+    void watcherLoop(Lane& lane);
+    void push(uint64_t serial, int32_t status, std::vector<unsigned char> payload = {});
+    void resolvedLocked(uint64_t serial);  // a watch has its outcome (under mutex_)
 
     Submit submit_;
     std::mutex mutex_;
-    std::condition_variable markersChanged_;
-    std::deque<Pending> markers_;
+    std::vector<std::unique_ptr<Lane>> lanes_;
+    std::unordered_map<uint64_t, size_t> laneOfQueue_;  // queues with a lane of their own
+    size_t outstanding_ = 0;  // markers queued or waited for, over every lane
+    // Watches made and not yet resolved, and the highest serial watched: what WAIT_SERIAL
+    // waits on. Bounded by the outstanding watches (kMaxOutstanding).
+    std::unordered_set<uint64_t> unresolved_;
+    uint64_t lastWatched_ = 0;
+    std::condition_variable serialsChanged_;
+    bool serialsCancelled_ = false;
     std::deque<Record> records_;
+    size_t unwrittenPayload_ = 0;
     int wake_[2] = {-1, -1};
     uint64_t generation_ = 0;  // the current feed stream's run; earlier ones return
     bool detached_ = false;
     bool closing_ = false;
     bool attached_ = false;
-    Pending waiting_;  // the marker the watcher waits for (no waiter), serial 0 when none
     uint64_t watches_ = 0, unwatched_ = 0;
     uint64_t lastCompletedSerial_ = 0, lastWrittenSerial_ = 0;
     int32_t lastStatus_ = 0;
     int64_t lastCompletedMs_ = 0, lastWrittenMs_ = 0;
-    std::thread watcher_;
     std::mutex orderMutex_;
     std::condition_variable orderChanged_;
     uint64_t ordered_ = 0;

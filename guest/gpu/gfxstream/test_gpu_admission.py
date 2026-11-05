@@ -24,8 +24,19 @@ class AdmissionTests(unittest.TestCase):
         self.assertEqual(admission.features(request(
             extra=b'X-Caboose-GPU-Features: guest-handles,guest-handle-arrays,completion-feed,ordered-present\r\n')),
             frozenset({'guest-handles', 'guest-handle-arrays', 'completion-feed', 'ordered-present'}))
+        self.assertEqual(admission.features(request(extra=b'X-Caboose-GPU-Features: silent-success,one-way-start\r\n')),
+                         frozenset({'silent-success', 'one-way-start'}))
         self.assertEqual(admission.features(request()), frozenset())
         self.assertEqual(admission.features(request(extra=b'X-Caboose-GPU-Features: \xff\r\n')), frozenset())
+
+    def test_declared_features_are_every_well_formed_name_or_none(self):
+        self.assertIsNone(admission.declared(request(extra=b'X-Caboose-GPU-Features: guest-handles\r\n')))
+        self.assertEqual(admission.declared(request(extra=b'X-Caboose-GPU-Declared: Guest-Handles, future-thing, bad name\r\n')),
+                         frozenset({'guest-handles', 'future-thing'}))
+        self.assertIsNone(admission.declared(request(extra=b'X-Caboose-GPU-Declared: \xff\r\n')))
+        self.assertEqual(admission.forwarded(request(extra=b'X-Caboose-GPU-Features: guest-handles,future-thing\r\n')),
+                         frozenset({'guest-handles', 'future-thing'}))
+        self.assertEqual(admission.forwarded(request()), frozenset())
 
     def test_unauthenticated_identity_not_interpreted(self):
         with mock.patch.object(admission.uuid, 'UUID', side_effect=AssertionError('identity consulted')):

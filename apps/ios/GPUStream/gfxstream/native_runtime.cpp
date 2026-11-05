@@ -7,6 +7,8 @@
 #include "memory_audit.h"
 #endif
 #include "executor_gate.h"
+#include "executor_stats.h"
+#include "memory_budget.h"
 #include "headless_framebuffer.h"
 #include "process_registry.h"
 #include "frame_buffer.h"
@@ -16,12 +18,16 @@
 #include <chrono>
 #include <cerrno>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <cstdint>
 #include <limits>
 #include <mutex>
 #include <string>
 
 namespace {
+// How long finish waits for its process's cleanup before letting it go on alone.
+constexpr uint32_t kFinishCleanupWaitMs = 4000;
 std::mutex mutex;
 bool attempted = false;
 bool installedVirtualWsi = false;
@@ -77,8 +83,9 @@ static int startRuntime(PFN_vkGetInstanceProcAddr get, caboose_gpu_resolve_expor
 #endif
     features.VulkanNullOptionalStrings.setEnabled(true);
     // Batched descriptor sets (docs/gpu-live.md): each pool's set ids exist from its creation,
-    // for guests that allocate and write sets themselves and commit them with a submit.
-    // Guests that allocate sets per call are served as before.
+    // for guests that allocate and write sets themselves, inline uniform blocks included, and
+    // commit them with a submit. Inline uniform blocks stay offered (the fork), which DXVK
+    // requires; guests that allocate sets per call are served as before.
     features.VulkanBatchedDescriptorSetUpdate.setEnabled(true);
 #ifdef CABOOSE_GPU_PRESENTATION_LEASE
     features.CabooseVirtualWsi.setEnabled(virtualWsi);
@@ -108,6 +115,7 @@ static int startRuntime(PFN_vkGetInstanceProcAddr get, caboose_gpu_resolve_expor
         caboose::gpuv2::finalizeHeadlessFramebuffer();
         return startResult = result;
     }
+    caboose::gpuv2::installMemoryBudget();
     return startResult = 0;
 }
 extern "C" int caboose_gpu_runtime_start(PFN_vkGetInstanceProcAddr get,
@@ -136,7 +144,12 @@ extern "C" int caboose_gpu_runtime_set_cache_root(const char* root) {
     const int result = caboose::gpuv2::setShaderStoreRoot(root);
     if (mvkCabooseSetPipelineArchivePath) {
         const std::string selected = caboose::gpuv2::cacheRoot();
-        mvkCabooseSetPipelineArchivePath(selected.empty() ? nullptr
+        const char* archiveSetting = std::getenv("CABOOSE_METAL_BINARY_ARCHIVE");
+        // Metal archive lookups crash in the iOS driver callback-copy path.
+        // Keep this optional cache off unless explicitly enabled for diagnostics.
+        const bool disabled = !archiveSetting || std::strcmp(archiveSetting, "1");
+        std::fprintf(stderr, "CABOOSE_METAL_BINARY_ARCHIVE enabled=%d\n", !disabled);
+        mvkCabooseSetPipelineArchivePath(selected.empty() || disabled ? nullptr
                                          : (selected + "/pipeline/metal-binary-archive.bin").c_str());
     }
     return result;
@@ -237,6 +250,18 @@ extern "C" int caboose_gpu_runtime_resume(void) {
     caboose::gpuv2::ExecutorGate::instance().open();
     return 0;
 }
+extern "C" int caboose_gpu_runtime_set_memory_limit(uint64_t bytes) {
+    caboose::gpuv2::setMemoryLimit(bytes);
+    return 0;
+}
+extern "C" int caboose_gpu_runtime_executor_stats(caboose_gpu_executor_stats* out) {
+    if (!out || out->size != sizeof(*out)) return EINVAL;
+    caboose::gpuv2::stats::read(*out);
+    return 0;
+}
+extern "C" void caboose_gpu_runtime_report_teardown(void) {
+    if (auto* r = getRegistry()) caboose_gfx_registry_report(r);
+}
 extern "C" int caboose_gpu_runtime_stop(uint64_t token) {
     auto* r = getRegistry();
     return r ? caboose_gfx_process_stop(r, token) : ENODEV;
@@ -244,12 +269,18 @@ extern "C" int caboose_gpu_runtime_stop(uint64_t token) {
 extern "C" int caboose_gpu_runtime_finish(uint64_t token) {
     auto* r = getRegistry();
     if (!r) return ENODEV;
-    const int result = caboose_gfx_process_finish(r, token);
+    uint32_t context = 0;
+    const int result = caboose_gfx_process_finish_context(r, token, &context);
     if (result) return result;
-    // stop enqueues cleanup before process_finish can remove this entry. The
-    // upstream barrier waits through that queued cleanup, without holding the
-    // registry or runtime mutex; cleanup itself waits for render TLS to leave.
-    gfxstream::host::FrameBuffer::getFB()->waitForAllPendingCleanups();
+    // stop enqueued this process's cleanup before process_finish removed its entry. It is
+    // waited for a bounded time, without holding the registry or runtime mutex: past it the
+    // cleanup goes on by itself, and what it cannot free yet (GPU work or a presentation
+    // still in flight) is deferred until it can, never holding other processes' cleanups.
+    if (!gfxstream::host::FrameBuffer::getFB()->waitForGuestProcessCleanup(context, kFinishCleanupWaitMs)) {
+        std::fprintf(stderr, "CABOOSE_GPU_CLEANUP_CONTINUES token=%llu context=%u\n",
+                     (unsigned long long)token, context);
+        caboose_gfx_registry_report(r);
+    }
     // The process's pipelines are compiled; keep their binaries for the next launch.
     const bool archiveSaved = mvkCabooseSavePipelineArchive ? mvkCabooseSavePipelineArchive() : false;
     // What the persistent caches saved since launch, for the device console.

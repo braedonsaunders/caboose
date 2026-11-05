@@ -1,5 +1,6 @@
 // Copyright 2026 Caboose contributors. SPDX-License-Identifier: Apache-2.0
 #include "presentation_virtual_swapchain_internal.h"
+#include "presentation_driver_lock.h"
 #include "metal_surface_internal.h"
 #include "vk_decoder_global_state.h"
 #include <algorithm>
@@ -26,6 +27,7 @@ VkResult createVirtualSwapchain(gfxstream::host::vk::CabooseSwapchainDevice& dev
         info.present_mode != VK_PRESENT_MODE_FIFO_KHR ||
         info.pre_transform != VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR)
         return VK_ERROR_FEATURE_NOT_PRESENT;
+    DriverLock driver;
     auto capsFn = reinterpret_cast<PFN_vkGetPhysicalDeviceSurfaceCapabilitiesKHR>(
         get(device.instance, "vkGetPhysicalDeviceSurfaceCapabilitiesKHR"));
     auto formatsFn = reinterpret_cast<PFN_vkGetPhysicalDeviceSurfaceFormatsKHR>(
@@ -136,6 +138,7 @@ VkResult validateVirtualPresentQueue(gfxstream::host::vk::CaboosePresentationDev
     auto support = reinterpret_cast<PFN_vkGetPhysicalDeviceSurfaceSupportKHR>(
         get(device.instance, "vkGetPhysicalDeviceSurfaceSupportKHR"));
     if (!families || !support) return VK_ERROR_EXTENSION_NOT_PRESENT;
+    DriverLock driver;
     try {
         uint32_t count = 0;
         families(device.physicalDevice, &count, nullptr);

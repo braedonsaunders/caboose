@@ -23,6 +23,7 @@
 #include <deque>
 #include "caboose-bounded-memory/presentation_retirement.h"
 #include "caboose-bounded-memory/async_allocation.h"
+#include "caboose-bounded-memory/launch_timeline.h"
 #include <system_error>
 #include "goldfish_vk_private_defs.h"
 #include "Resources.h"
@@ -69,6 +70,9 @@ struct Surface {
     std::vector<std::shared_ptr<DeviceSwapchain>> remoteSwaps;
     VkInstance instance;
     uint64_t boxedInstance;
+    // The executor generation of the surface's instance: a surface of an instance made under
+    // an earlier executor is lost, and never binds or queries on the current one.
+    uint64_t instanceGeneration=0;
     uint32_t object;
     Client::Space space=Client::WaylandSurface;
     VkAllocationCallbacks allocator{};
@@ -77,7 +81,12 @@ struct Surface {
     // A refused bind (the window does not exist yet) is tried again from this time on;
     // a bind the phone answered with a failure, not before `nextPhoneBind`.
     std::chrono::steady_clock::time_point nextBind{}, nextPhoneBind{};
+    // When the compositor first refused the bind that pending swapchain work waits for.
+    std::chrono::steady_clock::time_point firstRefused{};
     uint32_t bindAttempts=0, phoneFailures=0;
+    // The last bind was answered by the phone with a failure and is retried: pending
+    // swapchain work waits for it instead of ending (kPhoneBindFailuresMax).
+    bool phoneRetrying=false;
     // The provider's last capability reply, for the physical device it answered.
     Bytes caps;
     uint64_t capsPhysical=0;
@@ -91,8 +100,10 @@ struct Surface {
     Client client;
 };
 static void startSurfaceWorker(const std::shared_ptr<Surface>& surface);
-static std::mutex mutex;
-static std::map<VkSurfaceKHR,std::shared_ptr<Surface>> surfaces;
+// Never destroyed: a process's exit runs static destructors while its surface workers and
+// other threads may still use them.
+static std::mutex& mutex=*new std::mutex;
+static std::map<VkSurfaceKHR,std::shared_ptr<Surface>>& surfaces=*new std::map<VkSurfaceKHR,std::shared_ptr<Surface>>;
 static std::shared_ptr<Surface> lookup(VkSurfaceKHR handle) {
     std::lock_guard<std::mutex> lock(mutex);
     auto found=surfaces.find(handle);
@@ -135,6 +146,11 @@ static bool lazyBind() { return caboose_gfxstream_guest_images==1; }
 // retried after a delay that doubles up to this, even by presents: each costs the phone's
 // own wait for the layer.
 constexpr auto kPhoneBindRetryMax=std::chrono::seconds(4);
+// Phone failures in a row a pending swapchain waits through (about 14 s with the backoff
+// above) before its work ends as for a refused bind.
+constexpr uint32_t kPhoneBindFailuresMax=8;
+// How long pending swapchain work waits through a bind the compositor refuses.
+constexpr auto kRefusedBindPatience=std::chrono::seconds(5);
 static void logBind(const Surface& surface, const char* outcome, int error, int vk) {
     // The first attempts, then every 32nd: enough to see why a window never binds.
     if (surface.bindAttempts>4 && surface.bindAttempts%32) return;
@@ -157,43 +173,61 @@ constexpr auto kFirstPresentBindWait=std::chrono::seconds(2);
 // Without guest-owned images a query has no local answer, so it waits for a bind in flight as
 // long as the broker does for the compositor's answer: a slow bind is not a lost surface.
 constexpr auto kQueryBindPatience=std::chrono::seconds(5);
+static bool staleGeneration(const Surface& surface) {
+    return surface.instanceGeneration &&
+           surface.instanceGeneration!=caboose::completion::connectionGeneration.load(std::memory_order_acquire);
+}
 static bool tryBind(Surface& surface, bool present=false,
-                    std::chrono::steady_clock::duration wait=std::chrono::steady_clock::duration::zero()) {
+                    std::chrono::steady_clock::duration wait=std::chrono::steady_clock::duration::zero(),
+                    bool framesWaiting=false) {
+    if (staleGeneration(surface)) return false;
     if (surface.bound) return true;
     const auto now=std::chrono::steady_clock::now();
-    try {
-        if (lazyBind() && !surface.instanceLease) {
-            surface.generation=caboose::completion::executorGeneration.load(std::memory_order_acquire);
-            syncRetirementGeneration(surface.generation);
-            surface.instanceLease=caboose::memory::presentationRetirement.reserve(surface.generation,
-                {{Retirement::Kind::Instance,surface.boxedInstance}});
-            if (!surface.instanceLease) throw std::bad_alloc();
+    // A bind with a frame to show (a present, or frames waiting for it) asks for the window;
+    // one without (a query, swapchain set-up) only probes it, when queries are answered locally.
+    const bool carriesFrame=present || framesWaiting;
+    const bool probe=Client::BindPolicy::probe(present,framesWaiting,lazyBind());
+    for (int round=0;round<2;++round) {
+        bool probeRefused=false;
+        try {
+            if (lazyBind() && !surface.instanceLease) {
+                surface.generation=caboose::completion::executorGeneration.load(std::memory_order_acquire);
+                syncRetirementGeneration(surface.generation);
+                surface.instanceLease=caboose::memory::presentationRetirement.reserve(surface.generation,
+                    {{Retirement::Kind::Instance,surface.boxedInstance}});
+                if (!surface.instanceLease) throw std::bad_alloc();
+            }
+            if (!surface.client.bindPending()) {
+                if (!Client::BindPolicy::mayBind(carriesFrame,now,surface.nextBind,surface.nextPhoneBind)) return false;
+                surface.attempted=true; ++surface.bindAttempts;
+                surface.client.connect(std::getenv("CABOOSE_GFXSTREAM_SURFACE_SOCKET"),deadline());
+                surface.client.beginBind(surface.boxedInstance,surface.object,0,0,deadline(),surface.space,probe);
+            }
+            Record reply;
+            if (!surface.client.awaitBind(now+wait,&reply)) return false;
+            const auto answer=status(reply.body,48);
+            if (apiStatus(answer)==VK_SUCCESS) {
+                surface.bound=true; surface.phoneRetrying=false;
+                if (surface.bindAttempts>1 || surface.phoneFailures) logBind(surface,"bound",0,0);
+                return true;
+            }
+            const auto delay=std::min<std::chrono::steady_clock::duration>(kPhoneBindRetryMax,
+                kBindRetry*(1u<<std::min(surface.phoneFailures,6u)));
+            ++surface.phoneFailures;
+            surface.phoneRetrying=surface.phoneFailures<kPhoneBindFailuresMax;
+            surface.nextPhoneBind=std::chrono::steady_clock::now()+delay;
+            logBind(surface,"failed",answer.nativeError,answer.hasVk ? answer.vk : 0);
+        } catch (const std::system_error& error) {
+            surface.phoneRetrying=false;
+            probeRefused=surface.client.lastBindProbe();
+            logBind(surface,probeRefused ? "refused-probe" : "refused",error.code().value(),0);
         }
-        if (!surface.client.bindPending()) {
-            if ((!present && now<surface.nextBind) || now<surface.nextPhoneBind) return false;
-            surface.attempted=true; ++surface.bindAttempts;
-            surface.client.connect(std::getenv("CABOOSE_GFXSTREAM_SURFACE_SOCKET"),deadline());
-            surface.client.beginBind(surface.boxedInstance,surface.object,0,0,deadline(),surface.space);
-        }
-        Record reply;
-        if (!surface.client.awaitBind(now+wait,&reply)) return false;
-        const auto answer=status(reply.body,48);
-        if (apiStatus(answer)==VK_SUCCESS) {
-            surface.bound=true;
-            if (surface.bindAttempts>1 || surface.phoneFailures) logBind(surface,"bound",0,0);
-            return true;
-        }
-        const auto delay=std::min<std::chrono::steady_clock::duration>(kPhoneBindRetryMax,
-            kBindRetry*(1u<<std::min(surface.phoneFailures,6u)));
-        ++surface.phoneFailures;
-        surface.nextPhoneBind=std::chrono::steady_clock::now()+delay;
-        logBind(surface,"failed",answer.nativeError,answer.hasVk ? answer.vk : 0);
-    } catch (const std::system_error& error) {
-        logBind(surface,"refused",error.code().value(),0);
+        surface.client.reset();
+        surface.attempted=false;
+        surface.nextBind=now+kBindRetry;
+        // A frame that found a probe in flight, refused, asks for the window itself at once.
+        if (!(carriesFrame && probeRefused)) return false;
     }
-    surface.client.reset();
-    surface.attempted=false;
-    surface.nextBind=now+kBindRetry;
     return false;
 }
 // Capabilities of a surface not bound yet, in the provider's reply format: the formats
@@ -222,7 +256,8 @@ static VkResult query(VkPhysicalDevice physical, VkSurfaceKHR handle, Bytes& cap
     auto& surface=*retained;
     std::lock_guard<std::recursive_mutex> lock(surface.operationMutex);
     VK_FROM_HANDLE(gfxstream_vk_physical_device, device, physical);
-    if (surface.instance!=gfxstream_vk_instance_to_handle(device->instance) || surface.poisoned)
+    if (surface.instance!=gfxstream_vk_instance_to_handle(device->instance) || surface.poisoned ||
+        staleGeneration(surface))
         return VK_ERROR_SURFACE_LOST_KHR;
     try {
         if (surface.workerStarted) {
@@ -275,6 +310,7 @@ static VkResult VKAPI_CALL create(VkInstance instance, const VkWaylandSurfaceCre
         surface->instance=instance;
         VK_FROM_HANDLE(gfxstream_vk_instance, owner, instance);
         surface->boxedInstance=get_host_u64_VkInstance(owner->internal_object);
+        surface->instanceGeneration=cabooseGenerationOf(owner->internal_object);
         surface->object=wl_proxy_get_id(proxy);
         if (allocator) { surface->allocator=*allocator; surface->customAllocator=true; }
         // The private WSI never creates a Linux presentation buffer. Keep the
@@ -304,6 +340,7 @@ static VkResult VKAPI_CALL createXcb(VkInstance instance, const VkXcbSurfaceCrea
         surface->instance=instance;
         VK_FROM_HANDLE(gfxstream_vk_instance, owner, instance);
         surface->boxedInstance=get_host_u64_VkInstance(owner->internal_object);
+        surface->instanceGeneration=cabooseGenerationOf(owner->internal_object);
         surface->object=info->window;
         surface->space=Client::X11Window;
         if (allocator) { surface->allocator=*allocator; surface->customAllocator=true; }
@@ -348,6 +385,7 @@ static VkResult VKAPI_CALL createXlib(VkInstance instance, const XlibSurfaceCrea
         surface->instance=instance;
         VK_FROM_HANDLE(gfxstream_vk_instance, owner, instance);
         surface->boxedInstance=get_host_u64_VkInstance(owner->internal_object);
+        surface->instanceGeneration=cabooseGenerationOf(owner->internal_object);
         surface->object=static_cast<uint32_t>(info->window);
         surface->space=Client::X11Window;
         if (allocator) { surface->allocator=*allocator; surface->customAllocator=true; }

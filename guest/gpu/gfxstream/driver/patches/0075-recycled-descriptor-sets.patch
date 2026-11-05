@@ -1,0 +1,159 @@
+From: Caboose <caboose@local>
+Subject: [PATCH 75/91] Keep a reset descriptor pool's sets for their ids' next allocation
+
+DXVK allocates about 80,000 descriptor sets a second and resets their pools as frames
+retire; with batched sets each reset freed every set's object and state and each allocation
+made them again, about 1.9 s of CPU in every 2 s on DXVK's queue thread. A batched pool now
+keeps the sets a reset clears, by pool id, and an allocation of that id makes the kept set
+again in place; the pool's destruction frees them. An inline uniform block binding takes one
+write-table entry, not one per byte.
+---
+diff --git a/src/gfxstream/guest/vulkan_enc/DescriptorSetVirtualization.cpp b/src/gfxstream/guest/vulkan_enc/DescriptorSetVirtualization.cpp
+index 4fb4afe..fc89b85 100644
+--- a/src/gfxstream/guest/vulkan_enc/DescriptorSetVirtualization.cpp
++++ b/src/gfxstream/guest/vulkan_enc/DescriptorSetVirtualization.cpp
+@@ -34,7 +34,12 @@ void initDescriptorWriteTable(const std::vector<VkDescriptorSetLayoutBinding>& l
+     std::vector<uint32_t> countsEachBinding(highestBindingNumber + 1, 0);
+ 
+     for (uint32_t i = 0; i < layoutBindings.size(); ++i) {
+-        countsEachBinding[layoutBindings[i].binding] = layoutBindings[i].descriptorCount;
++        // Caboose: an inline uniform block's descriptorCount is its size in bytes; its bytes
++        // are kept whole in entry 0, so it takes one entry, not one per byte.
++        countsEachBinding[layoutBindings[i].binding] =
++            layoutBindings[i].descriptorType == VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK
++                ? (layoutBindings[i].descriptorCount ? 1 : 0)
++                : layoutBindings[i].descriptorCount;
+     }
+ 
+     table.resize(countsEachBinding.size());
+@@ -45,6 +50,7 @@ void initDescriptorWriteTable(const std::vector<VkDescriptorSetLayoutBinding>& l
+         for (uint32_t j = 0; j < countsEachBinding[i]; ++j) {
+             table[i][j].type = DescriptorWriteType::Empty;
+             table[i][j].dstArrayElement = 0;
++            table[i][j].inlineUniformBlockBuffer.clear();
+         }
+     }
+ }
+@@ -468,7 +474,9 @@ void fillDescriptorSetInfoForPool(VkDescriptorPool pool, VkDescriptorSetLayout s
+                                   VkDescriptorSet set) {
+     DescriptorPoolAllocationInfo* allocInfo = as_goldfish_VkDescriptorPool(pool)->allocInfo;
+ 
+-    ReifiedDescriptorSet* newReified = new ReifiedDescriptorSet;
++    // Caboose: a recycled set keeps its state, made again in place.
++    ReifiedDescriptorSet* newReified = as_goldfish_VkDescriptorSet(set)->reified;
++    if (!newReified) newReified = new ReifiedDescriptorSet;
+     newReified->poolId = as_goldfish_VkDescriptorSet(set)->underlying;
+     newReified->allocationPending = true;
+ 
+@@ -515,7 +523,14 @@ VkResult validateAndApplyVirtualDescriptorSetAllocation(
+         uint64_t id = allocInfo->freePoolIds.back();
+         allocInfo->freePoolIds.pop_back();
+ 
+-        VkDescriptorSet newSet = new_from_host_VkDescriptorSet((VkDescriptorSet)id);
++        VkDescriptorSet newSet = VK_NULL_HANDLE;
++        auto recycled = allocInfo->recycledSets.find(id);
++        if (recycled != allocInfo->recycledSets.end()) {
++            newSet = recycled->second;
++            allocInfo->recycledSets.erase(recycled);
++        } else {
++            newSet = new_from_host_VkDescriptorSet((VkDescriptorSet)id);
++        }
+         pSets[i] = newSet;
+ 
+         fillDescriptorSetInfoForPool(pool, pAllocateInfo->pSetLayouts[i], newSet);
+@@ -563,5 +578,26 @@ std::vector<VkDescriptorSet> clearDescriptorPool(VkDescriptorPool pool, bool use
+     return toClear;
+ }
+ 
++std::vector<VkDescriptorSet> recycleDescriptorPool(VkDescriptorPool pool, std::vector<VkDescriptorSetLayout>* layouts) {
++    DescriptorPoolAllocationInfo* allocInfo = as_goldfish_VkDescriptorPool(pool)->allocInfo;
++    std::vector<VkDescriptorSet> toClear(allocInfo->allocedSets.begin(), allocInfo->allocedSets.end());
++    std::vector<VkDescriptorSet> unrecycled;
++    for (auto set : toClear) {
++        ReifiedDescriptorSet* reified = as_goldfish_VkDescriptorSet(set)->reified;
++        layouts->push_back(reified->setLayout);
++        if (removeDescriptorSetFromPool(set, true)) allocInfo->recycledSets[reified->poolId] = set;
++        else unrecycled.push_back(set);
++    }
++    return unrecycled;
++}
++
++std::vector<VkDescriptorSet> takeRecycledDescriptorSets(VkDescriptorPool pool) {
++    DescriptorPoolAllocationInfo* allocInfo = as_goldfish_VkDescriptorPool(pool)->allocInfo;
++    std::vector<VkDescriptorSet> sets;
++    for (const auto& [id, set] : allocInfo->recycledSets) sets.push_back(set);
++    allocInfo->recycledSets.clear();
++    return sets;
++}
++
+ }  // namespace vk
+ }  // namespace gfxstream
+diff --git a/src/gfxstream/guest/vulkan_enc/DescriptorSetVirtualization.h b/src/gfxstream/guest/vulkan_enc/DescriptorSetVirtualization.h
+index 88a7e8e..b784fef 100644
+--- a/src/gfxstream/guest/vulkan_enc/DescriptorSetVirtualization.h
++++ b/src/gfxstream/guest/vulkan_enc/DescriptorSetVirtualization.h
+@@ -7,6 +7,7 @@
+ #include <vulkan/vulkan.h>
+ 
+ #include <functional>
++#include <unordered_map>
+ #include <unordered_set>
+ #include <vector>
+ 
+@@ -76,6 +77,9 @@ struct DescriptorPoolAllocationInfo {
+     // Caboose: the pool asked for its set ids without waiting; this reads them into
+     // freePoolIds at the first allocation, and is false if they cannot be had.
+     std::function<bool(std::vector<uint64_t>*)> resolvePoolIds;
++    // Caboose: sets of a reset pool kept for their ids' next allocation (batched sets): the set
++    // object and its state are reused instead of freed and made again.
++    std::unordered_map<uint64_t, VkDescriptorSet> recycledSets;
+     std::unordered_set<uint32_t> allocedPoolIds;
+     std::unordered_set<VkDescriptorSet> allocedSets;
+     uint32_t maxSets;
+@@ -140,6 +144,11 @@ VkResult validateAndApplyVirtualDescriptorSetAllocation(
+ bool removeDescriptorSetFromPool(VkDescriptorSet set, bool usePoolIds);
+ 
+ std::vector<VkDescriptorSet> clearDescriptorPool(VkDescriptorPool pool, bool usePoolIds);
++// Caboose (batched sets): clears the pool, keeping its sets for their ids' next allocation;
++// returns the sets it could not keep and appends every cleared set's layout to `layouts`.
++std::vector<VkDescriptorSet> recycleDescriptorPool(VkDescriptorPool pool, std::vector<VkDescriptorSetLayout>* layouts);
++// Caboose: the sets a pool keeps, which its destruction frees.
++std::vector<VkDescriptorSet> takeRecycledDescriptorSets(VkDescriptorPool pool);
+ 
+ }  // namespace vk
+ }  // namespace gfxstream
+diff --git a/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp b/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp
+index f645a38..beb80d2 100644
+--- a/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp
++++ b/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp
+@@ -1337,6 +1337,17 @@ void ResourceTracker::freeDescriptorSetsIfHostAllocated(VkEncoder* enc, VkDevice
+ 
+ void ResourceTracker::clearDescriptorPoolAndUnregisterDescriptorSets(void* context, VkDevice device,
+                                                                      VkDescriptorPool pool) {
++    if (cabooseBatchedSets()) {
++        // Caboose: a reset keeps the pool's sets for their ids' next allocation.
++        std::vector<VkDescriptorSetLayout> layouts;
++        std::vector<VkDescriptorSet> unrecycled = recycleDescriptorPool(pool, &layouts);
++        for (auto setLayout : layouts) decDescriptorSetLayoutRef(context, device, setLayout, nullptr);
++        for (auto set : unrecycled) {
++            unregister_VkDescriptorSet(set);
++            delete_goldfish_VkDescriptorSet(set);
++        }
++        return;
++    }
+     std::vector<VkDescriptorSet> toClear =
+         clearDescriptorPool(pool, cabooseBatchedSets());
+ 
+@@ -6529,6 +6540,10 @@ void ResourceTracker::on_vkDestroyDescriptorPool(void* context, VkDevice device,
+     VkEncoder* enc = (VkEncoder*)context;
+ 
+     clearDescriptorPoolAndUnregisterDescriptorSets(context, device, descriptorPool);
++    for (auto set : takeRecycledDescriptorSets(descriptorPool)) {
++        unregister_VkDescriptorSet(set);
++        delete_goldfish_VkDescriptorSet(set);
++    }
+ 
+     enc->vkDestroyDescriptorPool(device, descriptorPool, pAllocator, true /* do lock */);
+ }
+-- 
+2.43.0

@@ -1,6 +1,13 @@
 // SPDX-License-Identifier: MIT
 #include "completion_feed.h"
+#include <atomic>
 #include <cassert>
+#include <cstdlib>
+#include <cstring>
+#include <string>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <unistd.h>
 #include <thread>
 using namespace caboose::completion;
 using Answer = Tracker::Answer;
@@ -71,6 +78,134 @@ int main() {
         const uint64_t s2 = t.submitted(f, {});
         t.complete(s2, kDeviceLost);
         assert(t.deviceLost() && t.fencesSignaled(&f, 1, true) == Answer::DeviceLost);
+    }
+    {
+        // A wait that stays unsatisfied says what it waits for, first after stallFirst and then
+        // every stallRepeat, and still waits until its deadline.
+        Tracker t;
+        t.stallReports(std::chrono::milliseconds(30), std::chrono::milliseconds(40));
+        const uint64_t f = 0xF7, sem = 0x57, wanted = 4;
+        t.fenceCreated(f, false);
+        t.timelineCreated(sem, 2);
+        t.submitted(f, {{sem, 3}});
+        char path[] = "/tmp/caboose-wait-stall-XXXXXX";
+        const int out = mkstemp(path);
+        assert(out >= 0);
+        std::fflush(stderr);
+        const int saved = dup(2);
+        dup2(out, 2);
+        const auto began = Tracker::Clock::now();
+        const Answer timelines = t.waitTimelines(&sem, &wanted, 1, true, began + std::chrono::milliseconds(150));
+        const Answer fences = t.waitFences(&f, 1, true, Tracker::Clock::now() + std::chrono::milliseconds(50));
+        std::fflush(stderr);
+        dup2(saved, 2);
+        close(saved);
+        assert(timelines == Answer::NotYet && fences == Answer::NotYet);
+        assert(Tracker::Clock::now() - began >= std::chrono::milliseconds(200));
+        char text[4096] = {};
+        assert(pread(out, text, sizeof text - 1, 0) > 0);
+        close(out);
+        unlink(path);
+        const std::string log = text;
+        size_t lines = 0;
+        for (size_t at = log.find("CABOOSE_GPU_WAIT_STALLED call=vkWaitSemaphores"); at != std::string::npos;
+             at = log.find("CABOOSE_GPU_WAIT_STALLED call=vkWaitSemaphores", at + 1)) ++lines;
+        assert(lines >= 2 && lines <= 4);
+        assert(log.find(" semaphore0=0x57 wanted=4 tracked value=2 pending=3 last_serial=") != std::string::npos);
+        assert(log.find("CABOOSE_GPU_WAIT_STALLED call=vkWaitForFences seconds=0 fence0=pending/serial1/outstanding") !=
+               std::string::npos);
+    }
+    {
+        // A long wait (here 100 ms or more) on watched work goes on past its deadline while the
+        // phone completes the process's work, and ends after that long without progress; a
+        // short one ends at its deadline.
+        using namespace std::chrono_literals;
+        Tracker t;
+        t.progressTimeouts(100ms);
+        const uint64_t f = 0xF8, g = 0xF9, sem = 0x58, wanted = 9;
+        t.fenceCreated(f, false);
+        t.fenceCreated(g, false);
+        t.timelineCreated(sem, 0);
+        const uint64_t awaited = t.submitted(f, {{sem, wanted}});
+        std::atomic<bool> stop{false};
+        std::thread phone([&] {
+            // Other work completes every 40 ms for 400 ms, then what the wait waits for.
+            for (int i = 0; i < 10 && !stop; ++i) {
+                const uint64_t other = t.submitted(g, {});
+                std::this_thread::sleep_for(40ms);
+                t.complete(other, kCompleted);
+            }
+            t.complete(awaited, kCompleted);
+        });
+        auto began = Tracker::Clock::now();
+        assert(t.waitTimelines(&sem, &wanted, 1, true, began + 150ms) == Answer::Satisfied);
+        assert(Tracker::Clock::now() - began >= 350ms);
+        phone.join();
+        // No progress: the long wait ends a timeout after the last completion.
+        const uint64_t next = 10;
+        t.submitted(f, {{sem, next}});
+        began = Tracker::Clock::now();
+        assert(t.waitTimelines(&sem, &next, 1, true, began + 150ms) == Answer::NotYet);
+        assert(Tracker::Clock::now() - began < 400ms);
+        // Progress, but a short wait: it ends at its deadline.
+        std::thread busy([&] {
+            for (int i = 0; i < 6; ++i) {
+                const uint64_t other = t.submitted(g, {});
+                std::this_thread::sleep_for(10ms);
+                t.complete(other, kCompleted);
+            }
+        });
+        began = Tracker::Clock::now();
+        assert(t.waitTimelines(&sem, &next, 1, true, began + 50ms) == Answer::NotYet);
+        assert(Tracker::Clock::now() - began < 90ms);
+        busy.join();
+        // A value nothing submitted signals is not watched: no progress keeps it.
+        const uint64_t unsent = 99;
+        began = Tracker::Clock::now();
+        std::thread more([&] { const uint64_t other = t.submitted(g, {}); std::this_thread::sleep_for(60ms); t.complete(other, kCompleted); });
+        assert(t.waitTimelines(&sem, &unsent, 1, true, began + 120ms) == Answer::NotYet);
+        assert(Tracker::Clock::now() - began < 200ms);
+        more.join();
+        stop = true;
+    }
+    {
+        // Progress counts on the queues of the watches a wait needs only, and a long wait ends
+        // at its ceiling (here min(4 x 110 ms, 110 ms + 150 ms) = 260 ms) whatever completes.
+        using namespace std::chrono_literals;
+        Tracker t;
+        t.progressTimeouts(100ms, 150ms);
+        const uint64_t f = 0xFA, g = 0xFB, sem = 0x5A, wanted = 1;
+        const uint64_t mine = 0x9001, other = 0x9002;
+        t.fenceCreated(f, false);
+        t.fenceCreated(g, false);
+        t.timelineCreated(sem, 0);
+        t.submitted(f, {{sem, wanted}}, mine);  // never completes: a hung submission
+        std::atomic<bool> stop{false};
+        auto busyOn = [&](uint64_t queue) {
+            return std::thread([&, queue] {
+                while (!stop) {
+                    const uint64_t s = t.submitted(g, {}, queue);
+                    std::this_thread::sleep_for(20ms);
+                    t.complete(s, kCompleted);
+                }
+            });
+        };
+        // Another queue keeps completing: the wait still ends at its own timeout.
+        std::thread elsewhere = busyOn(other);
+        auto began = Tracker::Clock::now();
+        assert(t.waitTimelines(&sem, &wanted, 1, true, began + 120ms) == Answer::NotYet);
+        assert(Tracker::Clock::now() - began < 200ms);
+        stop = true;
+        elsewhere.join();
+        // Its own queue keeps completing other work: extended, but only up to the ceiling.
+        stop = false;
+        std::thread here = busyOn(mine);
+        began = Tracker::Clock::now();
+        assert(t.waitTimelines(&sem, &wanted, 1, true, began + 110ms) == Answer::NotYet);
+        const auto took = Tracker::Clock::now() - began;
+        assert(took >= 250ms && took < 350ms);
+        stop = true;
+        here.join();
     }
     {
         // A closed feed hands outstanding waits back to the device.
@@ -301,6 +436,50 @@ int main() {
         for (int i = 0; i < 5000; ++i) q.commandBufferQueries(0xc4, pool, 0, 1, true);
         q.complete(q.submitted(0, {}, 0x9, 0x1, {0xc4}), kCompleted);
         assert(q.queries(pool, 1, 1) == Q::AskDevice);
+    }
+    {
+        // Executor generations: a loss and a reconnect advance the generation once; a
+        // connection that reaches another executor's socket does so with no loss seen first.
+        namespace c = caboose::completion;
+        // The broker's socket of each executor session.
+        auto listen = [](const char* path) {
+            unlink(path);
+            sockaddr_un address{};
+            address.sun_family = AF_UNIX;
+            std::strncpy(address.sun_path, path, sizeof(address.sun_path) - 1);
+            const int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+            assert(fd >= 0 && bind(fd, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == 0);
+            return fd;
+        };
+        const std::string a = "/tmp/caboose-generation-a-" + std::to_string(getpid());
+        const std::string b = "/tmp/caboose-generation-b-" + std::to_string(getpid());
+        const int fa = listen(a.c_str()), fb = listen(b.c_str());
+        setenv("CABOOSE_GFXSTREAM_SOCKET", a.c_str(), 1);
+        c::executorConnected();
+        c::noteExecutorSocket();
+        const uint64_t first = c::connectionGeneration.load();
+        c::executorConnected();
+        assert(c::connectionGeneration.load() == first);
+        static std::atomic<int> lossHooksRun{0};
+        c::onExecutorLost([] { ++lossHooksRun; });
+        c::markExecutorLost();
+        assert(c::lostCall(first) && lossHooksRun == 1);
+        c::markExecutorLost();  // already lost: the hooks run once
+        assert(lossHooksRun == 1);
+        c::executorConnected();
+        c::noteExecutorSocket();
+        assert(c::connectionGeneration.load() == first + 1 && !c::executorLost.load());
+        assert(c::lostCall(first) && !c::lostCall(first + 1));
+        setenv("CABOOSE_GFXSTREAM_SOCKET", b.c_str(), 1);
+        c::executorConnected();
+        c::noteExecutorSocket();
+        assert(c::connectionGeneration.load() == first + 2 && !c::executorLost.load());
+        assert(c::lostCall(first + 1) && !c::lostCall(first + 2));
+        close(fa);
+        close(fb);
+        unlink(a.c_str());
+        unlink(b.c_str());
+        unsetenv("CABOOSE_GFXSTREAM_SOCKET");
     }
     return 0;
 }

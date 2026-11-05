@@ -3,10 +3,12 @@
 #include <cerrno>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <fcntl.h>
 #include <mutex>
 #include <string>
+#include <sys/file.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #include <unordered_map>
@@ -171,6 +173,30 @@ public:
         return values_.size();
     }
 
+    // How each requirements question was answered, for CABOOSE_CAPABILITY_CACHE_DIAGNOSTICS:
+    // from the cache, asked and kept, or asked and not kept because the object was made with
+    // parameters that are not cached, or the question's own chains are not.
+    enum class Outcome { hit, kept, uncachedObject, uncachedQuestion };
+    void count(Outcome outcome) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        ++outcomes_[size_t(outcome)];
+    }
+    uint64_t counted(Outcome outcome) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return outcomes_[size_t(outcome)];
+    }
+    bool known(uint64_t object) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return objects_.count(object) != 0;
+    }
+    void report() {
+        std::unique_lock<std::mutex> lock(mutex_, std::try_to_lock);
+        if (!lock.owns_lock() || !std::getenv("CABOOSE_CAPABILITY_CACHE_DIAGNOSTICS")) return;
+        std::fprintf(stderr, "CABOOSE_REQUIREMENTS_CACHE hits=%llu kept=%llu uncached_object=%llu uncached_question=%llu\n",
+                     (unsigned long long)outcomes_[0], (unsigned long long)outcomes_[1],
+                     (unsigned long long)outcomes_[2], (unsigned long long)outcomes_[3]);
+    }
+
 private:
     template <class T> static void put(std::string* key, const T& value) {
         key->append(reinterpret_cast<const char*>(&value), sizeof(value));
@@ -202,6 +228,12 @@ private:
         if (bytes.size() < sizeof(kMagic) || std::memcmp(bytes.data(), kMagic, sizeof(kMagic))) return;
         size_t at = sizeof(kMagic);
         while (bytes.size() - at >= sizeof(uint32_t) && values_.size() < kMaxEntries) {
+            // A header in the middle: two processes once both began an empty file. The records
+            // after it are as good as the ones before.
+            if (bytes.size() - at >= sizeof(kMagic) && !std::memcmp(bytes.data() + at, kMagic, sizeof(kMagic))) {
+                at += sizeof(kMagic);
+                continue;
+            }
             uint32_t length = 0;
             std::memcpy(&length, bytes.data() + at, sizeof(length));
             if (length > kMaxKeyBytes || bytes.size() - at - sizeof(length) < length + kValueBytes) break;
@@ -226,8 +258,12 @@ private:
         if (file == files_.end() || key.size() > kMaxKeyBytes) return;
         const int fd = ::open(file->second.c_str(), O_WRONLY | O_APPEND | O_CREAT | O_CLOEXEC, 0644);
         if (fd < 0) return;
+        // Exclusive while the size is read and the record written, so only the process that
+        // finds the file empty writes its header.
+        int locked;
+        do { locked = ::flock(fd, LOCK_EX); } while (locked < 0 && errno == EINTR);
         struct stat info;
-        if (fstat(fd, &info) != 0 || info.st_size >= kMaxFileBytes) {
+        if (locked != 0 || fstat(fd, &info) != 0 || info.st_size >= kMaxFileBytes) {
             ::close(fd);
             return;
         }
@@ -252,8 +288,15 @@ private:
     std::unordered_map<std::string, Value> values_;
     std::unordered_map<uint64_t, uint64_t> identities_;  // device -> identity
     std::unordered_map<uint64_t, std::string> files_;    // identity -> file
+    uint64_t outcomes_[4] = {};
 };
 
-inline RequirementsCache requirementsCache;
+// Never destroyed: a process's exit runs static destructors while its other threads may
+// still be inside the driver.
+inline RequirementsCache& requirementsCache = *[] {
+    auto* cache = new RequirementsCache;
+    std::atexit([] { requirementsCache.report(); });
+    return cache;
+}();
 
 }  // namespace caboose::memory

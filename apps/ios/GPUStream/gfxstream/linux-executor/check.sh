@@ -29,9 +29,11 @@ here=$(cd "$(dirname "$0")" && pwd)
 repo=$(cd "$here/../../../../.." && pwd)
 name=caboose-lexec-$$
 shared=$(mktemp -d)
-chmod 0777 "$shared"
+# Sticky, as /tmp is: the driver keeps capability logs only under directories nobody else can
+# replace (static_query_cache.h), and one-way start predicts from those logs.
+chmod 1777 "$shared"
 cpus=${CPUS:-4}
-phone=guest-handles,guest-handle-arrays,completion-feed,ordered-present,guest-images,guest-query-pools,shader-cache,executor-resume,zstd-stream,upload-cache,guest-buffer-views,batched-descriptor-sets
+phone=guest-handles,guest-handle-arrays,completion-feed,ordered-present,guest-images,guest-query-pools,shader-cache,executor-resume,zstd-stream,upload-cache,guest-buffer-views,batched-descriptor-sets-inline,guest-set-ids,completion-payloads,wait-serial,silent-success,one-way-start,executor-stats
 cleanup() {
   docker rm -f "$name-executor" "$name-computer" > /dev/null 2>&1 || true
   rm -rf "$shared"
@@ -55,7 +57,9 @@ docker run -d --name "$name-computer" --init --network none --cpus "$cpus" --mem
   /repo/apps/ios/GPUStream/gfxstream/linux-executor/broker_host.py --directory /shared/gpu --listen 127.0.0.1:14650 --bind-delay "${BIND_DELAY:-0.4}" --refuse-missing-x11 :99 \
   > /dev/null
 wait_log "$name-computer" 'listening on' 30 || fail 'the broker did not start'
-docker exec -d -u caboose "$name-computer" Xvfb :99 -screen 0 1920x1080x24 -nolisten tcp
+# -noreset: an X server otherwise regenerates whenever its last client leaves, and a client
+# connecting meanwhile is reset (the exit_latency children and the bind fixture come and go).
+docker exec -d -u caboose "$name-computer" Xvfb :99 -screen 0 1920x1080x24 -nolisten tcp -noreset
 docker exec -u caboose "$name-computer" sh -c 'python3 /repo/guest/gpu/gfxstream/make_manifest.py \
   /shared/libvulkan_gfxstream.so "$(sha256sum /shared/libvulkan_gfxstream.so | cut -d" " -f1)" /tmp/icd.json 1.3.0'
 app() { # as the seat user, on the guest driver, with the broker's sockets and the display
@@ -99,6 +103,14 @@ else
   status=1; echo 'FAIL allocator lifetime (allocator-lifetime.log)'
 fi
 drain "$out/executor-sync-check.log"
+# The abandoned_work case's process left a batch waiting for a timeline value nothing signals:
+# the executor releases that wait and finishes the process within 5 s.
+if grep -q 'case=abandoned_work' "$out/sync-check.log"; then
+  released=$(grep -c 'CABOOSE_GPU_RELEASED' "$out/executor-sync-check.log" || true)
+  slow=$(awk -F'seconds=' '/process finished/ { if ($2 + 0 >= 5) n++ } END { print n + 0 }' "$out/executor-sync-check.log")
+  if [ "$released" -ge 1 ] && [ "$slow" = 0 ]; then echo "PASS abandoned work: its wait released, every process finished within 5 s"
+  else status=1; echo "FAIL abandoned work: released=$released slow_finishes=$slow"; fi
+fi
 # The probe's child windows (a covering and an inset child of one top-level, an inset child
 # of another) each bind a surface of their own and present every frame on the executor.
 children=$(grep 'case=child_windows' "$out/sync-check.log" | sed -n 's/.* windows=\([^ ]*\).*/\1/p')

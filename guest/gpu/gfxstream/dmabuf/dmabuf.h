@@ -218,6 +218,17 @@ public:
         return entries_.size();
     }
 
+    // The executor that held every allocation is gone (a new executor generation): its
+    // allocations are forgotten and their descriptors closed. Memory objects of the previous
+    // generation still release theirs, which then frees nothing: the host allocations went
+    // with their executor, and an import from now on allocates on the new one.
+    void clear() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (auto& entry : entries_)
+            if (entry.second.fd >= 0) ::close(entry.second.fd);
+        entries_.clear();
+    }
+
 private:
     std::mutex mutex_;
     std::map<Identity, Entry> entries_;

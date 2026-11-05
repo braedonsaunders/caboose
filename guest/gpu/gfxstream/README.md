@@ -7,12 +7,14 @@ broker that relays its command streams to the phone. The protocol is in
 | Path | What |
 | --- | --- |
 | [`driver/`](driver/README.md) | Builds `libvulkan_gfxstream.so` from pinned Mesa, the patch series and the sources below |
-| `SocketStream.{h,cpp}` | The driver's transport: a Unix stream socket to the broker and the 48-byte hello that negotiates its features |
+| `SocketStream.{h,cpp}` | The driver's transport: a Unix stream socket to the broker and the 48-byte hello that negotiates its features; an auxiliary stream (lazy readback's fills) whose hello sets nothing of the process's |
 | [`virtual-wsi/`](virtual-wsi/README.md) | The driver's surfaces and swapchains, presented on the phone through the broker |
 | [`bounded-memory/`](bounded-memory/README.md) | The driver's mapped-memory transfer, command buffer staging and deferred replies |
 | `caboose-gpu-broker` and its modules | The broker (below) |
 | `make_manifest.py` | Writes a Vulkan loader manifest for a built library after checking its hash |
 | `check_opcodes.py` | Compares the guest and decoder opcode tables of the pinned revisions |
+| `gpu-features.json`, `gpu_features.py` | The GPU feature names and bits every component must agree on, the check that they do, and the release's expected session ([Feature negotiation](../../../docs/gpu-live.md#feature-negotiation)) |
+| `check_session_features.py COMPUTER` | Exits 1 when the phone's last session on COMPUTER negotiated fewer features than the installed release expects, naming the stage that dropped each |
 | `check_live_broker.py`, `phone_guest_oracle.py` | Broker transport check with a fake executor; feedback renderer run against a broker |
 | [`coherent/`](coherent/README.md) | A standalone exact-byte publication library; the driver does not use it |
 
@@ -129,7 +131,8 @@ lines carry no payloads, handles or identities.
 Each process's driver also writes `CABOOSE_GPU_MEMORY_TRAFFIC` to its standard error
 every five seconds in which anything moved: the bytes its sockets sent and received, the
 mapped memory it flushed and read back (the application's own flushes and invalidates apart
-from the driver's upkeep of its host-coherent type), the readback ranges copies into buffers
+from the driver's upkeep of its host-coherent type), the GPU-written ranges completion records
+delivered so the upkeep did not read them back, the readback ranges copies into buffers
 marked, the coherent upkeep's written blocks and whole mappings, staging uploads,
 upload-cache pieces, and what the copied and hashed shadows considered and sent
 (`bounded-memory/memory_traffic.h`).

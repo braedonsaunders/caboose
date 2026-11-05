@@ -11,6 +11,9 @@ pub const X11_WINDOW: u32 = 1;
 /// (docs/gpu-buffers.md); the object is the window ID.
 pub const BUFFER_WINDOW: u32 = 2;
 
+/// The version-2 bind record's flag: a bind with no frame to show.
+pub const PROBE: u32 = 1;
+
 #[derive(Debug)]
 pub struct Bind {
     pub request: u64,
@@ -20,6 +23,9 @@ pub struct Bind {
     pub start_ticks: u64,
     pub object: u32,
     pub space: u32,
+    /// A bind with no frame to show (a query or swapchain set-up): a version-2 record with
+    /// the probe flag. A version-1 bind carries a frame.
+    pub probe: bool,
     pub pidfd: OwnedFd,
 }
 
@@ -74,14 +80,19 @@ pub fn receive(socket: &UnixStream) -> io::Result<Record> {
     }
     if bad_control || msg.msg_flags & (libc::MSG_CTRUNC | libc::MSG_TRUNC) != 0 { return Err(invalid()); }
     let data = &data[..size as usize];
-    if data.len() < 16 || &data[..4] != b"CGB1" || u16_at(data, 4) != 1 ||
+    // Version 2 exists only for the bind record (its probe flag).
+    let version = if data.len() >= 8 { u16_at(data, 4) } else { 0 };
+    if data.len() < 16 || &data[..4] != b"CGB1" || !(version == 1 || (version == 2 && u16_at(data, 6) == 1)) ||
         u32_at(data, 8) as usize != data.len() || u32_at(data, 12) != 0 { return Err(invalid()); }
     match u16_at(data, 6) {
-        1 if data.len() == 56 && fds.len() == 1 && matches!(u32_at(data, 52), WAYLAND_SURFACE | X11_WINDOW | BUFFER_WINDOW) => {
+        1 if data.len() == if version == 1 { 56 } else { 64 } && fds.len() == 1 &&
+            matches!(u32_at(data, 52), WAYLAND_SURFACE | X11_WINDOW | BUFFER_WINDOW) => {
             let (request, process, uid, pid, start_ticks, object, space) = (u64_at(data, 16), u64_at(data, 24),
                 u32_at(data, 32), u32_at(data, 36), u64_at(data, 40), u32_at(data, 48), u32_at(data, 52));
             if request == 0 || process == 0 || pid == 0 || start_ticks == 0 || object == 0 { return Err(invalid()); }
-            Ok(Record::Bind(Bind { request, process, uid, pid, start_ticks, object, space, pidfd: fds.pop().unwrap() }))
+            if version == 2 && (u32_at(data, 56) != PROBE || u32_at(data, 60) != 0) { return Err(invalid()); }
+            Ok(Record::Bind(Bind { request, process, uid, pid, start_ticks, object, space, probe: version == 2,
+                                   pidfd: fds.pop().unwrap() }))
         }
         kind @ (7 | 8) if data.len() == 64 && fds.is_empty() && u64_at(data, 56) == 0 => {
             let epoch: [u8; 16] = data[16..32].try_into().unwrap();
@@ -195,7 +206,7 @@ mod tests {
         packet
     }
 
-    fn send_with_fd(sender: &UnixStream, mut packet: [u8; 56], pidfd: &OwnedFd) {
+    fn send_with_fd<const N: usize>(sender: &UnixStream, mut packet: [u8; N], pidfd: &OwnedFd) {
         use std::os::fd::AsRawFd;
         let mut iov = libc::iovec { iov_base: packet.as_mut_ptr().cast(), iov_len: packet.len() };
         let mut control = [0usize; 8];
@@ -209,7 +220,7 @@ mod tests {
             (*header).cmsg_level = libc::SOL_SOCKET; (*header).cmsg_type = libc::SCM_RIGHTS;
             (*header).cmsg_len = libc::CMSG_LEN(size_of::<libc::c_int>() as u32) as _;
             std::ptr::write_unaligned(libc::CMSG_DATA(header).cast::<libc::c_int>(), pidfd.as_raw_fd());
-            assert_eq!(libc::sendmsg(sender.as_raw_fd(), &msg, 0), 56);
+            assert_eq!(libc::sendmsg(sender.as_raw_fd(), &msg, 0), N as isize);
         }
     }
 
@@ -242,6 +253,32 @@ mod tests {
         assert_eq!((bind.object, bind.space), (9, BUFFER_WINDOW));
         send_with_fd(&sender, bind_packet(&peer, 0x400003, 3), &pidfd);
         assert_eq!(receive(&receiver).unwrap_err().kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn a_version_2_bind_is_a_probe_and_a_version_1_bind_carries_a_frame() {
+        let (socket, _other) = UnixStream::pair().unwrap();
+        let peer = crate::gpu_peer::GpuPeer::capture(&socket).unwrap();
+        let pidfd = own_pidfd();
+        let (sender, receiver) = pair();
+        send_with_fd(&sender, bind_packet(&peer, 0x400003, X11_WINDOW), &pidfd);
+        let Record::Bind(bind) = receive(&receiver).unwrap() else { panic!("expected bind") };
+        assert!(!bind.probe, "an old guest's bind carries a frame, as before");
+        // What guest/gpu/gfxstream/control_protocol.py encodes for a probe.
+        let probe = |flags: u32, reserved: u32| {
+            let mut packet = [0u8; 64];
+            packet[..56].copy_from_slice(&bind_packet(&peer, 0x400003, X11_WINDOW));
+            packet[4..6].copy_from_slice(&2u16.to_le_bytes()); packet[8..12].copy_from_slice(&64u32.to_le_bytes());
+            packet[56..60].copy_from_slice(&flags.to_le_bytes()); packet[60..64].copy_from_slice(&reserved.to_le_bytes());
+            packet
+        };
+        send_with_fd(&sender, probe(PROBE, 0), &pidfd);
+        let Record::Bind(bind) = receive(&receiver).unwrap() else { panic!("expected bind") };
+        assert!(bind.probe && bind.object == 0x400003);
+        for (flags, reserved) in [(0, 0), (3, 0), (PROBE, 1)] {
+            send_with_fd(&sender, probe(flags, reserved), &pidfd);
+            assert_eq!(receive(&receiver).unwrap_err().kind(), io::ErrorKind::InvalidData);
+        }
     }
 
     #[test]

@@ -10,12 +10,16 @@
 #include <pthread.h>
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <mutex>
+#include <set>
 #include <string>
 #include <thread>
 #include <unistd.h>
 #include "caboose-bounded-memory/completion_feed.h"
 #include "caboose-bounded-memory/deferred_replies.h"
+#include "caboose-bounded-memory/launch_timeline.h"
 #include "caboose-bounded-memory/memory_traffic.h"
+#include "caboose-bounded-memory/silent_success.h"
 #include "caboose-bounded-memory/upload_cache.h"
 #include "caboose-bounded-memory/static_query_cache.h"
 #include "caboose-shader-cache/shader_cache.h"
@@ -54,16 +58,36 @@ static constexpr unsigned char kHello[48] = {
 // socket and suspends in the background, so waits for the phone have no deadline of their own
 // (the broker ends the streams when it is lost for good); 0x8000 it names 4096-byte pieces of
 // flushed memory the phone keeps by hash (caboose-bounded-memory/upload_cache.h); 0x10000 it
-// assigns buffer view handles too (requires 0x80); 0x40000 it allocates and writes descriptor
-// sets itself and sends them with its next submit, in one vkQueueCommitDescriptorSetUpdatesGOOGLE
-// (docs/gpu-live.md, "Batched descriptor sets"). The broker replies with the features both
+// assigns buffer view handles too (requires 0x80); 0x80000 it allocates and writes descriptor
+// sets itself, inline uniform blocks included, and sends them with its next submit, in one
+// vkQueueCommitDescriptorSetUpdatesGOOGLE (docs/gpu-live.md, "Batched descriptor sets"); 0x100000
+// it chooses the set ids of those descriptor pools itself (requires 0x80; docs/gpu-live.md,
+// "Guest-chosen set ids"); 0x200000 its completion watches name the queries and coherent
+// memory their batches end and write, and the feed's records bring them back (requires 0x200;
+// caboose-bounded-memory/completion_payloads.h); 0x400000 it sends WAIT_SERIAL, so a wait may
+// report complete a submission whose completion it cannot otherwise observe (requires 0x200;
+// caboose-bounded-memory/completion_feed.h, Speculation); 0x800000 its device streams switch to
+// silent success, where the phone writes no reply for the commands the process does not wait for
+// and reports their failure on the feed (requires 0x80 and 0x200; docs/gpu-live.md, "Silent
+// success"); 0x1000000 it names its instances, physical devices, devices and queues itself and
+// sends the commands that make them without their reply once an identical one succeeded in the
+// session (requires 0x80, 0x200 and 0x800000; caboose-bounded-memory/one_way_start.h,
+// docs/gpu-live.md, "One-way start"). It never offers 0x40000, the same without inline uniform blocks. The broker replies with the features both
 // the process and the connected phone support. A broker that predates a feature closes
 // the connection instead, so the offer falls back to fewer features.
 static constexpr uint32_t kGuestHandles = 0x80, kGuestHandleArrays = 0x100, kCompletionFeed = 0x200,
                           kOrderedPresent = 0x400, kGuestImages = 0x800, kGuestQueryPools = 0x1000,
                           kShaderCache = 0x2000, kExecutorResume = 0x4000, kUploadCache = 0x8000,
-                          kGuestBufferViews = 0x10000, kBatchedDescriptorSets = 0x40000;
-static const uint32_t kOffers[] = {0x3ff80 | kBatchedDescriptorSets, 0x3ff80, kGuestHandles | kGuestHandleArrays | kCompletionFeed | kOrderedPresent | kGuestImages |
+                          kGuestBufferViews = 0x10000, kBatchedDescriptorSets = 0x80000,
+                          kGuestSetIds = 0x100000, kCompletionPayloads = 0x200000, kWaitSerial = 0x400000,
+                          kSilentSuccess = caboose::silent::kHelloBit, kOneWayStart = caboose::silent::kOneWayStartBit;
+static const uint32_t kOffers[] = {0x3ff80 | kBatchedDescriptorSets | kGuestSetIds | kCompletionPayloads | kWaitSerial | kSilentSuccess |
+                                       kOneWayStart,
+                                   0x3ff80 | kBatchedDescriptorSets | kGuestSetIds | kCompletionPayloads | kWaitSerial | kSilentSuccess,
+                                   0x3ff80 | kBatchedDescriptorSets | kGuestSetIds | kCompletionPayloads | kWaitSerial,
+                                   0x3ff80 | kBatchedDescriptorSets | kGuestSetIds | kCompletionPayloads,
+                                   0x3ff80 | kBatchedDescriptorSets | kGuestSetIds,
+                                   0x3ff80 | kBatchedDescriptorSets, 0x3ff80, kGuestHandles | kGuestHandleArrays | kCompletionFeed | kOrderedPresent | kGuestImages |
                                        kGuestQueryPools | kShaderCache | kExecutorResume | kUploadCache |
                                        kGuestBufferViews,
                                    kGuestHandles | kGuestHandleArrays | kCompletionFeed | kOrderedPresent | kGuestImages |
@@ -120,12 +144,38 @@ int caboose_gfxstream_executor_resume = 0;
 // 1 when the phone keeps flushed pieces and takes their prefixes (hello feature 0x8000).
 extern "C" int caboose_gfxstream_upload_cache;
 int caboose_gfxstream_upload_cache = 0;
-// 1 when descriptor sets are allocated and written in the guest and sent with the next submit
-// (hello feature 0x40000), 0 when not, -1 before the first connection. The process's first
-// connection decides it, since the driver sets its descriptor handling up once: an executor
-// that does not take batched sets cannot serve a process that uses them.
+// 1 while descriptor sets are allocated and written in the guest and sent with the next submit
+// (hello feature 0x80000), 0 when not, -1 before the first connection. Each executor
+// connection decides it: a process that outlives its executor (the compositor) follows the
+// next one, batched or not, and the objects it made under the last are lost with it.
 extern "C" int caboose_gfxstream_batched_descriptor_sets;
 int caboose_gfxstream_batched_descriptor_sets = -1;
+// 1 while this process chooses the set ids of its batched descriptor pools (hello feature
+// 0x100000, granted with 0x80). Each executor connection decides it, as for batched sets; each
+// pool records how its ids were made.
+extern "C" int caboose_gfxstream_guest_set_ids;
+int caboose_gfxstream_guest_set_ids = 0;
+// 1 while this process's completion watches name what the phone captures for their records
+// (hello feature 0x200000, granted with the completion feed 0x200). Each executor connection
+// decides it; records are read the same way either way.
+extern "C" int caboose_gfxstream_completion_payloads;
+int caboose_gfxstream_completion_payloads = 0;
+// 1 while this process's device stream takes WAIT_SERIAL (hello feature 0x400000, granted with
+// the completion feed 0x200), so its waits may be speculated; each executor connection decides it.
+extern "C" int caboose_gfxstream_wait_serial;
+int caboose_gfxstream_wait_serial = 0;
+#if defined(CABOOSE_GFXSTREAM_PRIVATE_INDEXED_WSI)
+// Speculated watches whose records are still to come, at most, per queue.
+static constexpr uint32_t kSpeculationLimit = 3;
+// CABOOSE_GPU_SPECULATE=0 keeps every wait for the phone's records.
+static bool speculationAllowed() {
+    static const bool allowed = [] {
+        const char* value = std::getenv("CABOOSE_GPU_SPECULATE");
+        return !(value && std::strcmp(value, "0") == 0);
+    }();
+    return allowed;
+}
+#endif
 
 namespace {
 // The reply is the required hello with a subset of the offered features; returns them.
@@ -217,26 +267,36 @@ void startCompletionFeed(const char* path, const unsigned char* granted) {
             !sendAll(fd, &clientFlags, sizeof(clientFlags)) || !sendAll(fd, command, sizeof(command))) {
             std::fprintf(stderr, "CABOOSE_COMPLETION_FEED unavailable errno=%d\n", errno);
             if (fd >= 0) close(fd);
+            // The current generation has no feed: its waits ask the device. An older feed
+            // still marked active would leave watches nobody completes.
+            if (feedGeneration.load(std::memory_order_acquire) == generation)
+                caboose::completion::feedActive.store(false, std::memory_order_release);
             uint64_t own = generation;
             activeFeedGeneration.compare_exchange_strong(own, 0, std::memory_order_acq_rel);
             return;
         }
         if (feedGeneration.load(std::memory_order_acquire) == generation)
             caboose::completion::feedActive.store(true, std::memory_order_release);
-        unsigned char record[caboose::completion::kRecordSize];
-        while (recvAll(fd, record, sizeof(record))) {
-            if (feedGeneration.load(std::memory_order_acquire) != generation) break;
-            uint64_t serial;
-            int32_t status;
-            std::memcpy(&serial, record, sizeof(serial));
-            std::memcpy(&status, record + 8, sizeof(status));
-            caboose::completion::tracker().complete(serial, status);
+        // Records carry their payloads (caboose-bounded-memory/completion_payloads.h); one
+        // that arrives after a later generation took over is not applied. A FAULT (silent
+        // success) is the loss of the process's device.
+        while (caboose::completion::readRecord([&](void* data, size_t size) {
+                   return recvAll(fd, data, size) && feedGeneration.load(std::memory_order_acquire) == generation;
+               }, caboose::completion::tracker(), [](uint32_t opcode, int32_t result) {
+                   caboose::silent::fault(opcode, result);
+               })) {
         }
         // A feed ends with its executor, or alone (its waits then ask the device). An
         // older generation's feed that finishes after a reconnect must not touch the
         // new generation's state.
         if (feedGeneration.load(std::memory_order_acquire) == generation) {
             caboose::completion::executorEndedIfGone();
+            // A silent stream's failures are told only on the feed: without it they would go
+            // unseen, so the device is lost with it.
+            if (caboose::silent::replyMode().anySilent()) {
+                std::fprintf(stderr, "CABOOSE_GPU_SILENT_FEED_ENDED\n");
+                caboose::completion::markExecutorLost();
+            }
             caboose::completion::feedActive.store(false, std::memory_order_release);
             caboose::completion::tracker().feedClosed();
         }
@@ -250,9 +310,23 @@ void startCompletionFeed(const char* path, const unsigned char* granted) {
 
 // Set on the thread running a connection's hello.
 static thread_local bool handshaking = false;
+// An auxiliary stream: a second connection of the process, made by lazy readback's fills
+// (caboose_gfxstream_connect_auxiliary, write_watch.h), which reads memory beside the device
+// stream. Its hello sets nothing of the process's (features, caches, the completion feed), it
+// is no device stream, and its end is no executor loss.
+static thread_local bool connectingAuxiliary = false;
+static std::mutex& auxiliaryMutex = *new std::mutex;
+static std::set<const void*>& auxiliaryStreams = *new std::set<const void*>;
+static bool auxiliary(const void* stream) {
+    std::lock_guard<std::mutex> lock(auxiliaryMutex);
+    return auxiliaryStreams.count(stream) != 0;
+}
+extern "C" void caboose_gfxstream_connect_auxiliary(int on);
+extern "C" void caboose_gfxstream_connect_auxiliary(int on) { connectingAuxiliary = on != 0; }
 // The process's first connected stream: the shared encoder writes to it.
 static std::atomic<CabooseSocketStream*> firstStream{nullptr};
-static std::string firstPath;
+// Never destroyed: a reconnect can run while the process exits.
+static std::string& firstPath = *new std::string;
 // The executor is gone. A null read aborts the process in the encoder, so the reply reads
 // as VK_ERROR_DEVICE_LOST in every 32-bit word instead: a call's VkResult says the device
 // is lost and its other outputs go unused. A length read from such a reply is that word
@@ -260,15 +334,24 @@ static std::string firstPath;
 // more is one sized by the lost reply itself (vkGetPipelineCacheData's data, after its
 // size): it is left unwritten, never filled past the caller's buffer.
 constexpr size_t kLostReadLimit = size_t(1) << 30;
-static const unsigned char* lostReply(unsigned char* data, size_t len) {
-    caboose::completion::awaitExecutorReturn();  // CABOOSE_GPU_ON_LOSS=pause
+static const unsigned char* lostReply(unsigned char* data, size_t len, bool await = true) {
+    if (await) caboose::completion::awaitExecutorReturn();  // CABOOSE_GPU_ON_LOSS=pause
+    ++caboose::completion::lostReplies;
     if (len >= kLostReadLimit) return data;
-    const int32_t lost = -4;
+    const int32_t lost = caboose::completion::lostResult();
     for (size_t i = 0; i < len; ++i) data[i] = reinterpret_cast<const unsigned char*>(&lost)[i % sizeof(lost)];
     return data;
 }
-CabooseSocketStream::CabooseSocketStream(size_t size) : IOStream(size) {}
+// Encoders made on this stream may switch it to silent success (silent_success.h).
+CabooseSocketStream::CabooseSocketStream(size_t size) : IOStream(size) {
+    caboose::silent::replyMode().deviceStream(static_cast<gfxstream::guest::IOStream*>(this), true);
+}
 CabooseSocketStream::~CabooseSocketStream() {
+    caboose::silent::replyMode().deviceStream(static_cast<gfxstream::guest::IOStream*>(this), false);
+    {
+        std::lock_guard<std::mutex> lock(auxiliaryMutex);
+        auxiliaryStreams.erase(this);
+    }
     // Do not flush during teardown: an interrupted session must not send stale work.
     CabooseSocketStream* self = this;
     firstStream.compare_exchange_strong(self, nullptr);
@@ -279,7 +362,7 @@ void CabooseSocketStream::invalidate() {
     indexedReady_.store(false, std::memory_order_release);
     if (fd_ >= 0) shutdown(fd_, SHUT_RDWR);
     // A connected device stream ends only when its executor does.
-    if (fd_ >= 0 && !handshaking) caboose::completion::markExecutorLost();
+    if (fd_ >= 0 && !handshaking && !auxiliary(this)) caboose::completion::markExecutorLost();
 }
 int CabooseSocketStream::connect(const char* path) {
     int result = -1;
@@ -328,6 +411,24 @@ int CabooseSocketStream::connectWith(const char* path, const unsigned char* offe
         errno = EPROTO;
         return -1;
     }
+    if (connectingAuxiliary) {
+#if defined(CABOOSE_GFXSTREAM_PRIVATE_INDEXED_WSI)
+        // Its commands name the device stream's objects: the same handles, or none of it.
+        if (((features & kGuestHandles) != 0) != (caboose_gfxstream_guest_handles == 1)) {
+            invalidate();
+            close(fd_);
+            fd_ = -1;
+            errno = EPROTO;
+            return -1;
+        }
+#endif
+        {
+            std::lock_guard<std::mutex> lock(auxiliaryMutex);
+            auxiliaryStreams.insert(this);
+        }
+        caboose::silent::replyMode().deviceStream(static_cast<gfxstream::guest::IOStream*>(this), false);
+        return 0;
+    }
 #if defined(CABOOSE_GFXSTREAM_PRIVATE_INDEXED_WSI)
     caboose_gfxstream_guest_handles = (features & kGuestHandles) ? 1 : 0;
     caboose_gfxstream_guest_handle_arrays =
@@ -339,20 +440,20 @@ int CabooseSocketStream::connectWith(const char* path, const unsigned char* offe
     caboose_gfxstream_shader_cache = (features & kShaderCache) ? 1 : 0;
     caboose_gfxstream_executor_resume = (features & kExecutorResume) ? 1 : 0;
     caboose_gfxstream_upload_cache = (features & kUploadCache) ? 1 : 0;
-    {
-        int unset = -1;
-        const int batched = (features & kBatchedDescriptorSets) ? 1 : 0;
-        if (!__atomic_compare_exchange_n(&caboose_gfxstream_batched_descriptor_sets, &unset, batched, false,
-                                         __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE) && unset == 1 && !batched) {
-            std::fprintf(stderr, "CABOOSE_GPU_CONNECT_FAILED this process sends batched descriptor sets "
-                                 "and the executor does not take them\n");
-            handshaking = true;
-            close(fd_);
-            fd_ = -1;
-            errno = ENOTSUP;
-            return -1;
-        }
-    }
+    __atomic_store_n(&caboose_gfxstream_batched_descriptor_sets, (features & kBatchedDescriptorSets) ? 1 : 0,
+                     __ATOMIC_RELEASE);
+    __atomic_store_n(&caboose_gfxstream_guest_set_ids,
+                     (features & kGuestHandles) && (features & kGuestSetIds) ? 1 : 0, __ATOMIC_RELEASE);
+    __atomic_store_n(&caboose_gfxstream_completion_payloads,
+                     (features & kCompletionFeed) && (features & kCompletionPayloads) ? 1 : 0, __ATOMIC_RELEASE);
+    // Silent success needs every create and allocation it covers to use guest handles, and the
+    // feed for failures; a stream switches once its feed runs (VkEncoder::lock).
+    const uint32_t silentNeeds = kSilentSuccess | kGuestHandles | kGuestHandleArrays | kCompletionFeed |
+                                 kGuestQueryPools | kGuestBufferViews;
+    caboose::silent::replyMode().granted((features & silentNeeds) == silentNeeds);
+    caboose::silent::replyMode().startGranted((features & kOneWayStart) != 0);
+    const bool waitSerial = (features & kCompletionFeed) && (features & kWaitSerial);
+    __atomic_store_n(&caboose_gfxstream_wait_serial, waitSerial ? 1 : 0, __ATOMIC_RELEASE);
 #else
     caboose_gfxstream_guest_handles = 0;
 #endif
@@ -376,6 +477,10 @@ int CabooseSocketStream::connectWith(const char* path, const unsigned char* offe
         caboose::memory::staticQueryCache.reset();
     }
     caboose::completion::executorConnected();
+#if defined(CABOOSE_GFXSTREAM_PRIVATE_INDEXED_WSI)
+    caboose::completion::tracker().speculation(
+        __atomic_load_n(&caboose_gfxstream_wait_serial, __ATOMIC_ACQUIRE) && speculationAllowed() ? kSpeculationLimit : 0);
+#endif
     caboose::completion::noteExecutorSocket();
 #if defined(CABOOSE_GFXSTREAM_PRIVATE_INDEXED_WSI)
     if (features & kCompletionFeed) {
@@ -393,6 +498,9 @@ int CabooseSocketStream::reconnectEnded() {
     std::lock_guard<std::mutex> epochLock(caboose::completion::transportEpochMutex);
     CabooseSocketStream* stream = firstStream.load();
     if (!stream) { errno = ENOTCONN; return -1; }
+    // A process that made no call since its executor left has not seen the loss: the
+    // broker's socket is gone or is a new executor's. Its next instance connects to that.
+    caboose::completion::executorEndedIfGone();
     // When the completion feed or a surface socket detected the executor's departure first,
     // every encoder call returned early via lostCall() without touching `stream`, so
     // `stream->indexedReady_` stayed true on the dead socket.
@@ -432,6 +540,7 @@ int CabooseSocketStream::writeFully(const void* data, size_t len) {
         p += n; len -= static_cast<size_t>(n);
     }
     caboose::memory::traffic::counters().report();
+    caboose::launch::report();
     return 0;
 }
 const unsigned char* CabooseSocketStream::readFully(void* data, size_t len) {
@@ -443,7 +552,8 @@ const unsigned char* CabooseSocketStream::readFully(void* data, size_t len) {
         if (n <= 0) {
             invalidate();
             if (handshaking) return nullptr;
-            return lostReply(start, static_cast<size_t>(p - start) + len);
+            // An auxiliary stream's read ends at once: nothing waits for a new executor there.
+            return lostReply(start, static_cast<size_t>(p - start) + len, !auxiliary(this));
         }
         caboose::memory::traffic::counters().received(static_cast<uint64_t>(n));
         p += n; len -= static_cast<size_t>(n);
@@ -453,7 +563,7 @@ const unsigned char* CabooseSocketStream::readFully(void* data, size_t len) {
 const unsigned char* CabooseSocketStream::commitBufferAndReadFully(size_t size, void* data, size_t len) {
     if (commitBuffer(size) != 0) {
         if (handshaking) return nullptr;
-        return lostReply(static_cast<unsigned char*>(data), len);
+        return lostReply(static_cast<unsigned char*>(data), len, !auxiliary(this));
     }
     return readFully(data, len);
 }

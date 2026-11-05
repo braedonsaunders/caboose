@@ -71,7 +71,10 @@ kind 40, 48 bytes, carries the host instance, device, queue and image handles, t
 image's format and extent, and the queue family, with the dma-buf itself in
 `SCM_RIGHTS`; kind 41, 16 bytes, forgets a buffer by device and inode when its last
 memory object is freed. One connection per process carries these records; closing it
-forgets all of the process's buffers. A buffer is registered once, for its first image.
+forgets all of the process's buffers. The broker closes it when the process's executor is
+lost, and the process's next registration opens a new connection, so a process that
+recovers from the loss registers the buffers it makes on the new executor; a socket that
+cannot be reached is tried again at most once a second. A buffer is registered once, for its first image.
 
 caboose-display names the render node as the main device of its linux-dmabuf global's
 feedback, and with the phone GPU configured also advertises the remote modifier for every
@@ -99,6 +102,18 @@ again 4 ms later, at most 64 times. A buffer of another process or size retires 
 window's grant first. A client must have finished rendering a buffer before committing
 it: Chromium's GBM presentation waits for its rendering fence first, and the image is
 copied on the registering process's queue.
+
+## GBM in Flatpak applications
+
+A Flatpak runtime's libgbm searches only its own backend directory, where Mesa's generic
+backend cannot allocate on `vgem` (its dumb-buffer request is refused), so a sandboxed
+application (Chromium's and CEF's GPU process on X11, which allocate their native pixmaps with
+GBM and export them as dma-bufs) would get no buffers. `install-live.py --gbm vgem_gbm.so`
+installs the backend in `lib/gbm` of the Flatpak "host" GL extension of its architecture
+(`GL32.host` for an i386 build) and sets `GBM_BACKENDS_PATH` in the system-wide Flatpak
+override: each extension's backend directory at its sandbox path and at the path Steam's
+container runtime gives it (`/run/parent/usr/...`), then the runtime's and the container
+runtime's own backend directories, so every other device keeps its backend.
 
 ## OpenGL on the render node
 

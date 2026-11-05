@@ -1,0 +1,24 @@
+{
+  "description": "The GPU capabilities a phone may declare (docs/gpu-live.md, \"Feature negotiation\"). Each is a name the phone sends in X-Caboose-GPU-Features; bit is its bit in the local hello's feature mask, or null for a transport feature the broker uses itself; requires names features granted only with it; phone is whether the current phone app declares it. test_feature_lists.py holds every list that names features to this one.",
+  "features": [
+    {"name": "guest-handles", "bit": "0x80", "requires": [], "phone": true},
+    {"name": "guest-handle-arrays", "bit": "0x100", "requires": ["guest-handles"], "phone": true},
+    {"name": "completion-feed", "bit": "0x200", "requires": [], "phone": true},
+    {"name": "ordered-present", "bit": "0x400", "requires": [], "phone": true},
+    {"name": "guest-images", "bit": "0x800", "requires": [], "phone": true},
+    {"name": "guest-query-pools", "bit": "0x1000", "requires": ["guest-handles"], "phone": true},
+    {"name": "shader-cache", "bit": "0x2000", "requires": [], "phone": true},
+    {"name": "executor-resume", "bit": "0x4000", "requires": [], "phone": true},
+    {"name": "upload-cache", "bit": "0x8000", "requires": [], "phone": true},
+    {"name": "guest-buffer-views", "bit": "0x10000", "requires": ["guest-handles"], "phone": true},
+    {"name": "batched-descriptor-sets", "bit": "0x40000", "requires": [], "phone": false},
+    {"name": "batched-descriptor-sets-inline", "bit": "0x80000", "requires": [], "phone": true},
+    {"name": "guest-set-ids", "bit": "0x100000", "requires": ["guest-handles"], "phone": true},
+    {"name": "completion-payloads", "bit": "0x200000", "requires": ["completion-feed"], "phone": true},
+    {"name": "wait-serial", "bit": "0x400000", "requires": ["completion-feed"], "phone": true},
+    {"name": "silent-success", "bit": "0x800000", "requires": ["guest-handles", "completion-feed"], "phone": true},
+    {"name": "one-way-start", "bit": "0x1000000", "requires": ["guest-handles", "completion-feed", "silent-success"], "phone": true},
+    {"name": "zstd-stream", "bit": null, "requires": [], "phone": true},
+    {"name": "executor-stats", "bit": null, "requires": [], "phone": true}
+  ]
+}

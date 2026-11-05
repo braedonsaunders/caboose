@@ -22,7 +22,8 @@ export DEVELOPER_DIR=${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer
 mkdir -p "$N/src" "$OUT"
 
 # 1. MoltenVK 1.4.2 with persistent Metal pipeline binaries, event-set-at-execution,
-# encoder status, and MTLResidencySet registration, plus its pinned SPIRV-Cross with
+# encoder status, MTLResidencySet registration, retained command-buffer references and pipeline compilers that
+# outlive their Metal submissions, plus its pinned SPIRV-Cross with
 # the multi-plane padding and MSL reserved type-name patches.
 PROVIDER_PATCHES=$(cat \
   "$A/provider-patches/spirv-cross-multiplane-padding.patch" \
@@ -30,7 +31,9 @@ PROVIDER_PATCHES=$(cat \
   "$A/provider-patches/moltenvk-pipeline-binary-archive.patch" \
   "$A/provider-patches/moltenvk-event-set-at-execution.patch" \
   "$A/provider-patches/moltenvk-command-buffer-encoder-status.patch" \
-  "$A/provider-patches/moltenvk-residency-set.patch" | shasum -a 256 | cut -d' ' -f1)
+  "$A/provider-patches/moltenvk-residency-set.patch" \
+  "$A/provider-patches/moltenvk-retained-references.patch" \
+  "$A/provider-patches/moltenvk-compile-lifetime.patch" | shasum -a 256 | cut -d' ' -f1)
 if [ "$(cat "$N/moltenvk/provider-patches.sha256" 2>/dev/null)" != "$PROVIDER_PATCHES" ]; then
   rm -rf "$N/moltenvk" "$N/src/moltenvk" "$N/src/spirv-cross"
 fi
@@ -41,6 +44,8 @@ if [ ! -f "$N/moltenvk/libMoltenVK-ios-arm64.a" ]; then
     git -C "$N/src/moltenvk" apply "$A/provider-patches/moltenvk-event-set-at-execution.patch"
     git -C "$N/src/moltenvk" apply "$A/provider-patches/moltenvk-command-buffer-encoder-status.patch"
     git -C "$N/src/moltenvk" apply "$A/provider-patches/moltenvk-residency-set.patch"
+    git -C "$N/src/moltenvk" apply "$A/provider-patches/moltenvk-retained-references.patch"
+    git -C "$N/src/moltenvk" apply "$A/provider-patches/moltenvk-compile-lifetime.patch"
   fi
   if [ ! -d "$N/src/spirv-cross" ]; then
     git clone -q --filter=blob:none --no-checkout https://github.com/KhronosGroup/SPIRV-Cross.git "$N/src/spirv-cross"

@@ -40,7 +40,8 @@ ARCHIVES = (
     "upstream/common/utils/libgfxstream_common_utils.a",
     "upstream/host/tracing/libgfxstream_host_tracing.a",
 )
-PRESENTATION_HEADERS = ("presentation_types.h", "presentation_api_draft.h", "presentation_swapchain_api_draft.h")
+PRESENTATION_HEADERS = ("presentation_types.h", "presentation_api_draft.h", "presentation_swapchain_api_draft.h",
+                        "executor_stats_abi.h")
 REQUIRED_NATIVE = {
     "caboose_gpu_runtime_start_v4", "caboose_gpu_surface_query_indexed",
     "caboose_gpu_surface_query_variable_extent", "caboose_gpu_surface_configure_extent",
@@ -52,6 +53,7 @@ REQUIRED_NATIVE = {
     "caboose_gpu_surface_capabilities_get", "caboose_gpu_surface_capabilities_release",
     "caboose_gpu_surface_present", "caboose_gpu_surface_retire", "caboose_gpu_surface_detach",
     "caboose_gpu_runtime_set_cache_root", "caboose_gpu_runtime_suspend", "caboose_gpu_runtime_resume",
+    "caboose_gpu_runtime_executor_stats",
 }
 REQUIRED_EXPORTS = {"vkGetInstanceProcAddr", "vkGetDeviceProcAddr", "vkCreateInstance",
                     "vkDestroyInstance", "vkCreateDevice", "vkDestroyDevice"}
@@ -118,6 +120,10 @@ import CabooseGPULive
         _ = caboose_gpu_runtime_set_cache_root("/")
         _ = caboose_gpu_runtime_suspend(0)
         _ = caboose_gpu_runtime_resume()
+        var stats = caboose_gpu_executor_stats()
+        stats.size = UInt64(MemoryLayout<caboose_gpu_executor_stats>.size)
+        _ = caboose_gpu_runtime_executor_stats(&stats)
+        caboose_gpu_runtime_report_teardown()
         var surface: OpaquePointer?
         var bind = caboose_gpu_surface_bind_info()
         _ = caboose_gpu_surface_prepare(&bind, &surface)

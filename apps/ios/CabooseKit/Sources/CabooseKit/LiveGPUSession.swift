@@ -25,6 +25,13 @@ public protocol LiveGPUByteConsumer: AnyObject, Sendable {
     func finish() throws
 }
 
+/// A consumer that queues input past `consume`: `release` runs exactly once, when all of
+/// `bytes` has left the consumer (also on failure), and the session's ingress budget keeps
+/// the charge until then.
+protocol LiveGPUDeferredIngress: AnyObject {
+    func consume(_ bytes: Data, release: @escaping @Sendable () -> Void) throws
+}
+
 /// Internal owner-view command; no application-supplied process ID is accepted.
 protocol LiveGPUSurfaceRevoking: AnyObject {
     func requestSurfaceRevocation(_ identity: LiveGPUSurfaceIdentity) throws
@@ -34,6 +41,12 @@ protocol LiveGPUSurfaceRevoking: AnyObject {
 /// admitted REVOKED receipt. A normal broker close is separately required.
 protocol LiveGPURetirementReporting: AnyObject {
     var retirementReceiptSent: Bool { get }
+}
+
+/// Prints where a cleanup that has not returned stands (docs/gpu-live.md, "Teardown
+/// report"): each process's teardown step and what the native teardown is doing. Any thread.
+protocol LiveGPUTeardownReporting: AnyObject {
+    func reportTeardown()
 }
 
 public enum LiveGPUSessionEvent: Sendable {
@@ -61,6 +74,8 @@ public final class LiveGPUSession: @unchecked Sendable {
     /// The transport's receiving is held back while the decoder catches up (under `lock`).
     private var receivePaused = false
     private var confirmedRetirement = false
+    /// Set when cleanup returned (under `lock`): the teardown report stops.
+    private var cleanupReturned = false
     public var remoteRetirementCompleted: Bool { lock.withLock { confirmedRetirement } }
     private var drainDeadline: DispatchWorkItem?
     private let drainTimeout: TimeInterval
@@ -124,11 +139,12 @@ public final class LiveGPUSession: @unchecked Sendable {
         lock.unlock()
     }
 
-    /// Ends a suspension, also one whose QUIESCE has not arrived yet.
-    public func resume() {
+    /// Ends a suspension, also one whose QUIESCE has not arrived yet. `afterBackground` says
+    /// whether the app was in the background meanwhile; only then is a quiet socket suspect.
+    public func resume(afterBackground: Bool = true) {
         lock.lock()
         guard started, !stopping, let suspending = consumer as? LiveGPUSuspending else { lock.unlock(); return }
-        (transport as? LiveGPUResumableTransport)?.resumeTransport()
+        (transport as? LiveGPUResumableTransport)?.resumeTransport(afterBackground: afterBackground)
         worker.async { [self] in
             guard ingress.active else { return }
             do { try suspending.resumeExecutor() } catch { stop(error) }
@@ -197,7 +213,7 @@ public final class LiveGPUSession: @unchecked Sendable {
                 (transport as? LiveGPUReceiveFlow)?.setReceivingPaused(true)
             }
             worker.async { [self] in
-                defer {
+                let release: @Sendable () -> Void = { [self] in
                     ingress.release(charge)
                     let resume = lock.withLock { () -> Bool in
                         guard receivePaused, ingress.drained else { return false }
@@ -206,7 +222,13 @@ public final class LiveGPUSession: @unchecked Sendable {
                     }
                     if resume { (transport as? LiveGPUReceiveFlow)?.setReceivingPaused(false) }
                 }
-                guard ingress.active else { return }
+                guard ingress.active else { return release() }
+                // A consumer that queues input keeps the charge until the input has left it.
+                if let deferred = consumer as? LiveGPUDeferredIngress {
+                    do { try deferred.consume(data, release: release) } catch { stop(error) }
+                    return
+                }
+                defer { release() }
                 do { try consumer.consume(data) } catch { stop(error) }
             }
             lock.unlock()
@@ -231,6 +253,7 @@ public final class LiveGPUSession: @unchecked Sendable {
         #endif
         transport.close()
         DispatchQueue.global().asyncAfter(deadline: .now() + cleanupTimeout) { [self] in
+            reportTeardownWhilePending()
             report(cause: cause, cleanupError: LiveGPUError.cleanupTimedOut)
         }
         // A blocked socketpair writer cannot prevent revocation from interrupting it.
@@ -242,10 +265,20 @@ public final class LiveGPUSession: @unchecked Sendable {
                 var cleanupError = priorError
                 do { try consumer.finish() } catch { if cleanupError == nil { cleanupError = error } }
                 let receipt = (consumer as? any LiveGPURetirementReporting)?.retirementReceiptSent == true
+                lock.withLock { cleanupReturned = true }
                 report(cause: cause, cleanupError: cleanupError,
                        confirmed: normalPeerClose && cause == nil && cleanupError == nil && receipt)
             }
         }
+    }
+
+    /// At the cleanup deadline and every 10 s after it while cleanup has not returned, prints
+    /// where each process's teardown stands.
+    private func reportTeardownWhilePending() {
+        guard !lock.withLock({ cleanupReturned }) else { return }
+        print("CABOOSE_GPU_TEARDOWN_REPORT generation=\(generation.uuidString)")
+        (consumer as? any LiveGPUTeardownReporting)?.reportTeardown()
+        DispatchQueue.global().asyncAfter(deadline: .now() + 10) { [self] in reportTeardownWhilePending() }
     }
 
     /// The single end event: from returned cleanup or from the cleanup deadline, whichever is first.

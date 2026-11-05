@@ -18,6 +18,7 @@
 #include "presentation_acquire_internal.h"
 #include "presentation_swapchain_api_draft.h"
 #include "presentation_index_state.h"
+#include "memory_budget.h"
 #include "presentation_extent_state.h"
 #include "presentation_virtual_swapchain_internal.h"
 #endif
@@ -198,16 +199,20 @@ constexpr uint32_t kCaptureSlots = 3;
 // Caller holds s.operations, after the previous frame's copy has completed. Returns the
 // image this present's copy also writes, or null to present without a capture.
 VkImage reserveCapture(caboose_gpu_surface& s, const CaboosePresentationObjects& source, uint64_t serial) {
+    // While memory is short the window presents without captures, and gives its ring up.
+    const bool pressure = memoryPressure();
     {
         std::lock_guard<std::mutex> lock(s.mutex);
-        if (!s.captureCallback && s.capture && s.captureState.unused()) {
-            // Captures stopped and nothing holds the ring: a window captured now and then
-            // (a snapshot on demand) does not keep its images between captures.
+        if ((!s.captureCallback || pressure) && s.capture && s.captureState.unused()) {
+            // Captures stopped (or memory is short) and nothing holds the ring: a window
+            // captured now and then (a snapshot on demand) does not keep its images between
+            // captures.
             destroyCaptureRing(*s.capture);
             s.capture.reset();
             s.captureState.reset(0);
+            if (pressure) fprintf(stderr, "caboose-capture: gpu capture ring given up (memory short)\n");
         }
-        if (!s.captureCallback || s.captureUnsupported || !s.device) return VK_NULL_HANDLE;
+        if (!s.captureCallback || pressure || s.captureUnsupported || !s.device) return VK_NULL_HANDLE;
         if (s.capture && (s.capture->device != source.device || s.capture->format != source.format ||
                           s.capture->extent.width != source.extent.width ||
                           s.capture->extent.height != source.extent.height)) {
@@ -1489,13 +1494,15 @@ extern "C" int caboose_gpu_virtual_swapchain_retire(caboose_gpu_virtual_swapchai
         completion = swapchain->device->guestCompletion;
         if (!completion) return fail(EBUSY);
         proof = completion->tryRelease();
-        if (!proof.valid() && swapchain->device && swapchain->device->vk &&
-            swapchain->device->vk->vkDeviceWaitIdle) {
+        auto* state = gfxstream::host::vk::VkDecoderGlobalState::get();
+        if (!proof.valid() && swapchain->device && state) {
             auto before = completion->beforeDeviceIdle();
             VkResult idleResult;
             {
+                // Bounded: GPU work that never finishes makes this retirement fail (EBUSY),
+                // never hang; the device's teardown then waits for it, deferred.
                 std::lock_guard<std::mutex> hostLock(*swapchain->hostMutex);
-                idleResult = swapchain->device->vk->vkDeviceWaitIdle(swapchain->device->device);
+                idleResult = state->cabooseDeviceIdleWithin(swapchain->device->device, 2000);
             }
             completion->afterIdle(before, idleResult == VK_SUCCESS);
             proof = completion->tryRelease();

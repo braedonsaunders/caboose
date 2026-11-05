@@ -82,4 +82,12 @@ public enum LaptopLayout {
         return Frames(screen: CGRect(x: 0, y: 0, width: width, height: screenHeight),
                       controls: CGRect(x: 0, y: controlsY, width: width, height: max(0, visible - controlsY)))
     }
+
+    /// Where the black division above the fold starts on a display of `scale` pixels per point:
+    /// the top of the device pixel row holding `division`'s top edge, so a part-pixel row
+    /// between the upper screen and the fold is the division's, never the wallpaper behind.
+    public static func divisionTop(_ division: CGRect, scale: CGFloat) -> CGFloat {
+        guard scale.isFinite, scale > 0, division.minY.isFinite else { return division.minY }
+        return ((division.minY * scale + 0.001).rounded(.down) / scale)
+    }
 }

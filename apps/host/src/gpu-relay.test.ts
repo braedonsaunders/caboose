@@ -26,7 +26,8 @@ vi.mock('ws', async () => {
 })
 
 import { WebSocket } from 'ws'
-import { GPU_CLOSE_TIMEOUT_MS, GPU_EXECUTOR_ENDED_CLOSE, GPU_HEARTBEAT_MS, GPU_HEARTBEAT_TIMEOUT_MS, GPU_MAX_MESSAGE, GPU_MAX_PENDING, GPU_MAX_PENDING_MESSAGES, GPU_RESUME_HOLD_MS, GPU_SUSPEND_HOLD_MS, GPU_SUSPENDED_CLOSE, gpuFeatures, gpuUpstreamURL, relayGPU, startGPURelay, suspension } from './gpu-relay.js'
+import { readFileSync } from 'node:fs'
+import { GPU_CLOSE_TIMEOUT_MS, GPU_EXECUTOR_ENDED_CLOSE, GPU_HEARTBEAT_MS, GPU_HEARTBEAT_TIMEOUT_MS, GPU_MAX_MESSAGE, GPU_MAX_PENDING, GPU_MAX_PENDING_MESSAGES, GPU_RESUME_HOLD_MS, GPU_SUSPEND_HOLD_MS, GPU_SUSPENDED_CLOSE, gpuFeatures, declaredGPUFeatures, droppedGPUFeaturesLine, GPU_FEATURES, gpuUpstreamURL, relayGPU, startGPURelay, suspension } from './gpu-relay.js'
 
 type ControlledSocket = WebSocket & { pending: Array<(error?: Error) => void>; paused: boolean; closeCodes: number[]; pings: number; peerClose(code: number): void }
 function pair() {
@@ -140,6 +141,18 @@ it('never holds a resumable relay whose guest side ended', async () => {
   } finally { vi.useRealTimers() }
 })
 
+it('forwards exactly the features the computer knows (guest/gpu/gfxstream/gpu-features.json)', () => {
+  const canonical = JSON.parse(readFileSync(new URL('../../../guest/gpu/gfxstream/gpu-features.json', import.meta.url), 'utf8')) as { features: { name: string }[] }
+  expect([...GPU_FEATURES].sort()).toEqual(canonical.features.map(feature => feature.name).sort())
+})
+
+it('reports declared features it does not forward', () => {
+  expect(declaredGPUFeatures(' Guest-Handles , future-thing,guest-handles, bad name,x'.repeat(1))).toEqual(['future-thing', 'guest-handles', 'x'])
+  expect(droppedGPUFeaturesLine(['future-thing', 'guest-handles'])).toBe('CABOOSE_GPU_RELAY_FEATURES dropped=future-thing forwarded=guest-handles')
+  expect(droppedGPUFeaturesLine(['guest-handles'])).toBe('')
+  expect(declaredGPUFeatures(Array.from({ length: 100 }, (_, i) => `f${i}`).join(','))).toHaveLength(64)
+})
+
 it('forwards only known phone GPU features, normalized', () => {
   expect(gpuFeatures(' Guest-Handles , bogus,guest-handles')).toEqual(['guest-handles'])
   expect(gpuFeatures(['x', 'guest-handles'])).toEqual(['guest-handles'])
@@ -153,6 +166,8 @@ it('forwards only known phone GPU features, normalized', () => {
   expect(gpuFeatures('completion-payloads,completion-feed')).toEqual(['completion-feed', 'completion-payloads'])
   expect(gpuFeatures('silent-success,completion-feed')).toEqual(['completion-feed', 'silent-success'])
   expect(gpuFeatures('wait-serial,completion-feed')).toEqual(['completion-feed', 'wait-serial'])
+  expect(gpuFeatures('one-way-start,silent-success')).toEqual(['one-way-start', 'silent-success'])
+  expect(gpuFeatures('executor-stats,zstd-stream')).toEqual(['executor-stats', 'zstd-stream'])
   expect(gpuFeatures('completion-feed, guest-handle-arrays,GUEST-HANDLES,ordered-present')).toEqual(['completion-feed', 'guest-handle-arrays', 'guest-handles', 'ordered-present'])
   const client = new WebSocket('ws://test') as ControlledSocket
   void relayGPU(client, { displayURL: 'ws://guest:14600', displayToken: 't', computer: 'owner', executor: 'e', features: ['guest-handles'] })
@@ -161,6 +176,10 @@ it('forwards only known phone GPU features, normalized', () => {
   void relayGPU(new WebSocket('ws://test'), { displayURL: 'ws://guest:14600', displayToken: 't', computer: 'owner', executor: 'e' })
   const without = state.created.at(-1) as unknown as { args: [string, string, { headers: Record<string, string> }] }
   expect(without.args[2].headers).not.toHaveProperty('x-caboose-gpu-features')
+  expect(without.args[2].headers).not.toHaveProperty('x-caboose-gpu-declared')
+  void relayGPU(new WebSocket('ws://test'), { displayURL: 'ws://guest:14600', displayToken: 't', computer: 'owner', executor: 'e', features: ['guest-handles'], declared: ['future-thing', 'guest-handles'] })
+  const declared = state.created.at(-1) as unknown as { args: [string, string, { headers: Record<string, string> }] }
+  expect(declared.args[2].headers['x-caboose-gpu-declared']).toBe('future-thing,guest-handles')
 })
 
 it('ends the relay when the phone stops answering pings, but not while it answers', async () => {

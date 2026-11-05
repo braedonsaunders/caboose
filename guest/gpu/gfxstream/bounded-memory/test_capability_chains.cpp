@@ -51,8 +51,15 @@ int main() {
     VkPhysicalDeviceProperties2 withUnknown{}; withUnknown.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2; withUnknown.pNext = &unknown;
     std::string ignored;
     assert(!chainShape(root, &withUnknown, sizeof(withUnknown), sizes, &ignored));
+    // A layout list is cached only while its arrays are not given: then it asks only counts.
     VkPhysicalDeviceVulkan14Properties pointers{}; pointers.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_4_PROPERTIES;
     VkPhysicalDeviceProperties2 withPointers{}; withPointers.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2; withPointers.pNext = &pointers;
+    std::string counts;
+    assert(chainShape(root, &withPointers, sizeof(withPointers), sizes, &counts));
+    VkImageLayout layouts[4] = {};
+    pointers.pCopySrcLayouts = layouts; pointers.copySrcLayoutCount = 4;
     assert(!chainShape(root, &withPointers, sizeof(withPointers), sizes, &ignored));
-    std::puts("capability chains: shapes, answers, order, sizes, unknown and pointer-holding structures passed");
+    pointers.pCopySrcLayouts = nullptr; pointers.pCopyDstLayouts = layouts;
+    assert(!chainShape(root, &withPointers, sizeof(withPointers), sizes, &ignored));
+    std::puts("capability chains: shapes, answers, order, sizes, unknown, pointer-holding and count-only structures passed");
 }

@@ -1,8 +1,8 @@
 diff --git a/MoltenVK/MoltenVK/GPUObjects/MVKPipeline.mm b/MoltenVK/MoltenVK/GPUObjects/MVKPipeline.mm
-index 7eae64c..deb4bb3 100644
+index 7eae64c..3a75964 100644
 --- a/MoltenVK/MoltenVK/GPUObjects/MVKPipeline.mm
 +++ b/MoltenVK/MoltenVK/GPUObjects/MVKPipeline.mm
-@@ -3089,6 +3089,127 @@ MVKPipelineCache::~MVKPipelineCache() {
+@@ -3089,6 +3089,126 @@ MVKPipelineCache::~MVKPipelineCache() {
  }
  
  
@@ -11,8 +11,7 @@ index 7eae64c..deb4bb3 100644
 +
 +// Caboose: a Metal binary archive at a path the app selects keeps compiled pipeline
 +// binaries across launches. Each pipeline is first looked up in it alone
-+// (MTLPipelineOptionFailOnBinaryArchiveMiss), synchronously on MoltenVK's compile queue;
-+// a miss compiles as usual and adds the
++// (MTLPipelineOptionFailOnBinaryArchiveMiss); a miss compiles as usual and adds the
 +// pipeline's functions to the archive on a serial queue, which also writes the archive
 +// back after every kCabooseArchiveSaveInterval additions and on request. An archive that
 +// cannot be loaded (another OS or GPU, a damaged file) is replaced by an empty one.
@@ -130,7 +129,7 @@ index 7eae64c..deb4bb3 100644
  #pragma mark -
  #pragma mark MVKRenderPipelineCompiler
  
-@@ -3097,13 +3218,37 @@ id<MTLRenderPipelineState> MVKRenderPipelineCompiler::newMTLRenderPipelineState(
+@@ -3097,12 +3217,42 @@ id<MTLRenderPipelineState> MVKRenderPipelineCompiler::newMTLRenderPipelineState(
  
  	compile(lock, ^{
  		auto mtlDev = getMTLDevice();
@@ -145,35 +144,39 @@ index 7eae64c..deb4bb3 100644
 +			}
 +			return;
 +		}
-+		// On this compile queue, so the lookup and a compile after a miss can be synchronous.
++		// The lookup and a compile after a miss are asynchronous, as MoltenVK's own compile:
++		// the device lock is held only to submit each, so compiles run concurrently.
 +		mtlRPLDesc.binaryArchives = @[archive];
-+		NSError* error = nil;
-+		id<MTLRenderPipelineState> ps = nil;
  		@synchronized (mtlDev) {
--			[mtlDev newRenderPipelineStateWithDescriptor: mtlRPLDesc
+ 			[mtlDev newRenderPipelineStateWithDescriptor: mtlRPLDesc
 -									   completionHandler: ^(id<MTLRenderPipelineState> ps, NSError* error) {
 -										   bool isLate = compileComplete(ps, error);
 -										   if (isLate) { destroy(); }
 -									   }];
-+			ps = [mtlDev newRenderPipelineStateWithDescriptor: mtlRPLDesc
-+													  options: MTLPipelineOptionFailOnBinaryArchiveMiss
-+												   reflection: nil
-+														error: &error];
-+			(ps ? _cabooseArchiveHits : _cabooseArchiveMisses)++;
-+			if ( !ps ) {
-+				error = nil;
-+				ps = [mtlDev newRenderPipelineStateWithDescriptor: mtlRPLDesc error: &error];
-+				if (ps) { cabooseArchiveAdd(archive, mtlRPLDesc, false); }
-+			}
++												 options: MTLPipelineOptionFailOnBinaryArchiveMiss
++									   completionHandler: ^(id<MTLRenderPipelineState> found, MTLRenderPipelineReflection*, NSError*) {
++				if (found) {
++					_cabooseArchiveHits++;
++					bool isLate = compileComplete(found, nil);
++					[archive release];
++					if (isLate) { destroy(); }
++					return;
++				}
++				_cabooseArchiveMisses++;
++				@synchronized (mtlDev) {
++					[mtlDev newRenderPipelineStateWithDescriptor: mtlRPLDesc
++											   completionHandler: ^(id<MTLRenderPipelineState> ps, NSError* error) {
++						if (ps) { cabooseArchiveAdd(archive, mtlRPLDesc, false); }
++						bool isLate = compileComplete(ps, error);
++						[archive release];
++						if (isLate) { destroy(); }
++					}];
++				}
++			}];
  		}
-+		bool isLate = compileComplete(ps, error);
-+		[ps release];
-+		[archive release];
-+		if (isLate) { destroy(); }
  	});
  
- 	return [_mtlRenderPipelineState retain];
-@@ -3131,14 +3276,41 @@ id<MTLComputePipelineState> MVKComputePipelineCompiler::newMTLComputePipelineSta
+@@ -3131,13 +3281,43 @@ id<MTLComputePipelineState> MVKComputePipelineCompiler::newMTLComputePipelineSta
  
  	compile(lock, ^{
  		auto mtlDev = getMTLDevice();
@@ -189,35 +192,36 @@ index 7eae64c..deb4bb3 100644
 +			}
 +			return;
 +		}
-+		// On this compile queue, as for render pipelines.
++		// Asynchronous, as for render pipelines.
 +		plDesc.binaryArchives = @[archive];
-+		NSError* error = nil;
-+		id<MTLComputePipelineState> ps = nil;
  		@synchronized (mtlDev) {
--			[mtlDev newComputePipelineStateWithDescriptor: plDesc
+ 			[mtlDev newComputePipelineStateWithDescriptor: plDesc
 -												  options: MTLPipelineOptionNone
 -										completionHandler: ^(id<MTLComputePipelineState> ps, MTLComputePipelineReflection*, NSError* error) {
 -											bool isLate = compileComplete(ps, error);
 -											if (isLate) { destroy(); }
 -										}];
-+			ps = [mtlDev newComputePipelineStateWithDescriptor: plDesc
-+													   options: MTLPipelineOptionFailOnBinaryArchiveMiss
-+													reflection: nil
-+														 error: &error];
-+			(ps ? _cabooseArchiveHits : _cabooseArchiveMisses)++;
-+			if ( !ps ) {
-+				error = nil;
-+				ps = [mtlDev newComputePipelineStateWithDescriptor: plDesc
-+														   options: MTLPipelineOptionNone
-+														reflection: nil
-+															 error: &error];
-+				if (ps) { cabooseArchiveAdd(archive, plDesc, true); }
-+			}
++												  options: MTLPipelineOptionFailOnBinaryArchiveMiss
++										completionHandler: ^(id<MTLComputePipelineState> found, MTLComputePipelineReflection*, NSError*) {
++				if (found) {
++					_cabooseArchiveHits++;
++					bool isLate = compileComplete(found, nil);
++					[archive release];
++					if (isLate) { destroy(); }
++					return;
++				}
++				_cabooseArchiveMisses++;
++				@synchronized (mtlDev) {
++					[mtlDev newComputePipelineStateWithDescriptor: plDesc
++														  options: MTLPipelineOptionNone
++												completionHandler: ^(id<MTLComputePipelineState> ps, MTLComputePipelineReflection*, NSError* error) {
++						if (ps) { cabooseArchiveAdd(archive, plDesc, true); }
++						bool isLate = compileComplete(ps, error);
++						[archive release];
++						if (isLate) { destroy(); }
++					}];
++				}
++			}];
  		}
-+		bool isLate = compileComplete(ps, error);
-+		[ps release];
-+		[archive release];
-+		if (isLate) { destroy(); }
  	});
  
- 	return [_mtlComputePipelineState retain];

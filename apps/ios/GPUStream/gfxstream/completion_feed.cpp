@@ -40,6 +40,107 @@ bool CompletionFeed::parseWatch(const unsigned char* packet, size_t size, uint64
     return *queue != 0 && *serial != 0;
 }
 
+size_t CompletionFeed::watch2Size(const unsigned char* header) {
+    const uint32_t count = u32(header + 24);
+    return count <= kMaxCaptures ? kWatch2HeaderSize + size_t(count) * kCaptureEntrySize : 0;
+}
+
+bool CompletionFeed::parseWatch2(const unsigned char* packet, size_t size, uint64_t* queue, uint64_t* serial,
+                                 std::vector<Capture>* captures) {
+    if (size < kWatch2HeaderSize || u32(packet) != kWatch2Opcode || u32(packet + 4) != size ||
+        watch2Size(packet) != size || u32(packet + 28) != 0)
+        return false;
+    // Header: opcode u32, size u32, queue u64, serial u64, count u32, flags u32 (0).
+    *queue = u64(packet + 8);
+    *serial = u64(packet + 16);
+    if (!*queue || !*serial) return false;
+    const uint32_t count = u32(packet + 24);
+    captures->clear();
+    captures->reserve(count);
+    for (uint32_t i = 0; i < count; ++i) {
+        const unsigned char* e = packet + kWatch2HeaderSize + size_t(i) * kCaptureEntrySize;
+        Capture c;
+        c.kind = u32(e);
+        c.handle = u64(e + 8);
+        c.a = u64(e + 16);
+        c.b = u64(e + 24);
+        if (u32(e + 4) != 0 || !c.handle || !c.b) return false;
+        if (c.kind == kCaptureQueries) {
+            if (c.a > UINT32_MAX || c.b > UINT32_MAX || c.a + c.b > UINT32_MAX) return false;
+        } else if (c.kind == kCaptureMemory) {
+            if (c.a + c.b < c.a) return false;
+        } else {
+            return false;
+        }
+        captures->push_back(c);
+    }
+    return true;
+}
+
+std::vector<unsigned char> CompletionFeed::takeCaptures(const std::vector<Capture>& captures,
+                                                        const Capturer& capturer) {
+    size_t total = 0;
+    for (const auto& c : captures) {
+        const size_t data = captureBytes(c);
+        if (data > kMaxPayload) return {};
+        total += kCaptureEntrySize + ((data + 7) & ~size_t(7));
+        if (total > kMaxPayload) return {};
+    }
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (unwrittenPayload_ + total > kMaxUnwrittenPayload) return {};
+        unwrittenPayload_ += total;  // reserved until written or dropped
+    }
+    std::vector<unsigned char> payload(total, 0);
+    size_t at = 0;
+    for (const auto& c : captures) {
+        unsigned char* e = payload.data() + at;
+        const int32_t status = capturer(c, e + kCaptureEntrySize);
+        std::memcpy(e, &c.kind, 4);
+        std::memcpy(e + 4, &status, 4);
+        std::memcpy(e + 8, &c.handle, 8);
+        std::memcpy(e + 16, &c.a, 8);
+        std::memcpy(e + 24, &c.b, 8);
+        at += kCaptureEntrySize + ((captureBytes(c) + 7) & ~size_t(7));
+    }
+    return payload;
+}
+
+void CompletionFeed::fault(uint32_t opcode, int32_t result) {
+    std::vector<unsigned char> payload(8);
+    std::memcpy(payload.data(), &opcode, 4);
+    std::memcpy(payload.data() + 4, &result, 4);
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        unwrittenPayload_ += payload.size();
+    }
+    push(0, kFault, std::move(payload));
+}
+
+bool CompletionFeed::parseWaitSerial(const unsigned char* packet, size_t size, uint64_t* serial) {
+    if (size != kWaitSerialPacketSize || u32(packet) != kWaitSerialOpcode || u32(packet + 4) != kWaitSerialPacketSize)
+        return false;
+    *serial = u64(packet + 8);
+    return *serial != 0;
+}
+
+void CompletionFeed::resolvedLocked(uint64_t serial) {
+    if (unresolved_.erase(serial)) serialsChanged_.notify_all();
+}
+
+bool CompletionFeed::serialResolved(uint64_t serial) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return serial <= lastWatched_ && !unresolved_.count(serial);
+}
+
+int CompletionFeed::waitSerial(uint64_t serial) {
+    std::unique_lock<std::mutex> lock(mutex_);
+    // A barrier names a watch the process has already made.
+    if (serial > lastWatched_) return EPROTO;
+    serialsChanged_.wait(lock, [&] { return serialsCancelled_ || !unresolved_.count(serial); });
+    return unresolved_.count(serial) ? ECANCELED : 0;
+}
+
 bool CompletionFeed::parseOrder(const unsigned char* packet, size_t size, uint64_t* serial) {
     if (size != kOrderPacketSize || u32(packet) != kOrderOpcode || u32(packet + 4) != kOrderPacketSize)
         return false;
@@ -68,6 +169,11 @@ void CompletionFeed::cancelOrders() {
         ordersCancelled_ = true;
     }
     orderChanged_.notify_all();
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        serialsCancelled_ = true;
+    }
+    serialsChanged_.notify_all();
 }
 
 bool CompletionFeed::parseFeed(const unsigned char* packet, size_t size) {
@@ -86,8 +192,17 @@ CompletionFeed::State CompletionFeed::state() {
         std::lock_guard<std::mutex> lock(mutex_);
         s.watches = watches_;
         s.unwatched = unwatched_;
-        s.outstanding = markers_.size() + (waiting_.serial ? 1 : 0);
-        const Pending* oldest = waiting_.serial ? &waiting_ : markers_.empty() ? nullptr : &markers_.front();
+        s.outstanding = outstanding_;
+        s.lanes = lanes_.size();
+        // The marker watched longest ago over every lane: the front of each lane's order.
+        const Pending* oldest = nullptr;
+        for (const auto& lane : lanes_) {
+            const Pending* front = lane->waiting.serial ? &lane->waiting
+                                   : lane->markers.empty() ? nullptr : &lane->markers.front();
+            if (front && (!oldest || front->watchedMs < oldest->watchedMs ||
+                          (front->watchedMs == oldest->watchedMs && front->serial < oldest->serial)))
+                oldest = front;
+        }
         if (oldest) {
             s.oldestSerial = oldest->serial;
             s.oldestQueue = oldest->queue;
@@ -112,7 +227,6 @@ CompletionFeed::CompletionFeed(Submit submit) : submit_(std::move(submit)) {
         fcntl(fd, F_SETFD, FD_CLOEXEC);
         fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK);
     }
-    watcher_ = std::thread([this] { watcherLoop(); });
 }
 
 CompletionFeed::~CompletionFeed() {
@@ -122,26 +236,61 @@ CompletionFeed::~CompletionFeed() {
 
 void CompletionFeed::close() {
     cancelOrders();
+    std::vector<std::thread*> threads;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         closing_ = true;
+        // No lane is made once closing: this is every thread there will be.
+        for (auto& lane : lanes_) {
+            lane->changed.notify_all();
+            threads.push_back(&lane->thread);
+        }
     }
-    markersChanged_.notify_all();
-    if (watcher_.joinable() && watcher_.get_id() != std::this_thread::get_id()) watcher_.join();
+    for (std::thread* thread : threads)
+        if (thread->joinable() && thread->get_id() != std::this_thread::get_id()) thread->join();
 }
 
-void CompletionFeed::watch(uint64_t boxedQueue, uint64_t serial) {
+CompletionFeed::Lane& CompletionFeed::laneForLocked(uint64_t queue) {
+    auto found = laneOfQueue_.find(queue);
+    if (found != laneOfQueue_.end()) return *lanes_[found->second];
+    if (lanes_.size() < kMaxLanes) {
+        lanes_.push_back(std::make_unique<Lane>());
+        Lane& lane = *lanes_.back();
+        lane.thread = std::thread([this, &lane] { watcherLoop(lane); });
+        laneOfQueue_.emplace(queue, lanes_.size() - 1);
+        return lane;
+    }
+    // Every lane is taken: the marker joins the lane with the fewest markers. A queue's
+    // markers may then wait in different lanes; records may arrive in any order.
+    Lane* least = lanes_.front().get();
+    for (auto& lane : lanes_) {
+        const size_t load = lane->markers.size() + (lane->waiting.serial ? 1 : 0);
+        if (load < least->markers.size() + (least->waiting.serial ? 1 : 0)) least = lane.get();
+    }
+    return *least;
+}
+
+void CompletionFeed::watch(uint64_t boxedQueue, uint64_t serial, std::vector<Capture> captures) {
     {
         std::lock_guard<std::mutex> lock(mutex_);
+        if (serial > lastWatched_) {
+            // Serials skipped on the way here were never watched: nothing to wait for.
+            lastWatched_ = serial;
+            serialsChanged_.notify_all();
+        }
         if (closing_ || detached_) return;
         ++watches_;
-        if (markers_.size() >= kMaxOutstanding) {
+        if (outstanding_ >= kMaxOutstanding) {
             ++unwatched_;
-            records_.push_back({serial, kUnwatched});
+            records_.push_back({serial, kUnwatched, {}});
             char one = 1;
             (void)!write(wake_[1], &one, 1);
             return;
         }
+    }
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        unresolved_.insert(serial);
     }
     // The marker submission takes decoder locks: never under this feed's lock.
     Waiter wait = submit_(boxedQueue);
@@ -149,6 +298,7 @@ void CompletionFeed::watch(uint64_t boxedQueue, uint64_t serial) {
         {
             std::lock_guard<std::mutex> lock(mutex_);
             ++unwatched_;
+            resolvedLocked(serial);
         }
         push(serial, kUnwatched);
         return;
@@ -156,46 +306,61 @@ void CompletionFeed::watch(uint64_t boxedQueue, uint64_t serial) {
     {
         std::unique_lock<std::mutex> lock(mutex_);
         if (closing_) {
-            // The watcher may be gone: the marker is waited for here, releasing its device.
+            // The lanes may be gone: the marker is waited for here, releasing its device.
             lock.unlock();
-            wait();
+            wait([](const Capturer&) {});
+            std::lock_guard<std::mutex> relock(mutex_);
+            resolvedLocked(serial);
             return;
         }
-        markers_.push_back({serial, std::move(wait), boxedQueue, nowMs()});
+        Lane& lane = laneForLocked(boxedQueue);
+        lane.markers.push_back({serial, std::move(wait), boxedQueue, nowMs(), std::move(captures)});
+        ++outstanding_;
+        lane.changed.notify_one();
     }
-    markersChanged_.notify_one();
 }
 
-void CompletionFeed::watcherLoop() {
+void CompletionFeed::watcherLoop(Lane& lane) {
     for (;;) {
         Pending next;
         {
             std::unique_lock<std::mutex> lock(mutex_);
-            markersChanged_.wait(lock, [this] { return closing_ || !markers_.empty(); });
+            lane.changed.wait(lock, [&] { return closing_ || !lane.markers.empty(); });
             // Outstanding markers are always waited for: each holds its device alive.
-            if (markers_.empty()) return;
-            next = std::move(markers_.front());
-            markers_.pop_front();
-            waiting_ = {next.serial, nullptr, next.queue, next.watchedMs};
+            if (lane.markers.empty()) return;
+            next = std::move(lane.markers.front());
+            lane.markers.pop_front();
+            lane.waiting = {next.serial, nullptr, next.queue, next.watchedMs, {}};
         }
-        const int32_t result = next.wait();
+        std::vector<unsigned char> payload;
+        const int32_t result = next.wait([&](const Capturer& capturer) {
+            if (!next.captures.empty()) payload = takeCaptures(next.captures, capturer);
+        });
         next.wait = nullptr;
+        if (result != 0 && !payload.empty()) {
+            // A lost device's captures are not sent.
+            std::lock_guard<std::mutex> lock(mutex_);
+            unwrittenPayload_ -= payload.size();
+            payload.clear();
+        }
         {
             std::lock_guard<std::mutex> lock(mutex_);
-            waiting_ = {};
+            lane.waiting = {};
+            --outstanding_;
+            resolvedLocked(next.serial);
             lastCompletedSerial_ = next.serial;
             lastStatus_ = result == 0 ? kCompleted : kDeviceLost;
             lastCompletedMs_ = nowMs();
         }
-        push(next.serial, result == 0 ? kCompleted : kDeviceLost);
+        push(next.serial, result == 0 ? kCompleted : kDeviceLost, std::move(payload));
     }
 }
 
-void CompletionFeed::push(uint64_t serial, int32_t status) {
+void CompletionFeed::push(uint64_t serial, int32_t status, std::vector<unsigned char> payload) {
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (detached_) return;
-        records_.push_back({serial, status});
+        if (detached_) { unwrittenPayload_ -= payload.size(); return; }
+        records_.push_back({serial, status, std::move(payload)});
     }
     char one = 1;
     (void)!write(wake_[1], &one, 1);
@@ -218,8 +383,9 @@ int CompletionFeed::run(int fd, const std::atomic_bool& stop) {
         ~Detach() {
             std::lock_guard<std::mutex> lock(feed->mutex_);
             if (feed->generation_ != generation) return;  // superseded: the new feed owns records
-            // The guest is gone: records have no reader. The watcher keeps waiting for
+            // The guest is gone: records have no reader. The lanes keep waiting for
             // markers until close(), since each holds its device alive.
+            for (const auto& r : feed->records_) feed->unwrittenPayload_ -= r.payload.size();
             feed->records_.clear();
             feed->detached_ = true;
             feed->attached_ = false;
@@ -234,10 +400,22 @@ int CompletionFeed::run(int fd, const std::atomic_bool& stop) {
             ready.swap(records_);
         }
         if (!ready.empty()) {
-            out.assign(ready.size() * kRecordSize, 0);
-            for (size_t i = 0; i < ready.size(); ++i) {
-                std::memcpy(out.data() + i * kRecordSize, &ready[i].serial, 8);
-                std::memcpy(out.data() + i * kRecordSize + 8, &ready[i].status, 4);
+            // Each record: serial u64, status i32, payload bytes u32, then the payload.
+            size_t bytes = 0, payloads = 0;
+            for (const auto& r : ready) { bytes += kRecordSize + r.payload.size(); payloads += r.payload.size(); }
+            out.assign(bytes, 0);
+            size_t at = 0;
+            for (const auto& r : ready) {
+                const uint32_t size = static_cast<uint32_t>(r.payload.size());
+                std::memcpy(out.data() + at, &r.serial, 8);
+                std::memcpy(out.data() + at + 8, &r.status, 4);
+                std::memcpy(out.data() + at + 12, &size, 4);
+                if (size) std::memcpy(out.data() + at + kRecordSize, r.payload.data(), size);
+                at += kRecordSize + size;
+            }
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                unwrittenPayload_ -= payloads;
             }
             if (int error = sendAll(fd, out.data(), out.size())) return stop.load() ? 0 : error;
             std::lock_guard<std::mutex> lock(mutex_);

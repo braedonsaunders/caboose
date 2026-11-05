@@ -27,7 +27,7 @@ name=caboose-capabilities-$$
 shared=$(mktemp -d)
 chmod 1777 "$shared"
 cpus=${CPUS:-4}
-phone=guest-handles,guest-handle-arrays,completion-feed,ordered-present,guest-images,guest-query-pools,shader-cache,executor-resume,zstd-stream,upload-cache,guest-buffer-views,batched-descriptor-sets
+phone=guest-handles,guest-handle-arrays,completion-feed,ordered-present,guest-images,guest-query-pools,shader-cache,executor-resume,zstd-stream,upload-cache,guest-buffer-views,batched-descriptor-sets-inline,guest-set-ids
 cleanup() {
   docker rm -f "$name-executor" "$name-computer" > /dev/null 2>&1 || true
   rm -rf "$shared"
@@ -50,7 +50,9 @@ docker run -d --name "$name-computer" --init --network none --cpus "$cpus" --mem
   /repo/apps/ios/GPUStream/gfxstream/linux-executor/broker_host.py --directory /shared/gpu --listen 127.0.0.1:14650 --bind-delay "${BIND_DELAY:-0.4}" --refuse-missing-x11 :99 \
   > /dev/null
 wait_log "$name-computer" 'listening on' 30 || fail 'the broker did not start'
-docker exec -d -u caboose "$name-computer" Xvfb :99 -screen 0 1920x1080x24 -nolisten tcp
+# -noreset: an X server otherwise regenerates whenever its last client leaves, and a client
+# connecting meanwhile is reset (the exit_latency children and the bind fixture come and go).
+docker exec -d -u caboose "$name-computer" Xvfb :99 -screen 0 1920x1080x24 -nolisten tcp -noreset
 docker exec -u caboose "$name-computer" sh -c 'python3 /repo/guest/gpu/gfxstream/make_manifest.py \
   /shared/libvulkan_gfxstream.so "$(sha256sum /shared/libvulkan_gfxstream.so | cut -d" " -f1)" /tmp/icd.json 1.3.0'
 else
@@ -88,6 +90,10 @@ executor() { # features
     python3 -u /repo/apps/ios/GPUStream/gfxstream/linux-executor/executor.py --connect "127.0.0.1:$port" \
     --token-file "$token" --library /build/libcaboose_gpu_executor.so --features "$1" --extra-formats "${EXTRA_FORMATS-37:0,43:0}" > /dev/null
   wait_log "$name-executor" 'session ready' 60 || fail 'the executor session did not start'
+  # The broker makes its device socket after the executor's session is ready: an application
+  # that started before it would fail its instance (VK_ERROR_INCOMPATIBLE_DRIVER).
+  i=0; until docker exec "$name-computer" test -S "$sockets/gpu.sock"; do
+    i=$((i + 1)); [ $i -le 150 ] || fail 'the broker never made its device socket'; sleep 0.2; done
 }
 drain() { # log
   # An executor that already exited keeps its logs for the verdict below.
@@ -128,8 +134,10 @@ for name in ('disabled','cold','warm','fresh'):
     count,size,micros=map(int,writes.groups())
     if name=='cold' and not count:
         raise SystemExit('FAIL the cold process kept no answers: '+writes.group(0))
-    # Each new answer is one appended record: never a rewrite of earlier records.
-    if count>misses or size>count*(2*4096+4096+16):
+    # Each new answer is one appended record: never a rewrite of earlier records. A record is
+    # at most a key of 2*4096+16 bytes and a 64 KiB value (static_query_cache.h kMaxKeyBytes,
+    # kMaxValueBytes); a process's device answers (properties chains) reach several KiB.
+    if count>misses or size>count*(2*4096+16+65536):
         raise SystemExit('FAIL capability cache rewrote records: '+name+' '+writes.group(0))
     seconds[name]=float(elapsed.group(1))
     print('%-8s process %.3f s, %d records appended, %d bytes, %.3f ms appending'%(name,seconds[name],count,size,micros/1000))

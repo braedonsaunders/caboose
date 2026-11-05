@@ -71,15 +71,18 @@ class Registry:
         self.buffers = {}
 
     def register(self, connection, process, identity, image):
-        owned = sum(1 for entry in self.buffers.values() if entry[0] == connection)
+        """Registers a buffer for its first registering process: whether it is now that
+        connection's. Another process importing the same buffer (the compositor imports its
+        clients' buffers) registers nothing, and a connection at its capacity gets no more
+        buffers; neither ends the connection or its other buffers."""
         current = self.buffers.get(identity)
-        if current is not None and current[0] != connection:
-            raise ValueError('buffer registered by another process')
-        if current is None and owned >= MAX_BUFFERS_PER_PROCESS:
-            raise ValueError('buffer registration capacity')
+        if current is not None:
+            return current[0] == connection
+        if sum(1 for entry in self.buffers.values() if entry[0] == connection) >= MAX_BUFFERS_PER_PROCESS:
+            return False
         # A buffer is registered once, for the first image bound to it.
-        if current is None:
-            self.buffers[identity] = (connection, process, image)
+        self.buffers[identity] = (connection, process, image)
+        return True
 
     def forget(self, connection, identity):
         current = self.buffers.get(identity)
@@ -111,6 +114,7 @@ class Window:
     window: int
     process: int = 0
     extent: tuple = (0, 0)
+    source: tuple = (0, 0)     # the bound images' host instance and device
     key: tuple = None          # the grant's (epoch, grant, generation) once bound
     bound: bool = False
     binding: bool = False
@@ -131,8 +135,11 @@ class Window:
             self.waiting = frame
             return None
         if self.key is not None and (frame.process != self.process or
-                                     (frame.image.width, frame.image.height) != self.extent):
-            # Another process or size needs a new grant: retire this one first.
+                                     (frame.image.width, frame.image.height) != self.extent or
+                                     (frame.image.instance, frame.image.device) != self.source):
+            # Another process, size or device (a renderer made again: its images belong to
+            # another instance than the one the window was bound for) needs a new grant:
+            # retire this one first.
             self.release(self.waiting, errno.ECANCELED)
             self.waiting = frame
             self.retiring = True
@@ -144,6 +151,7 @@ class Window:
                 return None
             self.binding = True
             self.process, self.extent = frame.process, (frame.image.width, frame.image.height)
+            self.source = (frame.image.instance, frame.image.device)
             return 'bind'
         return self.next_present()
 
@@ -201,6 +209,7 @@ class Window:
             return None
         self.binding = True
         self.process, self.extent = self.waiting.process, (self.waiting.image.width, self.waiting.image.height)
+        self.source = (self.waiting.image.instance, self.waiting.image.device)
         return 'bind'
 
     def take_released(self):

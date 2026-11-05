@@ -68,12 +68,11 @@ public struct MonitorPolicy {
     public func resolve(external: ClientCapabilities? = nil) -> ClientCapabilities? {
         if let external { return external }
         guard var device, let panel = laptopPanel ?? physicalScreen, let selection else { return device }
-        let width = Double(panel.width) * selection.renderScale
-        let height = Double(panel.height) * selection.renderScale
-        guard width.isFinite, height.isFinite, (1...32768).contains(width),
-              (1...32768).contains(height) else { return device }
-        device.desktopWidth = Int(width)
-        device.desktopHeight = Int(height)
+        guard let width = Self.pixels(Double(panel.width), scale: selection.renderScale),
+              let height = Self.pixels(Double(panel.height), scale: selection.renderScale),
+              width <= 32768, height <= 32768 else { return device }
+        device.desktopWidth = width
+        device.desktopHeight = height
         return device
     }
 
@@ -107,9 +106,20 @@ public struct MonitorPolicy {
 
     public static func fullDevice(screen: CGSize, pixelsPerPoint: CGFloat, dpi: Int,
                                   refreshRate: Int) -> ClientCapabilities {
-        return ClientCapabilities(desktopWidth: Int(screen.width * pixelsPerPoint),
-                                  desktopHeight: Int(screen.height * pixelsPerPoint),
+        return ClientCapabilities(desktopWidth: pixels(Double(screen.width), scale: Double(pixelsPerPoint)) ?? 0,
+                                  desktopHeight: pixels(Double(screen.height), scale: Double(pixelsPerPoint)) ?? 0,
                                   dpi: dpi, refreshRate: refreshRate)
+    }
+
+    /// The whole computer pixels that cover `points` at `scale`: rounded up, so a display made
+    /// for a panel of fractional pixels reaches its edge (the phone clips the part past it)
+    /// instead of ending short of it. A value within a thousandth of a pixel of a whole one
+    /// is that one. Nil for no pixels.
+    public static func pixels(_ points: Double, scale: Double) -> Int? {
+        let value = points * scale
+        guard value.isFinite, value >= 0.001, value <= 1_048_576 else { return nil }
+        let nearest = value.rounded()
+        return Int(abs(value - nearest) < 0.001 ? nearest : value.rounded(.up))
     }
 
     /// Only an explicit owner zoom changes the retained device DPI.

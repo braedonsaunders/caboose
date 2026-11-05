@@ -119,7 +119,7 @@ All guest times are the computer's CLOCK_MONOTONIC.
   shares with the display's log ([gfxstream README](../gpu/gfxstream/README.md)). Without
   it the broker's `CABOOSE_GPU_PRESENT_RATE` lines are used.
 - The app's own output: `CABOOSE_READ_PROFILE=1` is in its environment, and the phone's
-  driver prints its blocking-read profile every two seconds.
+  driver prints its blocking-read profile every two seconds and at exit.
 - `/proc` for the CPU of the app's process tree, sampled every half second.
 - The phone's console, kept by the driver: `CABOOSE_GPU_DECODE_TIMING` lines (with
   `CABOOSE_PRIVATE_GPU_MEMORY_AUDIT=1`), and `caboose-framelab: present window=W seq=S

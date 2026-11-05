@@ -56,6 +56,45 @@ private:
     std::unordered_map<uint64_t, Entry> entries_;
 };
 
-inline EventStatusReplies eventStatusReplies;
+// Never destroyed: a process's exit runs static destructors while its other threads may
+// still be inside the driver.
+inline EventStatusReplies& eventStatusReplies = *new EventStatusReplies;
+
+// An event the completion tracker says is reset, polled with no batch pending that could set it,
+// is asked about on the device after kRecheckMs and then every kRecheckMs while the poll
+// continues: the local answer is right as long as the tracker saw every change, and the device's
+// answer is the truth if it missed one (a poll otherwise never ends, as DXVK's did).
+class EventRecheck {
+public:
+    static constexpr int64_t kRecheckMs = 250;
+    // Whether this thread's poll of `event`, answered reset locally at `nowMs`, should ask the
+    // device now.
+    bool due(uint64_t event, int64_t nowMs) {
+        Poll& poll = poll_();
+        if (poll.event != event) {
+            poll = {event, nowMs, nowMs};
+            return false;
+        }
+        if (nowMs - poll.lastAsked < kRecheckMs) return false;
+        poll.lastAsked = nowMs;
+        return nowMs - poll.first >= kRecheckMs;
+    }
+    // The poll of `event` ended (it was answered set).
+    void done(uint64_t event) {
+        Poll& poll = poll_();
+        if (poll.event == event) poll = {};
+    }
+
+private:
+    struct Poll {
+        uint64_t event = 0;
+        int64_t first = 0, lastAsked = 0;
+    };
+    static Poll& poll_() {
+        thread_local Poll poll;
+        return poll;
+    }
+};
+inline EventRecheck& eventRecheck = *new EventRecheck;
 
 }  // namespace caboose::memory

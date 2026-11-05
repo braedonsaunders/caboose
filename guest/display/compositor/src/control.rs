@@ -17,7 +17,8 @@
 //!                              surface's id in that connection), rect (the window),
 //!                              surface (its root surface's x, y, w, h, shadows included),
 //!                              display, scale, focused
-//! focus ID                     give a window the keyboard
+//! focus ID                     give a window the keyboard; one that has it is deactivated
+//!                              and given it again
 //! close ID                     ask a window to close, as its close button would (quitting
 //!                              an app, guest/scopes)
 //! click X Y [BUTTON [COUNT]]   BUTTON is left, middle, right, back or forward
@@ -298,7 +299,7 @@ impl State {
                 .and_then(|a| a.parse::<u64>().ok())
                 .filter(|id| self.windows.get(*id).is_some())
                 .map(|id| {
-                    self.focus_window(id);
+                    self.refocus_window(id);
                     b"{\"ok\":true}\n".to_vec()
                 })
                 .ok_or_else(|| "no such window".to_owned()),
@@ -488,7 +489,7 @@ impl State {
     }
 
     /// The keyboard's window.
-    fn focused_window(&self) -> Option<u64> {
+    pub(crate) fn focused_window(&self) -> Option<u64> {
         match self.seat.get_keyboard()?.current_focus()? {
             KeyboardFocus::Wayland(s) => self.window_of_surface(&s),
             KeyboardFocus::X11(x) => self.windows.by_x11(&x),

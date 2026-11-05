@@ -30,6 +30,10 @@ int SocketStream::commitBuffer(size_t size) {
 }
 int SocketStream::writeFully(const void* data, size_t size) {
     const auto* p = static_cast<const unsigned char*>(data);
+    if (holding_) {
+        try { held_.insert(held_.end(), p, p + size); } catch (...) { fail(ENOMEM); }
+        return 0;
+    }
     while (size && !error()) {
 #ifdef MSG_NOSIGNAL
         const auto n = send(fd_, p, size, MSG_NOSIGNAL);

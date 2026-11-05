@@ -3,6 +3,8 @@
 // (README.md). Each case prints one CABOOSE_SYNC_CHECK line; the exit status is nonzero
 // when a case fails.
 #define _POSIX_C_SOURCE 200809L
+#include <errno.h>
+#include <fcntl.h>
 #include <stdarg.h>
 #include <stdatomic.h>
 #include <stdint.h>
@@ -11,7 +13,12 @@
 #include <string.h>
 #include <time.h>
 #include <poll.h>
+#include <pthread.h>
+#include <signal.h>
+#include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
+#include <dlfcn.h>
 #include <unistd.h>
 #include <xcb/xcb.h>
 #include <vulkan/vulkan.h>
@@ -331,6 +338,168 @@ static void completionCase(void) {
            batchUs / 1000.0 / rounds);
 }
 
+// Lazy readback (bounded-memory/README.md): GPU-written coherent memory is filled from the
+// phone on its first use. A query's results and a pipeline cache's data are written straight
+// into such memory while it is still lazy, by calls the driver answers holding its own locks,
+// encoder included: the fill must need none of them. A call that never returns is a deadlock,
+// reported by the watchdog. The GPU's bytes around them must arrive too.
+static void lazyWatchdog(int signal) {
+    (void)signal;
+    static const char line[] = "CABOOSE_SYNC_CHECK case=lazy_query_results FAIL deadlock: a call writing into lazy memory did not return in 30 s\n";
+    (void)!write(1, line, sizeof(line) - 1);
+    _exit(1);
+}
+static void lazyQueryResultsCase(void) {
+    const VkDeviceSize size = 1u << 20;
+    VkBufferCreateInfo bufferInfo = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    bufferInfo.size = size;
+    bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    VkBuffer source, target;
+    CHECK(vkCreateBuffer(device, &bufferInfo, NULL, &source));
+    // A buffer the GPU may also read: its copies are read back, never carried in completion
+    // records, so the invalidate after the wait reads it, lazily.
+    bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+    CHECK(vkCreateBuffer(device, &bufferInfo, NULL, &target));
+    VkMemoryRequirements req;
+    VkMemoryAllocateInfo alloc = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    VkDeviceMemory sourceMemory, targetMemory;
+    vkGetBufferMemoryRequirements(device, source, &req);
+    alloc.allocationSize = req.size;
+    alloc.memoryTypeIndex = memoryType(req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    CHECK(vkAllocateMemory(device, &alloc, NULL, &sourceMemory));
+    CHECK(vkBindBufferMemory(device, source, sourceMemory, 0));
+    vkGetBufferMemoryRequirements(device, target, &req);
+    alloc.allocationSize = req.size;
+    alloc.memoryTypeIndex = memoryType(req.memoryTypeBits,
+                                       VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    CHECK(vkAllocateMemory(device, &alloc, NULL, &targetMemory));
+    CHECK(vkBindBufferMemory(device, target, targetMemory, 0));
+    uint8_t* mapped = NULL;
+    CHECK(vkMapMemory(device, targetMemory, 0, VK_WHOLE_SIZE, 0, (void**)&mapped));
+    VkQueryPoolCreateInfo poolInfo = {VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+    poolInfo.queryType = VK_QUERY_TYPE_TIMESTAMP;
+    poolInfo.queryCount = 1;
+    VkQueryPool pool;
+    CHECK(vkCreateQueryPool(device, &poolInfo, NULL, &pool));
+    VkPipelineCacheCreateInfo cacheInfo = {VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO};
+    VkPipelineCache cache;
+    CHECK(vkCreatePipelineCache(device, &cacheInfo, NULL, &cache));
+    size_t cacheSize = 0;
+    CHECK(vkGetPipelineCacheData(device, cache, &cacheSize, NULL));
+    uint8_t* expected = calloc(1, cacheSize ? cacheSize : 1);
+    if (!expected) fail("calloc", VK_ERROR_OUT_OF_HOST_MEMORY);
+    size_t expectedSize = cacheSize;
+    CHECK(vkGetPipelineCacheData(device, cache, &expectedSize, expected));
+    signal(SIGALRM, lazyWatchdog);
+    alarm(30);
+    const int rounds = 4;
+    int wrong = 0, wrongCache = 0, zeroTimestamps = 0;
+    uint64_t callUs = 0, touchUs = 0, waitUs = 0;
+    for (int i = 0; i < rounds; ++i) {
+        const uint32_t pattern = 0xA5000000u + (uint32_t)i;
+        vkResetQueryPool(device, pool, 0, 1);
+        begin();
+        vkCmdFillBuffer(cb, source, 0, VK_WHOLE_SIZE, pattern);
+        VkMemoryBarrier2 barrier = {VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
+        barrier.srcStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
+        barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        barrier.dstStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
+        barrier.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
+        VkDependencyInfo dependency = {VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+        dependency.memoryBarrierCount = 1;
+        dependency.pMemoryBarriers = &barrier;
+        vkCmdPipelineBarrier2(cb, &dependency);
+        const VkBufferCopy copy = {0, 0, size};
+        vkCmdCopyBuffer(cb, source, target, 1, &copy);
+        vkCmdWriteTimestamp2(cb, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, pool, 0);
+        const uint64_t waitStart = nowUs();
+        waitTimeline(submit2(1));
+        waitUs += nowUs() - waitStart;
+        // Written into the lazy memory, before anything else touches it.
+        uint64_t* results = (uint64_t*)(mapped + (256u << 10) + 8);
+        uint8_t* cacheData = mapped + (512u << 10);
+        const uint64_t start = nowUs();
+        CHECK(vkGetQueryPoolResults(device, pool, 0, 1, sizeof(uint64_t), results, sizeof(uint64_t),
+                                    VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT));
+        size_t got = cacheSize;
+        CHECK(vkGetPipelineCacheData(device, cache, &got, cacheData));
+        callUs += nowUs() - start;
+        if (!*(volatile uint64_t*)results) ++zeroTimestamps;
+        if (got != expectedSize || memcmp(cacheData, expected, got)) ++wrongCache;
+        // The GPU's bytes before, between and after them; the first read of a part nothing
+        // touched yet takes a fill when the memory is lazy.
+        const uint32_t* words = (const uint32_t*)mapped;
+        const uint64_t touchStart = nowUs();
+        if (((const volatile uint32_t*)words)[(768u << 10) / 4] != pattern) ++wrong;
+        touchUs += nowUs() - touchStart;
+        if (words[0] != pattern || words[(256u << 10) / 4] != pattern || words[(size - 4) / 4] != pattern ||
+            words[(512u << 10) / 4 + (uint32_t)(got + 4) / 4 + 1] != pattern)
+            ++wrong;
+    }
+    alarm(0);
+    signal(SIGALRM, SIG_DFL);
+    free(expected);
+    vkDestroyPipelineCache(device, cache, NULL);
+    vkDestroyQueryPool(device, pool, NULL);
+    vkUnmapMemory(device, targetMemory);
+    vkDestroyBuffer(device, source, NULL);
+    vkDestroyBuffer(device, target, NULL);
+    vkFreeMemory(device, sourceMemory, NULL);
+    vkFreeMemory(device, targetMemory, NULL);
+    report("lazy_query_results", !wrong && !wrongCache, "rounds=%d wrong_gpu_bytes=%d wrong_cache_data=%d "
+           "zero_timestamps=%d mean_wait_ms=%.1f mean_calls_ms=%.1f mean_first_touch_ms=%.2f", rounds, wrong,
+           wrongCache, zeroTimestamps, waitUs / 1000.0 / rounds, callUs / 1000.0 / rounds, touchUs / 1000.0 / rounds);
+}
+
+// Memory nothing was sent since its allocation could have written is invalidated without
+// reading (device_work.h): what the process wrote stays. Once a fill was sent, the invalidate
+// after vkQueueWaitIdle (which must wait for that fill) reads the device's bytes, at once or,
+// in coherent memory, lazily on first use (lazy readback): a lazy or GPU-marked block is never
+// taken for unwritten.
+static void unwrittenMemoryCase(VkMemoryPropertyFlags want, const char* name) {
+    VkBufferCreateInfo bufferInfo = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    bufferInfo.size = 65536;
+    bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    VkBuffer buffer;
+    CHECK(vkCreateBuffer(device, &bufferInfo, NULL, &buffer));
+    VkMemoryRequirements req;
+    vkGetBufferMemoryRequirements(device, buffer, &req);
+    VkMemoryAllocateInfo alloc = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    alloc.allocationSize = req.size;
+    alloc.memoryTypeIndex = memoryType(req.memoryTypeBits, want);
+    VkDeviceMemory memory;
+    CHECK(vkAllocateMemory(device, &alloc, NULL, &memory));
+    CHECK(vkBindBufferMemory(device, buffer, memory, 0));
+    volatile uint8_t* mapped = NULL;
+    CHECK(vkMapMemory(device, memory, 0, VK_WHOLE_SIZE, 0, (void**)&mapped));
+    const VkMappedMemoryRange range = {VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, NULL, memory, 0, VK_WHOLE_SIZE};
+    memset((void*)mapped, 0xA5, (size_t)bufferInfo.size);
+    CHECK(vkFlushMappedMemoryRanges(device, 1, &range));
+    const uint64_t start = nowUs();
+    for (int i = 0; i < 16; ++i) CHECK(vkInvalidateMappedMemoryRanges(device, 1, &range));
+    const uint64_t unwrittenUs = nowUs() - start;
+    int kept = 1;
+    for (VkDeviceSize i = 0; i < bufferInfo.size; i += 4093) kept &= mapped[i] == 0xA5;
+    begin();
+    vkCmdFillBuffer(cb, buffer, 0, VK_WHOLE_SIZE, 0x5A5A5A5Au);
+    CHECK(vkEndCommandBuffer(cb));
+    VkSubmitInfo submit = {VK_STRUCTURE_TYPE_SUBMIT_INFO};
+    submit.commandBufferCount = 1;
+    submit.pCommandBuffers = &cb;
+    CHECK(vkQueueSubmit(queue, 1, &submit, VK_NULL_HANDLE));
+    CHECK(vkQueueWaitIdle(queue));
+    CHECK(vkInvalidateMappedMemoryRanges(device, 1, &range));
+    int filled = 1;
+    for (VkDeviceSize i = 0; i < bufferInfo.size; i += 4093) filled &= mapped[i] == 0x5A;
+    // The queue is idle now and nothing was sent since: a second wait has nothing to wait for.
+    CHECK(vkQueueWaitIdle(queue));
+    vkUnmapMemory(device, memory);
+    vkDestroyBuffer(device, buffer, NULL);
+    vkFreeMemory(device, memory, NULL);
+    report(name, kept && filled, "kept=%d filled=%d unwritten_invalidates_us=%llu", kept, filled,
+           (unsigned long long)unwrittenUs);
+}
+
 // Surface formats and present modes enumerated the usual way, a count and then an array of
 // that size, from the moment a window's surface exists (while it binds to the phone, whose
 // answers then replace the local defaults): every enumeration must succeed with the count
@@ -420,6 +589,259 @@ static void surfaceCase(void) {
     // enumeration must survive; the range shows whether this run saw that change.
     report("surface_enumeration", bad == 0, "enumerations=%d inconsistent=%d formats=%u..%u%s%s", enumerations, bad,
            fewestFormats == UINT32_MAX ? 0 : fewestFormats, mostFormats, bad ? " first: " : "", first);
+}
+
+// A descriptor pool reports VK_ERROR_OUT_OF_POOL_MEMORY when an allocation exceeds its sets or
+// its descriptors, also when the sets' handles are assigned without waiting for the phone: an
+// application (DXVK) moves to a new pool, and recycles the full one, only on that result.
+static void poolCapacityCase(void) {
+    VkDescriptorSetLayoutBinding bindings[2] = {
+        {0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_ALL, NULL},
+        {1, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 2, VK_SHADER_STAGE_ALL, NULL},
+    };
+    VkDescriptorSetLayoutCreateInfo layoutInfo = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+    layoutInfo.bindingCount = 2;
+    layoutInfo.pBindings = bindings;
+    VkDescriptorSetLayout layout;
+    CHECK(vkCreateDescriptorSetLayout(device, &layoutInfo, NULL, &layout));
+    // Pool A holds 4 sets and descriptors for 8: its sets run out first. Pool B holds 8 sets
+    // but sampled images for 3: its images run out at the second set.
+    VkDescriptorPoolSize sizesA[2] = {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 8}, {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 16}};
+    VkDescriptorPoolSize sizesB[2] = {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 8}, {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 3}};
+    struct { const char* name; uint32_t maxSets; VkDescriptorPoolSize* sizes; uint32_t fits; } pools[2] = {
+        {"sets", 4, sizesA, 4}, {"descriptors", 8, sizesB, 1}};
+    int ok = 1;
+    char details[256] = "";
+    size_t used = 0;
+    for (int p = 0; p < 2; ++p) {
+        VkDescriptorPoolCreateInfo poolInfo = {VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+        poolInfo.maxSets = pools[p].maxSets;
+        poolInfo.poolSizeCount = 2;
+        poolInfo.pPoolSizes = pools[p].sizes;
+        VkDescriptorPool pool;
+        CHECK(vkCreateDescriptorPool(device, &poolInfo, NULL, &pool));
+        for (int round = 0; round < 2; ++round) {  // again after a reset
+            uint32_t made = 0;
+            VkResult last = VK_SUCCESS;
+            for (uint32_t i = 0; i <= pools[p].fits; ++i) {
+                VkDescriptorSetAllocateInfo setInfo = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+                setInfo.descriptorPool = pool;
+                setInfo.descriptorSetCount = 1;
+                setInfo.pSetLayouts = &layout;
+                VkDescriptorSet set;
+                last = vkAllocateDescriptorSets(device, &setInfo, &set);
+                if (last != VK_SUCCESS) break;
+                ++made;
+            }
+            const int good = made == pools[p].fits && last == VK_ERROR_OUT_OF_POOL_MEMORY;
+            ok &= good;
+            used += (size_t)snprintf(details + used, sizeof(details) - used, "%s%s/%d made=%u of %u result=%d",
+                                     used ? " " : "", pools[p].name, round, made, pools[p].fits, last);
+            CHECK(vkResetDescriptorPool(device, pool, 0));
+        }
+        vkDestroyDescriptorPool(device, pool, NULL);
+    }
+    vkDestroyDescriptorSetLayout(device, layout, NULL);
+    report("pool_capacity", ok, "%s", details);
+}
+
+// Sets bound without any descriptor written since their allocation: a set the shader never
+// reads (DXVK's sets for unused stages, a set of immutable samplers) is still allocated on the
+// device by the submit that binds it, with batched descriptor sets as without. Each round binds
+// such a set alone, beside a written one, and again after a free and a reallocation in a pool
+// that frees sets one by one; a set the device never allocated binds nothing there (the Linux
+// executor faults on it, as lavapipe reads the set) and a later free names a set it never had.
+static void unwrittenSetsCase(void) {
+    VkDescriptorSetLayoutBinding binding = {0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, NULL};
+    VkDescriptorSetLayoutCreateInfo layoutInfo = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+    layoutInfo.bindingCount = 1;
+    layoutInfo.pBindings = &binding;
+    VkDescriptorSetLayout layout;
+    CHECK(vkCreateDescriptorSetLayout(device, &layoutInfo, NULL, &layout));
+    VkDescriptorSetLayout layouts[2] = {layout, layout};
+    VkPipelineLayoutCreateInfo pipelineLayoutInfo = {VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+    pipelineLayoutInfo.setLayoutCount = 2;
+    pipelineLayoutInfo.pSetLayouts = layouts;
+    VkPipelineLayout pipelineLayout;
+    CHECK(vkCreatePipelineLayout(device, &pipelineLayoutInfo, NULL, &pipelineLayout));
+    VkBufferCreateInfo bufferInfo = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    bufferInfo.size = 256;
+    bufferInfo.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+    VkBuffer buffer;
+    CHECK(vkCreateBuffer(device, &bufferInfo, NULL, &buffer));
+    VkMemoryRequirements req;
+    vkGetBufferMemoryRequirements(device, buffer, &req);
+    VkMemoryAllocateInfo memoryInfo = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    memoryInfo.allocationSize = req.size;
+    memoryInfo.memoryTypeIndex = memoryType(req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    VkDeviceMemory memory;
+    CHECK(vkAllocateMemory(device, &memoryInfo, NULL, &memory));
+    CHECK(vkBindBufferMemory(device, buffer, memory, 0));
+    VkDescriptorPoolSize size = {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 64};
+    int ok = 1, rounds = 0;
+    VkResult last = VK_SUCCESS;
+    char first[160] = "";
+    for (int freeing = 0; freeing < 2 && ok; ++freeing) {
+        VkDescriptorPoolCreateInfo poolInfo = {VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+        poolInfo.flags = freeing ? VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT : 0;
+        poolInfo.maxSets = 64;
+        poolInfo.poolSizeCount = 1;
+        poolInfo.pPoolSizes = &size;
+        VkDescriptorPool pool;
+        CHECK(vkCreateDescriptorPool(device, &poolInfo, NULL, &pool));
+        for (int round = 0; round < 8 && ok; ++round) {
+            // Round 0 of each pool: an unwritten set alone; then beside a written one; in the
+            // freeing pool, the written set is freed after its submit and the next round's
+            // allocation takes its id again.
+            VkDescriptorSetAllocateInfo setInfo = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+            setInfo.descriptorPool = pool;
+            setInfo.descriptorSetCount = 2;
+            setInfo.pSetLayouts = layouts;
+            VkDescriptorSet sets[2];
+            if ((last = vkAllocateDescriptorSets(device, &setInfo, sets)) != VK_SUCCESS) {
+                ok = 0;
+                snprintf(first, sizeof(first), "allocate pool=%d round=%d", freeing, round);
+                break;
+            }
+            if (round > 0) {
+                VkDescriptorBufferInfo described = {buffer, 0, 256};
+                VkWriteDescriptorSet write = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+                write.dstSet = sets[0];
+                write.descriptorCount = 1;
+                write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+                write.pBufferInfo = &described;
+                vkUpdateDescriptorSets(device, 1, &write, 0, NULL);
+            }
+            begin();
+            if (round > 0) vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, 2, sets, 0, NULL);
+            else vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 1, 1, &sets[1], 0, NULL);
+            const uint64_t value = submit2(1);
+            VkSemaphoreWaitInfo wait = {VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};
+            wait.semaphoreCount = 1;
+            wait.pSemaphores = &timeline;
+            wait.pValues = &value;
+            if ((last = vkWaitSemaphores(device, &wait, 5000000000ull)) != VK_SUCCESS) {
+                ok = 0;
+                snprintf(first, sizeof(first), "wait pool=%d round=%d", freeing, round);
+                break;
+            }
+            if (freeing && (last = vkFreeDescriptorSets(device, pool, 2, sets)) != VK_SUCCESS) {
+                ok = 0;
+                snprintf(first, sizeof(first), "free pool=%d round=%d", freeing, round);
+                break;
+            }
+            ++rounds;
+        }
+        if (ok && (last = vkDeviceWaitIdle(device)) != VK_SUCCESS) {
+            ok = 0;
+            snprintf(first, sizeof(first), "idle pool=%d", freeing);
+        }
+        vkDestroyDescriptorPool(device, pool, NULL);
+    }
+    vkDestroyBuffer(device, buffer, NULL);
+    vkFreeMemory(device, memory, NULL);
+    vkDestroyPipelineLayout(device, pipelineLayout, NULL);
+    vkDestroyDescriptorSetLayout(device, layout, NULL);
+    report("unwritten_sets", ok, "rounds=%d of 16 result=%d%s%s", rounds, last, ok ? "" : " at ", first);
+}
+
+// Frees from one thread while another sends commands: thread 1 allocates, writes, binds,
+// submits, waits for and frees two sets of a pool that frees them one by one, 300 times;
+// thread 2 creates and destroys buffers meanwhile. Every command shares the device stream, so
+// one written without the encoder lock interleaves with the other thread's and the phone reads
+// neither (a set it cannot find, an unknown command, the process lost).
+static VkBuffer threadedBuffer;
+static VkDescriptorSetLayout threadedLayout;
+static VkPipelineLayout threadedPipelineLayout;
+static atomic_int threadedStop;
+static atomic_int threadedCreated;
+static void* threadedBuffers(void* unused) {
+    (void)unused;
+    while (!atomic_load(&threadedStop)) {
+        VkBufferCreateInfo info = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+        info.size = 4096;
+        info.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+        VkBuffer buffer;
+        if (vkCreateBuffer(device, &info, NULL, &buffer) != VK_SUCCESS) break;
+        VkMemoryRequirements req;
+        vkGetBufferMemoryRequirements(device, buffer, &req);
+        vkDestroyBuffer(device, buffer, NULL);
+        atomic_fetch_add(&threadedCreated, 1);
+    }
+    return NULL;
+}
+static void threadedSetFreesCase(void) {
+    VkDescriptorSetLayoutBinding binding = {0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, NULL};
+    VkDescriptorSetLayoutCreateInfo layoutInfo = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+    layoutInfo.bindingCount = 1;
+    layoutInfo.pBindings = &binding;
+    CHECK(vkCreateDescriptorSetLayout(device, &layoutInfo, NULL, &threadedLayout));
+    VkDescriptorSetLayout layouts[2] = {threadedLayout, threadedLayout};
+    VkPipelineLayoutCreateInfo pipelineLayoutInfo = {VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+    pipelineLayoutInfo.setLayoutCount = 2;
+    pipelineLayoutInfo.pSetLayouts = layouts;
+    CHECK(vkCreatePipelineLayout(device, &pipelineLayoutInfo, NULL, &threadedPipelineLayout));
+    VkBufferCreateInfo bufferInfo = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    bufferInfo.size = 256;
+    bufferInfo.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+    CHECK(vkCreateBuffer(device, &bufferInfo, NULL, &threadedBuffer));
+    VkMemoryRequirements req;
+    vkGetBufferMemoryRequirements(device, threadedBuffer, &req);
+    VkMemoryAllocateInfo memoryInfo = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    memoryInfo.allocationSize = req.size;
+    memoryInfo.memoryTypeIndex = memoryType(req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    VkDeviceMemory memory;
+    CHECK(vkAllocateMemory(device, &memoryInfo, NULL, &memory));
+    CHECK(vkBindBufferMemory(device, threadedBuffer, memory, 0));
+    VkDescriptorPoolSize size = {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 64};
+    VkDescriptorPoolCreateInfo poolInfo = {VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+    poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
+    poolInfo.maxSets = 64;
+    poolInfo.poolSizeCount = 1;
+    poolInfo.pPoolSizes = &size;
+    VkDescriptorPool pool;
+    CHECK(vkCreateDescriptorPool(device, &poolInfo, NULL, &pool));
+    atomic_store(&threadedStop, 0);
+    atomic_store(&threadedCreated, 0);
+    pthread_t other;
+    pthread_create(&other, NULL, threadedBuffers, NULL);
+    int ok = 1, rounds = 0;
+    VkResult last = VK_SUCCESS;
+    for (; rounds < 300 && ok; ++rounds) {
+        VkDescriptorSetAllocateInfo setInfo = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+        setInfo.descriptorPool = pool;
+        setInfo.descriptorSetCount = 2;
+        setInfo.pSetLayouts = layouts;
+        VkDescriptorSet sets[2];
+        if ((last = vkAllocateDescriptorSets(device, &setInfo, sets)) != VK_SUCCESS) { ok = 0; break; }
+        VkDescriptorBufferInfo described = {threadedBuffer, 0, 256};
+        VkWriteDescriptorSet writes[2] = {{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}, {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}};
+        for (int i = 0; i < 2; ++i) {
+            writes[i].dstSet = sets[i];
+            writes[i].descriptorCount = 1;
+            writes[i].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+            writes[i].pBufferInfo = &described;
+        }
+        vkUpdateDescriptorSets(device, 2, writes, 0, NULL);
+        begin();
+        vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, threadedPipelineLayout, 0, 2, sets, 0, NULL);
+        const uint64_t value = submit2(1);
+        VkSemaphoreWaitInfo wait = {VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};
+        wait.semaphoreCount = 1;
+        wait.pSemaphores = &timeline;
+        wait.pValues = &value;
+        if ((last = vkWaitSemaphores(device, &wait, 5000000000ull)) != VK_SUCCESS) { ok = 0; break; }
+        if ((last = vkFreeDescriptorSets(device, pool, 2, sets)) != VK_SUCCESS) { ok = 0; break; }
+    }
+    atomic_store(&threadedStop, 1);
+    pthread_join(other, NULL);
+    if (ok && (last = vkDeviceWaitIdle(device)) != VK_SUCCESS) ok = 0;
+    vkDestroyDescriptorPool(device, pool, NULL);
+    vkDestroyBuffer(device, threadedBuffer, NULL);
+    vkFreeMemory(device, memory, NULL);
+    vkDestroyPipelineLayout(device, threadedPipelineLayout, NULL);
+    vkDestroyDescriptorSetLayout(device, threadedLayout, NULL);
+    report("threaded_set_frees", ok, "rounds=%d of 300 buffers=%d result=%d", rounds, atomic_load(&threadedCreated), last);
 }
 
 // Calls that must not wait for the phone: each is timed; a round trip takes milliseconds.
@@ -760,6 +1182,63 @@ static void childWindowsCase(void) {
            presenters[0].presented, presenters[1].presented, presenters[2].presented, covering, inset, lone);
 }
 
+// A popup as a toolkit makes a menu: an override-redirect window, still unmapped, gets its
+// surface and swapchain (which sends the bind) and its first frame; another process maps it
+// half a second later, as a toolkit's UI process shows a menu its GPU process drew, and 30
+// more frames follow. The compositor holds the bind until the window maps and answers it
+// then (unmapped-bind check: linux-executor/check-unmapped-bind.sh). Run only by name.
+static void unmappedPopupCase(void) {
+    if (!surfaces) fail("unmapped_popup needs an X11 display", VK_ERROR_INITIALIZATION_FAILED);
+    xcb_connection_t* connection = xcb_connect(NULL, NULL);
+    if (xcb_connection_has_error(connection)) fail("unmapped_popup X11", VK_ERROR_INITIALIZATION_FAILED);
+    xcb_screen_t* screen = xcb_setup_roots_iterator(xcb_get_setup(connection)).data;
+    const xcb_window_t parent = createWindow(connection, screen->root, screen->root_visual, 0, 0, 640, 480);
+    const xcb_window_t popup = xcb_generate_id(connection);
+    const uint32_t overrideRedirect = 1;
+    xcb_create_window(connection, XCB_COPY_FROM_PARENT, popup, screen->root, 40, 40, 320, 200, 0,
+                      XCB_WINDOW_CLASS_INPUT_OUTPUT, screen->root_visual, XCB_CW_OVERRIDE_REDIRECT, &overrideRedirect);
+    xcb_flush(connection);
+    fflush(stdout);
+    const pid_t mapper = fork();
+    if (mapper < 0) fail("fork", VK_ERROR_INITIALIZATION_FAILED);
+    if (mapper == 0) {
+        char windowArg[16];
+        snprintf(windowArg, sizeof(windowArg), "%u", popup);
+        execl("/proc/self/exe", "sync_check", "--map-window", windowArg, "500", (char*)NULL);
+        _exit(4);
+    }
+    struct Presenter presenter;
+    presenterCreate(&presenter, connection, popup, 320, 200);
+    const uint64_t start = nowUs();
+    presenterFrame(&presenter, 0.0f);
+    const double firstMs = (double)(nowUs() - start) / 1000.0;
+    int status = 0;
+    waitpid(mapper, &status, 0);
+    const int mapped = WIFEXITED(status) && WEXITSTATUS(status) == 0;
+    const int frames = 30;
+    for (int i = 0; i < frames; ++i) presenterFrame(&presenter, (float)i / frames);
+    presenterDestroy(&presenter);
+    xcb_destroy_window(connection, popup);
+    xcb_destroy_window(connection, parent);
+    xcb_flush(connection);
+    xcb_disconnect(connection);
+    report("unmapped_popup", mapped && presenter.presented == frames + 1,
+           "accepted=%d window=%#x mapped_by_other_process=%d first_frame_ms=%.1f", presenter.presented, popup, mapped,
+           firstMs);
+}
+
+// The mapper of unmappedPopupCase: maps `window` after `delayMs` on a connection of its own.
+static int mapWindowChild(xcb_window_t window, int delayMs) {
+    xcb_connection_t* connection = xcb_connect(NULL, NULL);
+    if (xcb_connection_has_error(connection)) return 2;
+    struct timespec pause = {delayMs / 1000, (long)(delayMs % 1000) * 1000000L};
+    nanosleep(&pause, NULL);
+    xcb_generic_error_t* error = xcb_request_check(connection, xcb_map_window_checked(connection, window));
+    xcb_disconnect(connection);
+    if (error) { free(error); return 3; }
+    return 0;
+}
+
 // Exactly one present followed by no Vulkan calls: a delayed bind must progress
 // independently. The executor verifies the frame, not merely the API return value.
 static void oneShotCase(void) {
@@ -913,6 +1392,11 @@ static void* VKAPI_PTR trackedReallocate(void* opaque, void* original, size_t si
 }
 
 static int exitChild(int mode, int fd) {
+    struct stat pipeStat = {0};
+    if (fd>=0 && (fstat(fd, &pipeStat) != 0 || !S_ISFIFO(pipeStat.st_mode))) {
+        fprintf(stderr, "CABOOSE_SYNC_CHECK exit_child pipe fd=%d is not a pipe at start (errno %d)\n", fd, errno);
+        return 6;
+    }
     VkAllocationCallbacks callbacks={0};
     const VkAllocationCallbacks* allocator=NULL;
     if (mode==2) {
@@ -932,11 +1416,11 @@ static int exitChild(int mode, int fd) {
     instanceInfo.enabledExtensionCount = 2;
     instanceInfo.ppEnabledExtensionNames = extensions;
     VkInstance childInstance;
-    if (vkCreateInstance(&instanceInfo, allocator, &childInstance) != VK_SUCCESS) return 3;
+    if (vkCreateInstance(&instanceInfo, allocator, &childInstance) != VK_SUCCESS) { fprintf(stderr, "CABOOSE_SYNC_CHECK exit_child step=create_instance failed\n"); { fprintf(stderr, "CABOOSE_SYNC_CHECK exit_child step=%d failed\n", __LINE__); return 3; } }
     uint32_t count = 1;
     VkPhysicalDevice childPhysical;
     VkResult enumerated = vkEnumeratePhysicalDevices(childInstance, &count, &childPhysical);
-    if ((enumerated != VK_SUCCESS && enumerated != VK_INCOMPLETE) || !count) return 3;
+    if ((enumerated != VK_SUCCESS && enumerated != VK_INCOMPLETE) || !count) { fprintf(stderr, "CABOOSE_SYNC_CHECK exit_child step=%d failed\n", __LINE__); return 3; }
     const float priority = 1.0f;
     VkDeviceQueueCreateInfo queueInfo = {VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};
     queueInfo.queueFamilyIndex = 0;
@@ -949,9 +1433,11 @@ static int exitChild(int mode, int fd) {
     deviceInfo.enabledExtensionCount = 1;
     deviceInfo.ppEnabledExtensionNames = &swapchainExtension;
     VkDevice childDevice;
-    if (vkCreateDevice(childPhysical, &deviceInfo, allocator, &childDevice) != VK_SUCCESS) return 3;
+    if (vkCreateDevice(childPhysical, &deviceInfo, allocator, &childDevice) != VK_SUCCESS) { fprintf(stderr, "CABOOSE_SYNC_CHECK exit_child step=%d failed\n", __LINE__); return 3; }
     xcb_connection_t* connection = xcb_connect(NULL, NULL);
-    if (xcb_connection_has_error(connection)) return 3;
+    const int xError = xcb_connection_has_error(connection);
+    const int xErrno = errno;
+    if (xError) { fprintf(stderr, "CABOOSE_SYNC_CHECK exit_child step=x11_connect failed xcb_error=%d errno=%d\n", xError, xErrno); return 3; }
     xcb_screen_t* screen = xcb_setup_roots_iterator(xcb_get_setup(connection)).data;
     xcb_window_t window = xcb_generate_id(connection);
     xcb_create_window(connection, XCB_COPY_FROM_PARENT, window, screen->root, 0, 0, 320, 240, 0,
@@ -962,13 +1448,13 @@ static int exitChild(int mode, int fd) {
     surfaceInfo.connection = connection;
     surfaceInfo.window = window;
     VkSurfaceKHR surface;
-    if (vkCreateXcbSurfaceKHR(childInstance, &surfaceInfo, allocator, &surface) != VK_SUCCESS) return 3;
+    if (vkCreateXcbSurfaceKHR(childInstance, &surfaceInfo, allocator, &surface) != VK_SUCCESS) { fprintf(stderr, "CABOOSE_SYNC_CHECK exit_child step=%d failed\n", __LINE__); return 3; }
     VkSurfaceCapabilitiesKHR caps;
-    if (vkGetPhysicalDeviceSurfaceCapabilitiesKHR(childPhysical, surface, &caps) != VK_SUCCESS) return 3;
+    if (vkGetPhysicalDeviceSurfaceCapabilitiesKHR(childPhysical, surface, &caps) != VK_SUCCESS) { fprintf(stderr, "CABOOSE_SYNC_CHECK exit_child step=%d failed\n", __LINE__); return 3; }
     VkSurfaceFormatKHR format;
     count = 1;
     VkResult listed = vkGetPhysicalDeviceSurfaceFormatsKHR(childPhysical, surface, &count, &format);
-    if ((listed != VK_SUCCESS && listed != VK_INCOMPLETE) || !count) return 3;
+    if ((listed != VK_SUCCESS && listed != VK_INCOMPLETE) || !count) { fprintf(stderr, "CABOOSE_SYNC_CHECK exit_child step=%d failed\n", __LINE__); return 3; }
     VkSwapchainCreateInfoKHR swapInfo = {VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR};
     swapInfo.surface = surface;
     swapInfo.minImageCount = caps.minImageCount;
@@ -982,16 +1468,34 @@ static int exitChild(int mode, int fd) {
     swapInfo.presentMode = VK_PRESENT_MODE_FIFO_KHR;
     swapInfo.clipped = VK_TRUE;
     VkSwapchainKHR swapchain;
-    if (vkCreateSwapchainKHR(childDevice, &swapInfo, allocator, &swapchain) != VK_SUCCESS) return 3;
+    if (vkCreateSwapchainKHR(childDevice, &swapInfo, allocator, &swapchain) != VK_SUCCESS) { fprintf(stderr, "CABOOSE_SYNC_CHECK exit_child step=%d failed\n", __LINE__); return 3; }
     // Shutdown: the window goes first, as a toolkit's does, and one more frame is presented
     // to it (Steam's update window does), with its bind refused or still in flight.
     const char done = 1;
-    if (fd>=0 && write(fd, &done, 1) != 1) return 3;
+    // The descriptor the parent gave must still be its pipe: a driver that closes a descriptor
+    // it does not own (and so frees the number for something else) would have this byte go
+    // elsewhere, and the parent see the pipe end without it.
+    if (fd>=0) {
+        struct stat st;
+        if (fstat(fd, &st) != 0 || !S_ISFIFO(st.st_mode) || st.st_ino != pipeStat.st_ino || st.st_dev != pipeStat.st_dev) {
+            char path[64], target[256] = "";
+            snprintf(path, sizeof(path), "/proc/self/fd/%d", fd);
+            const ssize_t n = readlink(path, target, sizeof(target) - 1);
+            if (n > 0) target[n] = 0;
+            fprintf(stderr, "CABOOSE_SYNC_CHECK exit_child pipe fd=%d replaced: %s (errno %d)\n", fd, target, errno);
+            return 6;
+        }
+        const ssize_t wrote = write(fd, &done, 1);
+        if (wrote != 1) {
+            fprintf(stderr, "CABOOSE_SYNC_CHECK exit_child write fd=%d returned %zd errno=%d\n", fd, wrote, errno);
+            { fprintf(stderr, "CABOOSE_SYNC_CHECK exit_child step=%d failed\n", __LINE__); return 3; }
+        }
+    }
     xcb_destroy_window(connection, window);
     xcb_flush(connection);
     VkSemaphoreCreateInfo semaphoreInfo = {VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
     VkSemaphore acquired;
-    if (vkCreateSemaphore(childDevice, &semaphoreInfo, allocator, &acquired) != VK_SUCCESS) return 3;
+    if (vkCreateSemaphore(childDevice, &semaphoreInfo, allocator, &acquired) != VK_SUCCESS) { fprintf(stderr, "CABOOSE_SYNC_CHECK exit_child step=%d failed\n", __LINE__); return 3; }
     uint32_t index = 0;
     const VkResult got = vkAcquireNextImageKHR(childDevice, swapchain, 1000000000ull, acquired, VK_NULL_HANDLE, &index);
     if (got == VK_SUCCESS || got == VK_SUBOPTIMAL_KHR) {
@@ -1025,6 +1529,23 @@ static int exitChild(int mode, int fd) {
     return 0;
 }
 
+// A failed child's output: its CABOOSE_ lines and its last 20 lines.
+static void showChildOutput(const char* path) {
+    FILE* file = fopen(path, "r");
+    if (!file) { printf("CABOOSE_SYNC_CHECK exit_child_output none (%s) errno=%d\n", path, errno); return; }
+    char line[512], tail[20][512];
+    int lines = 0;
+    while (fgets(line, sizeof(line), file)) {
+        line[strcspn(line, "\n")] = 0;
+        if (strstr(line, "CABOOSE_")) printf("CABOOSE_SYNC_CHECK exit_child_output %s\n", line);
+        snprintf(tail[lines % 20], sizeof(tail[0]), "%s", line);
+        ++lines;
+    }
+    fclose(file);
+    const int first = lines > 20 ? lines - 20 : 0;
+    for (int i = first; i < lines; ++i) printf("CABOOSE_SYNC_CHECK exit_child_tail %s\n", tail[i % 20]);
+}
+
 // Exit latency: from a child's shutdown (exitChild above) to its end. A process's end never
 // waits for the phone, so a launcher that starts again at once never finds it still running.
 static void exitLatencyCase(void) {
@@ -1041,10 +1562,16 @@ static void exitLatencyCase(void) {
         if (pipe(pipefd) != 0) fail("pipe", VK_ERROR_INITIALIZATION_FAILED);
         fflush(stdout);
         const uint64_t started = nowUs();
+        // Named before the fork, so parent and child agree on it.
+        char childLog[64];
+        snprintf(childLog, sizeof(childLog), "/tmp/caboose-sync-exit-child-%d-%d.log", (int)getpid(), round);
         const pid_t child = fork();
         if (child < 0) fail("fork", VK_ERROR_INITIALIZATION_FAILED);
         if (child == 0) {
             close(pipefd[0]);
+            // The child's output goes to a file, shown when it fails.
+            const int logFd = open(childLog, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+            if (logFd >= 0) { dup2(logFd, 1); dup2(logFd, 2); if (logFd > 2) close(logFd); }
             char modeArg[8], fdArg[16];
             snprintf(modeArg, sizeof(modeArg), "%d", mode);
             snprintf(fdArg, sizeof(fdArg), "%d", pipefd[1]);
@@ -1054,16 +1581,26 @@ static void exitLatencyCase(void) {
         close(pipefd[1]);
         struct pollfd ready = {pipefd[0], POLLIN, 0};
         char byte = 0;
-        const int signalled = poll(&ready, 1, 30000) == 1 && read(pipefd[0], &byte, 1) == 1;
+        const int polled = poll(&ready, 1, 30000);
+        const int pollErrno = polled < 0 ? errno : 0;
+        const ssize_t got = polled == 1 ? read(pipefd[0], &byte, 1) : -2;
+        const int readErrno = got < 0 ? errno : 0;
+        const int signalled = polled == 1 && got == 1;
         const uint64_t shutdown = nowUs();
         const double setupMs = (double)(shutdown - started) / 1000.0;
         int status = 0;
         waitpid(child, &status, 0);
         const double ms = (double)(nowUs() - shutdown) / 1000.0;
         close(pipefd[0]);
-        if (!WIFEXITED(status) || WEXITSTATUS(status))
-            printf("CABOOSE_SYNC_CHECK exit_child mode=%d wait_status=%d signal=%d\n",mode,status,WIFSIGNALED(status) ? WTERMSIG(status) : 0);
         const int clean = signalled && WIFEXITED(status) && WEXITSTATUS(status) == 0;
+        if (!clean) {
+            printf("CABOOSE_SYNC_CHECK exit_child round=%d mode=%d poll=%d poll_errno=%d revents=0x%x read=%zd read_errno=%d "
+                   "exited=%d code=%d signal=%d setup_ms=%.1f exit_ms=%.1f\n", round, mode, polled, pollErrno, ready.revents,
+                   got, readErrno, WIFEXITED(status), WIFEXITED(status) ? WEXITSTATUS(status) : -1,
+                   WIFSIGNALED(status) ? WTERMSIG(status) : 0, setupMs, ms);
+            showChildOutput(childLog);
+        }
+        unlink(childLog);
         if (!clean || ms >= 50.0) ok = 0;
         if (!clean) ++failedChildren;
         if (ms>worst[mode]) worst[mode]=ms;
@@ -1071,6 +1608,377 @@ static void exitLatencyCase(void) {
     }
     report("exit_latency",ok,"cycles=32 abandoned_ms=%.1f destroyed_ms=%.1f setup_ms=%.0f/%.0f failed_children=%d",
            worst[0],worst[1],worstSetup[0],worstSetup[1],failedChildren);
+}
+
+// The process the abandoned_work case starts: a batch that waits for a timeline value
+// nothing will signal, and the process gone at once, so that only the executor's
+// teardown can let that work finish.
+static void abandonWork(void) {
+    begin();
+    CHECK(vkEndCommandBuffer(cb));
+    VkSemaphoreSubmitInfo waitInfo = {VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
+    waitInfo.semaphore = timeline;
+    waitInfo.value = 1;
+    waitInfo.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+    VkCommandBufferSubmitInfo cbInfo = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO};
+    cbInfo.commandBuffer = cb;
+    VkSubmitInfo2 submit = {VK_STRUCTURE_TYPE_SUBMIT_INFO_2};
+    submit.waitSemaphoreInfoCount = 1;
+    submit.pWaitSemaphoreInfos = &waitInfo;
+    submit.commandBufferInfoCount = 1;
+    submit.pCommandBufferInfos = &cbInfo;
+    VkFenceCreateInfo fenceInfo = {VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+    VkFence fence;
+    CHECK(vkCreateFence(device, &fenceInfo, NULL, &fence));
+    CHECK(vkQueueSubmit2(queue, 1, &submit, fence));
+    // Time for the batch to reach the executor before the process goes.
+    struct timespec pause = {0, 500000000};
+    nanosleep(&pause, NULL);
+    printf("CABOOSE_SYNC_CHECK abandoned pid=%ld\n", (long)getpid());
+    fflush(stdout);
+    _exit(0);
+}
+
+// Starts this program again to abandon a waiting batch (abandonWork), and waits for it.
+static void abandonedWorkCase(void) {
+    const uint64_t start = nowUs();
+    const pid_t child = fork();
+    if (child == 0) {
+        execl("/proc/self/exe", "sync_check", "--abandon", (char*)NULL);
+        _exit(127);
+    }
+    int status = 0;
+    int exited = 0;
+    while (child > 0 && nowUs() - start < 20000000u) {
+        const pid_t done = waitpid(child, &status, WNOHANG);
+        if (done == child) { exited = 1; break; }
+        struct timespec pause = {0, 20000000};
+        nanosleep(&pause, NULL);
+    }
+    report("abandoned_work", exited && WIFEXITED(status) && WEXITSTATUS(status) == 0,
+           "exited=%d status=%d ms=%.1f (linux-executor/check.sh also requires its retirement)", exited,
+           exited ? WEXITSTATUS(status) : -1, (nowUs() - start) / 1000.0);
+}
+
+// The process the one_way cases start (one-way start, ../../bounded-memory/one_way_start.h): an
+// instance, its physical device, a device and its queue, then one empty batch waited for.
+// 0: the batch completed; 5: the device was lost; 6: the instance was refused; 3: setup failed.
+//
+// Without `mispredict` they are made as this probe's other child processes make theirs, through
+// the loader. With it, the driver is called directly (the loader would refuse the instance
+// itself), its instance enables a layer no executor has, which nothing checks before the phone,
+// and CABOOSE_ONE_WAY_START=predict sends that creation without its reply: the phone refuses
+// it, and the process must see its device lost, never hang.
+typedef PFN_vkVoidFunction (VKAPI_PTR *PFN_icdGetInstanceProcAddr)(VkInstance, const char*);
+static PFN_icdGetInstanceProcAddr directDriver(void) {
+    // The first manifest of VK_DRIVER_FILES is the driver under test.
+    const char* files = getenv("VK_DRIVER_FILES");
+    if (!files) return NULL;
+    char manifest[4096];
+    snprintf(manifest, sizeof(manifest), "%s", files);
+    char* colon = strchr(manifest, ':');
+    if (colon) *colon = 0;
+    FILE* file = fopen(manifest, "r");
+    if (!file) return NULL;
+    char text[4096];
+    const size_t n = fread(text, 1, sizeof(text) - 1, file);
+    fclose(file);
+    text[n] = 0;
+    const char* key = strstr(text, "\"library_path\"");
+    const char* start = key ? strchr(key + strlen("\"library_path\""), '"') : NULL;
+    const char* end = start ? strchr(start + 1, '"') : NULL;
+    if (!start || !end || end - start - 1 >= 1024) return NULL;
+    char library[1024];
+    memcpy(library, start + 1, (size_t)(end - start - 1));
+    library[end - start - 1] = 0;
+    void* handle = dlopen(library, RTLD_NOW | RTLD_LOCAL);
+    return handle ? (PFN_icdGetInstanceProcAddr)dlsym(handle, "vk_icdGetInstanceProcAddr") : NULL;
+}
+
+static int oneWayChild(int mispredict) {
+    PFN_vkCreateInstance createInstance = vkCreateInstance;
+    PFN_icdGetInstanceProcAddr icd = NULL;
+    if (mispredict) {
+        icd = directDriver();
+        if (!icd) return 3;
+        createInstance = (PFN_vkCreateInstance)icd(NULL, "vkCreateInstance");
+        if (!createInstance) return 3;
+    }
+    VkApplicationInfo app = {VK_STRUCTURE_TYPE_APPLICATION_INFO};
+    app.pApplicationName = "caboose-sync-check-one-way";
+    app.apiVersion = VK_API_VERSION_1_3;
+    const char* absent = "VK_LAYER_CABOOSE_absent";
+    VkInstanceCreateInfo instanceInfo = {VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
+    instanceInfo.pApplicationInfo = &app;
+    if (mispredict) {
+        instanceInfo.enabledLayerCount = 1;
+        instanceInfo.ppEnabledLayerNames = &absent;
+    }
+    VkInstance childInstance;
+    VkResult result = createInstance(&instanceInfo, NULL, &childInstance);
+    if (result == VK_ERROR_LAYER_NOT_PRESENT) return 6;
+    if (result == VK_ERROR_DEVICE_LOST || result == VK_ERROR_INITIALIZATION_FAILED) return 5;
+    if (result != VK_SUCCESS) return 3;
+#define CHILD_CALL(name) PFN_##name call_##name = icd ? (PFN_##name)icd(childInstance, #name) : name
+    CHILD_CALL(vkEnumeratePhysicalDevices);
+    CHILD_CALL(vkGetDeviceProcAddr);
+#undef CHILD_CALL
+    uint32_t count = 1;
+    VkPhysicalDevice childPhysical;
+    result = call_vkEnumeratePhysicalDevices(childInstance, &count, &childPhysical);
+    if (result == VK_ERROR_DEVICE_LOST || result == VK_ERROR_INITIALIZATION_FAILED) return 5;
+    if ((result != VK_SUCCESS && result != VK_INCOMPLETE) || !count) return 3;
+    PFN_vkCreateDevice createDevice = icd ? (PFN_vkCreateDevice)icd(childInstance, "vkCreateDevice") : vkCreateDevice;
+    const float priority = 1.0f;
+    VkDeviceQueueCreateInfo queueInfo = {VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};
+    queueInfo.queueFamilyIndex = 0;
+    queueInfo.queueCount = 1;
+    queueInfo.pQueuePriorities = &priority;
+    VkDeviceCreateInfo deviceInfo = {VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
+    deviceInfo.queueCreateInfoCount = 1;
+    deviceInfo.pQueueCreateInfos = &queueInfo;
+    // A process that lost its device still destroys what it made; the driver must keep those
+    // destroys to itself (the phone never made the objects a refused prediction named).
+    PFN_vkDestroyInstance destroyInstance =
+        icd ? (PFN_vkDestroyInstance)icd(childInstance, "vkDestroyInstance") : vkDestroyInstance;
+    VkDevice childDevice;
+    result = createDevice(childPhysical, &deviceInfo, NULL, &childDevice);
+    if (result == VK_ERROR_DEVICE_LOST || result == VK_ERROR_INITIALIZATION_FAILED) {
+        destroyInstance(childInstance, NULL);
+        return 5;
+    }
+    if (result != VK_SUCCESS) return 3;
+#define DEVICE_CALL(name) PFN_##name call_##name = icd ? (PFN_##name)call_vkGetDeviceProcAddr(childDevice, #name) : name
+    DEVICE_CALL(vkGetDeviceQueue);
+    DEVICE_CALL(vkCreateFence);
+    DEVICE_CALL(vkQueueSubmit);
+    DEVICE_CALL(vkWaitForFences);
+    DEVICE_CALL(vkQueueWaitIdle);
+    VkQueue childQueue;
+    call_vkGetDeviceQueue(childDevice, 0, 0, &childQueue);
+    VkFenceCreateInfo fenceInfo = {VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+    VkFence fence = VK_NULL_HANDLE;
+    result = call_vkCreateFence(childDevice, &fenceInfo, NULL, &fence);
+    if (result == VK_SUCCESS) result = call_vkQueueSubmit(childQueue, 0, NULL, fence);
+    if (result == VK_SUCCESS) result = call_vkWaitForFences(childDevice, 1, &fence, VK_TRUE, 20000000000ull);
+    if (result == VK_SUCCESS) result = call_vkQueueWaitIdle(childQueue);
+    DEVICE_CALL(vkDestroyFence);
+    DEVICE_CALL(vkDestroyDevice);
+    if (result == VK_SUCCESS || result == VK_ERROR_DEVICE_LOST) {
+        call_vkDestroyFence(childDevice, fence, NULL);
+        call_vkDestroyDevice(childDevice, NULL);
+        destroyInstance(childInstance, NULL);
+    }
+    if (result == VK_ERROR_DEVICE_LOST) return 5;
+    if (result != VK_SUCCESS) return 3;
+    return 0;
+#undef DEVICE_CALL
+}
+
+// lost_reply_stand_ins child: a thread keeps asking layout support for layouts the session has
+// not seen (each a round trip) and creating them, while the process's executor streams end
+// under it. With CABOOSE_GPU_ON_LOSS=quiet, every
+// answer, including one whose reply was lost during the call, must be supported and every
+// layout a distinct, non-null handle.
+#define LOST_REPLY_MAX 20000
+static VkDevice lostReplyDevice;
+static atomic_int lostReplyStop;
+static uint64_t lostReplyHandles[LOST_REPLY_MAX];
+static int lostReplyCount, lostReplyNull, lostReplyUnsupported;
+static void* lostReplyAsker(void* unused) {
+    (void)unused;
+    // It keeps asking until the loss has passed: the newest LOST_REPLY_MAX layouts are kept.
+    for (uint32_t i = 0; !atomic_load(&lostReplyStop); ++i) {
+        // Binding numbers never asked before: every support question is a round trip.
+        VkDescriptorSetLayoutBinding bindings[4];
+        const uint32_t n = 1 + i % 4;
+        for (uint32_t b = 0; b < n; ++b)
+            bindings[b] = (VkDescriptorSetLayoutBinding){i * 4 + b, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1,
+                                                         VK_SHADER_STAGE_ALL, NULL};
+        VkDescriptorSetLayoutCreateInfo info = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+        info.bindingCount = n;
+        info.pBindings = bindings;
+        VkDescriptorSetLayoutSupport support = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_SUPPORT};
+        support.supported = VK_FALSE;
+        vkGetDescriptorSetLayoutSupport(lostReplyDevice, &info, &support);
+        if (!support.supported) ++lostReplyUnsupported;
+        VkDescriptorSetLayout layout = VK_NULL_HANDLE;
+        if (vkCreateDescriptorSetLayout(lostReplyDevice, &info, NULL, &layout) != VK_SUCCESS || !layout) ++lostReplyNull;
+        lostReplyHandles[lostReplyCount++ % LOST_REPLY_MAX] = (uint64_t)layout;
+    }
+    return NULL;
+}
+static int cmpU64(const void* a, const void* b) {
+    const uint64_t x = *(const uint64_t*)a, y = *(const uint64_t*)b;
+    return x < y ? -1 : x > y;
+}
+static int lostReplyChild(void) {
+    VkApplicationInfo app = {VK_STRUCTURE_TYPE_APPLICATION_INFO};
+    app.pApplicationName = "caboose-sync-check-lost-reply";
+    app.apiVersion = VK_API_VERSION_1_3;
+    VkInstanceCreateInfo instanceInfo = {VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
+    instanceInfo.pApplicationInfo = &app;
+    VkInstance childInstance;
+    if (vkCreateInstance(&instanceInfo, NULL, &childInstance) != VK_SUCCESS) return 3;
+    uint32_t count = 1;
+    VkPhysicalDevice childPhysical;
+    VkResult result = vkEnumeratePhysicalDevices(childInstance, &count, &childPhysical);
+    if ((result != VK_SUCCESS && result != VK_INCOMPLETE) || !count) return 3;
+    const float priority = 1.0f;
+    VkDeviceQueueCreateInfo queueInfo = {VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};
+    queueInfo.queueCount = 1;
+    queueInfo.pQueuePriorities = &priority;
+    VkDeviceCreateInfo deviceInfo = {VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
+    deviceInfo.queueCreateInfoCount = 1;
+    deviceInfo.pQueueCreateInfos = &queueInfo;
+    if (vkCreateDevice(childPhysical, &deviceInfo, NULL, &lostReplyDevice) != VK_SUCCESS) return 3;
+    pthread_t asker;
+    if (pthread_create(&asker, NULL, lostReplyAsker, NULL) != 0) return 3;
+    struct timespec pause = {0, 300000000};
+    nanosleep(&pause, NULL);
+    // The loss: the process's executor streams end under it, as when the phone leaves,
+    // while the asking thread waits for a reply.
+    for (int fd = 3; fd < 1024; ++fd) {
+        struct stat info;
+        if (fstat(fd, &info) == 0 && S_ISSOCK(info.st_mode)) shutdown(fd, SHUT_RDWR);
+    }
+    struct timespec after = {1, 0};
+    nanosleep(&after, NULL);
+    atomic_store(&lostReplyStop, 1);
+    pthread_join(asker, NULL);
+    const int kept = lostReplyCount < LOST_REPLY_MAX ? lostReplyCount : LOST_REPLY_MAX;
+    qsort(lostReplyHandles, (size_t)kept, sizeof(uint64_t), cmpU64);
+    int duplicates = 0;
+    for (int i = 1; i < kept; ++i)
+        if (lostReplyHandles[i] && lostReplyHandles[i] == lostReplyHandles[i - 1]) ++duplicates;
+    fprintf(stderr, "CABOOSE_SYNC_CHECK_LOST_REPLY asked=%d null=%d unsupported=%d duplicates=%d\n", lostReplyCount,
+            lostReplyNull, lostReplyUnsupported, duplicates);
+    // The process ends here: its lost device is not torn down.
+    return lostReplyNull ? 7 : lostReplyUnsupported ? 8 : duplicates ? 9 : 0;
+}
+
+static char oneWayChildLine[256];
+static size_t oneWayChildBytes;  // what the last one-way child wrote to its diagnostics
+static char oneWayChildHead[2048];  // its first lines, printed when a one-way case fails
+static int lostReplyLostCalls;
+// Runs oneWayChild in a new process with the driver's diagnostics, and returns its exit status
+// (-1 when it did not exit within 40 s, and was killed), how many commands it sent one-way, and
+// whether its executor granted one-way start.
+static int runOneWayChild(int mispredict, int* oneWay, int* granted) {
+    int pipefd[2];
+    if (pipe(pipefd) != 0) fail("pipe", VK_ERROR_INITIALIZATION_FAILED);
+    fflush(stdout);
+    const pid_t child = fork();
+    if (child < 0) fail("fork", VK_ERROR_INITIALIZATION_FAILED);
+    if (child == 0) {
+        close(pipefd[0]);
+        dup2(pipefd[1], 2);
+        close(pipefd[1]);
+        setenv("CABOOSE_CAPABILITY_CACHE_DIAGNOSTICS", "1", 1);
+        if (mispredict == 1) setenv("CABOOSE_ONE_WAY_START", "predict", 1);
+        if (mispredict == 2) setenv("CABOOSE_GPU_ON_LOSS", "quiet", 1);
+        char mode[4];
+        snprintf(mode, sizeof(mode), "%d", mispredict);
+        execl("/proc/self/exe", "sync_check", "--one-way-child", mode, (char*)NULL);
+        _exit(4);
+    }
+    close(pipefd[1]);
+    // The child's diagnostics are read line by line as they come, so a child that writes a lot
+    // (traffic and launch lines) cannot push the lines counted here out of a fixed buffer.
+    char line[4096];
+    size_t used = 0;
+    int oneWayLines = 0, grantedBit = 0, sawHello = 0;
+    oneWayChildLine[0] = 0;
+    oneWayChildBytes = 0;
+    oneWayChildHead[0] = 0;
+    lostReplyLostCalls = 0;
+    const uint64_t start = nowUs();
+    for (;;) {
+        const int64_t left = 40000 - (int64_t)((nowUs() - start) / 1000);
+        if (left <= 0) break;
+        struct pollfd ready = {pipefd[0], POLLIN, 0};
+        if (poll(&ready, 1, (int)left) != 1) break;
+        char chunk[8192];
+        const ssize_t n = read(pipefd[0], chunk, sizeof(chunk));
+        if (n <= 0) break;
+        const size_t kept = strlen(oneWayChildHead);
+        if (kept < sizeof(oneWayChildHead) - 1)
+            snprintf(oneWayChildHead + kept, sizeof(oneWayChildHead) - kept, "%.*s", (int)n, chunk);
+        oneWayChildBytes += (size_t)n;
+        for (ssize_t i = 0; i < n; ++i) {
+            if (chunk[i] != '\n' && used < sizeof(line) - 1) { line[used++] = chunk[i]; continue; }
+            if (chunk[i] != '\n') continue;  // an over-long line: its start is kept
+            line[used] = 0;
+            used = 0;
+            if (strstr(line, "CABOOSE_ONE_WAY_START opcode=")) ++oneWayLines;
+            if (strstr(line, "CABOOSE_GPU_LOST_CALL")) ++lostReplyLostCalls;
+            const char* lost = strstr(line, "CABOOSE_SYNC_CHECK_LOST_REPLY ");
+            if (lost) snprintf(oneWayChildLine, sizeof(oneWayChildLine), "%s", lost + 30);
+            const char* hello = strstr(line, "CABOOSE_GPU_HELLO features=0x");
+            if (hello && !sawHello) {
+                sawHello = 1;
+                grantedBit = (strtoul(hello + strlen("CABOOSE_GPU_HELLO features=0x"), NULL, 16) & 0x1000000u) != 0;
+            }
+        }
+    }
+    close(pipefd[0]);
+    int status = 0, exited = 0;
+    while (nowUs() - start < 41000000u) {
+        if (waitpid(child, &status, WNOHANG) == child) { exited = 1; break; }
+        struct timespec pause = {0, 20000000};
+        nanosleep(&pause, NULL);
+    }
+    if (!exited) {
+        kill(child, SIGKILL);
+        waitpid(child, &status, 0);
+    }
+    *oneWay = oneWayLines;
+    *granted = grantedBit;
+    return exited && WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+}
+
+// one_way_start: a process made as one before it in the session starts without waiting for
+// the phone. one_way_misprediction: a prediction the phone does not bear out is the loss of the
+// device, never a hang.
+static void oneWayCases(const char* only) {
+    int firstSent = 0, secondSent = 0, granted = 0, grantedAgain = 0;
+    if (!only || strstr("one_way_start", only)) {
+        const int first = runOneWayChild(0, &firstSent, &granted);
+        const size_t firstBytes = oneWayChildBytes;
+        const int second = runOneWayChild(0, &secondSent, &grantedAgain);
+        // Instance, device and queue at least; the list too once the session knows its count.
+        const int ok = first == 0 && second == 0 && (!granted || secondSent >= 3);
+        report("one_way_start", ok, "granted=%d first=%d second=%d sent_one_way=%d/%d diagnostics_bytes=%zu/%zu", granted,
+               first, second, firstSent, secondSent, firstBytes, oneWayChildBytes);
+        if (!ok) printf("CABOOSE_SYNC_CHECK one_way_start second child wrote:\n%s\n", oneWayChildHead);
+    }
+    if (!only || strstr("one_way_misprediction", only)) {
+        int sent = 0;
+        const int status = runOneWayChild(1, &sent, &granted);
+        // Without one-way start the instance is asked, and refused.
+        // The executor and every other process carry on: this probe's own device still runs a
+        // batch, and a new process starts and completes one.
+        VkFenceCreateInfo fenceInfo = {VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+        VkFence fence;
+        VkResult parent = vkCreateFence(device, &fenceInfo, NULL, &fence);
+        if (parent == VK_SUCCESS) {
+            parent = vkQueueSubmit(queue, 0, NULL, fence);
+            if (parent == VK_SUCCESS) parent = vkWaitForFences(device, 1, &fence, VK_TRUE, 20000000000ull);
+            vkDestroyFence(device, fence, NULL);
+        }
+        int afterSent = 0, afterGranted = 0;
+        const int after = runOneWayChild(0, &afterSent, &afterGranted);
+        const int ok = (granted ? status == 5 : status == 6) && parent == VK_SUCCESS && after == 0;
+        report("one_way_misprediction", ok,
+               "granted=%d status=%d sent_one_way=%d (5: device lost; 6: refused; -1: hung) probe=%d next_process=%d",
+               granted, status, sent, parent, after);
+    }
+    if (!only || strstr("lost_reply_stand_ins", only)) {
+        int sent = 0;
+        const int status = runOneWayChild(2, &sent, &granted);
+        report("lost_reply_stand_ins", status == 0, "granted=%d status=%d %s lost_call_lines=%d (7: null layout; "
+               "8: unsupported; 9: duplicate handles; -1: hung)", granted, status, oneWayChildLine, lostReplyLostCalls);
+    }
 }
 
 int main(int argc, char** argv) {
@@ -1087,7 +1995,11 @@ int main(int argc, char** argv) {
         return 0;
     }
     if (argc > 3 && !strcmp(argv[1], "--exit-child")) return exitChild(atoi(argv[2]), atoi(argv[3]));
-    const char* only = argc > 1 ? argv[1] : NULL;
+    if (argc > 3 && !strcmp(argv[1], "--map-window")) return mapWindowChild((xcb_window_t)strtoul(argv[2], NULL, 10), atoi(argv[3]));
+    if (argc > 2 && !strcmp(argv[1], "--one-way-child"))
+        return atoi(argv[2]) == 2 ? lostReplyChild() : oneWayChild(atoi(argv[2]));
+    const int abandon = argc > 1 && !strcmp(argv[1], "--abandon");
+    const char* only = argc > 1 && !abandon ? argv[1] : NULL;
     VkApplicationInfo app = {VK_STRUCTURE_TYPE_APPLICATION_INFO};
     app.pApplicationName = "caboose-sync-check";
     app.apiVersion = VK_API_VERSION_1_3;
@@ -1170,6 +2082,7 @@ int main(int argc, char** argv) {
     semaphoreInfo.pNext = &typeInfo;
     CHECK(vkCreateSemaphore(device, &semaphoreInfo, NULL, &timeline));
 
+    if (abandon) abandonWork();
 #define RUN(name, call) if (!only || strstr(name, only)) call
     RUN("event_set2_timeline", eventCase(0));
     RUN("event_set2_unsignalled", eventCase(1));
@@ -1179,12 +2092,26 @@ int main(int argc, char** argv) {
     RUN("surface_enumeration", surfaceCase());
     RUN("free_after_wait", freeCase());
     RUN("completion_after_gpu", completionCase());
+    RUN("lazy_query_results", lazyQueryResultsCase());
+    RUN("unwritten_memory_coherent", unwrittenMemoryCase(VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                                                         "unwritten_memory_coherent"));
+    RUN("unwritten_memory_cached", unwrittenMemoryCase(VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT,
+                                                      "unwritten_memory_cached"));
+    RUN("pool_capacity", poolCapacityCase());
+    RUN("unwritten_sets", unwrittenSetsCase());
+    RUN("threaded_set_frees", threadedSetFreesCase());
     RUN("calls", callsCase());
     RUN("pipeline_cache", pipelineCacheCase(&props));
     RUN("child_windows", childWindowsCase());
     RUN("one_shot", oneShotCase());
     RUN("coherent_rewrite", coherentRewriteCase());
     RUN("exit_latency", exitLatencyCase());
+    RUN("abandoned_work", abandonedWorkCase());
+    if (!only || strstr("one_way_start", only) || strstr("one_way_misprediction", only) ||
+        strstr("lost_reply_stand_ins", only))
+        oneWayCases(only);
+    // Needs a compositor that maps windows (a running computer), so only when named.
+    if (only && !strcmp(only, "unmapped_popup")) unmappedPopupCase();
 
     CHECK(vkDeviceWaitIdle(device));
     vkDestroySemaphore(device, timeline, NULL);

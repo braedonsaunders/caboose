@@ -46,6 +46,7 @@ struct LinuxWindowScene: View {
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar { controls }
         }
+        .overlay(alignment: .topTrailing) { FrameRateOverlay(windowID: window?.id) }
         .background {
             SceneProbe(connected: { window in
                 host.window = window

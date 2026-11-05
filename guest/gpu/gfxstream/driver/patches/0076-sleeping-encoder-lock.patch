@@ -1,0 +1,65 @@
+From: Caboose <caboose@local>
+Subject: [PATCH 76/91] Let threads waiting for the encoder sleep instead of spinning
+
+Every thread of a process shares one encoder, and its lock spun. While one thread held it
+across a wait for the phone (a reply, or room in the stream), the others spun: with DXVK
+two of them took 41-48% of their samples each in VkEncoder::lock, whole cores taken from
+the application. The lock is now a mutex, which sleeps; taking it again on the thread that
+holds it still ends the process with CABOOSE_GPU_ENCODER_REENTERED.
+---
+diff --git a/src/gfxstream/guest/vulkan_enc/VkEncoder.cpp.inl b/src/gfxstream/guest/vulkan_enc/VkEncoder.cpp.inl
+index 823c7f7..292b483 100644
+--- a/src/gfxstream/guest/vulkan_enc/VkEncoder.cpp.inl
++++ b/src/gfxstream/guest/vulkan_enc/VkEncoder.cpp.inl
+@@ -8,6 +8,7 @@ static uint32_t sFeatureBits = 0;
+ static constexpr uint32_t kWatchdogBufferMax = 1'000;
+ 
+ #if DETECT_OS_ANDROID
++#include <mutex>
+ #include <cutils/properties.h>
+ #endif
+ 
+@@ -49,22 +50,24 @@ class VkEncoder::Impl {
+     // Not recursive. A thread that takes the lock it already holds is a thread whose
+     // locked section was abandoned by a fault (Wine abandons a faulting unix call): it
+     // would spin forever, and every other thread behind it. Report it and end instead.
++    // Threads that wait sleep instead of spinning: the holder may be waiting for the phone
++    // (a reply, or room in the stream), and spinning waiters took whole cores from the
++    // application meanwhile.
+     void lock() {
+         const long self = static_cast<long>(syscall(SYS_gettid));
+-        while (mLock.test_and_set(std::memory_order_acquire)) {
+-            if (mOwner.load(std::memory_order_relaxed) == self) {
+-                fprintf(stderr, "CABOOSE_GPU_ENCODER_REENTERED thread %ld: an earlier call on this "
+-                                "thread faulted while encoding; ending instead of waiting forever\n",
+-                        self);
+-                abort();
+-            }
++        if (mOwner.load(std::memory_order_relaxed) == self) {
++            fprintf(stderr, "CABOOSE_GPU_ENCODER_REENTERED thread %ld: an earlier call on this "
++                            "thread faulted while encoding; ending instead of waiting forever\n",
++                    self);
++            abort();
+         }
++        mLock.lock();
+         mOwner.store(self, std::memory_order_relaxed);
+     }
+ 
+     void unlock() {
+         mOwner.store(0, std::memory_order_relaxed);
+-        mLock.clear(std::memory_order_release);
++        mLock.unlock();
+     }
+ 
+    private:
+@@ -76,7 +79,7 @@ class VkEncoder::Impl {
+ 
+     caboose::upload_cache::StreamKnown m_uploadKnown;
+     bool m_logEncodes;
+-    std::atomic_flag mLock = ATOMIC_FLAG_INIT;
++    std::mutex mLock;
+     std::atomic<long> mOwner{0};
+ };
+ 
+-- 
+2.43.0

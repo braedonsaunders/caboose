@@ -2902,6 +2902,9 @@ view's bounds, including while a resize stretches the previous picture.
   same ready session, and is cancelled when its desktop leaves the screen, a card is shown,
   the app leaves the foreground or the session changes.
   Launchpad pages through the available apps, with its controls above the dock.
+  In Laptop mode, the outer Laptop overlay alone draws the desktop menu and cursor
+  and measures the menu's pointer hit regions. The desktop stage underneath does not
+  register a second set of menu rows at its smaller UI scale.
   An external display scene supplies its current size and scale to the shared desktop;
   changes reconfigure the display without transferring geometry ownership to an app card.
   The green title-bar button maximizes above the dock: its title bar meets the desktop's
@@ -4027,3 +4030,25 @@ requires native retirement before rebinding; fitting unchanged pixels does not.
 
 Computer selection is available only on Home. Desktop, connection recovery and
 other tabs follow Home’s selected computer without separate switching controls.
+
+Persistent Metal pipeline binary archives are disabled by default: archive lookup
+can crash the iOS GPU driver during callback copying. Shader and Vulkan pipeline
+caches remain enabled. `CABOOSE_METAL_BINARY_ARCHIVE=1` enables the archive only
+for diagnostic launches.
+
+Window GPU health registers pending work before native presentation can call back.
+An early source release clears that work; a rejected submission leaves no pending wait.
+Uncertain work remains tracked until release or device loss.
+
+The frame-rate overlay appears at the top right by default, with a persistent
+Show Frame Rate switch in device integration settings. Desktop, full-screen app cards,
+gamepad presentations and detached window scenes display it; cards and detached scenes
+measure their own window. The rate counts accepted GPU presents over the last two seconds
+and disappears when that window has no recent presents.
+
+Desktop Launchpad retains its page-arrow hit regions while changing pages. Repeated
+pointer clicks advance through the available pages; an arrow at either end consumes
+the click without dismissing Launchpad or moving beyond the page range.
+Its search field stays above the grid, filters app names across all pages, and returns
+to the first page when the query changes. Search and clear controls accept pointer
+clicks without dismissing the launcher. Closing Launchpad clears the query.
