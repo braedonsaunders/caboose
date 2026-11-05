@@ -24,6 +24,14 @@ class SurfaceWireTests(unittest.TestCase):
                 decoder.finish()
                 self.assertEqual(got, [frame])
 
+    def test_a_seat_routed_bind_carries_its_seat(self):
+        bind = bytes.fromhex(BY_NAME["bind"]["payload"])
+        for seat in (0, 1):
+            validate_surface(16, bind + struct.pack('<II', seat, 0))
+        for bad in (struct.pack('<II', 2, 0), struct.pack('<II', 0, 1), bytes(4), bytes(12)):
+            with self.assertRaises(ValueError):
+                validate_surface(16, bind + bad)
+
     def test_invalid_fields_fail_before_delivery_and_poison(self):
         mutations = [
             ("bind", 0, bytes(16)), ("bind", 16, bytes(16)),

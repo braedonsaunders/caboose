@@ -31,8 +31,10 @@ def validate_surface(kind: int, payload: bytes):
     require(len(payload) >= 40, "truncated surface identity")
     require(payload[:16] != bytes(16) and payload[16:32] != bytes(16) and wide(32) != 0,
             "zero surface identity")
-    if kind == 16:  # bind
-        exact(64)
+    if kind == 16:  # bind; 72 bytes with seat routing: seat u32 (0 owner, 1 agent), reserved u32 = 0
+        require(len(payload) in (64, 72), "surface payload length")
+        if len(payload) == 72:
+            require(word(64) in (0, 1) and word(68) == 0, "invalid bind seat")
         require(wide(40) and wide(48), "invalid bind identity")
         require((word(56) == 0) == (word(60) == 0), "mixed-zero bind extent")
     elif kind in (17, 24):  # bound / retired
