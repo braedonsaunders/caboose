@@ -5,16 +5,19 @@ import SwiftUI
 /// topmost computer window that draws on this device's GPU presents at (any app).
 enum FrameRateOverlaySetting {
     static let key = "display.showsFrameRate"
+    static let defaultValue = true
 }
 
 struct FrameRateOverlay: View {
     @Environment(AppModel.self) private var model
-    @AppStorage(FrameRateOverlaySetting.key) private var shows = false
+    @AppStorage(FrameRateOverlaySetting.key) private var shows = FrameRateOverlaySetting.defaultValue
+    /// A card or detached scene reports its own window, independent of desktop stacking.
+    var windowID: Int?
 
     var body: some View {
         if shows {
             TimelineView(.periodic(from: .now, by: 0.5)) { _ in
-                if let front = PresentedFrameRate.shared.frontmost(model.desktop.stacking.reversed()) {
+                if let front = PresentedFrameRate.shared.frontmost(windowID.map { [$0] } ?? Array(model.desktop.stacking.reversed())) {
                     Text("\(Int(front.rate.rounded())) fps")
                         .font(.caption.monospacedDigit().weight(.semibold))
                         .foregroundStyle(.white)
@@ -31,7 +34,7 @@ struct FrameRateOverlay: View {
 
 /// The overlay's switch, for the display settings.
 struct FrameRateOverlayToggle: View {
-    @AppStorage(FrameRateOverlaySetting.key) private var shows = false
+    @AppStorage(FrameRateOverlaySetting.key) private var shows = FrameRateOverlaySetting.defaultValue
     var body: some View {
         Toggle(isOn: $shows) {
             Label("Show Frame Rate", systemImage: "speedometer")

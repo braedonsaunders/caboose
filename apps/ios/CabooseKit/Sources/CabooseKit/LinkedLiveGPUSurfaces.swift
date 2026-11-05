@@ -273,24 +273,25 @@ private final class LinkedLiveGPUSurface: LiveGPUIndexedSurfaceResource, @unchec
         info.vk_image_layout = request.layout; info.queue_family = request.queueFamily
         info.wait_semaphore_count = UInt32(request.waits.count)
         callbackLock.withLock { callbacks[request.serial] = event }
-        let result = request.waits.withUnsafeBufferPointer { waits in
-            info.boxed_wait_semaphores = waits.baseAddress
-            return caboose_gpu_surface_present(pointer, &info, { context, serial, kind, result in
-                guard let context else { return }
-                Unmanaged<LinkedLiveGPUSurface>.fromOpaque(context).takeUnretainedValue()
-                    .receive(serial: serial, kind: kind, result: result)
-            }, Unmanaged.passUnretained(self).toOpaque())
+        return lease.trackSubmission(request.serial) {
+            let result = request.waits.withUnsafeBufferPointer { waits in
+                info.boxed_wait_semaphores = waits.baseAddress
+                return caboose_gpu_surface_present(pointer, &info, { context, serial, kind, result in
+                    guard let context else { return }
+                    Unmanaged<LinkedLiveGPUSurface>.fromOpaque(context).takeUnretainedValue()
+                        .receive(serial: serial, kind: kind, result: result)
+                }, Unmanaged.passUnretained(self).toOpaque())
+            }
+            let disposition = LiveGPUSurfaceMessage.Disposition(rawValue: result.disposition.rawValue) ?? .uncertain
+            callbackLock.withLock {
+                if disposition == .rejected { callbacks.removeValue(forKey: request.serial) }
+                else { callbacks = callbacks.filter { $0.key == request.serial } }
+            }
+            if disposition != .rejected {
+                PresentedFrameRate.shared.note(window: Int(bind.identity.window_id))
+            }
+            return .init(status: Self.status(result), disposition: disposition)
         }
-        let disposition = LiveGPUSurfaceMessage.Disposition(rawValue: result.disposition.rawValue) ?? .uncertain
-        callbackLock.withLock {
-            if disposition == .rejected { callbacks.removeValue(forKey: request.serial) }
-            else { callbacks = callbacks.filter { $0.key == request.serial } }
-        }
-        if disposition != .rejected {
-            lease.notePresented(request.serial)
-            PresentedFrameRate.shared.note(window: Int(bind.identity.window_id))
-        }
-        return .init(status: Self.status(result), disposition: disposition)
     }
     private static func status(_ result: caboose_gpu_submit_result) -> LiveGPUSurfaceStatus {
         .init(nativeErrno: result.native_error,
@@ -385,22 +386,23 @@ private final class LinkedLiveGPUIndexedSwapchain: LiveGPUIndexedSwapchain, @unc
         info.queue_family = request.family; info.image_index = request.index; info.vk_image_layout = request.layout
         info.wait_semaphore_count = UInt32(request.waits.count)
         lock.withLock { callbacks[request.serial] = event }
-        let result = request.waits.withUnsafeBufferPointer {
-            info.boxed_wait_semaphores = $0.baseAddress
-            return caboose_gpu_virtual_swapchain_present(pointer, &info, { context, serial, kind, result in
-                guard let context else { return }
-                Unmanaged<LinkedLiveGPUIndexedSwapchain>.fromOpaque(context).takeUnretainedValue()
-                    .receive(serial: serial, kind: kind, result: result)
-            }, Unmanaged.passUnretained(self).toOpaque())
+        return parent.lease.trackSubmission(request.serial) {
+            let result = request.waits.withUnsafeBufferPointer {
+                info.boxed_wait_semaphores = $0.baseAddress
+                return caboose_gpu_virtual_swapchain_present(pointer, &info, { context, serial, kind, result in
+                    guard let context else { return }
+                    Unmanaged<LinkedLiveGPUIndexedSwapchain>.fromOpaque(context).takeUnretainedValue()
+                        .receive(serial: serial, kind: kind, result: result)
+                }, Unmanaged.passUnretained(self).toOpaque())
+            }
+            let disposition = LiveGPUSurfaceMessage.Disposition(rawValue: result.disposition.rawValue) ?? .uncertain
+            if disposition == .rejected { _ = lock.withLock { callbacks.removeValue(forKey: request.serial) } }
+            else {
+                PresentedFrameRate.shared.note(window: Int(identity.window_id))
+            }
+            return .init(status: .init(nativeErrno: result.native_error,
+                vkResult: result.has_vulkan_result == 1 ? result.vulkan_result : nil), disposition: disposition)
         }
-        let disposition = LiveGPUSurfaceMessage.Disposition(rawValue: result.disposition.rawValue) ?? .uncertain
-        if disposition == .rejected { _ = lock.withLock { callbacks.removeValue(forKey: request.serial) } }
-        else {
-            parent.lease.notePresented(request.serial)
-            PresentedFrameRate.shared.note(window: Int(identity.window_id))
-        }
-        return .init(status: .init(nativeErrno: result.native_error,
-            vkResult: result.has_vulkan_result == 1 ? result.vulkan_result : nil), disposition: disposition)
     }
     private func receive(serial: UInt64, kind: caboose_gpu_present_event, result: caboose_gpu_submit_result) {
         switch kind {

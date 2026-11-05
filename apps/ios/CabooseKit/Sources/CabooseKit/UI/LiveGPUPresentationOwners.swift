@@ -579,11 +579,13 @@ final class LiveGPULayerLease: @unchecked Sendable {
     }
     /// The window's GPU for the notice over it: presents are noted from the presenting
     /// thread, read once a second on main (LiveGPUPresentationOwners).
-    private var health = LiveGPUWindowHealth()
-    func notePresented(_ serial: UInt64) { lock.withLock { health.presented(serial, at: ProcessInfo.processInfo.systemUptime) } }
-    func noteReleased(_ serial: UInt64) { lock.withLock { health.released(serial) } }
-    func noteDeviceLost() { lock.withLock { health.deviceLost() } }
-    var healthState: LiveGPUWindowHealth.State { lock.withLock { health.state(at: ProcessInfo.processInfo.systemUptime) } }
+    private let health = LiveGPUWindowHealthTracker()
+    func trackSubmission(_ serial: UInt64, _ operation: () -> LiveGPUSurfaceSubmission) -> LiveGPUSurfaceSubmission {
+        health.submit(serial, at: ProcessInfo.processInfo.systemUptime, operation)
+    }
+    func noteReleased(_ serial: UInt64) { health.released(serial) }
+    func noteDeviceLost() { health.deviceLost() }
+    var healthState: LiveGPUWindowHealth.State { health.state(at: ProcessInfo.processInfo.systemUptime) }
     /// The notice currently shown over the window.
     @MainActor var shownHealth = LiveGPUWindowHealth.State.running
     private let lock = NSLock()

@@ -118,6 +118,7 @@ struct InputControls: View {
                                               set: { if !$0 && input == .gamepad { input = .trackpad } })) {
             GamepadPanel(target: { surface.focusedWindow }, enabled: enabled, close: { input = .trackpad })
                 .environment(model)
+                .overlay(alignment: .topTrailing) { FrameRateOverlay(windowID: surface.focusedWindow?.id) }
                 .statusBarHidden()
                 .persistentSystemOverlays(.hidden)
         }

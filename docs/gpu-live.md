@@ -1467,6 +1467,9 @@ and `CABOOSE_METAL_STALLED` is printed until it recovers). Over a window whose G
 present reported its device lost) or not responding (a present has waited 2 s for the GPU
 to release its source), one line says so, "GPU lost" or "GPU not responding", until it
 recovers, with `CABOOSE_GPU_WINDOW_HEALTH window=… state=…` on each change.
+The health tracker records a present before calling native submission, so a completion
+that arrives before the call returns clears the wait. Rejected submissions remove their
+wait; uncertain submissions retain it until source release or device loss.
 Each end is printed on standard output as `CABOOSE_GPU_OWNER_ENDED cause=… cleanup=…
 retirement_confirmed=0|1`.
 

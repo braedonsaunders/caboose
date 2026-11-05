@@ -4022,6 +4022,16 @@ can crash the iOS GPU driver during callback copying. Shader and Vulkan pipeline
 caches remain enabled. `CABOOSE_METAL_BINARY_ARCHIVE=1` enables the archive only
 for diagnostic launches.
 
+Window GPU health registers pending work before native presentation can call back.
+An early source release clears that work; a rejected submission leaves no pending wait.
+Uncertain work remains tracked until release or device loss.
+
+The frame-rate overlay appears at the top right by default, with a persistent
+Show Frame Rate switch in device integration settings. Desktop, full-screen app cards,
+gamepad presentations and detached window scenes display it; cards and detached scenes
+measure their own window. The rate counts accepted GPU presents over the last two seconds
+and disappears when that window has no recent presents.
+
 Desktop Launchpad retains its page-arrow hit regions while changing pages. Repeated
 pointer clicks advance through the available pages; an arrow at either end consumes
 the click without dismissing Launchpad or moving beyond the page range.
