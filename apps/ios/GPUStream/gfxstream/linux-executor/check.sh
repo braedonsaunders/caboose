@@ -90,6 +90,8 @@ if app timeout 600 /shared/sync_check > "$out/sync-check.log" 2>&1; then
   echo "PASS sync-check: $(grep -c 'case=.* PASS' "$out/sync-check.log") cases"
 else
   status=1; echo "FAIL sync-check: $(grep 'FAIL\|failures=' "$out/sync-check.log" | tr '\n' ' ')"
+  # The broker's side of a failed run: who ended which stream or session, and why.
+  docker logs "$name-computer" > "$out/broker-sync-check.log" 2>&1 || true
 fi
 grep 'note=surface_enumeration' "$out/sync-check.log" || true
 if app env CABOOSE_GFXSTREAM_RETIREMENT_DIAGNOSTICS=1 timeout 120 /shared/sync_check --lifetime-child > "$out/allocator-lifetime.log" 2>&1; then
