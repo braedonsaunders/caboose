@@ -78,7 +78,7 @@ assert.equal(find(tasks, task.id).agentName, 'Stand-in')
 assert.ok(outputs(task.id).includes('turns in session: 1; mcp: caboose-desktop; blocks: text,link:evil name.bin,link:evil name (2).bin,image:image/png; recap: no; display: :101'), outputs(task.id).join('\n'))
 assert.equal(await sh('find /home/caboose -xdev \\( ! -user caboose -o ! -group caboose \\) | wc -l'), '0')
 console.log('Root-owned leftovers in the home given back to caboose.')
-console.log('Start, attachments as ACP content, the desktop MCP server and streaming passed.')
+console.log('Start, attachments as ACP content, the computer-use server and streaming passed.')
 
 // Reply at once: the runner is still waiting, so the same session continues.
 await tasks.reply(task.id, { prompt: 'Second prompt' })

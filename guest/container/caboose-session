@@ -81,17 +81,17 @@ PY
   fi
   rm -f -- "$bus"
   if [ "$bus" = "$XDG_RUNTIME_DIR/agent-bus" ]; then
-    runuser -u caboose -- python3 /opt/caboose/agent-profile.py exec dbus-daemon --config-file=/opt/caboose/keyring/agent-bus.conf --fork
+    runuser -u caboose -- /usr/libexec/caboose/agent-profile exec dbus-daemon --config-file=/opt/caboose/keyring/agent-bus.conf --fork
   else
     runuser -u caboose -- dbus-daemon --session --address="unix:path=$bus" --fork
   fi
 }
 
 # Starts the seat's accessibility bus before any app, so every app on its Xwayland joins that
-# bus (see guest/desktop-mcp/README.md). Safe to repeat; an app still runs without it.
+# bus (see guest/computer-use/README.md). Safe to repeat; an app still runs without it.
 a11y_bus() {
   local envfile=$1 bus=$2
-  runuser -u caboose -- env HOME="$CABOOSE_HOME" DBUS_SESSION_BUS_ADDRESS="unix:path=$bus" /bin/sh -c 'set -a; . "$0"; exec python3 /opt/caboose/a11y.py bus --display "$DISPLAY" --wait 30' "$envfile" >/dev/null ||
+  runuser -u caboose -- env HOME="$CABOOSE_HOME" DBUS_SESSION_BUS_ADDRESS="unix:path=$bus" /bin/sh -c 'set -a; . "$0"; exec /usr/libexec/caboose/a11y bus --display "$DISPLAY" --wait 30' "$envfile" >/dev/null ||
     echo "No accessibility bus for the display in $envfile" >&2
 }
 
@@ -132,7 +132,7 @@ start_display() {
   fi
   install -o caboose -g caboose -m 0644 /dev/null "$envfile"
   local wrapper=()
-  if [ "$port" = 14601 ]; then wrapper=(python3 /opt/caboose/agent-profile.py exec); fi
+  if [ "$port" = 14601 ]; then wrapper=(/usr/libexec/caboose/agent-profile exec); fi
   local libs=
   if [ "${CABOOSE_GPU:-none}" = wsl ]; then libs=/usr/lib/wsl/lib; fi
   local log="$CABOOSE_HOME/.cache/$name.log"

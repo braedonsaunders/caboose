@@ -1,0 +1,7 @@
+{
+  "name": "com.caboose.webmcp",
+  "description": "Caboose WebMCP: page tools for the agent seat's computer-use tools",
+  "path": "/usr/lib/caboose/computer-use/webmcp/host.py",
+  "type": "stdio",
+  "allowed_origins": ["chrome-extension://amcaiglphpdknhlheglmkglkdacedoab/"]
+}

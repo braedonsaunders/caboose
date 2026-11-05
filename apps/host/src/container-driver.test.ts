@@ -132,7 +132,7 @@ describe('createContainerController', () => {
       'XAUTHORITY=/run/user/1000/caboose-xauth', 'QT_QPA_PLATFORM=wayland;xcb']))
     expect(controller.agentDisplayUrl).toBe('ws://127.0.0.1:14601/')
     await controller.ensureAgentSeat()
-    expect(fake.calls.at(-1)).toEqual(expect.arrayContaining(['/usr/local/libexec/caboose-agent-seat']))
+    expect(fake.calls.at(-1)).toEqual(expect.arrayContaining(['/usr/libexec/caboose/agent-seat']))
   })
 
   it('parks by freezing and resumes with the same display token', async () => {
@@ -218,7 +218,7 @@ describe('createContainerController', () => {
     const controller = createContainerController(settings, { fence: async () => {}, docker: fake.docker, exists: () => false })
     await controller.wake()
     await controller.ensureAgentSeat()
-    expect(fake.calls.at(-1)).toEqual(['exec', '-u', 'root', 'caboose-owner', '/usr/local/libexec/caboose-agent-seat'])
+    expect(fake.calls.at(-1)).toEqual(['exec', '-u', 'root', 'caboose-owner', '/usr/libexec/caboose/agent-seat'])
     expect(await controller.apps()).toEqual([])
     expect(fake.calls.at(-1)?.slice(0, 4)).toEqual(['exec', '-u', 'caboose', 'caboose-owner'])
     await controller.launch('gimp.desktop', 'Pictures/a.png')

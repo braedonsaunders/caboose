@@ -124,8 +124,10 @@ a turn (including the history an agent replays on `session/load`) are not writte
   `auth.terminal: true`. The `authMethods` it returns are kept in
   `~/.local/share/caboose/agents/<id>/auth.json`.
 - **Session.** `session/new` with the configured task or persistent-profile workspace as `cwd` and the MCP server
-  `caboose-desktop` (`node /opt/caboose/desktop-mcp.mjs`, see `guest/desktop-mcp`), so every
-  agent can drive GUI apps on the agent seat. Its environment carries the seat's launch
+  `caboose-desktop` (`/usr/bin/caboose-computer-use` from the caboose-computer-use package, see
+  `guest/computer-use`; `CABOOSE_DESKTOP_MCP` overrides the path), so every agent can drive GUI
+  apps on the agent seat. Where it is not installed, the chat gets a notice saying it cannot use
+  applications on the computer. Its environment carries the seat's launch
   environment from the runner's: `CABOOSE_AGENT_DISPLAY` (the runner's `DISPLAY`),
   `WAYLAND_DISPLAY`, `CABOOSE_DISPLAY_CONTROL`, `XAUTHORITY`, `XDG_RUNTIME_DIR`,
   `DBUS_SESSION_BUS_ADDRESS`, `GDK_BACKEND`, `QT_QPA_PLATFORM`,
@@ -287,8 +289,9 @@ defines grouped select values, the model category, setter responses and update n
 The [Codex ACP implementation](https://github.com/zed-industries/codex-acp/blob/main/src/codex_agent.rs)
 returns this configuration from session creation/resume and implements the config setter.
 
-The runner supplies Caboose presentation guidance with each prompt: downloadable guest-file
-links, image previews, and complete self-contained `inline-html` widgets with responsive,
+The runner supplies Caboose guidance with each prompt, the same for every agent: to use
+applications through `caboose-desktop` on the agent seat (the owner's display is never theirs,
+and the owner can watch the seat live), downloadable guest-file links, image previews, and complete self-contained `inline-html` widgets with responsive,
 accessible controls. Widgets have no network or file access; data comes from the agent’s
 computer tools. `window.Caboose.compose(message)` proposes a native follow-up for the owner
 to review and send, and cannot execute a tool itself. When the owner asks for an app, or

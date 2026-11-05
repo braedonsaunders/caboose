@@ -501,8 +501,8 @@ address.
 
 `/v1/screen/elements`, `act`, `type` and `keys` (`src/screen.ts`, `docs/architecture.md`
 § Screen) read and drive the owner's display, Wayland and X11 applications alike. They run
-`/opt/caboose/a11y.py` and `/opt/caboose/seat.py`
-([`guest/desktop-mcp`](../../guest/desktop-mcp/README.md)) as `caboose` with the owner
+`/usr/libexec/caboose/a11y` and `/usr/libexec/caboose/seat`
+([`guest/computer-use`](../../guest/computer-use/README.md)) as `caboose` with the owner
 display's launch environment, which names its control socket.
 
 ## Notifications and Live Activities
@@ -651,7 +651,7 @@ approvals, cancel, restore after a host restart, sign-in, attachments and Downlo
 Debian 13 container where the real `caboose-agentd`, installed by its own `install.sh`,
 drives a stand-in ACP agent.
 
-`guest/desktop-mcp/check-a11y.sh` covers the accessibility helper behind the screen routes,
+`guest/computer-use/check/check-a11y.sh` covers the accessibility helper behind the screen routes,
 `guest/files/check-service.py` the file service, and `guest/terminal/check-service.py` the terminal service; see their READMEs.
 
 Agent profiles are private per-computer records in `agent-profiles.json`, with identity,

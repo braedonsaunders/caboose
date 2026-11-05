@@ -1,0 +1,18 @@
+# Installed as /etc/chromium.d/zz-caboose-agent by the caboose-computer-use package; Debian's
+# /usr/bin/chromium sources every file here, this one last. On the agent seat, which the computer-use
+# tools read and drive:
+# - --force-renderer-accessibility: Chromium builds its whole accessibility tree only with it;
+# - WebMCPTesting: Chromium's WebMCP (document.modelContext) with the tool listing and calls
+#   the Caboose WebMCP extension uses;
+# - --silent-debugger-extension-api: the extension evaluates in a tab through the DevTools
+#   protocol (chrome.debugger) without the "started debugging" bar changing the page;
+# - the extension itself. Chromium keeps only the last --load-extension, so this one names
+#   Debian's extension directories that exist too, joined by commas alone.
+if [ "${CABOOSE_SEAT:-}" = agent ]; then
+  caboose_extensions=/usr/lib/caboose/computer-use/webmcp/extension
+  for caboose_extension in /usr/share/chromium/extensions/*; do
+    [ -d "$caboose_extension" ] && caboose_extensions="$caboose_extensions,$caboose_extension"
+  done
+  export CHROMIUM_FLAGS="$CHROMIUM_FLAGS --force-renderer-accessibility --enable-features=WebMCPTesting --disable-features=DisableLoadExtensionCommandLineSwitch --silent-debugger-extension-api --load-extension=$caboose_extensions"
+  unset caboose_extension caboose_extensions
+fi

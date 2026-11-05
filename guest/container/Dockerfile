@@ -13,10 +13,10 @@ RUN cd /src && cargo build --release --locked --jobs "$CARGO_BUILD_JOBS" -p cabo
 # The Caboose VA-API driver (guest/vaapi).
 COPY vaapi /vaapi
 RUN make -C /vaapi BUILD=/out/vaapi /out/vaapi/caboose_drv_video.so
-# The Win32 side of desktop MCP's Wine reader (guest/desktop-mcp/wine), cross-built here so no
-# computer needs a Windows compiler.
+# The Win32 side of computer use's Wine reader (guest/computer-use/wine), cross-built here so no
+# computer needs a Windows compiler; it becomes the caboose-computer-use-wine package.
 RUN apt-get update && apt-get install -y --no-install-recommends gcc-mingw-w64-x86-64-win32 && rm -rf /var/lib/apt/lists/*
-COPY desktop-mcp/wine /wine
+COPY computer-use/wine /wine
 RUN mkdir -p /out/wine && x86_64-w64-mingw32-gcc -O2 -municode -o /out/wine/caboose-msaa.exe /wine/caboose-msaa.c \
       -loleacc -loleaut32 -lole32 -luuid -luser32
 # The GBM backend for the computer's render node (guest/gpu/gbm).
@@ -59,22 +59,19 @@ RUN printf 'deb https://deb.debian.org/debian trixie main contrib non-free non-f
     printf 'caboose ALL=(ALL) NOPASSWD:ALL\n' > /etc/sudoers.d/caboose && chmod 0440 /etc/sudoers.d/caboose
 COPY image/apps.sh image/desktop-apps.sh image/desktop-apps.tsv /tmp/
 RUN bash /tmp/apps.sh && rm /tmp/apps.sh /tmp/desktop-apps.sh /tmp/desktop-apps.tsv
-COPY desktop-mcp /tmp/desktop-mcp
-COPY --from=display /out/wine/caboose-msaa.exe /tmp/desktop-mcp/wine/caboose-msaa.exe
-RUN /tmp/desktop-mcp/install.sh
 COPY agentd/caboose-agentd.mjs agentd/agent-tools.mjs agentd/library-mcp.mjs agentd/package.json agentd/install.sh /tmp/agentd/
 RUN /tmp/agentd/install.sh && rm -rf /tmp/agentd
 COPY agentd/caboose-agentd.mjs agentd/agent-tools.mjs agentd/library-mcp.mjs agentd/package.json agentd/install.sh /tmp/bundle/agentd/
 COPY components /tmp/bundle/components
 COPY template/caboose-template.py template/caboose-template.target /tmp/bundle/template/
-COPY desktop-mcp /tmp/bundle/desktop-mcp
+COPY computer-use /tmp/bundle/computer-use
+COPY --from=display /out/wine/caboose-msaa.exe /tmp/bundle/computer-use/wine/caboose-msaa.exe
 COPY keyring /tmp/bundle/keyring
 COPY container/caboose-session /tmp/bundle/container/
 COPY files /tmp/bundle/files
 COPY terminal /tmp/bundle/terminal
 COPY ports /tmp/bundle/ports
 COPY notifications /tmp/bundle/notifications
-COPY webmcp /tmp/bundle/webmcp
 COPY scopes /tmp/bundle/scopes
 COPY phone /tmp/bundle/phone
 COPY devices /tmp/bundle/devices
@@ -86,7 +83,7 @@ COPY apps/install.sh apps/caboose-app apps/appcore.py apps/net.py apps/remote.py
 COPY memory/install.sh memory/caboose-memory.py memory/caboose-memory.service /tmp/bundle/memory/
 COPY ai /tmp/bundle/ai
 COPY wine /tmp/bundle/wine
-RUN bash /tmp/bundle/components/install.sh image-container && rm -rf /tmp/bundle
+RUN bash /tmp/bundle/components/install.sh image-container && sh /tmp/bundle/computer-use/check/installed.sh && rm -rf /tmp/bundle
 RUN export USER=root HOME=/root TERM=xterm && mkdir -p /tmp/themes && \
     for spec in 'WhiteSur-gtk-theme d5782652d412137e26fb8ff55b55a5572e4c6995' 'WhiteSur-icon-theme 73d8040da51a9ed74e47c7366e7e9ff437601a5c' 'WhiteSur-cursors e190baf618ed95ee217d2fd45589bd309b37672b'; do \
       set -- $spec; git clone -q "https://github.com/vinceliuice/$1.git" "/tmp/themes/$1" && git -C "/tmp/themes/$1" checkout -q "$2" || exit 1; \
@@ -99,7 +96,7 @@ RUN export USER=root HOME=/root TERM=xterm && mkdir -p /tmp/themes && \
     rm -f /usr/bin/gnome-theme-switcher /usr/share/applications/org.gnome.GTK4ThemeSwitcher.desktop && \
     mkdir -p /etc/xdg/gtk-3.0 && \
     printf '[Settings]\ngtk-theme-name=WhiteSur-Dark\ngtk-icon-theme-name=WhiteSur-dark\ngtk-cursor-theme-name=WhiteSur-cursors\ngtk-font-name=Inter 10\ngtk-decoration-layout=:\ngtk-application-prefer-dark-theme=1\n' > /etc/xdg/gtk-3.0/settings.ini && \
-    rm -rf /tmp/themes /tmp/desktop-mcp /var/lib/apt/lists/*
+    rm -rf /tmp/themes /var/lib/apt/lists/*
 RUN apt-get update && apt-get install -y --no-install-recommends chromium-sandbox && rm -rf /var/lib/apt/lists/*
 COPY --from=display /src/target/release/caboose-display /src/target/release/caboose-display-probe /usr/local/bin/
 COPY --from=display /out/vaapi/caboose_drv_video.so /tmp/caboose_drv_video.so

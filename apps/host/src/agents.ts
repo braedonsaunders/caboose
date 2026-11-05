@@ -265,7 +265,7 @@ const LAUNCH = [
   // The seat's launch environment (its Wayland socket, Xwayland :101 and cookie, control socket), when it is up.
   `if [ -r ${AGENT_DISPLAY_ENV_PATH} ]; then set -a; . ${AGENT_DISPLAY_ENV_PATH}; set +a; fi`,
   // The runner keeps the owner's home for its CLI authentication; the GUI profile belongs to
-  // the agent seat, where desktop MCP's launch starts applications.
+  // the agent seat, where the computer-use launch step starts applications.
   'unset XDG_CONFIG_HOME XDG_DATA_HOME XDG_CACHE_HOME XDG_STATE_HOME CABOOSE_SEAT',
   'export HOME=/home/caboose DISPLAY=:101 XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/agent-bus PATH=/home/caboose/.local/bin:/usr/local/bin:/usr/bin:/bin CABOOSE_TASK_DIR="$PWD"',
   `[ -f ${AGENTD} ] || { echo "${RUNNER_MISSING}" >&2; exit 1; }`,

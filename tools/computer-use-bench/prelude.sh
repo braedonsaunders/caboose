@@ -1,0 +1,79 @@
+# Sourced inside the computer before a task's setup, verify or reset, as the agent user with
+# the agent seat's environment (/run/caboose/agent-display.env). BENCH is the run directory.
+# The run's own home and data directories: no session restore or recent files carry over
+# from the agent profile or an earlier task. The run directory is the agent profile of the
+# desktop server too (CABOOSE_AGENT_PROFILE=$BENCH in --mcp), so applications the agent
+# launches share this home. Configuration (XDG_CONFIG_HOME) stays the seat's, with its
+# settings services (dconf, xfconf), which tasks reset themselves.
+export HOME="$BENCH/home" XDG_DATA_HOME="$BENCH/home/.local/share" XDG_CACHE_HOME="$BENCH/home/.cache" \
+  XDG_STATE_HOME="$BENCH/home/.local/state"
+(umask 077; mkdir -p "$HOME/.config" "$HOME/.local/share" "$HOME/.local/state" "$HOME/.cache")
+# The seat's installed software stays the agent profile's, as the computer-use launch step keeps it:
+# its user Flatpak installation and its Wine prefix.
+AGENT_HOME=/home/caboose/.local/share/caboose/agent-seat/home
+[ -d "$AGENT_HOME/.local/share/flatpak" ] && export FLATPAK_USER_DIR="$AGENT_HOME/.local/share/flatpak"
+[ -d "$AGENT_HOME/.wine" ] && export WINEPREFIX="$AGENT_HOME/.wine"
+TOOLS=${TOOLS:-/usr/lib/caboose/computer-use/helpers}  # where the computer-use helpers are installed
+SEAT=$TOOLS/seat.py
+# Start an application on the agent seat as the computer-use launch step does, after announcing the
+# assistive technology on the seat's accessibility bus as it does.
+start() {
+  gdbus call --session --dest org.a11y.Bus --object-path /org/a11y/bus --method org.freedesktop.DBus.Properties.Set \
+    org.a11y.Status ScreenReaderEnabled '<true>' >/dev/null 2>&1
+  ACCESSIBILITY_ENABLED=1 GNOME_ACCESSIBILITY=1 QT_LINUX_ACCESSIBILITY_ALWAYS_ON=1 XDG_SESSION_TYPE=wayland \
+    setsid python3 "$TOOLS/launcher.py" "$(python3 -c 'import shlex, sys; print(shlex.join(sys.argv[1:]))' "$@")" >>"$BENCH/app.log" 2>&1 < /dev/null &
+}
+# A form page whose submit sets the title to COMPLETE only when the expected values are in.
+page() {
+  mkdir -p "$(dirname "$1")"
+  cat > "$1" <<HTML
+<!doctype html><html><head><title>$2</title></head><body><h1>$2</h1>
+<form onsubmit="event.preventDefault(); document.title = (r.value === 'Iris Moss' && c.value === 'Granite Falls' && g.checked) ? '$3' : 'Incomplete';">
+<p><label for="r">Recipient</label> <input id="r"></p><p><label for="c">City</label> <input id="c"></p>
+<p><label><input type="checkbox" id="g"> Gift wrap</label></p>
+<button type="button">Reset</button> <button type="submit">Ship order</button></form></body></html>
+HTML
+}
+windows() { python3 "$SEAT" windows; }
+window_title() { windows | python3 -c 'import json, sys; sys.exit(0 if any(w.get("title") == sys.argv[1] for w in json.load(sys.stdin)["windows"]) else 1)' "$1"; }
+# Wait until a window of APP is on the seat and focused.
+wait_window() {
+  for _ in $(seq 1 600); do
+    windows | python3 -c 'import json, sys; sys.exit(0 if any((w.get("app_id") or "").lower() == sys.argv[1].lower() and w.get("focused") and w.get("title") for w in json.load(sys.stdin)["windows"]) else 1)' "$1" && return 0
+    sleep 0.1
+  done
+  windows; return 1
+}
+# The agent profile's LibreOffice profile, emptied between tasks: its document recovery would
+# carry one task's unsaved documents into the next.
+fresh_office() { rm -rf "${XDG_CONFIG_HOME:-$HOME/.config}/libreoffice"; }
+# The document portal's entries for this run's files: they outlive the run directory, and a
+# later task's file of the same path would reach an app through the stale one.
+forget_documents() {
+  flatpak documents --columns=id,origin 2>/dev/null | while read -r id origin; do
+    case "$origin" in "$BENCH"/*) flatpak document-unexport --doc-id "$id" >/dev/null 2>&1 ;; esac
+  done; true
+}
+# The seat's services started by D-Bus (the file dialogs of xdg-desktop-portal-gtk) take the
+# run's home too: the agent bus's activation environment is pointed at it, and an agent-seat
+# dialog service already running is ended so the next one starts with it. restore_home points
+# it back at the agent profile.
+seat_home() {
+  gdbus call --session --dest org.freedesktop.DBus --object-path /org/freedesktop/DBus --method org.freedesktop.DBus.UpdateActivationEnvironment \
+    "{'HOME': '$1', 'XDG_DATA_HOME': '$1/.local/share', 'XDG_CACHE_HOME': '$1/.cache', 'XDG_STATE_HOME': '$1/.local/state'}" >/dev/null
+  for pid in $(pgrep -u "$(id -u)" -x xdg-desktop-por); do
+    tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | grep -qx CABOOSE_SEAT=agent && grep -q portal-gtk "/proc/$pid/cmdline" && kill "$pid"
+  done; true
+}
+use_run_home() { seat_home "$HOME"; }
+restore_home() { seat_home "$AGENT_HOME"; }
+# End every process on the agent seat's windows, and anything still running from this run.
+end_apps() {
+  # Close each window first, as its close button would; then signals for what is left.
+  python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); from seat import Seat; s = Seat(); [s.request("close %d" % w["id"]) for w in s.windows()["windows"]]' "$TOOLS" 2>/dev/null
+  for _ in $(seq 1 30); do [ "$(windows | python3 -c 'import json, sys; print(len(json.load(sys.stdin)["windows"]))')" = 0 ] && break; sleep 0.1; done
+  for pid in $(windows | python3 -c 'import json, sys; print(" ".join({str(w["pid"]) for w in json.load(sys.stdin)["windows"] if w.get("pid")}))'); do kill "$pid" 2>/dev/null; done
+  pkill -u "$(id -u)" -f -- "$BENCH" 2>/dev/null
+  for _ in $(seq 1 50); do [ "$(windows | python3 -c 'import json, sys; print(len(json.load(sys.stdin)["windows"]))')" = 0 ] && break; sleep 0.1; done
+  pkill -KILL -u "$(id -u)" -f -- "$BENCH" 2>/dev/null; true
+}

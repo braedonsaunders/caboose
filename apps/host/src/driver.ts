@@ -266,7 +266,7 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
       try { return { url: endpoint(AI_PORT, 'http'), token: displayToken } } catch { return undefined }
     },
     async ensureAgentSeat() {
-      await command('/usr/local/libexec/caboose-agent-seat', [], 180_000)
+      await command('/usr/libexec/caboose/agent-seat', [], 180_000)
     },
     guest() {
       if (!desk) return undefined

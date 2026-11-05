@@ -72,7 +72,7 @@ it('routes agent replies, approvals, files and links with the right status codes
   const launch = vi.fn(async (_id: string, _path?: string, _action?: string) => {})
   const guest = { ownerEnv: ['DISPLAY=:110'], run: async (command: string, args: string[]) => {
     runs.push([command, ...args])
-    if (args.includes('/opt/caboose/a11y.py')) return '0\n{"elements":[]}'
+    if (args.includes('/usr/libexec/caboose/a11y')) return '0\n{"elements":[]}'
     if (command === '/usr/bin/python3' && args[2] === 'list') return '{}'
     // This route fixture models a runner that immediately claims admitted prompts.
     // Durable delivery now asks for that evidence before draining queued replies.
