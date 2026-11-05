@@ -168,7 +168,9 @@ encoders (parameter sets on keyframes), keysym mapping on the real `us` keymap, 
 → byte conversion for deletions, flow control, the launch environment, configuration and
 per-instance state directories, the Xauthority format, the control socket's key
 combinations and text escapes, the clipboard's checks and type choice, bounded pipe
-transfers, and the transfer area's path and link checks.
+transfers, and the transfer area's path and link checks, the GPU surface binds held for
+override-redirect X11 windows not mapped yet (which binds are held, replaced, refused and
+bounded: `src/gpu_pending.rs`) and the X11 cover rules for a bound child window.
 
 `scripts/check.py` starts the compositor with real applications and drives it with the
 probe. Every check asserts on what arrived, not on a picture:
@@ -309,6 +311,7 @@ summary.
 | `--private-gpu-stream-socket PATH` | disabled | Owner-only private live GPU stream socket; requires the surface socket option |
 | `--private-gpu-surface-socket PATH` | disabled | Owner-only private live GPU surface socket; requires the stream socket option |
 | `--private-gpu-indexed` | disabled | Select private indexed v4 transport; requires both private GPU sockets |
+| `--private-gpu-broker PATH` | disabled | Join the computer's shared GPU broker at this seat's control socket (`DIR/SEAT/control.sock`) instead of starting one; the GPU sockets are then that seat's (`DIR/SEAT/gpu.sock`, `surface.sock`), and the agent seat may take its own (`DIR/agent`). See [gpu-live.md, Seats](../../docs/gpu-live.md#seats) |
 | `--audio-bitrate BPS` | `128000` | Opus bitrate |
 | `--env-file PATH` | | Where to write the application environment once ready |
 | `--client-timeout SECS` | `30` | Close a client that has sent nothing for this long; `0` never |
@@ -318,6 +321,7 @@ summary.
 | --- | --- |
 | `XDG_RUNTIME_DIR` | Required. Holds the Wayland socket and the instance's state directory |
 | `CABOOSE_GAME_SOCKET` | The game socket (default `$XDG_RUNTIME_DIR/caboose-game.sock`) |
+| `CABOOSE_GPU_BROKER` | The GPU broker the private GPU supervisor starts (default `/usr/local/libexec/caboose-gpu-broker`; a release check runs its candidate broker this way) |
 | `LIBVA_DRIVERS_PATH` | Where to look for `caboose_drv_video.so` (default `/usr/lib/x86_64-linux-gnu/dri`) |
 | `CABOOSE_DISPLAY_LOG` | A `tracing` filter (`info`, `caboose_display=debug`, …) |
 
@@ -424,6 +428,27 @@ Python, libX11 and libXtst; the supplied command creates a native Wayland window
 It closes its own clients on success or failure and refuses an occupied seat. Run
 the identical fixture on the previous compositor as a negative control: stale
 foreground metadata fails its foreground assertion. No owner display is involved.
+
+### Keyboard focus returns without a click
+
+`scripts/check-focus.sh` checks that a native Wayland GTK 3 window keeps the keyboard at
+each step, with no click:
+- when it maps;
+- after its context menu (a popup holding a keyboard grab) closes;
+- after a dialog transient for it closes;
+- after the control socket's `focus` names it again.
+
+Run it inside a computer as the compositor's user, against a private seat (never the owner's
+display or the agent seat). Pass the seat's control socket and the env file its compositor
+wrote with `--env-file`:
+
+```sh
+sh scripts/check-focus.sh /path/to/private/control.sock /path/to/private/display.env [WORK_DIR]
+```
+
+`scripts/focus_check_app.py` is the window. It writes its entry's text to a file, so the
+check reads exactly which typed letters arrived. The check needs python3-gi with GTK 3 and
+prints `PASS`, or the first step whose letter was lost.
 
 ### X11 core wheel delivery check
 

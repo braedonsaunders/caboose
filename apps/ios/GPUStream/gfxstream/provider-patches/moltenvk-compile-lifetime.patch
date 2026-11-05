@@ -1,0 +1,222 @@
+diff --git a/MoltenVK/MoltenVK/GPUObjects/MVKPipeline.h b/MoltenVK/MoltenVK/GPUObjects/MVKPipeline.h
+index e385e9b..3faa327 100644
+--- a/MoltenVK/MoltenVK/GPUObjects/MVKPipeline.h
++++ b/MoltenVK/MoltenVK/GPUObjects/MVKPipeline.h
+@@ -561,6 +561,7 @@ protected:
+ 	bool compileComplete(id<MTLRenderPipelineState> pipelineState, NSError *error);
+ 
+ 	id<MTLRenderPipelineState> _mtlRenderPipelineState = nil;
++	MTLRenderPipelineDescriptor* _cabooseDescriptor = nil;	// this compile's own copy
+ };
+ 
+ 
+@@ -598,6 +599,7 @@ protected:
+ 	bool compileComplete(id<MTLComputePipelineState> pipelineState, NSError *error);
+ 
+ 	id<MTLComputePipelineState> _mtlComputePipelineState = nil;
++	MTLComputePipelineDescriptor* _cabooseDescriptor = nil;	// this compile's own copy
+ };
+ 
+ 
+diff --git a/MoltenVK/MoltenVK/GPUObjects/MVKPipeline.mm b/MoltenVK/MoltenVK/GPUObjects/MVKPipeline.mm
+index 3a75964..6b71386 100644
+--- a/MoltenVK/MoltenVK/GPUObjects/MVKPipeline.mm
++++ b/MoltenVK/MoltenVK/GPUObjects/MVKPipeline.mm
+@@ -3215,12 +3215,16 @@ extern "C" MVK_PUBLIC_SYMBOL bool mvkCabooseSavePipelineArchive(void) {
+ id<MTLRenderPipelineState> MVKRenderPipelineCompiler::newMTLRenderPipelineState(MTLRenderPipelineDescriptor* mtlRPLDesc) {
+ 	unique_lock<mutex> lock(_completionLock);
+ 
++	// The compile works on its own copy, which lives as long as this compiler: the caller may change
++	// or release its descriptor once this returns while Metal is still using it.
++	_cabooseDescriptor = [mtlRPLDesc copy];		// retained
++	MTLRenderPipelineDescriptor* desc = _cabooseDescriptor;
+ 	compile(lock, ^{
+ 		auto mtlDev = getMTLDevice();
+ 		id<MTLBinaryArchive> archive = cabooseArchiveFor(mtlDev);
+ 		if ( !archive ) {
+ 			@synchronized (mtlDev) {
+-				[mtlDev newRenderPipelineStateWithDescriptor: mtlRPLDesc
++				[mtlDev newRenderPipelineStateWithDescriptor: desc
+ 										   completionHandler: ^(id<MTLRenderPipelineState> ps, NSError* error) {
+ 											   bool isLate = compileComplete(ps, error);
+ 											   if (isLate) { destroy(); }
+@@ -3230,9 +3234,9 @@ id<MTLRenderPipelineState> MVKRenderPipelineCompiler::newMTLRenderPipelineState(
+ 		}
+ 		// The lookup and a compile after a miss are asynchronous, as MoltenVK's own compile:
+ 		// the device lock is held only to submit each, so compiles run concurrently.
+-		mtlRPLDesc.binaryArchives = @[archive];
++		desc.binaryArchives = @[archive];
+ 		@synchronized (mtlDev) {
+-			[mtlDev newRenderPipelineStateWithDescriptor: mtlRPLDesc
++			[mtlDev newRenderPipelineStateWithDescriptor: desc
+ 												 options: MTLPipelineOptionFailOnBinaryArchiveMiss
+ 									   completionHandler: ^(id<MTLRenderPipelineState> found, MTLRenderPipelineReflection*, NSError*) {
+ 				if (found) {
+@@ -3243,15 +3247,17 @@ id<MTLRenderPipelineState> MVKRenderPipelineCompiler::newMTLRenderPipelineState(
+ 					return;
+ 				}
+ 				_cabooseArchiveMisses++;
++				cabooseSubmitting();	// this second submission, like the first, can outlive the completion
+ 				@synchronized (mtlDev) {
+-					[mtlDev newRenderPipelineStateWithDescriptor: mtlRPLDesc
++					[mtlDev newRenderPipelineStateWithDescriptor: desc
+ 											   completionHandler: ^(id<MTLRenderPipelineState> ps, NSError* error) {
+-						if (ps) { cabooseArchiveAdd(archive, mtlRPLDesc, false); }
++						if (ps) { cabooseArchiveAdd(archive, desc, false); }
+ 						bool isLate = compileComplete(ps, error);
+ 						[archive release];
+ 						if (isLate) { destroy(); }
+ 					}];
+ 				}
++				cabooseSubmitted();	// may delete this compiler: nothing follows
+ 			}];
+ 		}
+ 	});
+@@ -3270,6 +3276,7 @@ bool MVKRenderPipelineCompiler::compileComplete(id<MTLRenderPipelineState> mtlRe
+ 
+ MVKRenderPipelineCompiler::~MVKRenderPipelineCompiler() {
+ 	[_mtlRenderPipelineState release];
++	[_cabooseDescriptor release];
+ }
+ 
+ 
+@@ -3279,12 +3286,15 @@ MVKRenderPipelineCompiler::~MVKRenderPipelineCompiler() {
+ id<MTLComputePipelineState> MVKComputePipelineCompiler::newMTLComputePipelineState(MTLComputePipelineDescriptor* plDesc) {
+ 	unique_lock<mutex> lock(_completionLock);
+ 
++	// Its own copy, as for render pipelines.
++	_cabooseDescriptor = [plDesc copy];		// retained
++	MTLComputePipelineDescriptor* desc = _cabooseDescriptor;
+ 	compile(lock, ^{
+ 		auto mtlDev = getMTLDevice();
+ 		id<MTLBinaryArchive> archive = cabooseArchiveFor(mtlDev);
+ 		if ( !archive ) {
+ 			@synchronized (mtlDev) {
+-				[mtlDev newComputePipelineStateWithDescriptor: plDesc
++				[mtlDev newComputePipelineStateWithDescriptor: desc
+ 													  options: MTLPipelineOptionNone
+ 											completionHandler: ^(id<MTLComputePipelineState> ps, MTLComputePipelineReflection*, NSError* error) {
+ 												bool isLate = compileComplete(ps, error);
+@@ -3294,9 +3304,9 @@ id<MTLComputePipelineState> MVKComputePipelineCompiler::newMTLComputePipelineSta
+ 			return;
+ 		}
+ 		// Asynchronous, as for render pipelines.
+-		plDesc.binaryArchives = @[archive];
++		desc.binaryArchives = @[archive];
+ 		@synchronized (mtlDev) {
+-			[mtlDev newComputePipelineStateWithDescriptor: plDesc
++			[mtlDev newComputePipelineStateWithDescriptor: desc
+ 												  options: MTLPipelineOptionFailOnBinaryArchiveMiss
+ 										completionHandler: ^(id<MTLComputePipelineState> found, MTLComputePipelineReflection*, NSError*) {
+ 				if (found) {
+@@ -3307,16 +3317,18 @@ id<MTLComputePipelineState> MVKComputePipelineCompiler::newMTLComputePipelineSta
+ 					return;
+ 				}
+ 				_cabooseArchiveMisses++;
++				cabooseSubmitting();	// this second submission, like the first, can outlive the completion
+ 				@synchronized (mtlDev) {
+-					[mtlDev newComputePipelineStateWithDescriptor: plDesc
++					[mtlDev newComputePipelineStateWithDescriptor: desc
+ 														  options: MTLPipelineOptionNone
+ 												completionHandler: ^(id<MTLComputePipelineState> ps, MTLComputePipelineReflection*, NSError* error) {
+-						if (ps) { cabooseArchiveAdd(archive, plDesc, true); }
++						if (ps) { cabooseArchiveAdd(archive, desc, true); }
+ 						bool isLate = compileComplete(ps, error);
+ 						[archive release];
+ 						if (isLate) { destroy(); }
+ 					}];
+ 				}
++				cabooseSubmitted();	// may delete this compiler: nothing follows
+ 			}];
+ 		}
+ 	});
+@@ -3335,6 +3347,7 @@ bool MVKComputePipelineCompiler::compileComplete(id<MTLComputePipelineState> mtl
+ 
+ MVKComputePipelineCompiler::~MVKComputePipelineCompiler() {
+ 	[_mtlComputePipelineState release];
++	[_cabooseDescriptor release];
+ }
+ 
+ 
+diff --git a/MoltenVK/MoltenVK/GPUObjects/MVKSync.h b/MoltenVK/MoltenVK/GPUObjects/MVKSync.h
+index f92730c..7e341f2 100644
+--- a/MoltenVK/MoltenVK/GPUObjects/MVKSync.h
++++ b/MoltenVK/MoltenVK/GPUObjects/MVKSync.h
+@@ -576,12 +576,18 @@ protected:
+ 	virtual void handleError();
+ 	bool endCompile(NSError* compileError);
+ 	bool markDestroyed();
++	void cabooseSubmitting();
++	void cabooseSubmitted();
+ 
+ 	MVKVulkanAPIDeviceObject* _owner;
+ 	NSError* _compileError = nil;
+ 	uint64_t _startTime = 0;
+ 	bool _isCompileDone = false;
+ 	bool _isDestroyed = false;
++	// Caboose: how many submissions of this compile are still running. Metal may call the
++	// completion before its submitting call returns, and that call can still use what the compiler
++	// owns, so the compiler is deleted only once the compile is done and no submission runs.
++	uint32_t _cabooseSubmitting = 0;
+ 	std::mutex _completionLock;
+ 	std::condition_variable _blocker;
+ 	std::string _compilerType = "Unknown";
+diff --git a/MoltenVK/MoltenVK/GPUObjects/MVKSync.mm b/MoltenVK/MoltenVK/GPUObjects/MVKSync.mm
+index f522c4d..b48a126 100644
+--- a/MoltenVK/MoltenVK/GPUObjects/MVKSync.mm
++++ b/MoltenVK/MoltenVK/GPUObjects/MVKSync.mm
+@@ -459,7 +459,11 @@ void MVKMetalCompiler::compile(unique_lock<mutex>& lock, dispatch_block_t block)
+ 
+ 	_startTime = getPerformanceTimestamp();
+ 
+-	dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{ @autoreleasepool { block(); } });
++	_cabooseSubmitting++;		// The caller holds _completionLock.
++	dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
++		@autoreleasepool { block(); }
++		cabooseSubmitted();
++	});
+ 
+ 	// Limit timeout to avoid overflow since wait_for() uses wait_until()
+ 	chrono::nanoseconds nanoTimeout(min(getMVKConfig().metalCompileTimeout, kMVKUndefinedLargeUInt64));
+@@ -484,12 +488,30 @@ void MVKMetalCompiler::handleError() {
+ 											   _compileError.localizedDescription.UTF8String));
+ }
+ 
+-// Returns whether the compilation came in late, after the compiler was destroyed.
++// Returns whether the compilation came in late, after the compiler was destroyed, and the
++// submission is over too, so that the caller must now delete this compiler.
+ bool MVKMetalCompiler::endCompile(NSError* compileError) {
+ 	_compileError = [compileError retain];		// retained
+ 	_isCompileDone = true;
+ 	_blocker.notify_all();
+-	return _isDestroyed;
++	return _isDestroyed && !_cabooseSubmitting;
++}
++
++// A further submission for this compile begins (from a completion, so the lock is not held).
++void MVKMetalCompiler::cabooseSubmitting() {
++	lock_guard<mutex> lock(_completionLock);
++	_cabooseSubmitting++;
++}
++
++// A submission has returned: deletes this compiler if it was destroyed and its compile is done.
++void MVKMetalCompiler::cabooseSubmitted() {
++	bool remove;
++	{
++		lock_guard<mutex> lock(_completionLock);
++		_cabooseSubmitting--;
++		remove = _isDestroyed && _isCompileDone && !_cabooseSubmitting;
++	}
++	if (remove) { MVKBaseObject::destroy(); }
+ }
+ 
+ void MVKMetalCompiler::destroy() {
+@@ -501,7 +523,7 @@ bool MVKMetalCompiler::markDestroyed() {
+ 	lock_guard<mutex> lock(_completionLock);
+ 
+ 	_isDestroyed = true;
+-	return _isCompileDone;
++	return _isCompileDone && !_cabooseSubmitting;
+ }
+ 
+ 

@@ -4,9 +4,18 @@ from test_live_broker import broker, Writer, Kind, Decoder, Envelope, mock, Read
 import os as _os
 # Sessions here send raw DATA unless a test turns transport compression on.
 _os.environ.setdefault('CABOOSE_PRIVATE_GPU_DEFLATE', '0')
+# The 64 KiB DATA reads the queue toward the phone takes, less its control headroom.
+CAPACITY = min(broker.MAX_QUEUED_FRAMES - broker.CONTROL_HEADROOM_MESSAGES,
+               (broker.MAX_QUEUED_BYTES - broker.CONTROL_HEADROOM_BYTES) // broker.DATA_CREDIT_BYTES)
 
 
 class BrokerCreditTests(unittest.IsolatedAsyncioTestCase):
+    def test_the_queue_holds_a_resume_window_of_data_reads(self):
+        # As many bytes as the phone may leave unacknowledged; bytes, not frames, bound it.
+        self.assertEqual(broker.MAX_QUEUED_BYTES, broker.RESUME_WINDOW_BYTES)
+        self.assertEqual(CAPACITY, (broker.MAX_QUEUED_BYTES - broker.CONTROL_HEADROOM_BYTES) // broker.DATA_CREDIT_BYTES)
+        self.assertGreaterEqual(CAPACITY * broker.DATA_READ_BYTES, broker.MAX_QUEUED_BYTES - 2 * broker.CONTROL_HEADROOM_BYTES)
+
     async def test_reservations_count_against_queue_and_release_wakes_waiter(self):
         session = broker.Session(None, b'a'*16, 1, None, Writer())
         credits = []
@@ -27,7 +36,7 @@ class BrokerCreditTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_idle_reader_cannot_steal_credit_from_waiting_stream(self):
         session = broker.Session(None, b'a'*16, 1, None, Writer())
-        credits = [await session.reserve_data() for _ in range(14)]
+        credits = [await session.reserve_data() for _ in range(CAPACITY)]
         order = []
         async def waiting_reader():
             credit = await session.reserve_data()
@@ -44,7 +53,7 @@ class BrokerCreditTests(unittest.IsolatedAsyncioTestCase):
             order.append('retry')
             credits.append(retry)
             self.assertEqual(order, ['waiting', 'retry'])
-            self.assertEqual(session.reserved_count, 14)
+            self.assertEqual(session.reserved_count, CAPACITY)
             self.assertLessEqual(session.reserved_bytes + session.pending_bytes,
                                  broker.MAX_QUEUED_BYTES - broker.CONTROL_HEADROOM_BYTES)
         finally:
@@ -55,7 +64,7 @@ class BrokerCreditTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_cancelled_front_waiter_allows_next_reader(self):
         session = broker.Session(None, b'a'*16, 1, None, Writer())
-        credits = [await session.reserve_data() for _ in range(14)]
+        credits = [await session.reserve_data() for _ in range(CAPACITY)]
         first = asyncio.create_task(session.reserve_data())
         second = asyncio.create_task(session.reserve_data())
         await asyncio.sleep(0)
@@ -64,7 +73,7 @@ class BrokerCreditTests(unittest.IsolatedAsyncioTestCase):
         credits.pop().release()
         try:
             credits.append(await asyncio.wait_for(second, 1))
-            self.assertEqual(session.reserved_count, 14)
+            self.assertEqual(session.reserved_count, CAPACITY)
             self.assertFalse(session.credit_waiters)
         finally:
             second.cancel(); await asyncio.gather(second, return_exceptions=True)
@@ -98,7 +107,7 @@ class BrokerCreditTests(unittest.IsolatedAsyncioTestCase):
             async def drain(self): raise OSError('broken')
         session=broker.Session(None,b'a'*16,1,None,BrokenWriter())
         credits=[]
-        for _ in range(14): credits.append(await session.reserve_data())
+        for _ in range(CAPACITY): credits.append(await session.reserve_data())
         session.send(Kind.DATA,1,1,b'x'*65536,credit=credits[0])
         waiter=asyncio.create_task(session.reserve_data()); await asyncio.sleep(0)
         self.assertFalse(waiter.done())
@@ -120,6 +129,8 @@ class BrokerCreditTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(credit.active)
             first.send(Kind.DATA,1,1,b'x',credit=credit)
             with self.assertRaises(RuntimeError): first.send(Kind.DATA,1,1,b'x',credit=credit)
+            self.assertEqual(first.pending.qsize(),1)
+            first.pending.get_nowait()
             self.assertEqual(first.sequence,2)
         finally:
             credit.release()
@@ -173,10 +184,10 @@ class BrokerCreditTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_cancelled_capacity_wait_does_not_own_credit(self):
         session=broker.Session(None,b'a'*16,1,None,Writer())
-        credits=[await session.reserve_data() for _ in range(14)]
+        credits=[await session.reserve_data() for _ in range(CAPACITY)]
         waiting=asyncio.create_task(session.reserve_data()); await asyncio.sleep(0)
         waiting.cancel(); await asyncio.gather(waiting,return_exceptions=True)
-        self.assertEqual(session.reserved_count,14)
+        self.assertEqual(session.reserved_count,CAPACITY)
         for credit in credits: credit.release()
         self.assertEqual(session.reserved_count,0)
         session.bindings.finish(session.binding_generation)
@@ -198,33 +209,33 @@ class CompressedCreditTests(unittest.IsolatedAsyncioTestCase):
         await session.message(Envelope(Kind.TRANSPORT_READY,b'a'*16,1,0,0,2,broker.TRANSPORT_CONFIG))
         sender=asyncio.create_task(session.send_loop())
         try:
-            for _ in range(14):
+            for _ in range(CAPACITY):
                 credit=await session.reserve_data()
                 session.send(Kind.DATA,1,1,b'x'*65536,credit=credit)
             logical=session.pending_bytes
             waiting=asyncio.create_task(session.reserve_data()); await asyncio.sleep(0)
             self.assertFalse(waiting.done())
-            self.assertGreater(logical,14*65536)
+            self.assertGreater(logical,CAPACITY*65536)
             await asyncio.wait_for(writer.entered.wait(),1)
             self.assertEqual(session.pending_bytes,logical)
             writer.allowed.set()
             credit=await asyncio.wait_for(waiting,1); credit.release()
             await asyncio.wait_for(session.pending.join(),1)
             self.assertEqual((session.pending_bytes,session.pending_count),(0,0))
-            # Server wire contains config then 14 independently decodable DATA frames.
+            # Server wire contains config then CAPACITY independently decodable DATA frames.
             wire=bytes(writer.data); payloads=[]
             while wire:
                 size=wire[1]&127; offset=2
                 if size==126: size=int.from_bytes(wire[2:4],'big'); offset=4
                 elif size==127: size=int.from_bytes(wire[2:10],'big'); offset=10
                 payloads.append(wire[offset:offset+size]); wire=wire[offset+size:]
-            self.assertEqual(len(payloads),15)
+            self.assertEqual(len(payloads),CAPACITY+1)
             parser=Decoder(b'a'*16,1); frames=[]
             parser.feed(payloads[0],frames.append)
             for payload in payloads[1:]:
                 self.assertEqual(payload[:4],b'CGLZ')
                 parser.feed(zlib.decompress(payload[16:],-15),frames.append)
-            self.assertEqual([f.sequence for f in frames],list(range(1,16)))
+            self.assertEqual([f.sequence for f in frames],list(range(1,CAPACITY+2)))
             self.assertTrue(all(f.payload==b'x'*65536 for f in frames[1:]))
         finally:
             sender.cancel(); await asyncio.gather(sender,return_exceptions=True)

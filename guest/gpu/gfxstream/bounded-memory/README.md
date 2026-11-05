@@ -9,20 +9,28 @@ transfer and reply handling, so it can be tested without Mesa.
 | --- | --- |
 | `ranges.h` | The process memory budget (96 MiB) shared by shadows and staging, and the planning of flush and invalidate ranges into atom-aligned chunks of at most 64 KiB per RPC |
 | `flush_packet.h` | One multi-range flush packet: up to 64 fragments under 15 × 64 KiB; an upload cache piece takes a fragment of its own |
-| `flush_shadow.h` | The bytes the host last received per allocation; a flush sends only the 256-byte blocks that differ among the blocks the host holds whole, and every block the device wrote is sent again |
+| `flush_shadow.h` | The bytes the host last received per allocation; a flush sends only the 8-byte words that differ in the 256-byte blocks the host holds whole (the blocks that differ, where it knows them by hash), and every block the device wrote is sent again |
 | `poll_stall.h` | Status polls that never change: an object polled for 10 seconds without change is named in `CABOOSE_GPU_POLL_STALLED`, again every minute |
-| `write_watch.h` | The blocks an application wrote to coherent memory since they were last sent, recorded with userfaultfd write protection (`/dev/userfaultfd`), so the flush before a submit sends only those; without the device, whole mappings |
+| `write_watch.h` | The blocks an application wrote to coherent memory since they were last sent, recorded with userfaultfd write protection (`/dev/userfaultfd`), so the flush before a submit sends only those; without the device, whole mappings. Lazy readback (below) uses the same descriptor |
 | `upload_cache.h` | The phone's upload cache (docs/gpu-live.md, "Upload cache"): the inventory and allowance per executor, the pieces each device stream stored, what a whole 4096-byte piece of a range of at least 16 KiB is sent as, and its wire form; BLAKE3 and the bytes are checked against `../upload-cache/vectors.json` by `../upload-cache/test_upload_cache_vectors.cpp` |
 | `cb_staging.h` | A command buffer's local, budgeted recording stream, sent with its queue submit |
-| `deferred_replies.h` | Replies the caller does not wait for, read as they arrive and drained in order once 6 MiB of commands or 64 KiB of their replies are owed; prefetched fence waits; guest-assigned handle checks |
+| `deferred_replies.h` | Replies the caller does not wait for, read as they arrive and drained in order once 64 KiB of replies or 24 MiB of their commands are owed; prefetched fence waits; guest-assigned handle checks |
 | `deferred_destroys.h` | Frees and destroys held until every queue submission sent before them has completed (Deferred frees, below) |
 | `event_status.h` | Event status asked for without waiting when the completion tracker does not follow the event |
-| `memory_traffic.h` | What a process moves, always counted and reported every five seconds in which anything moved: bytes its sockets sent and received, mapped memory flushed and read back by the application or the driver's coherent upkeep, and the readback ranges copies into buffers marked |
+| `memory_traffic.h` | What a process moves, always counted and reported every five seconds in which anything moved: bytes its sockets sent and received, mapped memory flushed and read back by the application or the driver's coherent upkeep, the readback ranges copies into buffers marked, and what the flush shadow sent against what whole changed blocks would have, in all and for the window's eight busiest allocations (`CABOOSE_GPU_MEMORY_ALLOCATION`: shadow kind, size, buffer usage) |
+| `launch_timeline.h` | A process's start, always counted: when it made its first instance, device, shader module and pipeline and presented its first frame (one `CABOOSE_GPU_LAUNCH event=` line each, in milliseconds since the process started), and every ten seconds of its first fifteen minutes the shader modules, pipelines, presents and commands it made |
 | `async_allocation.h` | Which device-memory allocations may skip the round trip: plain ones that keep their heap at most half committed |
-| `requirements_cache.h` | Image and buffer memory requirements by exact creation parameters, so an identical object needs no query; kept by device identity in a file shared by every process made the same way |
+| `requirements_cache.h` | Image and buffer memory requirements by exact creation parameters, so an identical object needs no query; kept by device identity in a file shared by every process made the same way, appended under an exclusive lock so only the process that finds it empty writes its header (a header met inside the file is skipped) |
 | `static_query_cache.h` | Answers of physical-device format queries, which cannot change, by their exact parameters |
+| `device_answers.h` | Device fingerprints and the parameters of a descriptor set layout support question, whose answers join the capability cache (Physical capability cache, below) |
+| `device_work.h` | What the process sent that can make the device write memory, by queue: memory nothing was sent since its allocation could have written is read from nowhere, and a queue with nothing sent since it was last reported idle is idle |
 | `query_results.h` | Query results without a round trip: a no-wait vkGetQueryPoolResults returns what its earlier identical request found, and resets drop stale results |
-| `completion_feed.h` | The completion feed's wire format and the tracker of every fence, timeline semaphore, event and query the process follows; the pause-on-loss waits: a paused process holds a loss until a new executor's socket appears, including a loss the phone replies with and a device stream that ends before the broker removes the old socket (`test_pause_on_loss.cpp`) |
+| `completion_feed.h` | The completion feed's wire format, its record reader, and the tracker of every fence, timeline semaphore, event and query the process follows, with the query values and memory captures records bring, and which waits it may report complete before their records (Speculated waits, below); the pause-on-loss waits: a paused process holds a loss until a new executor's socket appears, including a loss the phone replies with and a device stream that ends before the broker removes the old socket (`test_pause_on_loss.cpp`) |
+| `gpu_writes.h` | The GPU's writes of coherent memory: up to eight disjoint spans per allocation, what an invalidate reads of them (each span its own atom-aligned range unless one range takes no more 64 KiB round trips), and the bytes a copy from an image writes in its buffer, from the texel block size |
+| `completion_payloads.h` | Completion payloads with hello `0x200000` (docs/gpu-live.md, "Completion payloads"): `COMPLETION_WATCH2`, the captures in a record's payload, which query pools are captured, and `vkGetQueryPoolResults`' output written from captured values for every flag and layout |
+| `guest_set_ids.h` | Set ids a batched descriptor pool chooses with hello `0x100000`: the guest handles after the pool's own, in one block of the handle counter, and the create flag that tells the decoder so (docs/gpu-live.md, "Guest-chosen set ids") |
+| `silent_success.h` | Silent success with hello `0x800000` (docs/gpu-live.md, "Silent success"): its commands, the REPLY_MODE packet, which device streams have switched, feed records with payloads and the FAULT record, which is device loss |
+| `one_way_start.h` | One-way start with hello `0x1000000` (docs/gpu-live.md, "One-way start"): the start commands REPLY_MODE(3) silences, the questions that say an identical one succeeded earlier in the session, kept in its instance scope, and the wait for the feed |
 | `handles.h` | Vulkan handles as 64-bit keys and back, without the cast through `uintptr_t` that drops the upper half of a non-dispatchable handle in 32-bit builds |
 | `flush_timing.h`, `rpc_timing.h` | Bounded opt-in timing records (`CABOOSE_PRIVATE_GPU_FLUSH_TIMING=1`, `CABOOSE_PRIVATE_GPU_RPC_TIMING=1`) |
 
@@ -34,11 +42,70 @@ keeps only the blocks the host does not already hold, and packs them into flush 
 What the host holds is known per 256-byte block (`flush_shadow.h`): from a copy of the bytes
 it was sent for an allocation up to 32 MiB (48 MiB of copies in all), and otherwise from an
 XXH64 hash of each whole block (16 MiB of hashes, for 512 MiB of mappings), so memory an
-application rewrites with the bytes it already held is not sent again.
+application rewrites with the bytes it already held is not sent again. Of a block known by its
+copy only the 8-byte words that differ are sent, joined into one run where they are less than a
+fragment's 40 bytes of overhead apart: DXVK places each dynamic constant buffer in its own
+256-byte-aligned slot and rewrites the few words it holds. A block known by its hash, or not
+known, is sent whole. Each block is compared and recorded from one snapshot taken before any of
+its words are sent: the application may write the mapping while a flush runs (another thread
+filling the next frame's slot), and the shadow never records a value newer than the one
+compared, so a word written meanwhile differs from the shadow and goes in the next flush.
 The first failed packet's result is returned and no later packet is sent; a partial send
 or a failed reply read invalidates the stream. An invalidate retains every chunk until
 all ranges succeed, then publishes them in their original order, overlaps included;
 budget exhaustion or a failed chunk publishes nothing.
+
+The host-coherent type's upkeep reads back after a wait what copies into its buffers wrote
+on the GPU (`gpu_writes.h`): each command buffer and each watched submission keeps up to
+eight disjoint spans per allocation, and a copy from an image marks the bytes of the copied
+aspect's texel blocks. The invalidate after a wait reads the spans of the submissions that
+completed, less what their completion records delivered (below), in one call: each span as
+its own range, unless reading neighbours as one range takes no more 64 KiB round trips.
+Every copy into a coherent buffer is marked, including copies into buffers the GPU also
+reads (vertex, index, uniform, storage, indirect or transfer-source usage); the completion
+record of a submission carries only the bytes of copies into buffers the GPU does not read.
+
+## Lazy readback
+
+What the invalidate would read back is filled on its first use instead (`write_watch.h`):
+an application that reads part of a readback, or none of it, does not pay for the rest. Each
+16 KiB block of watched coherent memory the invalidate would read is made lazy: its pages are
+dropped, and the first access to one, a read or a write by the application or the kernel, is
+a missing-page fault on the write watch's userfaultfd. The watch's thread hands it to a
+filler thread, which reads the block and the lazy blocks after it, three to a round trip (the
+64 KiB invalidate chunk), and installs them write-protected, so a write after the fill is
+recorded as any write is. A block made lazy again while a fill reads it is read again.
+
+A fill reads on a connection of the process's own beside the device stream, an auxiliary
+stream (`../SocketStream.cpp`), with an encoder of its own: it takes no lock of the driver's,
+so a fault is served whatever the faulting thread holds, the device stream's encoder
+included (the driver writing a query's results into a lazy block, `sync-check`'s
+`lazy_query_results`). The auxiliary stream's hello sets nothing of the process's, it is no
+device stream, and its end is no executor loss. A fill always returns: a device of an executor
+the process no longer has is not asked (the fill installs zeros, as the lost device's memory
+reads), an executor's loss shuts the auxiliary stream (its read ends at once, never waiting for
+a new executor), and a new executor gets a new auxiliary stream, so every fault waiting on a
+fill is woken whatever becomes of the executor. A fill of a speculated submission's writes waits
+for its record first, a wait that also ends with the executor. Since the auxiliary stream is
+not ordered with the device stream, a block is lazy only when everything the phone must have
+done to it is done before the fill reads it: the GPU writes the invalidate covers have
+completed or the fill waits for them (the coherent upkeep's are those of completed or
+speculated submissions; any other invalidate's only when every submission has completed), and
+the last bytes the
+device stream sent for the block went before a submission that has completed (each flush
+notes the next submission's number for its blocks). A block is read at once, as before, when
+it holds writes not yet sent or sent and not yet confirmed, when it is not wholly inside the
+mapping, when a completion record is being stored into its memory, or when the process has
+no completion feed or no userfaultfd; `CABOOSE_LAZY_READBACK=0` reads every block at once.
+
+An invalidate decides what is lazy with the encoder held and stores only the rest, a flush
+fills the lazy blocks of what it sends first, an unmap fills the memory's lazy blocks while
+it is still mapped, and a completion record stores only the parts of its capture that are
+not lazy (the fill reads the phone's copy, which holds them). Missing-page faults are taken
+only in allocations that have had a lazy block; a page of one never used before is installed
+zero and write-protected. The watch's lock is below every lock in `lock_order.h`. The memory traffic
+line counts the bytes made lazy (`lazy_bytes`) and what fills read (`lazy_filled_bytes`,
+`lazy_fills`).
 
 ## Command buffers and replies
 
@@ -53,14 +120,23 @@ Flushes, fence and command-pool resets, binds, queue submits, guest-assigned cre
 plain allocations within the heap budget do not wait for their replies. `DeferredReplies` queues them per encoder; every later read drains them
 first, in stream order. Replies that have fully arrived are read without blocking as more
 deferred commands are sent, once 256 KiB of commands or 4 KiB of replies are owed. Past
-6 MiB of commands the phone has not answered, or 64 KiB of owed replies, a send waits for the
-oldest half: commands queued further ahead would only delay the next present. A failed
+64 KiB of owed replies (at most 16384) or 24 MiB of commands the phone has not answered (eight
+frames of a game that sends 3 MiB a frame), a send reads the oldest replies until half of each
+is owed. The guest keeps about 80 bytes per owed reply and none of the commands. The broker
+queues each stream's replies on their own, so unread replies hold back no other stream, and
+ends a stream that leaves 8 MiB unread (docs/gpu-live.md, "Toward guest streams"). The command bound
+keeps a burst of uploads from queueing seconds of decoding ahead of the next present; frame
+pacing, not these bounds, limits the frames in flight. A failed
 reset or flush is reported on stderr. A failed bind, or a create whose handle the
 device refused or renamed, invalidates the stream: the application can no longer observe
 that failure, so the device is lost. Only the first encoder of a process may defer; a
 second encoder turns deferral off for the process. Before the WSI surface socket names
 objects or work from the stream, `drainObjects` reads replies through the last pending
-create or submit and leaves later fence waits and plain results pending.
+create or submit and leaves later fence waits and plain results pending. On a stream switched
+to silent success (`silent_success.h`) the creates, allocations, binds, submits (with their
+staged command buffer begins and ends), command buffer begins and ends and event operations
+it lists queue no reply; the encoder then follows `drainObjects` with one round trip when such
+a command went out since the last.
 
 Without the completion feed, a submit that signals a fence is followed by a bounded
 (250 ms) wait for that fence. When the wait's reply reports success, the fence is known
@@ -92,6 +168,67 @@ request, or one a poll sends once the result is available, is read later with th
 replies, and the next identical call returns it (`query_results.h`). An event the tracker does not follow is
 asked about the same way (`event_status.h`): a poll returns what the latest answered request
 found, and no poll waits for the phone.
+
+With completion payloads (hello `0x200000`,
+[docs/gpu-live.md](../../../../docs/gpu-live.md#completion-payloads)) a batch's watch names
+its ended occlusion and timestamp queries, as ranges, and the coherent memory its commands
+write, within 256 entries and 1 MiB of captures (`completion_payloads.h`). Its record's
+captures give each query its value, which `vkGetQueryPoolResults` writes in every layout the
+call asks for without the device; a `WAIT` waits for the records. A reset, or a later batch
+that ends the query again, drops the value. A batch an idle wait completes keeps its queries
+pending until the record arrives, and `vkDestroyQueryPool` waits until every record that
+captures the pool has. Captured memory is copied into the allocation's shadow under the
+tracker's lock, then the flush shadow notes that the host holds those bytes and the write
+watch forgets the copy, and only then does the watch complete (an idle wait meanwhile waits
+for it); memory a later batch also writes, or whose batch an idle wait already completed, is
+left alone. The ranges stored are delivered: the invalidate after the wait takes them
+(`takeDelivered`) and does not read them from the phone. Ranges a record left out, a failed
+capture, and writes without the feed or the grant are read back as before; at most 4096
+allocations' delivered ranges wait to be taken, the oldest dropped first (then read back).
+
+## Speculated waits
+
+With `WAIT_SERIAL` (hello `0x400000`,
+[docs/gpu-live.md](../../../../docs/gpu-live.md#completion-feed)) the tracker may answer a
+blocking `vkWaitForFences` or `vkWaitSemaphores` before the records it waits for arrive. Each
+watch is classified when it is sent. It may be speculated when the submission's batches write
+no coherent memory whose bytes their record carries (copies into buffers the GPU also reads,
+whose bytes it does not carry, are read back after the wait: Lazy readback, below), set, reset or wait for no event, end or reset no
+query, signal no fence or semaphore whose payload is imported or exportable (nor an untracked
+timeline), wait for no imported payload or untracked timeline, and its watch goes out on the
+process's only device stream. A submission no watch follows hands what it waits for and
+signals to the next watch of its queue, which completes behind it; a sparse bind makes that
+watch unqualified. A wait is speculated when the watches it needs qualify, together with every
+earlier outstanding watch of their queues and, in turn, the watches that signal the timeline
+values those wait for; a timeline value that no outstanding watch signals and that is not yet
+reached is something the process has not sent, and stops it. Their fences are then signaled
+and their timelines reached, the queue must have had a record (the phone watches it), and at
+most three speculated watches per queue may await their records.
+
+Every command on the device stream takes the encoder lock first; there the encoder sends
+`WAIT_SERIAL` for the latest speculated watch of each queue not yet held behind, before the
+command. A watch whose record arrived first needs none. Another device stream's encoder waits
+for the speculated records instead, since the phone knows a watch only once its stream has
+been decoded that far. A record later reporting device loss makes the fence report device loss
+and the timeline be asked on the device, as for any watch; values reported reached are never
+lowered. Held frees still wait for the records. A new executor connection forgets what was
+held. `CABOOSE_GPU_SPECULATE=0` turns speculation off.
+
+A blocking wait with a timeout of a second or more on watched work ends only after that long
+without a record from the queues of the watches it needs, and at the latest at the smaller of
+four times its timeout and its timeout plus thirty seconds (`progressTimeouts`): a hung
+submission still times out behind a device busy elsewhere. It goes on while those queues
+complete work,
+since a speculated wait makes the next one cover the work before it as well, and an
+application that takes a five-second timeout as a hung GPU (DXVK) would otherwise lose the
+device during a load. A wait unsatisfied for ten seconds, and an encoder held as long behind
+speculated records, write `CABOOSE_GPU_WAIT_STALLED` (`stallReports`), naming what it waits for,
+the tracker's state and every other wait of five seconds or more (`WaitTimer`).
+
+The coherent upkeep's invalidate after a wait takes the writes of a speculated submission as it
+takes those of a completed one: what it makes lazy is filled once that submission's record has
+arrived (the fill waits for it), and what it reads at once goes on the device stream behind the
+`WAIT_SERIAL` the encoder sends first, so the phone reads it after the submission completed.
 
 ## Deferred frees
 
@@ -128,8 +265,31 @@ uses `$XDG_CACHE_HOME/caboose-gpu` or `~/.cache/caboose-gpu`. No additional sand
 is added. Format queries accept no extension chain or exactly `VkFormatProperties3`;
 image-format queries require empty input and output extension chains. Other chains go
 to the executor. Image answers persist only success or format-not-supported results.
-Logical-device descriptor-layout support queries remain real queries: enabled device
-features affect their answers.
+
+Descriptor set layout support depends on the extensions and features a device was made
+with, so its answers are kept in the physical device's scope under the device's
+fingerprint (`device_answers.h`): two 64-bit digests of the device's creation, its queues,
+its extensions in any order, its features and each pNext structure's contents as the
+executor receives them. A device made with a structure the encoder does not know, a
+device group or a memory report callback has no fingerprint and always asks. The question
+is the layout's flags, bindings, binding flags and mutable descriptor types; a layout with
+immutable samplers, or a structure of another kind, is always asked, and so is an output
+chain other than the variable descriptor count. The instance version has a scope of its
+own, the instance scope, in an `instance-` log: every process of the session shares the
+answer one of them received, and the broker deletes the log when the next session starts.
+The instance extensions and the physical device count are kept there too, and so is the
+identity of the session's GPU once a process has asked it: a process whose every instance
+finds exactly one physical device takes that identity for its device when it enumerates,
+so the answers kept for it are found before the process asks anything. A process that
+looks for an answer it may never give itself (the identity, the count) peeks: it never
+claims the question, so no other process waits for it.
+
+The host's features answer for the chain the encoder sends (without the structures the
+driver answers itself), its memory properties and its sparse image format answers are
+kept in the physical device's scope; the driver's own adjustments apply to a kept answer
+as to an asked one. A properties chain holding a structure that points into application memory is
+always asked, except a copy-layout list (Vulkan 1.4 or host image copy properties) whose
+arrays are not given: it asks only their counts, which are kept like any other member.
 
 Files are untrusted seat-user data, not an authorization source. Readers require a
 private directory and regular private files owned by the effective user, and reject
@@ -152,16 +312,39 @@ last attempt when the process exits. A forked child opens its own lock before wr
 Unsafe paths, a lock held past 5 ms, oversized or corrupt records produce cache misses.
 Current connection/device identity always comes from real queries.
 `CABOOSE_CAPABILITY_CACHE_DIAGNOSTICS=1` prints hits, misses, appended records and bytes,
-time spent appending and contended locks at exit; `CABOOSE_CAPABILITY_CACHE_DISABLE=1`
-bypasses the cache.
+time spent appending and contended locks at exit, and the requirements cache's
+`CABOOSE_REQUIREMENTS_CACHE` line: questions answered from it, asked and kept, and asked
+uncached because of the object's creation or the question's own chains;
+`CABOOSE_CAPABILITY_CACHE_DISABLE=1` bypasses the cache.
 
 `test_static_query_cache.cpp` covers fresh-process reuse, changed identities/protocols,
-concurrent and forked writers, lock contention and held-back records, append-only write
+the instance scope, concurrent and forked writers, lock contention and held-back records, append-only write
 volume, unsafe permissions, symlinks, size limits, torn tails, corrupt records and other
-formats. `../../../../apps/ios/GPUStream/gfxstream/linux-executor/check-capabilities.sh`
+formats. `test_device_answers.cpp` covers fingerprints, device lifetimes and layout
+questions. `../../../../apps/ios/GPUStream/gfxstream/linux-executor/check-capabilities.sh`
 measures a genuinely empty cache and two fresh warmed processes, with separate format,
 device-creation and descriptor-query timings. A warmed result does not measure first-use
 latency.
+
+## Device work
+
+`device_work.h` counts what the process sends that can make the device write memory:
+every queue command (submissions, staged submissions, sparse binds, command flushes, per
+queue) and the host-side copies and layout transitions of host image copy. Two questions are answered
+from it without asking the phone:
+
+- An application's invalidate of memory nothing was sent since its allocation reads
+  nothing: the mapped bytes are what the process put there, and new memory's contents are
+  undefined. Memory allocated with contents of its own (a flag beyond the device mask and
+  device address, or a capture replay address) is always read, and so is memory with GPU
+  writes marked or blocks left lazy (Lazy readback): those follow work sent after the
+  allocation, so the count alone never takes them for unwritten either.
+- A `vkQueueWaitIdle` on a queue nothing was sent to since the device last reported it
+  idle, or ever, returns at once; a reported idle covers only what was sent before the wait.
+
+A command counted that writes nothing only makes these answers ask the device as before.
+The `app_unwritten_invalidates` field of `CABOOSE_GPU_MEMORY_TRAFFIC` counts the
+invalidates answered this way.
 
 ## Executor loss
 
@@ -199,9 +382,21 @@ prefetch generations, guest-assigned handle checks (single and arrays), deferred
 results, the object drain, non-blocking drains, the allocation budget, single-encoder
 ownership, the requirements cache keys and lookups, the completion tracker's fences,
 timelines, events, queries, stale serials, untracked objects, device loss and feed closure,
-held destroys across queues, devices and executors, and event status replies. They exercise
-the headers, not the generated encoder or a device. `test_requirements_cache.cpp` needs
-Vulkan's headers on the include path (`test.sh` uses Mesa's, or
+held destroys across queues, devices and executors, speculated waits (which batches qualify,
+the watches taken together, the per-queue limit, the WAIT_SERIAL each stream sends, device loss
+and a new executor after them), event status replies, the blocks of
+guest-chosen descriptor set ids, and completion payloads: `COMPLETION_WATCH2`'s bytes, payload
+parsing (padding, unknown kinds, truncation), query results written from captured values,
+and the tracker fed records through a socket, fault reports, idle waits, held pool destroys
+and memory stored in a shadow included; delivered memory (`test_delivered_memory.cpp`): which
+stored ranges count as delivered, notes before completion, idle waits during a store, and
+what the invalidate still reads; GPU writes (`test_gpu_writes.cpp`): bounded spans,
+subtraction, invalidate ranges and image copy sizes; and lazy readback
+(`test_lazy_readback.cpp`): lazy-block bookkeeping, and where userfaultfd is available, fills
+on a read, a write and a kernel access, blocks holding unsent writes or outside the mapping,
+deliveries, settles, newer writes during a fill and the allocation's end. They exercise
+the headers, not the generated encoder or a device. `test_requirements_cache.cpp` and
+`test_device_answers.cpp` need Vulkan's headers on the include path (`test.sh` uses Mesa's, or
 `CABOOSE_VULKAN_INCLUDE`).
 
 `CABOOSE_CAPABILITY_CACHE_DISABLE=1` bypasses lookups and stores for a baseline run

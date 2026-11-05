@@ -33,6 +33,7 @@ struct CabooseApp: App {
                     }
                 }
                 .externalDesktopAccessory(model)
+                .overlay(alignment: .topTrailing) { FrameRateOverlay().environment(model) }
         }
         // The App-level phase is every scene's together: the display stays connected while any
         // of the app's windows is in the foreground.

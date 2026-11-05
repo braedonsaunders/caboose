@@ -13,6 +13,8 @@ class ControlProtocolTests(unittest.TestCase):
                   (p.ExecutorLifecycle(4, b'e'*16, 1), p.encode_lifecycle, 48, 0),
                   (p.ExecutorLifecycle(5, b'e'*16, 1), p.encode_lifecycle, 48, 0),
                   (p.ExecutorLifecycle(6, b'e'*16, 1), p.encode_lifecycle, 48, 0),
+                  (p.ExecutorLifecycle(11, b'e'*16, 1), p.encode_lifecycle, 48, 0),
+                  (p.ExecutorLifecycle(12, b'e'*16, 1), p.encode_lifecycle, 48, 0),
                   (p.BufferPresent(1, 7, 0x10, 2**40, 1920, 1080), p.encode_buffer_present, 56, 0),
                   (p.BufferReleased(1, 0), p.encode_buffer_released, 32, 0),
                   (p.BufferReleased(2, 11), p.encode_buffer_released, 32, 0)]
@@ -40,6 +42,23 @@ class ControlProtocolTests(unittest.TestCase):
         with self.assertRaises(p.ControlError): p.encode_bind(p.Bind(1,2,1000,42,1234,17,3))
         bad = bytearray(raw); bad[52] = 3
         with self.assertRaises(p.ControlError): p.decode(bytes(bad), 1)
+
+    def test_a_probe_bind_is_a_version_2_record_and_a_frame_bind_stays_version_1(self):
+        frame = p.Bind(1, 2, 3, 4, 5, 0x400003, p.X11_WINDOW)
+        data = p.encode_bind(frame)
+        self.assertEqual(data[4:6], (1).to_bytes(2, 'little'))
+        self.assertEqual(p.decode(data, 1), frame)
+        probe = p.Bind(1, 2, 3, 4, 5, 0x400003, p.X11_WINDOW, True)
+        data = p.encode_bind(probe)
+        self.assertEqual(data[4:6], (2).to_bytes(2, 'little'))
+        self.assertEqual(len(data), 64)
+        self.assertEqual(p.decode(data, 1), probe)
+        for flags, reserved in ((0, 0), (3, 0), (1, 1)):
+            bad = data[:56] + flags.to_bytes(4, 'little') + reserved.to_bytes(4, 'little')
+            with self.assertRaises(p.ControlError):
+                p.decode(bad, 1)
+        with self.assertRaises(p.ControlError):
+            p.decode(data, 0)  # a bind always carries the process's pidfd
 
     def test_buffer_records_reject_missing_identity(self):
         for value in (p.BufferPresent(0, 7, 1, 2, 3, 4), p.BufferPresent(1, 0, 1, 2, 3, 4),

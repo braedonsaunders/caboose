@@ -6,6 +6,43 @@ import XCTest
 
 /// The phone's own Metal never waits for a GPU that has stopped completing its work.
 final class SharedMetalTests: XCTestCase {
+    func testWindowHealthAcceptsCompletionBeforeNativeSubmissionReturns() {
+        for background in [false, true] {
+            let health = LiveGPUWindowHealthTracker()
+            _ = health.submit(1, at: 10) {
+                if background {
+                    let completed = DispatchSemaphore(value: 0)
+                    DispatchQueue.global().async { health.released(1); completed.signal() }
+                    XCTAssertEqual(completed.wait(timeout: .now() + 1), .success,
+                                   "Submission must not hold the lock needed by its completion")
+                } else {
+                    health.released(1)
+                }
+                return .init(status: .init(nativeErrno: 0, vkResult: 0), disposition: .queued)
+            }
+            XCTAssertEqual(health.state(at: 100), .running)
+        }
+    }
+
+    func testRejectedSubmissionDoesNotLeaveAStalledWaitButUncertainWorkDoes() {
+        let health = LiveGPUWindowHealthTracker()
+        _ = health.submit(1, at: 10) {
+            .init(status: .init(nativeErrno: 5, vkResult: nil), disposition: .rejected)
+        }
+        XCTAssertEqual(health.state(at: 100), .running)
+        _ = health.submit(2, at: 100) {
+            .init(status: .init(nativeErrno: 5, vkResult: nil), disposition: .uncertain)
+        }
+        XCTAssertEqual(health.state(at: 102), .stalled)
+        health.released(2)
+        XCTAssertEqual(health.state(at: 103), .running)
+        _ = health.submit(3, at: 104) {
+            health.deviceLost()
+            return .init(status: .init(nativeErrno: 0, vkResult: -4), disposition: .uncertain)
+        }
+        XCTAssertEqual(health.state(at: 104), .lost)
+    }
+
     func testAStalledGPURefusesCommandBuffersAndBoundsWaitsUntilItCompletesAgain() throws {
         let metal = SharedMetal()
         // Command buffers held by an event nobody signals stand in for a GPU that stopped.

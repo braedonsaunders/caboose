@@ -473,11 +473,11 @@ struct Launchpad: View {
     @GestureState private var pageDrag: CGFloat = 0
     @State private var movingForward = true
     @Environment(AppModel.self) private var model
-    let desktop: DesktopModel
+    @Bindable var desktop: DesktopModel
 
     var body: some View {
         let ui = desktop.ui
-        let apps = model.partitionedApps.main
+        let apps = desktop.matchingLauncherApps(model.partitionedApps.main)
         let reserved = LaunchpadLayout.reservedBottom(dock: desktop.dockBarFrame, height: desktop.size.height,
                                                       fallback: desktop.dockHeight + desktop.dockBottomInset)
         let layout = LaunchpadLayout(size: desktop.size, ui: ui, dockHeight: reserved)
@@ -485,6 +485,37 @@ struct Launchpad: View {
         let columns = Array(repeating: GridItem(.fixed(layout.column), spacing: layout.spacing), count: layout.columns)
         ZStack(alignment: .top) {
             Rectangle().fill(.ultraThinMaterial)
+            HStack(spacing: 10 * ui) {
+                Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                NativeTextInput("Search apps", text: $desktop.launcherSearch,
+                                focus: $desktop.launcherSearchFocused,
+                                capitalization: .none, correction: false)
+                if !desktop.launcherSearch.isEmpty {
+                    Button("Clear search", systemImage: "xmark.circle.fill") {
+                        desktop.launcherSearch = ""
+                        desktop.launcherSearchFocused = true
+                    }
+                    .labelStyle(.iconOnly)
+                    .frame(minWidth: 32 * ui, minHeight: 32 * ui)
+                    .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("desktop")) } action: {
+                        desktop.launcherClearSearchFrame = $0
+                    }
+                    .onDisappear { desktop.launcherClearSearchFrame = .null }
+                }
+            }
+            .padding(.horizontal, 16 * ui)
+            .padding(.vertical, 8 * ui)
+            .frame(width: min(420 * ui, max(1, desktop.size.width - 48 * ui)))
+            .background(.regularMaterial, in: Capsule())
+            .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("desktop")) } action: {
+                desktop.launcherSearchFrame = $0
+            }
+            .padding(.top, 12 * ui)
+            if apps.isEmpty {
+                Text("No apps found")
+                    .foregroundStyle(.secondary)
+                    .padding(.top, layout.top)
+            }
             LazyVGrid(columns: columns, spacing: layout.spacing) {
                 ForEach(Array(apps[range])) { app in
                     let hot = desktop.hovered == .launcher(app.id)
@@ -515,12 +546,12 @@ struct Launchpad: View {
             .padding(.top, layout.top)
             .offset(x: reduceMotion ? 0 : pageDrag)
             .transition(reduceMotion ? .opacity : .asymmetric(insertion: .move(edge: movingForward ? .trailing : .leading), removal: .move(edge: movingForward ? .leading : .trailing)))
-            .id("\(desktop.launcherPage)-\(apps.map(\.id).joined(separator: ","))-\(desktop.size.width)-\(desktop.size.height)")
+            .id("\(desktop.launcherSearch)-\(desktop.launcherPage)-\(apps.map(\.id).joined(separator: ","))-\(desktop.size.width)-\(desktop.size.height)")
             if layout.pageCount(apps.count) > 1 {
                 let pages = layout.pageCount(apps.count)
                 let current = layout.clampedPage(desktop.launcherPage, count: apps.count)
                 HStack(spacing: 16 * ui) {
-                    if current > 0 { pageArrow(-1, symbol: "chevron.left", ui: ui) } else { Color.clear.frame(width: 44 * ui, height: 44 * ui) }
+                    pageArrow(-1, symbol: "chevron.left", ui: ui, enabled: current > 0)
                     HStack(spacing: 9 * ui) {
                         ForEach(0..<pages, id: \.self) { page in
                             Circle()
@@ -530,7 +561,7 @@ struct Launchpad: View {
                     }
                     .accessibilityElement()
                     .accessibilityLabel("Page \(current + 1) of \(pages)")
-                    if current < pages - 1 { pageArrow(1, symbol: "chevron.right", ui: ui) } else { Color.clear.frame(width: 44 * ui, height: 44 * ui) }
+                    pageArrow(1, symbol: "chevron.right", ui: ui, enabled: current < pages - 1)
                 }
                 .animation(.smooth(duration: 0.2), value: current)
                 .frame(maxHeight: .infinity, alignment: .bottom)
@@ -543,15 +574,17 @@ struct Launchpad: View {
         .contentShape(Rectangle())
         .simultaneousGesture(DragGesture(minimumDistance: 12)
             .updating($pageDrag) { value, state, _ in
+                guard !desktop.launcherSearchFrame.contains(value.startLocation) else { return }
                 if abs(value.translation.width) > abs(value.translation.height) * 1.3 { state = value.translation.width }
             }
             .onEnded { value in
+                guard !desktop.launcherSearchFrame.contains(value.startLocation) else { return }
                 let next = layout.pageAfterSwipe(desktop.launcherPage, count: apps.count,
                     translation: value.translation, predicted: value.predictedEndTranslation)
                 guard next != desktop.launcherPage else { return }
                 movingForward = next > desktop.launcherPage
                 withAnimation(reduceMotion ? .easeOut(duration: 0.15) : .smooth(duration: 0.28)) {
-                    desktop.launcherFrames = [:]; desktop.launcherPageFrames = [:]
+                    desktop.launcherFrames = [:]
                     desktop.launcherPage = next
                 }
             })
@@ -559,28 +592,45 @@ struct Launchpad: View {
         .onChange(of: model.launching?.id) { opening, now in
             if opening != nil, now == nil { desktop.launchpadOpen = false }
         }
+        .onChange(of: layout.pageCount(apps.count), initial: true) { _, pages in
+            desktop.launcherPageCount = pages
+        }
         .onChange(of: apps.map(\.id)) { _, _ in resetFrames(layout: layout, count: apps.count) }
         .onChange(of: desktop.size) { _, _ in resetFrames(layout: layout, count: apps.count) }
-        .onDisappear { desktop.launcherFrames = [:]; desktop.launcherPageFrames = [:]; desktop.launcherPage = 0 }
+        .onDisappear {
+            desktop.launcherFrames = [:]
+            desktop.launcherPageFrames = [:]
+            desktop.launcherPage = 0
+            desktop.launcherSearch = ""
+            desktop.launcherSearchFocused = false
+            desktop.launcherSearchFrame = .null
+            desktop.launcherClearSearchFrame = .null
+        }
     }
 
     private func resetFrames(layout: LaunchpadLayout, count: Int) {
         desktop.launcherFrames = [:]
-        desktop.launcherPageFrames = [:]
         desktop.launcherPage = layout.clampedPage(desktop.launcherPage, count: count)
     }
 
-    private func pageArrow(_ direction: Int, symbol: String, ui: CGFloat) -> some View {
+    /// A page arrow at the end of the pages stays in place, dimmed, and swallows its click:
+    /// a click where an arrow was a moment ago must not count as a click outside Launchpad.
+    private func pageArrow(_ direction: Int, symbol: String, ui: CGFloat, enabled: Bool) -> some View {
         Image(systemName: symbol)
-            .font(.system(size: 16 * ui, weight: .semibold)).foregroundStyle(.white)
+            .font(.system(size: 16 * ui, weight: .semibold)).foregroundStyle(.white.opacity(enabled ? 1 : 0.3))
             .frame(width: 44 * ui, height: 44 * ui)
-            .background(.white.opacity(0.16), in: Circle())
+            .background(.white.opacity(enabled ? 0.16 : 0.06), in: Circle())
+            .contentShape(Circle())
             .onTapGesture {
+                guard enabled else { return }
                 movingForward = direction > 0
-                desktop.launcherFrames = [:]; desktop.launcherPageFrames = [:]
-                desktop.launcherPage += direction
+                desktop.launcherFrames = [:]
+                desktop.turnLauncherPage(direction)
             }
-            .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("desktop")) } action: { desktop.launcherPageFrames[direction] = $0 }
+            .accessibilityHidden(!enabled)
+            .onGeometryChange(for: CGRect.self) { $0.frame(in: .named("desktop")) } action: {
+                desktop.launcherPageFrames[direction] = $0
+            }
             .onDisappear { desktop.launcherPageFrames[direction] = nil }
     }
 }

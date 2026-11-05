@@ -35,7 +35,12 @@ it holds a submitted `vkCmdSetEvent` on a timeline wait until the host has reset
 and requires the event set once the GPU gets there; a stock MoltenVK 1.4.2 fails that case. `sh provider-patches/tests/check-msl-type-names.sh /path/to/spirv-cross` checks
 the type-name patch with a SPIRV-Cross command-line build: a shader whose variables, block
 and member are named `sampler`, `texture2d`, `array`, `float4` and `half` must convert to
-Metal source that compiles for iOS, with and without argument buffers. Its Mesa development
+Metal source that compiles for iOS, with and without argument buffers. MoltenVK's pipeline
+compilers also outlive their Metal submissions: Metal may run a compile's completion before the
+call that submitted it returns, so a compiler is deleted only once its compile is done and every
+submission of it has returned, and each render or compute compile works on its own copy of the
+descriptor rather than the caller's. `sh provider-patches/tests/check-compile-lifetime.sh
+[/path/to/moltenvk]` checks that patch. Its Mesa development
 dependency is `541c56aa3fd24027ed46ae350287d21dcd56c901`. The guest source checks
 are in [guest/gpu/gfxstream](../../../../guest/gpu/gfxstream/README.md).
 Matching opcode values does not establish compatible marshaling or execution.
@@ -95,11 +100,26 @@ c++ -std=c++17 -I apps/ios/GPUStream/gfxstream \
 /tmp/caboose-framing-test
 ```
 
+Every `*_test` target keeps its `assert()` checks in every build type, Release included.
+
 The runtime fixtures (`-DCABOOSE_GFXSTREAM_RUNTIME_TESTS=ON`) include
 `caboose_gpu_native_stream_eof LOADER`, which, among its end-of-stream cases, sends a command
 naming a device the decoder never created and requires the refusal (`kGuestFaultResult`,
 stage `guestInput`), clean process cleanup and a working runtime afterwards. On Linux it
 builds beside the executor (`linux-executor/`) and runs against lavapipe's loader.
+
+`caboose_gpu_native_one_way_start LOADER` checks one-way start ([gpu-live.md](../../../../docs/gpu-live.md#one-way-start))
+against the real decoder: a device stream sends `REPLY_MODE(3)`, a `vkCreateInstance` that fails
+(an extension no driver has), then `vkCreateInstance`, a `vkEnumeratePhysicalDevices` naming
+more physical devices than there are and one naming as many, a `vkCreateDevice` asking a family
+for more queues than it has, then `vkCreateDevice` and `vkGetDeviceQueue2` under handles of its
+own, `vkQueueWaitIdle` on its queue, both destroys and `vkEnumerateInstanceVersion`, without
+reading anything. It requires the two replies of `vkQueueWaitIdle` and
+`vkEnumerateInstanceVersion` and nothing else on the stream, and three FAULT records on the
+process's completion feed: the instance's, with `VK_ERROR_EXTENSION_NOT_PRESENT`, then the
+list's and the device's, with `VK_ERROR_INITIALIZATION_FAILED`. A handle the decoder did not take would end the stream as
+invalid input. It builds with the other runtime fixtures and runs beside the executor the same
+way.
 
 The standalone framing fixture passes on macOS with assertions enabled. It does
 not invoke the upstream decoder or validate arbitrary Vulkan command fields;
@@ -113,8 +133,10 @@ handle validation is not established by these checks.
 answers `COMPLETION_WATCH` and `COMPLETION_FEED` itself, before framing and decoding,
 and only for a process that has a feed (`process_registry.cpp` creates one per process).
 A watch submits a marker through `VkDecoderGlobalState::submitCabooseCompletionMarker`
-(fork commit 0028) and returns; the feed's watcher thread waits for markers in order, and the
-feed stream writes their records. Finishing a process waits for its outstanding
+(fork commit 0028) and returns. Each queue has its own watcher lane (up to eight per
+process; a marker of a further queue joins the least-loaded lane), which waits for that
+queue's markers in order and queues each record as soon as its marker completes, so a queue
+with long work holds back no record of another queue. The feed stream writes the records. Finishing a process waits for its outstanding
 markers. The portable fixture uses a fake marker backend and real socket pairs:
 
 ```sh
@@ -122,6 +144,27 @@ c++ -std=c++17 -Wall -Wextra -Werror -pthread -I apps/ios/GPUStream/gfxstream \
   apps/ios/GPUStream/gfxstream/tests/completion_feed_test.cpp \
   apps/ios/GPUStream/gfxstream/completion_feed.cpp -o /tmp/caboose-completion-feed-test
 /tmp/caboose-completion-feed-test
+```
+
+`pipeline_report.h` is the phone's `CABOOSE_GPU_PIPELINES` line (docs/gpu-live.md, "Launch
+timeline"), which the registry's watchdog writes from the compile lane's timing and the Metal
+binary archive's counts:
+
+```sh
+c++ -std=c++17 -Wall -Wextra -Werror -UNDEBUG -I apps/ios/GPUStream/gfxstream \
+  apps/ios/GPUStream/gfxstream/tests/pipeline_report_test.cpp -o /tmp/caboose-pipeline-report-test
+/tmp/caboose-pipeline-report-test
+```
+
+The fixture also covers per-queue lanes, `WAIT_SERIAL`, `COMPLETION_WATCH2` captures and their
+bounds, FAULT records and `REPLY_MODE` (`silent_replies.h`). The phone's records against the
+guest's own encoder and parser (`guest/gpu/gfxstream/bounded-memory/completion_payloads.h`):
+
+```sh
+c++ -std=c++17 -Wall -Wextra -Werror -pthread -I apps/ios/GPUStream/gfxstream \
+  -I guest/gpu/gfxstream/bounded-memory apps/ios/GPUStream/gfxstream/tests/completion_payloads_cross_test.cpp \
+  apps/ios/GPUStream/gfxstream/completion_feed.cpp -o /tmp/caboose-completion-payloads-cross-test
+/tmp/caboose-completion-payloads-cross-test
 ```
 
 ## Suspension

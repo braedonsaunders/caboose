@@ -4,7 +4,10 @@
 //! and scale, so applications render at the phone's or TV's density. Outputs are laid
 //! side by side in the logical space (X11 applications see that layout as the root
 //! window). Before any client connects there is one output from `--display`; after a
-//! client leaves its displays stay, so windows keep their sizes for the next one.
+//! client leaves its displays stay, so windows keep their sizes for the next one. An output
+//! that goes is first disabled (clients are told it is gone) and destroyed only after
+//! [`RETIRE_AFTER`], so a client that binds it in the meantime (one starting while the phone
+//! reconnects) gets an output that goes away instead of a protocol error that ends it.
 
 use crate::state::State;
 use caboose_display_protocol as proto;
@@ -12,6 +15,10 @@ use smithay::output::{Mode, Output, PhysicalProperties, Scale, Subpixel};
 use smithay::reexports::wayland_server::backend::GlobalId;
 use smithay::reexports::wayland_server::DisplayHandle;
 use smithay::utils::{Logical, Point, Rectangle, Size, Transform};
+use std::time::{Duration, Instant};
+
+/// How long a disabled output's global stays bindable before it is destroyed.
+pub const RETIRE_AFTER: Duration = Duration::from_secs(10);
 
 pub struct DisplayOutput {
     pub info: proto::Display,
@@ -47,6 +54,8 @@ impl DisplayOutput {
 #[derive(Default)]
 pub struct Displays {
     list: Vec<DisplayOutput>,
+    /// Disabled outputs' globals and when they were disabled.
+    retired: Vec<(GlobalId, Instant)>,
 }
 
 /// What changed when the set was replaced.
@@ -159,9 +168,18 @@ impl Displays {
             x += entry.logical_size().w;
             self.list.push(entry);
         }
+        let now = Instant::now();
+        self.retired.retain(|(global, since)| {
+            let keep = now.duration_since(*since) < RETIRE_AFTER;
+            if !keep {
+                dh.remove_global::<State>(global.clone());
+            }
+            keep
+        });
         for d in old {
             change.removed.push(d.info.id);
-            dh.remove_global::<State>(d.global);
+            dh.disable_global::<State>(d.global.clone());
+            self.retired.push((d.global, now));
         }
         change
     }
@@ -198,6 +216,8 @@ mod tests {
         assert!(unchanged.removed.is_empty());
         let removal = displays.replace(&handle, &[primary]);
         assert_eq!(removal.removed, vec![1]);
+        // The removed output's global is disabled, not destroyed, until RETIRE_AFTER.
+        assert_eq!(displays.retired.len(), 1);
         assert!(removal.changed.is_empty());
         assert_eq!(displays.primary().info.id, 0);
     }

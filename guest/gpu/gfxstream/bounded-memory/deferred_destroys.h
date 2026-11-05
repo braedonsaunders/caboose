@@ -118,6 +118,8 @@ private:
     std::unordered_map<uint64_t, Queue> unwatched_;
 };
 
-inline DeferredDestroys deferredDestroys;
+// Never destroyed: a process's exit runs static destructors while its other threads may
+// still be inside the driver.
+inline DeferredDestroys& deferredDestroys = *new DeferredDestroys;
 
 }  // namespace caboose::memory

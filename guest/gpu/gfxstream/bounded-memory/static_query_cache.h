@@ -22,9 +22,10 @@ namespace caboose::memory {
 // identity; without a verified scope answers remain process-local.
 class StaticQueryCache {
 public:
-    ~StaticQueryCache() {
-        // One last nonblocking attempt for records a busy lock held back. Exit never
-        // waits: a mutex another thread (or a forking parent) holds skips it.
+    ~StaticQueryCache() { finish(); }
+    // One last nonblocking attempt for records a busy lock held back, at exit. Exit never
+    // waits: a mutex another thread (or a forking parent) holds skips it.
+    void finish() {
         std::unique_lock<std::mutex> lock(mutex_,std::try_to_lock);
         if (!lock.owns_lock()) return;
         for (auto& file:files_) if (file.second.pid==getpid()) flushLocked(file.first,file.second);
@@ -38,6 +39,26 @@ public:
         closeAll();
     }
     static constexpr size_t kMaxEntries=8192, kMaxKeyBytes=4096, kMaxValueBytes=65536;
+    // The scope of answers no physical device is asked for (the executor's instance version),
+    // identified as a physical device is: a key value no handle takes.
+    static constexpr uint64_t kInstanceScope=1;
+    // Where a process keeps its scopes' logs: `capabilities/` beside the executor socket it
+    // was given, otherwise the user's cache directory. Empty when it cannot be made.
+    static std::string defaultDirectory() {
+        const char* socket=std::getenv("CABOOSE_GFXSTREAM_SOCKET");
+        std::string directory;
+        if (socket && socket[0]=='/' && std::strrchr(socket,'/')!=socket) {
+            directory=std::string(socket,size_t(std::strrchr(socket,'/')-socket))+"/capabilities";
+        } else {
+            const char* cache=std::getenv("XDG_CACHE_HOME");
+            const char* home=std::getenv("HOME");
+            directory=cache && *cache=='/' ? std::string(cache)
+                : home && *home=='/' ? std::string(home)+"/.cache" : std::string();
+            if (!directory.empty()) { mkdir(directory.c_str(),0700); directory+="/caboose-gpu"; }
+        }
+        if (!directory.empty() && mkdir(directory.c_str(),0700)!=0 && errno!=EEXIST) directory.clear();
+        return directory;
+    }
     static constexpr size_t kMaxScopes=64, kMaxFileBytes=8u<<20, kMaxPendingBytes=256u<<10;
     // How long a claim holds other processes back from asking the same question: far
     // longer than one round trip, short enough that a claimant that died costs little.
@@ -52,7 +73,10 @@ public:
     }
     // Called only after receiving the identity from this connected physical device.
     // The filename hash is an index, never proof: the full identity must match on read.
-    void identify(uint64_t physical,std::string identity,const std::string& directory,uint64_t expectedEpoch=0) {
+    // `name` begins the log's file name: "formats" logs are kept as the next sessions' history
+    // (warmup/README.md); others end with their session.
+    void identify(uint64_t physical,std::string identity,const std::string& directory,uint64_t expectedEpoch=0,
+                  const char* name="formats") {
         if (!physical || identity.empty() || identity.size()>kMaxKeyBytes) return;
         std::lock_guard<std::mutex> lock(mutex_);
         if (expectedEpoch && expectedEpoch!=epoch_) return;
@@ -61,10 +85,15 @@ public:
         identity=connection_+identity;
         identities_[physical]=identity;
         if (directory.empty() || files_.count(identity) || files_.size()>=kMaxScopes) return;
-        char suffix[40]; std::snprintf(suffix,sizeof(suffix),"/formats-%016llx.bin",(unsigned long long)digest(identity));
+        char suffix[64]; std::snprintf(suffix,sizeof(suffix),"/%.16s-%016llx.bin",name,(unsigned long long)digest(identity));
         Scope& scope=files_[identity];
         scope.path=directory+suffix;
         loadLocked(identity,scope);
+    }
+    // Whether `physical` has a scope on the current connection.
+    bool identified(uint64_t physical) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return identities_.count(physical)!=0;
     }
     // A replacement executor cannot inherit physical handle associations, even when
     // its handles reuse the old numeric values. Persistent files stay identity scoped.
@@ -89,13 +118,33 @@ public:
     }
     // An answer of any size (a structure chain or a list), for `storeBytes`.
     bool lookupBytes(const std::string& input,std::string* out) { return lookupValue(input,0,out); }
+    // An answer other processes may have stored, without claiming the question when there is
+    // none: for a question this process may never answer itself.
+    bool peekBytes(const std::string& input,std::string* out) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        lookupEpoch()=epoch_;
+        if (disabled()) return false;
+        auto scoped=normalize(input);
+        auto it=entries_.find(scoped.second);
+        if (it==entries_.end() && !scoped.first.empty()) {
+            auto file=files_.find(scoped.first);
+            if (file!=files_.end()) adoptLocked(scoped.first,file->second);
+            it=entries_.find(scoped.second);
+        }
+        if (it==entries_.end()) return false;
+        *out=it->second; return true;
+    }
     template<class T> void store(const std::string& input,const T& value) {
         storeBytes(input,std::string(reinterpret_cast<const char*>(&value),sizeof(T)));
     }
+    // Stores the answer to the question this thread last looked up, only while the connection
+    // it was asked on is still current: an answer read as lost (its executor left) and stored
+    // after another thread connected a new executor would otherwise be the new one's.
     void storeBytes(const std::string& input,const std::string& bytes) {
         if (disabled()) return;
         if (input.size()>kMaxKeyBytes || bytes.empty() || bytes.size()>kMaxValueBytes) return;
         std::lock_guard<std::mutex> lock(mutex_);
+        if (lookupEpoch()!=~0ull && lookupEpoch()!=epoch_) return;
         auto scoped=normalize(input);
         const bool known=entries_.count(scoped.second);
         if (!known && entries_.size()>=kMaxEntries) return;
@@ -105,8 +154,11 @@ public:
     uint64_t epoch() { std::lock_guard<std::mutex> lock(mutex_); return epoch_; }
 private:
     // `expected` is the answer's size, or 0 for any.
+    // The connection epoch of this thread's last lookup.
+    static uint64_t& lookupEpoch() { static thread_local uint64_t epoch=~0ull; return epoch; }
     bool lookupValue(const std::string& input,size_t expected,std::string* out) {
         std::unique_lock<std::mutex> lock(mutex_);
+        lookupEpoch()=epoch_;
         if (disabled()) { ++misses_; return false; }
         auto scoped=normalize(input);
         auto found=[&]() {
@@ -437,5 +489,11 @@ private:
     std::unordered_map<std::string,std::string> entries_;
     std::unordered_map<std::string,Wait> waits_;
 };
-inline StaticQueryCache staticQueryCache;
+// Never destroyed (a process's exit runs static destructors while its other threads may still
+// be inside the driver); its held-back records get their last attempt at exit.
+inline StaticQueryCache& staticQueryCache = *[] {
+    auto* cache = new StaticQueryCache;
+    std::atexit([] { staticQueryCache.finish(); });
+    return cache;
+}();
 } // namespace caboose::memory

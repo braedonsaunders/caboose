@@ -4,6 +4,9 @@ import struct
 
 _HEADER = struct.Struct('<4sHHII')
 _BIND = struct.Struct('<4sHHIIQQIIQII')
+# Version 2 of the bind record adds flags (bit 0: a probe) and a reserved word.
+_BIND2 = struct.Struct('<4sHHIIQQIIQIIII')
+BIND_PROBE = 1
 _RESULT = struct.Struct('<4sHHIIQII16s16sQQ')
 _REVOKE = struct.Struct('<4sHHII16s16sQQ')
 _LIFECYCLE = struct.Struct('<4sHHII16sQQ')
@@ -33,6 +36,9 @@ class Bind:
     start_ticks: int
     object_id: int
     space: int = WAYLAND_SURFACE
+    # A bind without a frame to show (docs/gpu-live.md, "Window identity boundary"): sent as
+    # a version-2 record; version 1 is a bind with a frame.
+    probe: bool = False
 
 
 @dataclass(frozen=True)
@@ -84,9 +90,14 @@ class BufferReleased:
     status: int
 
 
+# Executor lifecycle records: ready, lost, retired; and, for a suspended executor, that the
+# compositor's own streams were ended so it keeps serving (11) and that the executor resumed (12).
+LIFECYCLE_KINDS = (4, 5, 6, 11, 12)
+
+
 @dataclass(frozen=True)
 class ExecutorLifecycle:
-    kind: int  # 4 ready, 5 lost, 6 retired
+    kind: int  # 4 ready, 5 lost, 6 retired, 11 suspended (compositor released), 12 resumed
     executor: bytes
     generation: int
 
@@ -101,6 +112,9 @@ def encode_bind(value):
     if value.space not in (WAYLAND_SURFACE, X11_WINDOW, BUFFER_WINDOW):
         raise ControlError('invalid bind namespace')
     try:
+        if value.probe:
+            return _BIND2.pack(b'CGB1', 2, 1, _BIND2.size, 0, value.request, value.process, value.uid,
+                               value.pid, value.start_ticks, value.object_id, value.space, BIND_PROBE, 0)
         return _BIND.pack(b'CGB1', 1, 1, _BIND.size, 0, value.request, value.process,
                           value.uid, value.pid, value.start_ticks, value.object_id, value.space)
     except (struct.error, OverflowError) as error:
@@ -147,7 +161,7 @@ def encode_revoke_request(value):
 
 
 def encode_lifecycle(value):
-    if value.kind not in (4, 5, 6) or not _nonzero(value.executor) or not value.generation:
+    if value.kind not in LIFECYCLE_KINDS or not _nonzero(value.executor) or not value.generation:
         raise ControlError('invalid executor lifecycle')
     try:
         return _LIFECYCLE.pack(b'CGB1', 1, value.kind, _LIFECYCLE.size, 0,
@@ -181,6 +195,13 @@ def decode(data, fd_count):
         return 'handoff'
     if len(data) < _HEADER.size: raise ControlError('truncated control header')
     magic, version, kind, length, reserved = _HEADER.unpack_from(data)
+    if magic == b'CGB1' and version == 2 and kind == 1 and not reserved and length == len(data):
+        if length != _BIND2.size or fd_count != 1: raise ControlError('invalid bind record')
+        _, _, _, _, _, request, process, uid, pid, start, obj, space, flags, tail = _BIND2.unpack(data)
+        if flags != BIND_PROBE or tail: raise ControlError('invalid bind flags')
+        value = Bind(request, process, uid, pid, start, obj, space, True)
+        encode_bind(value)
+        return value
     if magic != b'CGB1' or version != 1 or reserved or length != len(data):
         raise ControlError('invalid control header')
     if kind == 1:
@@ -210,7 +231,7 @@ def decode(data, fd_count):
             value = RevokeRequest(epoch, grant, generation)
             encode_revoke_request(value)
         return value
-    if kind in (4, 5, 6):
+    if kind in LIFECYCLE_KINDS:
         if length != _LIFECYCLE.size or fd_count: raise ControlError('invalid lifecycle record')
         _, _, _, _, _, executor, generation, tail = _LIFECYCLE.unpack(data)
         if tail: raise ControlError('nonzero reserved field')

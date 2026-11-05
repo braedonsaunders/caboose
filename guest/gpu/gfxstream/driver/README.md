@@ -74,7 +74,7 @@ Each patch is one feature. Several change Mesa's generated encoder
 | 0002 virtual-wsi | Wayland surfaces and the indexed swapchain present through the broker; Caboose build configuration |
 | 0003 bounded-memory | Mapped memory moves in bounded, packed chunks within one process memory budget |
 | 0004 staged-command-buffers | Command buffers are recorded locally and sent with their submit in one round trip |
-| 0005 changed-block-flush | A flush sends only the 256-byte blocks the host does not already hold |
+| 0005 changed-block-flush | A flush sends only what the host does not already hold, compared per 256-byte block and, where the shadow keeps a copy, per 8-byte word (`../bounded-memory/flush_shadow.h`) |
 | 0006 deferred-replies | Flush and fence-reset replies are drained later instead of waited for |
 | 0007 fence-prefetch | The frame fence's wait is sent with its submit and answered locally afterwards |
 | 0008 chromium-angle-and-x11 | ANGLE's ES 3.0 requirements; X11 (XCB) surfaces |
@@ -147,6 +147,29 @@ Each patch is one feature. Several change Mesa's generated encoder
 | 0074 commit-without-drain | The batched descriptor set commit goes out without waiting for earlier replies, and pools of up to 4096 sets ask for their ids without waiting |
 | 0075 recycled-descriptor-sets | A batched pool keeps the sets a reset clears and makes them again in place at their ids' next allocation; an inline uniform block binding takes one write-table entry |
 | 0076 sleeping-encoder-lock | Threads waiting for the shared encoder sleep instead of spinning |
+| 0077 executor-generations | Every dispatchable object records its executor generation; calls on an earlier generation's objects report device loss, and one reset hook forgets the previous executor's cached answers and tables |
+| 0078 trace-scopes-without-a-tracer | Trace scopes compile to nothing without a tracer, instead of formatting their names on every call |
+| 0079 recycle-only-pools-without-frees | A reset batched pool recycles its sets only when the pool never frees sets one by one, so a late free or use of an old handle never reaches a reallocated set |
+| 0080 flush-shadow-outside-the-tracker-lock | The flush shadow is told outside the tracker lock, whose order against the shadow's lock deadlocked recording and submitting threads |
+| 0081 checked-lock-order | The tracker and encoder locks are checked against the driver's lock hierarchy (`CABOOSE_LOCK_ORDER`) |
+| 0082 bounded-descriptor-writes | Batched descriptor writes, copies and template updates stop at their layout's last binding instead of writing past the set's table |
+| 0083 atomic-layout-references | Descriptor set layout references are counted atomically (DXVK raises and lowers them from two threads) |
+| 0084 event-status-recheck | A reset event the tracker keeps answering locally is asked about on the device every 250 ms while it is polled |
+| 0085 guest-chosen-set-ids | With hello `0x100000`, a batched descriptor pool takes 1 + maxSets consecutive guest handles, its own and its sets' ids, and never asks the phone for them (`../bounded-memory/guest_set_ids.h`) |
+| 0086 completion-payloads | With hello `0x200000`, a batch's ended occlusion and timestamp queries and its GPU writes of coherent memory are watched with `COMPLETION_WATCH2`; the records' captures answer `vkGetQueryPoolResults` locally (every flag, a WAIT by waiting for the record) and fill the memory's shadow; a pool's destroy waits for the records that capture it (`../bounded-memory/completion_payloads.h`) |
+| 0087 silent-success | With hello `0x800000`, each device stream switches with REPLY_MODE once its feed runs, and the commands the guest does not wait for queue no reply; their failures arrive as FAULT records on the feed, as device loss (`../bounded-memory/silent_success.h`, docs/gpu-live.md "Silent success") |
+| 0088 local-invalidate | The invalidate after a wait skips the coherent ranges the batch's completion record stored in the shadow and reads only the rest; GPU writes are kept as up to eight spans per allocation and read as separate ranges unless one range takes no more round trips; a copy from an image marks the bytes of its texel blocks instead of 16 per texel (`../bounded-memory/gpu_writes.h`) |
+| 0089 speculated-waits | With hello `0x400000`, a blocking fence or timeline wait returns at once for submissions whose completion the process cannot otherwise observe (no host-visible writes the guest refreshes, events, queries or external payloads), at most three per queue ahead of their records; the device stream sends `WAIT_SERIAL` for them before its next command (`../bounded-memory/completion_feed.h`, Speculation) |
+| 0090 guest-counted-pool-capacity | With guest-assigned set handles, an allocation a descriptor pool cannot hold returns `VK_ERROR_OUT_OF_POOL_MEMORY` instead of succeeding into the decoder's overflow pools |
+| 0091 locked-descriptor-set-free | Freeing a batched descriptor set the device holds takes the encoder lock, so it never races another thread's commands on the device stream and goes behind `WAIT_SERIAL` for speculated waits (the phone never frees a set a waited-for batch may still use); a submit commits a newly allocated set even when nothing was written to it |
+| 0092 capability-answers | Descriptor set layout support is answered from the session's capability cache, keyed by the device's fingerprint (its creation, every pNext structure's contents included) and the layout's own parameters; the instance version is shared by every process of the session; the virtual WSI's swapchain images take their memory requirements from the requirements cache (`../bounded-memory/device_answers.h`) |
+| 0093 lazy-readback | The invalidate after a wait, and an application's invalidate of coherent memory, leave the blocks of watched memory that can wait lazy, filled from the phone on their first use through an auxiliary stream of the process's own (`../SocketStream.cpp`), which needs no lock of the driver's; a flush fills the lazy blocks it sends first, an unmap fills the memory's, and each flush notes the next submission for its blocks; copies into buffers the GPU also reads are read back too, lazily, without their bytes in completion records (`../bounded-memory/write_watch.h`, Lazy readback) |
+| 0094 start-from-the-session | Instance extensions, the physical device count and the session's one physical identity are kept in the instance scope, so a later process finds its capability answers before asking any; features, memory properties and sparse image format answers join the capability cache; an invalidate of memory nothing sent since its allocation could have written, and a queue idle wait with nothing sent since the device last reported it idle, are answered without asking (`../bounded-memory/device_work.h`) |
+| 0095 one-way-start | With one-way start granted, instances, physical devices, devices and queues get guest-assigned handles, and a vkCreateInstance, vkEnumeratePhysicalDevices, vkCreateDevice or vkGetDeviceQueue2 identical to one that succeeded earlier in the session goes between REPLY_MODE(3) and REPLY_MODE(1) without its reply; the first of each is asked and kept in the session's instance scope (`../bounded-memory/one_way_start.h`) |
+| 0096 zink-vertex-divisor | The device offers `VK_EXT_vertex_attribute_divisor` with the KHR name when the host has it: zink takes vertex attribute divisors from the EXT name only, and without them it offers OpenGL 3.2 and OpenGL ES 2.0, which Chromium's GPU process (ES 3.0, no fallback) cannot start on |
+| 0097 shadow-detail | A flush gives the flush shadow its range's buffer usage, which the memory traffic counters report with the window's busiest allocations (`../bounded-memory/memory_traffic.h`) |
+| 0098 launch-timeline | Every encoded command counts for the process's launch timeline: its first instance, device, shader module, pipeline and present, and what each ten seconds of its first fifteen minutes made (`../bounded-memory/launch_timeline.h`) |
+| 0099 lost-reply-stand-ins | A call whose reply was lost because the executor left during it gives the stand-in outputs of a call made after the loss (local handles for what it creates, layout support, sizes), counted through `caboose::completion::lostReplies`, instead of the lost reply's words, which with `CABOOSE_GPU_ON_LOSS=quiet` read as null handles; an instance or device asked for while the executor is gone fails to initialize |
 
 The patch messages describe each change. To change the driver, prepare a tree, commit
 the prepared state, edit, and regenerate the affected patch with `git format-patch`
@@ -156,11 +179,11 @@ against the commit before it; then rebuild and run the tests below.
 
 Before Mesa's first command, `SocketStream.cpp` sends a 48-byte hello: `CBGLREF1`, a
 little-endian version (4) and feature mask, and the source fingerprint documented in
-[docs/gpu-live.md](../../../../docs/gpu-live.md). The driver offers mask `0x3FFF0`; the
+[docs/gpu-live.md](../../../../docs/gpu-live.md). The driver offers mask `0x1FBFFF0`; the
 broker answers with the required `0x70` plus the offered bits the connected phone
 supports, and the driver prints `CABOOSE_GPU_HELLO features=0x…` with what it was granted. A
 broker that predates a bit closes the connection, and the driver reconnects offering fewer:
-`0x1FFF0`, `0xFFF0`, `0x7FF0`, `0x3FF0`, `0x1FF0`, `0xFF0`, `0x7F0`, `0xF0`, then `0x70`. An answer with bits the driver did not offer, or
+`0xFBFFF0`, `0x7BFFF0`, `0x3BFFF0`, `0x1BFFF0`, `0xBFFF0`, `0x3FFF0`, `0x1FFF0`, `0xFFF0`, `0x7FF0`, `0x3FF0`, `0x1FF0`, `0xFF0`, `0x7F0`, `0xF0`, then `0x70`. An answer with bits the driver did not offer, or
 any other difference, fails the connection, and with it Vulkan instance creation.
 `CABOOSE_GFXSTREAM_GUEST_HANDLES=0` offers `0x70` only. Patches 0013 and 0014, the
 creates and allocations of 0016 and the fence, semaphore and pipeline handles of 0018
@@ -185,6 +208,11 @@ hello for the completion feed. The rest of the series requires the `0x70` contra
 | 16 (`0x10000`) | Buffer views use guest-assigned handles (requires bit 7; patch 0057) |
 | 18 (`0x40000`) | Batched descriptor sets without inline uniform blocks; this driver never offers it |
 | 19 (`0x80000`) | Descriptor sets, inline uniform blocks included, allocated and written in the guest and committed with the next submit (patches 0067, 0072) |
+| 20 (`0x100000`) | Batched descriptor pools' set ids are the guest handles after the pool's, chosen in the guest (requires bit 7; patch 0085) |
+| 21 (`0x200000`) | Completion watches name the queries and coherent memory a batch ends and writes, and the records bring their captures (requires bit 9; patch 0086) |
+| 22 (`0x400000`) | The device stream takes `WAIT_SERIAL`, so waits may be speculated (requires bit 9; patch 0089) |
+| 23 (`0x800000`) | Silent success: no replies for the commands the guest does not wait for, failures on the feed (requires bits 7 and 9; used with bits 8, 12 and 16 too; patch 0087) |
+| 24 (`0x1000000`) | One-way start: instances, physical devices, devices and queues use guest-assigned handles, and a start command identical to one that succeeded earlier in the session goes without its reply (requires bit 23; patch 0095) |
 
 ## Runtime switches
 
@@ -193,7 +221,10 @@ hello for the completion feed. The rest of the series requires the `0x70` contra
 | `CABOOSE_GFXSTREAM_SOCKET` | Socket path of the broker; selects the Caboose transport |
 | `CABOOSE_GFXSTREAM_SURFACE_SOCKET` | Socket path of the broker's surface service |
 | `CABOOSE_GFXSTREAM_GUEST_HANDLES=0` | Do not offer guest-assigned handles |
-| `CABOOSE_READ_PROFILE=1` | Every two seconds and at exit, the eight opcodes with the most blocking read time (`opN` waiting for its own reply, `drainN` for earlier deferred replies, `waitN` for local waits), on stderr; calls above opcode 21009 are named (`wait_WaitSemaphores`) |
+| `CABOOSE_LAZY_READBACK=0` | Read back every invalidated block at once, never on its first use (patch 0093) |
+| `CABOOSE_ONE_WAY_START=0` | Ask every start command and wait for its reply (patch 0095); `predict`, for checks only, predicts every start command it can key, as if an identical one had succeeded |
+| `CABOOSE_GPU_SPECULATE=0` | Never report a wait complete before its record arrives, with `WAIT_SERIAL` granted or not (patch 0089) |
+| `CABOOSE_READ_PROFILE=1` | Every two seconds and at exit, the eight opcodes with the most blocking read time (`=all`: every opcode that blocked) (`opN` waiting for its own reply, `drainN` for earlier deferred replies, `waitN` for local waits), on stderr; calls above opcode 21009 are named (`wait_WaitSemaphores`); `speculated=N` counts the waits reported complete before their records since the process started |
 | `CABOOSE_COMMAND_PROFILE=1` | Every two seconds and at exit, the twelve commands that took the most device-stream bytes (`opN=KiB/count/mean bytes`), and the total bytes and commands, on stderr |
 | `CABOOSE_PRIVATE_GPU_COHERENT_LOG=1` | The first coherent-memory flushes and invalidates, per allocation, on stderr |
 | `CABOOSE_PRIVATE_GPU_FLUSH_TIMING=1` | Bounded flush timing records on stderr |
@@ -203,7 +234,10 @@ hello for the completion feed. The rest of the series requires the `0x70` contra
 
 `python3 -m unittest discover -s guest/gpu/gfxstream -p 'test_*.py'` checks the series
 (contiguous numbering, upstream-only changes, descriptions, pinned revision) along with
-the broker. The owned headers' C++ tests are described in their READMEs.
+the broker, and that silent success's commands are the decoder's. `compile.sh` runs
+`check_silent_success.py` on the prepared tree before every build: it fails when the encoder
+defers the reply of a command silent success does not list, or reads the reply of one it
+does. The owned headers' C++ tests are described in their READMEs.
 
 [`sync-check/`](sync-check/README.md) runs the event, query, free and reply-wait paths
 against a real phone executor and times them, for a driver build before it is installed.

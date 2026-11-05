@@ -1,0 +1,200 @@
+From: Caboose <caboose@local>
+Subject: [PATCH 86/91] Answer query results and capture coherent writes from
+ completion records
+
+vkGetQueryPoolResults asked the device for the values of ended queries: in five seconds
+of Halo 11 calls waited 117 ms, and a WAIT always waited for its reply. With hello 0x200000
+(completion payloads, with the completion feed) a watched batch that ends occlusion or
+timestamp queries, or writes coherent memory on the GPU, is watched with
+COMPLETION_WATCH2, naming those query ranges and memory ranges; the phone captures them
+once the batch completes and sends the captures in its record
+(caboose-bounded-memory/completion_payloads.h). vkGetQueryPoolResults answers every flag
+and layout of captured queries locally, a WAIT by waiting for the records, without the
+encoder lock; what it cannot answer is asked on the device as before. Captured memory is
+stored in its allocation's shadow before the batch completes, unless a later batch writes
+it too or an idle wait completed the batch first; the invalidate still reads it.
+vkDestroyQueryPool waits for the records that capture the pool, since the phone captures
+without a lock against the destroy. A batch submitted without a running feed leaves its
+queries to the device.
+---
+diff --git a/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp b/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp
+--- a/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp
++++ b/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp
+@@ -1937,6 +1937,39 @@ bool ResourceTracker::cabooseHasCommandBuffersGpuWritten(const std::vector<uint6
+     return false;
+ }
+ 
++std::vector<caboose::completion::Tracker::MemoryWrite> ResourceTracker::cabooseCommandBuffersGpuWrittenRanges(
++    const std::vector<uint64_t>& commandBuffers) {
++    std::vector<caboose::completion::Tracker::MemoryWrite> out;
++    std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
++    for (uint64_t cb : commandBuffers) {
++        auto it = mCabooseCommandDirtyRanges.find(cb);
++        if (it == mCabooseCommandDirtyRanges.end()) continue;
++        for (const auto& r : it->second) {
++            auto memIt = info_VkDeviceMemory.find(r.memory);
++            if (memIt == info_VkDeviceMemory.end() || !memIt->second.socketShadow || r.end <= r.begin) continue;
++            out.push_back({caboose::handle_key(r.memory), 0, uint64_t(r.begin), uint64_t(r.end - r.begin)});
++        }
++    }
++    return out;
++}
++
++// Caboose: a capture is stored where an invalidate would write it, the mapped part of the
++// allocation's shadow, which stays alive while it is written.
++bool ResourceTracker::cabooseCaptureTarget(uint64_t memory, caboose::completion::Tracker::MemoryTarget* out) {
++    std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
++    auto found = info_VkDeviceMemory.find(caboose::to_handle<VkDeviceMemory>(memory));
++    if (found == info_VkDeviceMemory.end()) return false;
++    const auto& info = found->second;
++    if (!info.socketShadow || !info.socketMapped || !info.ptr || info.socketMapOffset > info.allocationSize ||
++        info.socketMapSize > info.allocationSize - info.socketMapOffset) return false;
++    out->keep = info.socketShadow;
++    out->base = info.ptr;
++    out->begin = info.socketMapOffset;
++    out->end = info.socketMapOffset + info.socketMapSize;
++    out->allocation = info.allocationSize;
++    return true;
++}
++
+ void ResourceTracker::cabooseSubmitCommandBuffersGpuWritten(const std::vector<uint64_t>& commandBuffers, uint64_t serial) {
+     if (commandBuffers.empty()) return;
+     std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+@@ -10098,6 +10131,16 @@ static ResourceTracker* sTracker = nullptr;
+ ResourceTracker::ResourceTracker() {
+     mCreateMapping = new CreateMapping();
+     mDestroyMapping = new DestroyMapping();
++    // Caboose: captured coherent memory goes into its shadow; the flush shadow then knows the
++    // host holds those bytes, and the written blocks are not sent back.
++    caboose::completion::tracker().memoryHooks(
++        [](uint64_t memory, caboose::completion::Tracker::MemoryTarget* out) {
++            return ResourceTracker::get()->cabooseCaptureTarget(memory, out);
++        },
++        [](uint64_t memory, const caboose::completion::Tracker::MemoryTarget& target, uint64_t offset, uint64_t size) {
++            caboose::memory::flushShadow.noteRefreshed(memory, target.base, target.allocation, offset, size);
++            caboose::memory::writeWatch().written(target.base, offset, offset + size, [](uint64_t, uint64_t) {});
++        });
+     static const bool hooked = caboose::completion::onNewGeneration([] { ResourceTracker::get()->cabooseNewGeneration(); });
+     (void)hooked;
+ }
+diff --git a/src/gfxstream/guest/vulkan_enc/ResourceTracker.h b/src/gfxstream/guest/vulkan_enc/ResourceTracker.h
+--- a/src/gfxstream/guest/vulkan_enc/ResourceTracker.h
++++ b/src/gfxstream/guest/vulkan_enc/ResourceTracker.h
+@@ -569,6 +569,12 @@ class ResourceTracker {
+         cabooseMarkBufferGpuWritten(VK_NULL_HANDLE, buffer, dstOffset, size, requireReadbackBuffer);
+     }
+     bool cabooseHasCommandBuffersGpuWritten(const std::vector<uint64_t>& commandBuffers);
++    // Caboose: the coherent memory these command buffers write on the GPU, for a completion
++    // watch's captures (handles left for the encoder to fill), and the shadow a capture of an
++    // allocation is stored in (caboose-bounded-memory/completion_payloads.h).
++    std::vector<caboose::completion::Tracker::MemoryWrite> cabooseCommandBuffersGpuWrittenRanges(
++        const std::vector<uint64_t>& commandBuffers);
++    bool cabooseCaptureTarget(uint64_t memory, caboose::completion::Tracker::MemoryTarget* out);
+     void cabooseSubmitCommandBuffersGpuWritten(const std::vector<uint64_t>& commandBuffers, uint64_t serial);
+     VkDevice caboosePrefetchFenceDevice(VkFence fence);
+     uint32_t getStreamFeatures() const;
+diff --git a/src/gfxstream/guest/vulkan_enc/autogenerated/VkEncoder.cpp b/src/gfxstream/guest/vulkan_enc/autogenerated/VkEncoder.cpp
+--- a/src/gfxstream/guest/vulkan_enc/autogenerated/VkEncoder.cpp
++++ b/src/gfxstream/guest/vulkan_enc/autogenerated/VkEncoder.cpp
+@@ -370,6 +370,8 @@ extern "C" int caboose_gfxstream_guest_query_pools;
+ extern "C" int caboose_gfxstream_guest_buffer_views;
+ // 1 when the guest chooses its batched descriptor pools' set ids (hello feature 0x100000).
+ extern "C" int caboose_gfxstream_guest_set_ids;
++// 1 when completion watches name what the phone captures for their records (hello 0x200000).
++extern "C" int caboose_gfxstream_completion_payloads;
+ namespace caboose_guest_handles {
+ // Negotiated by the device stream's hello (SocketStream.cpp), never assumed.
+ inline bool enabled() { return caboose_gfxstream_guest_handles == 1; }
+@@ -754,6 +756,7 @@ static void cabooseWatchSubmission(VkEncoder* enc, Stream* stream, VkQueue queue
+         if (fence != VK_NULL_HANDLE) caboose::completion::tracker().fenceUntracked(caboose::handle_key(fence));
+         for (const auto& signal : signals) caboose::completion::tracker().semaphoreUntracked(signal.first);
+         if (events) caboose::completion::tracker().eventsUntracked(commandBuffers);
++        if (queries) caboose::completion::tracker().queriesUntracked(commandBuffers);
+         if (gpuWrites) ResourceTracker::get()->cabooseSubmitCommandBuffersGpuWritten(commandBuffers, 0);
+         return;
+     }
+@@ -765,12 +768,29 @@ static void cabooseWatchSubmission(VkEncoder* enc, Stream* stream, VkQueue queue
+         caboose_deferred_destroy::sendReady(stream);
+         return;
+     }
++    // Caboose: with completion payloads (hello 0x200000) the watch also names the batch's ended
++    // occlusion and timestamp queries and the coherent memory it writes, which the phone
++    // captures for its record (caboose-bounded-memory/completion_payloads.h).
++    const bool cabooseCaptures = __atomic_load_n(&caboose_gfxstream_completion_payloads, __ATOMIC_ACQUIRE) == 1;
++    caboose::completion::Tracker::Captures captures;
++    if (cabooseCaptures && gpuWrites) {
++        for (auto write : ResourceTracker::get()->cabooseCommandBuffersGpuWrittenRanges(commandBuffers)) {
++            write.handle = get_host_u64_VkDeviceMemory(caboose::to_handle<VkDeviceMemory>(write.memory));
++            captures.memory.push_back(write);
++        }
++    }
+     const uint64_t serial = caboose::completion::tracker().submitted(
+         caboose::handle_key(fence), signals, caboose::handle_key(queue), caboose::handle_key(device),
+-        commandBuffers);
++        commandBuffers, cabooseCaptures ? &captures : nullptr);
+     if (gpuWrites) ResourceTracker::get()->cabooseSubmitCommandBuffersGpuWritten(commandBuffers, serial);
+-    uint8_t* packet = stream->reserve(caboose::completion::kWatchPacketSize);
+-    caboose::completion::encodeWatch(packet, get_host_u64_VkQueue(queue), serial);
++    if (!captures.entries.empty()) {
++        const auto watch2 = caboose::completion::payloads::encodeWatch2(get_host_u64_VkQueue(queue), serial,
++                                                                        captures.entries);
++        memcpy(stream->reserve(watch2.size()), watch2.data(), watch2.size());
++    } else {
++        uint8_t* packet = stream->reserve(caboose::completion::kWatchPacketSize);
++        caboose::completion::encodeWatch(packet, get_host_u64_VkQueue(queue), serial);
++    }
+     caboose::memory::deferredDestroys.watched(caboose::handle_key(queue));
+     stream->flush();
+     caboose_deferred_destroy::sendReady(stream);
+@@ -5074,6 +5094,11 @@ VkResult VkEncoder::vkCreateQueryPool(VkDevice device, const VkQueryPoolCreateIn
+     } else {
+         caboose_read_profile::read(stream, &vkCreateQueryPool_VkResult_return, sizeof(VkResult));
+     }
++    // Caboose: an occlusion or timestamp pool's queries are captured with completion payloads
++    // (caboose-bounded-memory/completion_payloads.h).
++    if (vkCreateQueryPool_VkResult_return == VK_SUCCESS && pCreateInfo)
++        caboose::completion::tracker().queryPoolCreated(caboose::handle_key(*pQueryPool), cgen_var_3,
++                                                        caboose::handle_key(device), int32_t(pCreateInfo->queryType));
+     ++encodeCount;
+     if (0 == encodeCount % POOL_CLEAR_INTERVAL) {
+         pool->freeAll();
+@@ -5089,6 +5114,12 @@ void VkEncoder::vkDestroyQueryPool(VkDevice device, VkQueryPool queryPool,
+     caboose::memory::queryResults.poolDestroyed(caboose::handle_key(queryPool));
+     // The executor is gone: report device loss, and never read garbage replies into outputs.
+     if (caboose::completion::lostCall(cabooseGenerationOf(device))) return;
++    // Caboose: the phone destroys a pool without a lock against capturing its queries, so the
++    // destroy goes once every record that captures it has arrived (completion_payloads.h).
++    if (caboose::completion::tracker().poolCaptured(caboose::handle_key(queryPool))) {
++        caboose::completion::WaitTimer timer{OP_vkDestroyQueryPool};
++        caboose::completion::tracker().waitPoolCaptures(caboose::handle_key(queryPool));
++    }
+     bool queueSubmitWithCommandsEnabled =
+         sFeatureBits & VULKAN_STREAM_FEATURE_QUEUE_SUBMIT_WITH_COMMANDS_BIT;
+     if (!queueSubmitWithCommandsEnabled && doLock) this->lock();
+@@ -5171,6 +5202,24 @@ VkResult VkEncoder::vkGetQueryPoolResults(VkDevice device, VkQueryPool queryPool
+     (void)doLock;
+     // The executor is gone: report device loss, and never read garbage replies into outputs.
+     if (caboose::completion::lostCall(cabooseGenerationOf(device))) return VkResult(caboose::completion::lostResult());
++    // Caboose: with completion payloads the records brought the values of captured queries;
++    // they answer every flag and layout here, a WAIT by waiting for the records, without the
++    // encoder lock (caboose-bounded-memory/completion_payloads.h). What they cannot answer is
++    // asked on the device as before.
++    if (__atomic_load_n(&caboose_gfxstream_completion_payloads, __ATOMIC_ACQUIRE) == 1 &&
++        caboose::completion::feedActive.load(std::memory_order_acquire)) {
++        auto& cabooseTracker = caboose::completion::tracker();
++        const uint64_t caboosePool = caboose::handle_key(queryPool);
++        if ((flags & VK_QUERY_RESULT_WAIT_BIT) &&
++            cabooseTracker.queryValues(caboosePool, firstQuery, queryCount) ==
++                caboose::completion::Tracker::Values::Pending) {
++            caboose::completion::WaitTimer timer{OP_vkGetQueryPoolResults};
++            cabooseTracker.waitQueryValues(caboosePool, firstQuery, queryCount);
++        }
++        const int32_t cabooseLocal = cabooseTracker.queryResults(caboosePool, firstQuery, queryCount, dataSize,
++                                                                 pData, uint64_t(stride), uint32_t(flags));
++        if (cabooseLocal != caboose::completion::payloads::kAskDevice) return VkResult(cabooseLocal);
++    }
+     bool queueSubmitWithCommandsEnabled =
+         sFeatureBits & VULKAN_STREAM_FEATURE_QUEUE_SUBMIT_WITH_COMMANDS_BIT;
+     if (!queueSubmitWithCommandsEnabled && doLock) this->lock();
+-- 
+2.43.0

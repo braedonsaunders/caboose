@@ -43,6 +43,15 @@ class LocalSurfaceProtocolTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 protocol.decode_request(request(16, struct.pack('<QIIII', 7, 9, 0, 0, space)))
 
+    def test_a_probe_bind_carries_its_flag(self):
+        probe = struct.pack('<QIIIIII', 7, 9, 0, 0, 1, 1, 0)
+        self.assertEqual(protocol.decode_request(request(16, probe)), (16, probe))
+        for flags, reserved in ((0, 0), (2, 0), (1, 5)):
+            with self.assertRaises(ValueError):
+                protocol.decode_request(request(16, struct.pack('<QIIIIII', 7, 9, 0, 0, 1, flags, reserved)))
+        with self.assertRaises(ValueError):
+            protocol.decode_request(request(16, struct.pack('<QIIIII', 7, 9, 0, 0, 1, 1)))
+
     def test_bad_headers_and_truncated_requests_fail(self):
         valid = request(18, struct.pack('<QQ', 1, 2))
         for cut in range(len(valid)):

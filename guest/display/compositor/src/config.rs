@@ -22,6 +22,10 @@ OPTIONS:
     --private-gpu-stream-socket PATH   private live GPU stream socket (owner only)
     --private-gpu-surface-socket PATH  private live GPU surface socket (owner only)
     --private-gpu-indexed  select the private indexed v4 transport
+    --private-gpu-broker PATH  join the computer's shared GPU broker at this seat's control
+                           socket (DIR/SEAT/control.sock) instead of starting one; the stream
+                           and surface sockets are then DIR/SEAT/gpu.sock and surface.sock,
+                           and the agent seat may use its own (DIR/agent)
     --audio-bitrate BPS    Opus bitrate [default: 128000]
     --env-file PATH        write WAYLAND_DISPLAY/DISPLAY for launchers here once ready
     --client-timeout SECS  close a client that has sent nothing for this long; 0 = never
@@ -67,6 +71,9 @@ pub struct Config {
     pub private_gpu_stream: Option<PathBuf>,
     pub private_gpu_surface: Option<PathBuf>,
     pub private_gpu_indexed: bool,
+    /// The shared broker's control socket for this seat: the compositor is its client and
+    /// starts none of its own.
+    pub private_gpu_broker: Option<PathBuf>,
     pub socket: String,
     pub x_display: Option<u32>,
     pub audio: bool,
@@ -90,6 +97,7 @@ impl Default for Config {
             private_gpu_stream: None,
             private_gpu_surface: None,
             private_gpu_indexed: false,
+            private_gpu_broker: None,
             socket: "wayland-caboose-0".into(),
             x_display: Some(110),
             audio: true,
@@ -105,13 +113,29 @@ impl Default for Config {
 }
 
 impl Config {
-    /// The agent launch environment is not authorized to start a GPU broker.
+    /// The agent launch environment starts no GPU broker. It may join the computer's shared
+    /// broker with its own seat's sockets (DIR/agent), never the owner's; the owner seat
+    /// never takes the agent's.
     pub fn validate_private_gpu_seat(&self, is_agent: bool) -> Result<(), &'static str> {
-        if is_agent && (self.private_gpu_stream.is_some() || self.private_gpu_surface.is_some()) {
-            return Err("private GPU is unavailable on the agent seat");
+        if self.private_gpu_stream.is_none() && self.private_gpu_surface.is_none() { return Ok(()); }
+        let seat = self.private_gpu_broker.as_ref().and_then(|broker| broker.parent()).and_then(|dir| dir.file_name());
+        let agent_sockets = seat == Some(std::ffi::OsStr::new("agent"));
+        if is_agent && !agent_sockets {
+            return Err("the agent seat takes only the shared broker's agent sockets");
+        }
+        if !is_agent && agent_sockets {
+            return Err("the owner seat cannot take the agent's GPU sockets");
         }
         Ok(())
     }
+
+    /// The shared broker's seat this compositor takes (its sockets' directory name), if any.
+    pub fn gpu_seat(&self) -> Option<&str> {
+        self.private_gpu_broker.as_ref()?.parent()?.file_name()?.to_str()
+    }
+
+    /// Whether this compositor joins the computer's shared broker.
+    pub fn joins_gpu_broker(&self) -> bool { self.private_gpu_broker.is_some() }
     /// This instance's private state (X11 authority, the Xwayland shim, PulseAudio) under
     /// `runtime_dir`, named after its Wayland socket so that two instances (the owner's
     /// display and the agent seat) never share it.
@@ -147,6 +171,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Parsed, String> {
             "--private-gpu-stream-socket" => config.private_gpu_stream = Some(value(&mut args, &arg)?.into()),
             "--private-gpu-surface-socket" => config.private_gpu_surface = Some(value(&mut args, &arg)?.into()),
             "--private-gpu-indexed" => config.private_gpu_indexed = true,
+            "--private-gpu-broker" => config.private_gpu_broker = Some(value(&mut args, &arg)?.into()),
             "--socket" => config.socket = value(&mut args, &arg)?,
             "--x-display" => config.x_display = Some(number(value(&mut args, &arg)?, &arg)?),
             "--no-xwayland" => config.x_display = None,
@@ -176,12 +201,17 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Parsed, String> {
     }
     let safe_path = |path: &std::path::Path| path.is_absolute() && path.file_name().is_some() &&
         path.components().all(|part| matches!(part, std::path::Component::RootDir | std::path::Component::Normal(_)));
+    // A shared broker's seat has its control socket beside its stream and surface sockets; a
+    // compositor's own broker (no --private-gpu-broker) is the owner seat's alone.
+    let joined = config.private_gpu_broker.as_deref();
+    let beside = |stream: &std::path::Path| joined.map_or(true, |broker| safe_path(broker) && broker != stream && broker.parent() == stream.parent());
+    let owner_only = joined.is_some() || (config.games && config.socket != "wayland-caboose-agent");
     match (&config.private_gpu_stream, &config.private_gpu_surface) {
-        (None, None) if !config.private_gpu_indexed => {},
-        (Some(stream), Some(surface)) if config.games && config.socket != "wayland-caboose-agent" &&
+        (None, None) if !config.private_gpu_indexed && joined.is_none() => {},
+        (Some(stream), Some(surface)) if owner_only &&
             config.token_file.is_some() && safe_path(stream) && safe_path(surface) && stream != surface &&
-            stream.parent().is_some() && stream.parent() == surface.parent() => {},
-        _ => return Err("private GPU requires an authenticated owner seat and distinct absolute sockets in one private directory".into()),
+            stream.parent().is_some() && stream.parent() == surface.parent() && beside(stream) => {},
+        _ => return Err("private GPU requires an authenticated owner seat (or a shared broker's seat) and distinct absolute sockets in one private directory".into()),
     }
     Ok(Parsed::Run(Box::new(config)))
 }
@@ -195,6 +225,33 @@ mod tests {
             Parsed::Run(c) => *c,
             _ => panic!("not a run"),
         }
+    }
+
+    #[test]
+    fn a_shared_brokers_seat_sockets_are_its_own() {
+        let seat = |dir: &str, extra: &[&str]| {
+            let control = format!("/run/user/1000/caboose-gpu/{dir}/control.sock");
+            let stream = format!("/run/user/1000/caboose-gpu/{dir}/gpu.sock");
+            let surface = format!("/run/user/1000/caboose-gpu/{dir}/surface.sock");
+            let mut args: Vec<String> = ["--private-gpu-broker", &control, "--private-gpu-stream-socket", &stream,
+                "--private-gpu-surface-socket", &surface].iter().map(|s| s.to_string()).collect();
+            args.extend(extra.iter().map(|s| s.to_string()));
+            parse(args.into_iter())
+        };
+        let agent = ["--socket", "wayland-caboose-agent", "--no-games", "--no-devices"];
+        let Ok(Parsed::Run(config)) = seat("agent", &agent) else { panic!("agent seat") };
+        assert!(config.joins_gpu_broker());
+        assert!(config.validate_private_gpu_seat(true).is_ok());
+        assert!(config.validate_private_gpu_seat(false).is_err());
+        let Ok(Parsed::Run(config)) = seat("owner", &[]) else { panic!("owner seat") };
+        assert!(config.validate_private_gpu_seat(false).is_ok());
+        // The agent seat never takes the owner's sockets.
+        let Ok(Parsed::Run(config)) = seat("owner", &agent) else { panic!("parses") };
+        assert!(config.validate_private_gpu_seat(true).is_err());
+        // The control socket is the seat's, beside its other sockets.
+        assert!(parse(["--private-gpu-broker", "/run/a/agent/control.sock", "--private-gpu-stream-socket", "/run/a/owner/gpu.sock",
+            "--private-gpu-surface-socket", "/run/a/owner/surface.sock"].iter().map(|s| s.to_string())).is_err());
+        assert!(parse(["--private-gpu-broker", "/run/a/agent/control.sock"].iter().map(|s| s.to_string())).is_err());
     }
 
     #[test]

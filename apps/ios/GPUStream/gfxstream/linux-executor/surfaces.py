@@ -103,6 +103,8 @@ FOUR_BYTE_FORMATS = frozenset((37, 43, 44, 50))
 # --extra-formats), as (format, colour space) pairs: the phone lists more formats than an
 # unbound window's local defaults, and an application's enumeration must survive the change.
 EXTRA_FORMATS = []
+# executor.py --pictures: a directory that receives each window's newest captured picture.
+PICTURES = {'directory': None, 'interval': 0.1}
 
 
 def checksum(pixels):
@@ -113,6 +115,43 @@ def checksum(pixels):
     for row in range(pixels.height):
         crc = zlib.crc32(ctypes.string_at(pixels.data + row * pixels.row_pitch, width), crc)
     return f'{crc:08x}'
+
+
+def content(pixels):
+    """A captured picture's repeat fraction (how much of it repeats its left neighbour, from
+    0 to 1) and its colours (distinct texels among those sampled, up to 64). A rendered window
+    (flat backgrounds, glyphs, panels) repeats in most of its texels and has a few colours;
+    memory that was never written, or that is read with the wrong layout, looks like noise and
+    repeats in almost none; a picture never drawn into is one colour."""
+    if pixels.vk_format not in FOUR_BYTE_FORMATS or pixels.width < 2 or not pixels.height:
+        return None
+    same = total = 0
+    colours = set()
+    for row in range(0, pixels.height, max(1, pixels.height // 64)):
+        texels = memoryview(ctypes.string_at(pixels.data + row * pixels.row_pitch, pixels.width * 4)).cast('I')
+        same += sum(1 for a, b in zip(texels, texels[1:]) if a == b)
+        total += pixels.width - 1
+        if len(colours) < 64:
+            colours.update(texels[::max(1, pixels.width // 64)])
+    return same / total, min(len(colours), 64)
+
+
+def write_picture(path, pixels):
+    """Writes a captured picture as a binary PPM (B8G8R8A8 or R8G8B8A8)."""
+    bgr = pixels.vk_format in (44, 50)
+    rows = []
+    for row in range(pixels.height):
+        line = ctypes.string_at(pixels.data + row * pixels.row_pitch, pixels.width * 4)
+        rgb = bytearray(pixels.width * 3)
+        rgb[0::3] = line[2::4] if bgr else line[0::4]
+        rgb[1::3] = line[1::4]
+        rgb[2::3] = line[0::4] if bgr else line[2::4]
+        rows.append(bytes(rgb))
+    temporary = f'{path}.{threading.get_ident()}.part'
+    with open(temporary, 'wb') as out:
+        out.write(f'P6\n{pixels.width} {pixels.height}\n255\n'.encode())
+        out.writelines(rows)
+    os.replace(temporary, path)
 
 
 def register_receiver(function):
@@ -268,6 +307,8 @@ class Surface:
         self.callbacks = {}
         self.key = register_receiver(self._receive)
         self.capture_key = None
+        self.picture_time = self.picture_logged = float('-inf')
+        self.picture_measure = None
 
     def capture(self):
         """Captures every presented picture for its checksum (the phone's frame lab path)."""
@@ -281,6 +322,21 @@ class Surface:
     def _captured(self, serial, token, pixels):
         if pixels:
             self.frames.captured(self.window, serial, checksum(pixels))
+            directory = PICTURES['directory']
+            now = time.monotonic()
+            if directory and now - self.picture_time >= PICTURES['interval']:
+                self.picture_time = now
+                try:
+                    measure = content(pixels)
+                    write_picture(os.path.join(directory, f'window-{self.window:x}.ppm'), pixels)
+                    # The first picture, a changed measure, and one a second otherwise.
+                    if measure != self.picture_measure or now - self.picture_logged >= 1:
+                        self.picture_measure, self.picture_logged = measure, now
+                        log(f'picture window={self.window:#x} serial={serial} {pixels.width}x{pixels.height} '
+                            f'format={pixels.vk_format} content={measure[0]:.3f} colours={measure[1]}'
+                            if measure else f'picture window={self.window:#x} serial={serial} format={pixels.vk_format}')
+                except OSError as error:
+                    log(f'picture window={self.window:#x} not written: {error}')
         self.rt.surface_release_capture(self.pointer, token)
 
     def query(self, physical):
@@ -926,8 +982,14 @@ def parse_surface(kind, payload):
     """A broker-to-phone surface record: (identity bytes, fields)."""
     identity, r = payload[:40], payload[40:]
     if kind == 16:
-        window, instance, width, height = struct.unpack('<QQII', r)
-        return identity, {'window': window, 'instance': instance, 'width': width, 'height': height}
+        # seat-routing: 72 bytes, the seat (0 owner, 1 agent) and a reserved zero after the 64.
+        if len(r) == 32:
+            window, instance, width, height, seat, reserved = struct.unpack('<QQIIII', r)
+            if seat > 1 or reserved:
+                raise ProtocolViolation('surface bind seat')
+        else:
+            (window, instance, width, height), seat = struct.unpack('<QQII', r), 0
+        return identity, {'window': window, 'instance': instance, 'width': width, 'height': height, 'seat': seat}
     if kind == 18:
         request, physical = struct.unpack('<QQ', r)
         return identity, {'request': request, 'physical': physical}
@@ -1006,6 +1068,12 @@ class SurfaceController:
             self.entries[grant] = self._Entry(process, identity, None, retiring=True)
             if len(self.entries) > self.LIMIT:
                 return emit(17, Status(errno.ENOSPC).pack())
+            if fields['seat'] != 0:
+                # This executor shows one display, the owner's: an agent-seat window has no
+                # display session here, so its bind is answered and dropped, as on a phone
+                # with no agent seat open.
+                log(f'surface bind refused window={fields["window"]:#x} seat={fields["seat"]} errno={errno.ENOENT}')
+                return emit(17, Status(errno.ENOENT).pack())
             if self.fail_binds > 0:
                 # A phone whose layer for the window is not ready answers EAGAIN; the grant
                 # stays until its retirement, as after any failed bind.

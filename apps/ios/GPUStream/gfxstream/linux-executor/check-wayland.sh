@@ -7,7 +7,7 @@ image=$1; work=$(realpath "$2"); release=$(realpath "$3"); driver=$(realpath "$4
 mkdir -p "$6"; out=$(realpath "$6")
 here=$(cd "$(dirname "$0")" && pwd); repo=$(cd "$here/../../../../.." && pwd)
 name=caboose-wayland-check-$$
-shared=$(mktemp -d); chmod 0777 "$shared"
+shared=$(mktemp -d); chmod 1777 "$shared"
 cleanup() {
   docker logs "$name-executor" > "$out/executor.log" 2>&1 || true
   docker exec "$name-computer" cat /home/caboose/.cache/caboose-display.log > "$out/display.log" 2>&1 || true
@@ -17,7 +17,7 @@ cleanup() {
 trap cleanup EXIT INT TERM
 cp "$driver" "$shared/libvulkan_gfxstream.so"; cp "$probe" "$shared/wayland_present"
 printf 'wayland-check-token' > "$shared/token"
-features=guest-handles,guest-handle-arrays,completion-feed,ordered-present,guest-images,guest-query-pools,shader-cache,executor-resume,zstd-stream,upload-cache,guest-buffer-views,batched-descriptor-sets-inline
+features=guest-handles,guest-handle-arrays,completion-feed,ordered-present,guest-images,guest-query-pools,shader-cache,executor-resume,zstd-stream,upload-cache,guest-buffer-views,batched-descriptor-sets-inline,guest-set-ids
 docker run -d --name "$name-computer" --init --network none --cpus 4 --memory 6g --shm-size 256m \
  -v "$release:/release:ro" -v "$shared:/shared" -v "$repo/guest/gpu:/repo/guest/gpu:ro" \
  --entrypoint /bin/sh "$image" -c 'exec sleep infinity' >/dev/null

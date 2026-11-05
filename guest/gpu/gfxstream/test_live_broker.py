@@ -1,6 +1,7 @@
 import asyncio
 import contextlib
 import array
+import errno
 import os
 from importlib.machinery import SourceFileLoader
 import importlib.util
@@ -39,6 +40,8 @@ class Writer:
     def write_eof(self): self.eof = True
     def close(self): pass
     def abort(self): pass
+    def is_closing(self): return False
+    def get_write_buffer_size(self): return 0
     def get_extra_info(self, _name): return object()
     async def wait_closed(self): pass
 
@@ -135,6 +138,40 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
         with mock.patch.object(session, 'present_rate') as rate, mock.patch('builtins.print'):
             session.surface_progress('received_from_guest', Kind.SWAPCHAIN_PRESENT_ORDERED)
             rate.assert_called_once_with('received_from_guest', int(Kind.SWAPCHAIN_PRESENT_ORDERED))
+
+    def test_executor_stats_report_the_phones_counters_every_five_seconds(self):
+        import struct as _struct
+        def record(**values):
+            fields = dict.fromkeys(broker.ExecutorStats.FIELDS, 0)
+            fields.update(values, size=96)
+            return _struct.pack('<12Q', *(fields[k] for k in broker.ExecutorStats.FIELDS))
+        stats = broker.ExecutorStats()
+        with mock.patch('builtins.print') as output:
+            # The first record is the baseline: totals since the phone's runtime started.
+            self.assertIsNone(stats.receive(record(commands=500, decode_us=9_000), 0))
+            self.assertIsNone(stats.receive(record(commands=600, outstanding=3, outstanding_max=7), 1_000_000_000))
+            output.assert_not_called()
+            line = stats.receive(record(commands=1500, decode_us=1_009_000, read_bytes=4096, read_wait_us=2_500_000,
+                                        flush_us=40_000, submitted=300, completed=298, completion_us=2_980_000,
+                                        gpu_busy_us=2_500_000, outstanding=2, outstanding_max=4), 5_000_000_000)
+            self.assertRegex(line, r'^CABOOSE_GPU_EXECUTOR_STATS elapsed_ms=5000 commands=1000 decode_ms=1000 '
+                                   r'read_bytes=4096 read_wait_ms=2500 flush_ms=40 submitted=300 completed=298 '
+                                   r'completion_mean_us=10000 gpu_busy_pct=50\.0 outstanding=2 outstanding_max=7 '
+                                   r'at=\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$')
+            self.assertEqual(output.call_args.args[0], line)
+        with self.assertRaises(ValueError):
+            stats.receive(b'\0' * 95)
+
+    def test_stats_request_goes_only_to_a_phone_that_declared_executor_stats(self):
+        for features, expected in ((frozenset({'executor-stats'}), True), (frozenset(), False)):
+            session = mock.Mock(features=features, stats_requested=False)
+            broker.Session.request_stats(session)
+            broker.Session.request_stats(session)
+            if expected:
+                session.send.assert_called_once_with(broker.Kind.STATS_REQUEST, payload=bytes([0xe8, 3, 0, 0, 0, 0, 0, 0]))
+            else:
+                session.send.assert_not_called()
+            self.assertEqual(session.stats_requested, expected)
 
     def test_surface_stats_report_fps_and_bytes_every_five_seconds_without_opt_in(self):
         owner = {'to_phone': 1000, 'from_phone': 50}
@@ -336,7 +373,7 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
             await session.message(Envelope(Kind.SESSION_READY, b'a' * 16, 1, 0, 0, 2, broker.HELLO))
         session.bindings.finish(session.binding_generation)
 
-    async def test_local_stream_waits_for_real_receipts_and_relays_both_directions(self):
+    async def test_local_stream_answers_the_hello_before_receipts_and_relays_both_directions(self):
         session = broker.Session(None, b'a' * 16, 1, None, Writer())
         session.session_ready.set()
         class Peer:
@@ -355,15 +392,19 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
             return got[0]
         with mock.patch.object(broker.PeerIdentity, 'from_socket', return_value=Peer()):
             task = asyncio.create_task(session.local(reader, writer))
+            # The openings, the hello's answer and the guest's data go out at once, in order: the
+            # phone takes them in that order and answers the openings first.
             opened = await next_frame(Kind.PROCESS_OPEN)
-            self.assertEqual(writer.data, b'')
-            await session.message(Envelope(Kind.PROCESS_READY, b'a' * 16, 1, opened.process, 0, 1))
             stream = await next_frame(Kind.STREAM_OPEN)
-            self.assertEqual(writer.data, b'')
-            await session.message(Envelope(Kind.STREAM_READY, b'a' * 16, 1, opened.process, stream.stream, 2))
             data = await next_frame(Kind.DATA)
             self.assertEqual(data.payload, b'guest request')
+            self.assertEqual(writer.data, broker.HELLO)
             await next_frame(Kind.FIN)
+            # Replies are taken only after the phone's real receipts.
+            with self.assertRaises(ValueError):
+                await session.message(Envelope(Kind.DATA, b'a' * 16, 1, opened.process, stream.stream, 1, b'early'))
+            await session.message(Envelope(Kind.PROCESS_READY, b'a' * 16, 1, opened.process, 0, 1))
+            await session.message(Envelope(Kind.STREAM_READY, b'a' * 16, 1, opened.process, stream.stream, 2))
             await session.message(Envelope(Kind.DATA, b'a' * 16, 1, opened.process, stream.stream, 3, b'reply'))
             await session.message(Envelope(Kind.FIN, b'a' * 16, 1, opened.process, stream.stream, 4))
             stopped = await next_frame(Kind.PROCESS_STOP)
@@ -375,6 +416,17 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(writer.eof)
         self.assertFalse(session.processes)
         session.bindings.finish(session.binding_generation)
+
+    async def test_an_opening_the_phone_never_answers_fails_the_session(self):
+        session = broker.Session(None, b'a' * 16, 1, None, Writer())
+        session.session_ready.set()
+        process = {'ready': asyncio.Event()}
+        stream = {'ready': asyncio.Event()}
+        async def unanswered(event, timeout): raise asyncio.TimeoutError()
+        with mock.patch.object(session, 'phone_answer', unanswered), mock.patch.object(session, 'fail') as fail:
+            await session.opened(process, stream, 4, 9)
+        fail.assert_called_once()
+        self.assertIn('local stream 9 of process 4: no answer to its opening', fail.call_args[0][0])
 
     async def test_guest_handle_hello_is_echoed_only_when_the_phone_supports_it(self):
         everything = frozenset(broker.HELLO_FEATURES)
@@ -427,6 +479,14 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
         session = broker.Session(None, b'a' * 16, 1, None, Writer(), features=frozenset({'guest-handles'}))
         self.assertFalse(session.features)
 
+    def test_session_features_line_names_each_stage(self):
+        line = broker.session_features_line(frozenset({'guest-handles', 'future-thing', 'other'}),
+                                            frozenset({'guest-handles', 'other'}), frozenset({'guest-handles'}))
+        self.assertEqual(line, 'CABOOSE_GPU_SESSION_FEATURES source=relay declared=future-thing,guest-handles,other '
+                               'forwarded=guest-handles,other received=guest-handles bits=0x80')
+        self.assertEqual(broker.session_features_line(None, frozenset(), frozenset()),
+                         'CABOOSE_GPU_SESSION_FEATURES source=direct declared=- forwarded=- received=- bits=0x0')
+
     def test_hello_negotiation_grants_offered_phone_features(self):
         everything = frozenset(broker.HELLO_FEATURES)
         negotiate = broker.negotiate_hello
@@ -448,7 +508,7 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(negotiate(hello(0x470), everything), hello(0x470))
         self.assertIsNone(negotiate(hello(0x1070), everything))
         self.assertEqual(negotiate(hello(0x20070), frozenset()), hello(0x20070))
-        self.assertIsNone(negotiate(hello(0x100070), everything))
+        self.assertIsNone(negotiate(hello(0x200070), everything))
         # Batched descriptor sets are granted only when the phone declared them; an older phone
         # leaves the process on per-call descriptor sets.
         self.assertEqual(negotiate(hello(0x40070), everything), hello(0x40070))
@@ -458,6 +518,40 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(negotiate(hello(0x80070), everything), hello(0x80070))
         self.assertEqual(negotiate(hello(0x80070), everything - {'batched-descriptor-sets-inline'}), hello(0x70))
         self.assertEqual(negotiate(hello(0x80070), everything - {'batched-descriptor-sets'}), hello(0x80070))
+        # Guest-chosen set ids (0x100000) are granted when the phone declared them, and only with
+        # guest handles; an older phone leaves the process asking for its pools' ids.
+        self.assertEqual(negotiate(hello(0x1000F0), everything), hello(0x1000F0))
+        self.assertEqual(negotiate(hello(0x1000F0), everything - {'guest-set-ids'}), hello(0xF0))
+        self.assertIsNone(negotiate(hello(0x100070), everything))
+        self.assertEqual(negotiate(hello(0x1000F0), everything - {'guest-handles'}), hello(0x70))
+        # Completion payloads (0x200000) are granted when the phone declared them, and only with
+        # the completion feed; an older phone leaves the process asking for query results.
+        self.assertEqual(negotiate(hello(0x200270), everything), hello(0x200270))
+        self.assertEqual(negotiate(hello(0x200270), everything - {'completion-payloads'}), hello(0x270))
+        self.assertEqual(negotiate(hello(0x200270), everything - {'completion-feed'}), hello(0x70))
+        self.assertIsNone(negotiate(hello(0x200070), everything))
+        # WAIT_SERIAL (0x400000) likewise needs the phone's declaration and the completion feed.
+        self.assertEqual(negotiate(hello(0x400270), everything), hello(0x400270))
+        self.assertEqual(negotiate(hello(0x400270), everything - {'wait-serial'}), hello(0x270))
+        self.assertEqual(negotiate(hello(0x400270), everything - {'completion-feed'}), hello(0x70))
+        self.assertIsNone(negotiate(hello(0x400070), everything))
+        # Silent success (0x800000) is granted with guest handles and the completion feed; an
+        # offer without either is malformed, and a phone that grants neither drops it.
+        self.assertEqual(negotiate(hello(0x8002F0), everything), hello(0x8002F0))
+        self.assertEqual(negotiate(hello(0x8002F0), everything - {'silent-success'}), hello(0x2F0))
+        self.assertIsNone(negotiate(hello(0x800270), everything))
+        self.assertIsNone(negotiate(hello(0x8000F0), everything))
+        self.assertEqual(negotiate(hello(0x8002F0), everything - {'completion-feed'}), hello(0xF0))
+        self.assertEqual(negotiate(hello(0x8002F0), everything - {'guest-handles'}), hello(0x270))
+        # One-way start (0x1000000) is granted with silent success, guest handles and the completion
+        # feed; an offer without any of them is malformed, and a phone that grants silent success
+        # but not one-way start (an older phone) leaves the process waiting for those replies.
+        self.assertEqual(negotiate(hello(0x18002F0), everything), hello(0x18002F0))
+        self.assertEqual(negotiate(hello(0x18002F0), everything - {'one-way-start'}), hello(0x8002F0))
+        self.assertEqual(negotiate(hello(0x18002F0), everything - {'silent-success'}), hello(0x2F0))
+        self.assertIsNone(negotiate(hello(0x10002F0), everything))
+        self.assertIsNone(negotiate(hello(0x1800270), everything))
+        self.assertIsNone(negotiate(hello(0x18000F0), everything))
         # Buffer view handles need guest handles too.
         self.assertEqual(negotiate(hello(0x100F0), everything), hello(0x100F0))
         self.assertEqual(negotiate(hello(0x100F0), everything - {'guest-buffer-views'}), hello(0xF0))
@@ -703,7 +797,8 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
         control, peer = socket.socketpair(type=socket.SOCK_SEQPACKET)
         control.setblocking(False); peer.setblocking(False)
         broker_instance = broker.Broker.__new__(broker.Broker)
-        broker_instance.control = control
+        broker_instance.seats = {'owner': broker.Seat('owner', '/unused/gpu.sock', control=control)}
+        broker_instance.epoch_seats = {}; broker_instance.pending_bind_seats = {}
         broker_instance.next_bind = 0
         broker_instance.pending_binds = {}
         broker_instance.bind_send_lock = asyncio.Lock()
@@ -720,7 +815,7 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
         ready = asyncio.Event(); ready.set()
         session.processes = {3: {'ready': ready, 'surfaces': set()}}
         session.surfaces = {}
-        session.surface_epoch = None
+        session.surface_epochs = {}
         session.surface_count = 0
         broker_instance.session = session
         task = asyncio.create_task(broker_instance.request_bind(session, 3, 17, b'e' * 16))
@@ -786,7 +881,7 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
                 key = (b'e' * 16, b'g' * 16, 7)
                 session = mock.Mock()
                 session.surfaces = {key: {}}
-                session.surface_epoch = b'e' * 16
+                session.surface_epochs = {'owner': b'e' * 16}
                 instance.session = session
                 first.close()
                 for _ in range(200):
@@ -795,7 +890,7 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIsNone(instance.control)
                 self.assertFalse(instance.closing.is_set())
                 session.request_surface_retire.assert_called_once_with(control_protocol.RevokeGrant(*key))
-                self.assertIsNone(session.surface_epoch)
+                self.assertNotIn('owner', session.surface_epochs)
                 # Without a compositor grants are dropped and a bind cannot be asked.
                 await instance.send_control(control_protocol.encode_grant_retired(control_protocol.GrantRetired(*key)))
                 with self.assertRaises(ConnectionError):
@@ -817,10 +912,10 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_a_late_bind_answer_is_logged_and_its_grant_handed_back(self):
         broker_instance = broker.Broker.__new__(broker.Broker)
-        broker_instance.pending_binds = {}
+        broker_instance.pending_binds = {}; broker_instance.pending_bind_seats = {}
         broker_instance.tasks = set()
         sent = []
-        async def send_control(data, fd=None): sent.append(data)
+        async def send_control(data, fd=None, seat=None): sent.append(data)
         broker_instance.send_control = send_control
         with mock.patch('builtins.print') as output:
             broker_instance.bind_answered(control_protocol.BindResult(7, 0, b'e' * 16, b'g' * 16, 9, 3))
@@ -876,9 +971,13 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
         session.streams[s2] = {'process': p2, 'writer': Writer(), 'ready': ready, 'remote_fin': asyncio.Event(), 'local_eof': False, 'discard_reply': False}
 
         sent_envelopes = []
-        session.send = mock.Mock(side_effect=lambda kind, process=0, stream=0, payload=b'', credit=None: sent_envelopes.append((kind, process, stream, payload)))
+        priorities = []
+        def send(kind, process=0, stream=0, payload=b'', credit=None, priority=False):
+            sent_envelopes.append((kind, process, stream, payload))
+            priorities.append(priority)
+        session.send = mock.Mock(side_effect=send)
         control_records = []
-        async def send_control(data, fd=None):
+        async def send_control(data, fd=None, seat=None):
             control_records.append(control_protocol.decode(data, 0))
         instance = broker.Broker.__new__(broker.Broker)
         instance.send_control = mock.AsyncMock(side_effect=send_control)
@@ -886,7 +985,7 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
 
         key = (b'e' * 16, b'g' * 16, 7)
         identity = key[0] + key[1] + struct.pack('<Q', key[2])
-        async def request_bind(_session, process_id, obj, space=0):
+        async def request_bind(_session, process_id, obj, space=0, probe=False):
             self.assertEqual(process_id, p1)
             session.surfaces[key] = {
                 'process': p1, 'window': 12, 'retiring': False, 'retire_sent': False,
@@ -948,6 +1047,9 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
                     Kind.SWAPCHAIN_CANCEL_ACQUIRE,
                 ])
                 self.assertEqual(sent_envelopes[-1][3], identity + struct.pack('<QQ', 5, 11))
+                # The process's acquire goes ahead of queued DATA; the broker's own cancellation
+                # of it, after the process went, keeps its place.
+                self.assertEqual(priorities, [False, True, False])
                 self.assertEqual(control_records, [control_protocol.RevokeRequest(*key)])
 
                 # Compositor responds with RevokeGrant, but stream s1 for dead peer1 has not drained yet, so SURFACE_RETIRE waits.
@@ -1118,7 +1220,7 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
         peer = mock.Mock()
         result = control_protocol.BindResult(1, 0, b'e' * 16, b'g' * 16, 12, 7)
         key = (result.epoch, result.grant, result.generation)
-        async def bind(_session, process, obj, space=0):
+        async def bind(_session, process, obj, space=0, probe=False):
             self.assertEqual((process, obj), (1, 9))
             session.surfaces[key] = {'process': 1, 'window': 12, 'retiring': False, 'retired': asyncio.Event()}
             return result
@@ -1161,7 +1263,7 @@ class LiveBrokerTests(unittest.IsolatedAsyncioTestCase):
         key = (result.epoch, result.grant, result.generation)
         values = json.loads((HERE.parent / 'broker' / 'live-swapchain-vectors.json').read_text())
         vectors = {item['name']: bytes.fromhex(item['payload']) for item in values}
-        async def bind(_session, _process, _obj, space=0):
+        async def bind(_session, _process, _obj, space=0, probe=False):
             session.surfaces[key] = {'process': 1, 'window': 12, 'retiring': False, 'retired': asyncio.Event(),
                                      'stats': broker.SurfaceStats(1, session.processes[1])}
             return result
@@ -1307,7 +1409,7 @@ class TransportNegotiationTests(unittest.IsolatedAsyncioTestCase):
                     await session.message(Envelope(Kind.TRANSPORT_READY,b'a'*16,1,0,0,2,broker.TRANSPORT_CONFIG))
             finally: session.bindings.finish(session.binding_generation)
 
-    async def test_remote_does_not_report_ready_or_publish_socket_before_transport_ack(self):
+    async def test_remote_reports_ready_only_after_transport_ack_and_its_sockets(self):
         import uuid
         acknowledged=asyncio.Event(); hello_received=asyncio.Event(); published=asyncio.Event()
         class TestSession(broker.Session):
@@ -1339,8 +1441,10 @@ class TransportNegotiationTests(unittest.IsolatedAsyncioTestCase):
                     acknowledged.set()
                     await asyncio.wait_for(task,1)
                     self.assertTrue(published.is_set())
-                    self.assertEqual(instance.report_lifecycle.await_args_list[0].args[1],4)
-                    instance.lease.ready.assert_called_once()
+                    # Ready is reported only once the sockets exist: a publication that fails
+                    # never reports it.
+                    self.assertNotIn(4,[call.args[1] for call in instance.report_lifecycle.await_args_list])
+                    instance.lease.ready.assert_not_called()
                 finally:
                     task.cancel(); await asyncio.gather(task,return_exceptions=True)
 
@@ -1379,13 +1483,66 @@ class TransportNegotiationTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(instance.lease.idle)
             self.assertIsNone(instance.session)
 
+    async def test_a_new_executor_supersedes_one_that_lingers(self):
+        # The phone made a new executor while the host still held the previous one's
+        # transport: the new one is admitted, the old one is ended as a loss, not refused.
+        import uuid
+        aborted=asyncio.Event()
+        class LingeringWriter(Writer):
+            def abort(self): aborted.set()
+        ready=[asyncio.Event(),asyncio.Event()]
+        class TestSession(broker.Session):
+            async def read_loop(self):
+                await self.message(Envelope(Kind.SESSION_READY,self.executor,self.generation,0,0,1,self.hello))
+                if self.generation == 1:
+                    # The old connection looks alive until the broker ends it.
+                    await aborted.wait()
+                    raise ConnectionError('executor disconnected')
+                await asyncio.Event().wait()
+        class Server:
+            def close(self): pass
+            async def wait_closed(self): pass
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory); root.chmod(0o700); token=root/'token'; token.write_text('test')
+            async def start_server(_callback, path):
+                Path(path).touch(); return Server()
+            instance=object.__new__(broker.Broker)
+            instance.token_file=token; instance.indexed=False; instance.lease=broker.ExecutorLease()
+            instance.session=None; instance.holder=None; instance.socket_path=root/'gpu.sock'; instance.surface_path=None
+            instance.closing=asyncio.Event(); instance.warmup=None
+            reported=[]
+            async def report(session, kind):
+                reported.append((session.generation, kind))
+                if kind == 4: session.ready_reported = True; ready[session.generation-1].set()
+                if kind == 5: session.lost_reported = True
+                if kind == 6: session.retired_reported = True
+            instance.report_lifecycle=report
+            def connection(_sock=None, **_kw):
+                reader=asyncio.StreamReader(); reader.feed_data(b'GET / HTTP/1.1\r\n\r\n')
+                return reader, LingeringWriter()
+            identities=iter([uuid.UUID(bytes=b'a'*16), uuid.UUID(bytes=b'b'*16)])
+            def admit(*_args): return None, next(identities), b'upgrade'
+            with mock.patch.object(broker,'Session',TestSession), mock.patch.object(broker,'admit',side_effect=admit), mock.patch.object(asyncio,'open_connection',side_effect=connection), mock.patch.object(asyncio,'start_unix_server',side_effect=start_server):
+                first=asyncio.create_task(instance.remote(None))
+                await asyncio.wait_for(ready[0].wait(),5)
+                second=asyncio.create_task(instance.remote(None))
+                await asyncio.wait_for(ready[1].wait(),5)
+                await asyncio.wait_for(first,5)
+                self.assertTrue(aborted.is_set())
+                self.assertEqual(reported[:4],[(1,4),(1,5),(1,6),(2,4)])
+                self.assertTrue(instance.lease.held(b'b'*16,2))
+                self.assertIs(instance.holder.generation,2)
+                instance.closing.set()
+                second.cancel()
+                with contextlib.suppress(asyncio.CancelledError): await second
+
     async def test_orderly_retirement_is_not_reported_twice(self):
         session=object.__new__(broker.Session)
         session.executor=b'a'*16; session.generation=1
         session.ready_reported=True; session.lost_reported=True; session.retired_reported=False
         instance=object.__new__(broker.Broker)
         sent=[]
-        async def send_control(data): sent.append(data)
+        async def send_control(data, fd=None, seat=None): sent.append(data)
         instance.send_control=send_control
         await instance.report_lifecycle(session,6)
         self.assertTrue(session.retired_reported)
@@ -1421,7 +1578,7 @@ class ProcessUsageTests(unittest.TestCase):
         session.stream_compressor = None
         session.frame_timing = broker.FrameTiming(False)
         session.progress_enabled = False
-        session.enqueue_frame = lambda *args, **kwargs: None
+        session.enqueue = lambda *args, **kwargs: None
         session.send(Kind.DATA, 3, 1, b'abcd')
         session.send(Kind.DATA, 7, 1, b'ignored')
         self.assertEqual(session.processes[3]['to_phone'], 4)
@@ -1604,6 +1761,52 @@ class ExecutorSuspendTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.gather(sender, return_exceptions=True)
             session.bindings.finish(session.binding_generation)
 
+    async def test_a_long_suspension_releases_the_compositor_but_holds_applications(self):
+        """The compositor's own streams end once a suspension outlasts COMPOSITOR_HOLD_SECONDS, and
+        it is told (lifecycle 11) and told again on the resume (12); applications stay held."""
+        class Stream(Writer):
+            def __init__(self): super().__init__(); self.aborted = False
+            def abort(self): self.aborted = True
+            def is_closing(self): return self.aborted
+        reported = []
+        class Owner:
+            compositor_pid, compositor_start = 4242, 7
+            async def report_lifecycle(self, session, kind): reported.append(kind)
+        session = broker.Session(Owner(), self.executor, 1, None, Writer(), indexed=True,
+                                 features={'executor-resume'})
+        session.processes[1] = {'pid': 4242, 'start': 7, 'streams': {10}}
+        session.processes[2] = {'pid': 5000, 'start': 7, 'streams': {20}}
+        compositor, application = Stream(), Stream()
+        session.streams[10] = {'process': 1, 'writer': compositor, 'reader': None}
+        session.streams[20] = {'process': 2, 'writer': application, 'reader': None}
+        sender = asyncio.create_task(session.send_loop())
+        try:
+            with mock.patch.object(broker, 'COMPOSITOR_HOLD_SECONDS', 0.05), mock.patch('builtins.print'):
+                await session.message(self.phone(Kind.EXECUTOR_SUSPEND, 1))
+                await asyncio.sleep(0.02)
+                self.assertFalse(compositor.aborted)  # a short suspension holds it like the rest
+                await asyncio.sleep(0.1)
+                self.assertTrue(compositor.aborted and session.streams[10]['discard_reply'])
+                self.assertFalse(application.aborted)
+                self.assertEqual(reported, [11])
+                await session.message(self.phone(Kind.QUIESCED, 2))
+                await session.message(self.phone(Kind.EXECUTOR_RESUME, 3, struct.pack('<II', 0, 0)))
+                for _ in range(10): await asyncio.sleep(0)
+                self.assertEqual(reported, [11, 12])
+                # A short suspension that resumes in time neither ends nor reports anything.
+                compositor.aborted = False; session.streams[10]['discard_reply'] = False
+                await session.message(self.phone(Kind.EXECUTOR_SUSPEND, 4))
+                await asyncio.sleep(0.01)
+                await session.message(self.phone(Kind.QUIESCED, 5))
+                await session.message(self.phone(Kind.EXECUTOR_RESUME, 6, struct.pack('<II', 0, 0)))
+                await asyncio.sleep(0.1)
+                self.assertFalse(compositor.aborted)
+                self.assertEqual(reported, [11, 12])
+        finally:
+            sender.cancel()
+            await asyncio.gather(sender, return_exceptions=True)
+            session.bindings.finish(session.binding_generation)
+
     async def test_waits_for_the_phone_do_not_run_out_while_it_is_suspended(self):
         session = broker.Session(None, self.executor, 1, None, Writer(), indexed=True, features={'executor-resume'})
         try:
@@ -1641,3 +1844,330 @@ class ExecutorSuspendTests(unittest.IsolatedAsyncioTestCase):
                 await session.message(self.phone(Kind.QUIESCED, 1))
         finally:
             session.bindings.finish(session.binding_generation)
+
+
+class PhonePriorityTests(unittest.IsolatedAsyncioTestCase):
+    """Presentation controls go to the phone ahead of queued DATA (docs/gpu-live.md, "Priority
+    toward the phone")."""
+    executor = b'a' * 16
+
+    @staticmethod
+    def surface(window):
+        return b's' * 16 + b't' * 16 + struct.pack('<Q', window)
+
+    def cancel(self, acquire):
+        """A SWAPCHAIN_CANCEL_ACQUIRE payload, a priority control."""
+        return self.surface(1) + struct.pack('<QQ', 7, acquire)
+
+    def session(self, **kwargs):
+        return broker.Session(None, self.executor, 1, None, Writer(), **kwargs)
+
+    @staticmethod
+    def taken(session):
+        frames = []
+        while not session.pending.empty():
+            frames.append(session.pending.get_nowait()[0])
+        return frames
+
+    def phone_receives(self, frames):
+        """The envelopes the phone's decoder accepts from these frames, in order."""
+        decoder, envelopes = Decoder(self.executor, 1), []
+        for frame in frames:
+            decoder.feed(frame[{126: 4, 127: 10}.get(frame[1] & 127, 2):], envelopes.append)
+        return [(e.kind, e.sequence, e.stream, e.payload) for e in envelopes]
+
+    async def test_controls_overtake_data_and_each_lane_keeps_its_order(self):
+        session = self.session()
+        try:
+            session.send(Kind.DATA, 1, 1, b'a1')
+            session.send(Kind.DATA, 1, 2, b'b1')
+            session.send(Kind.SWAPCHAIN_CANCEL_ACQUIRE, 1, payload=self.cancel(1), priority=True)
+            session.send(Kind.DATA, 1, 1, b'a2')
+            session.send(Kind.SWAPCHAIN_CANCEL_ACQUIRE, 1, payload=self.cancel(2), priority=True)
+            self.assertEqual(session.sequence, 1)  # sequences are given as frames leave
+            got = self.phone_receives(self.taken(session))
+            self.assertEqual(got, [(Kind.SWAPCHAIN_CANCEL_ACQUIRE, 1, 0, self.cancel(1)),
+                                   (Kind.SWAPCHAIN_CANCEL_ACQUIRE, 2, 0, self.cancel(2)),
+                                   (Kind.DATA, 3, 1, b'a1'), (Kind.DATA, 4, 2, b'b1'),
+                                   (Kind.DATA, 5, 1, b'a2')])
+            self.assertEqual((session.pending_count, session.sequence), (5, 6))
+        finally:
+            session.bindings.finish(session.binding_generation)
+
+    async def test_only_acquires_and_presents_take_the_control_lane(self):
+        session = self.session()
+        try:
+            with self.assertRaises(ValueError):
+                session.send(Kind.SURFACE_RETIRE, 1, payload=self.surface(1), priority=True)
+            session.send(Kind.DATA, 1, 1, b'a1')
+            # Surface controls the broker or a process sends without priority keep their place.
+            session.send(Kind.SURFACE_RETIRE, 1, payload=self.surface(1))
+            session.send(Kind.SWAPCHAIN_CANCEL_ACQUIRE, 1, payload=self.cancel(1))
+            session.send(Kind.SWAPCHAIN_CANCEL_ACQUIRE, 1, payload=self.cancel(2), priority=True)
+            got = [(kind, payload) for kind, _, _, payload in self.phone_receives(self.taken(session))]
+            self.assertEqual(got, [(Kind.DATA, b'a1'), (Kind.SURFACE_RETIRE, self.surface(1)),
+                                   (Kind.SWAPCHAIN_CANCEL_ACQUIRE, self.cancel(1)),
+                                   (Kind.SWAPCHAIN_CANCEL_ACQUIRE, self.cancel(2))])
+        finally:
+            session.bindings.finish(session.binding_generation)
+
+    async def test_a_control_never_overtakes_a_queued_frame_that_is_not_data(self):
+        session = self.session()
+        try:
+            session.send(Kind.DATA, 1, 1, b'a1')
+            session.send(Kind.FIN, 1, 1)
+            session.send(Kind.DATA, 1, 2, b'b1')
+            session.send(Kind.STREAM_OPEN, 1, 3)
+            session.send(Kind.SWAPCHAIN_CANCEL_ACQUIRE, 1, payload=self.cancel(1), priority=True)
+            session.send(Kind.DATA, 1, 3, b'c1')
+            session.send(Kind.PROCESS_STOP, 1)
+            session.send(Kind.SWAPCHAIN_CANCEL_ACQUIRE, 1, payload=self.cancel(2), priority=True)
+            got = [(kind, stream, payload) for kind, _, stream, payload in self.phone_receives(self.taken(session))]
+            self.assertEqual(got, [(Kind.DATA, 1, b'a1'), (Kind.FIN, 1, b''), (Kind.DATA, 2, b'b1'),
+                                   (Kind.STREAM_OPEN, 3, b''), (Kind.SWAPCHAIN_CANCEL_ACQUIRE, 0, self.cancel(1)),
+                                   (Kind.DATA, 3, b'c1'), (Kind.PROCESS_STOP, 0, b''),
+                                   (Kind.SWAPCHAIN_CANCEL_ACQUIRE, 0, self.cancel(2))])
+        finally:
+            session.bindings.finish(session.binding_generation)
+
+    async def test_a_pong_overtakes_data_and_a_close_follows_everything(self):
+        session = self.session()
+        try:
+            session.send(Kind.DATA, 1, 1, b'a1')
+            session.enqueue_frame(broker.server_frame(10, b'ping'), control=True)
+            session.enqueue_frame(broker.server_frame(8, struct.pack('!H', 1000)))
+            session.send(Kind.SWAPCHAIN_CANCEL_ACQUIRE, 1, payload=self.cancel(1), priority=True)
+            frames = self.taken(session)
+            self.assertEqual([frame[0] & 15 for frame in frames], [10, 2, 8, 2])
+            self.assertEqual(frames[0], broker.server_frame(10, b'ping'))
+        finally:
+            session.bindings.finish(session.binding_generation)
+
+    @unittest.skipUnless(live_zstd.available(), 'libzstd 1.5 is not installed')
+    async def test_zstd_records_continue_the_stream_in_the_order_they_leave(self):
+        session = self.session(indexed=True, features={'zstd-stream'})
+        try:
+            await session.message(Envelope(Kind.SESSION_READY, self.executor, 1, 0, 0, 1, broker.HELLO_V4))
+            config, _ = session.pending.get_nowait()
+            await session.message(Envelope(Kind.TRANSPORT_READY, self.executor, 1, 0, 0, 2, zstd_stream_config(26)))
+            payloads = [b'abc' * 5000, os.urandom(65536), b'abc' * 5000]
+            session.send(Kind.DATA, 1, 1, payloads[0])
+            session.send(Kind.DATA, 1, 2, payloads[1])
+            session.send(Kind.SWAPCHAIN_CANCEL_ACQUIRE, 1, payload=self.cancel(1), priority=True)
+            session.send(Kind.DATA, 1, 1, payloads[2])
+            inflater, parser, envelopes = StreamDecompressor(26), Decoder(self.executor, 1), []
+            parser.feed(config[2:], lambda _: None)
+            while not session.pending.empty():
+                wire, charge = session.pending.get_nowait()
+                self.assertGreaterEqual(charge, len(wire))
+                self.assertLessEqual(charge, broker.DATA_CREDIT_BYTES)
+                message = wire[{126: 4, 127: 10}.get(wire[1] & 127, 2):]
+                if message[:4] == b'CGLZ': message = inflater.decompress(message)
+                parser.feed(message, envelopes.append)
+            self.assertEqual([(e.kind, e.sequence, e.payload) for e in envelopes],
+                             [(Kind.SWAPCHAIN_CANCEL_ACQUIRE, 2, self.cancel(1)), (Kind.DATA, 3, payloads[0]),
+                              (Kind.DATA, 4, payloads[1]), (Kind.DATA, 5, payloads[2])])
+        finally:
+            session.bindings.finish(session.binding_generation)
+
+    async def test_a_control_queued_while_the_window_is_full_is_written_first(self):
+        session = self.session(indexed=True, features={'executor-resume', 'completion-feed'})
+        sender = asyncio.create_task(session.send_loop())
+        async def drained():
+            for _ in range(20): await asyncio.sleep(0)
+        try:
+            with mock.patch.object(broker, 'RESUME_WINDOW_MESSAGES', 1):
+                session.send(Kind.REVOKE)
+                await drained()
+                session.send(Kind.DATA, 1, 1, b'x')
+                session.send(Kind.SWAPCHAIN_CANCEL_ACQUIRE, 1, payload=self.cancel(1), priority=True)
+                await drained()
+                self.assertEqual([s for s, _ in session.retained], [1])
+                session.acknowledge(1)
+                await drained()
+                session.acknowledge(2)
+                await drained()
+            sent = written_envelopes(session.writer.data)
+            self.assertEqual([(k, s) for k, s, _ in sent], [(Kind.REVOKE, 1), (Kind.SWAPCHAIN_CANCEL_ACQUIRE, 2), (Kind.DATA, 3)])
+            self.assertEqual([s for s, _ in session.retained], [3])
+            self.assertEqual(session.retained[0][1], session.writer.data[-len(session.retained[0][1]):])
+        finally:
+            sender.cancel()
+            await asyncio.gather(sender, return_exceptions=True)
+            session.bindings.finish(session.binding_generation)
+
+
+class SeatTests(unittest.IsolatedAsyncioTestCase):
+    """The computer's shared broker (`--dir`): one executor, a seat per display, and nothing
+    that crosses from one seat to the other."""
+
+    def shared(self, directory):
+        seats = {name: broker.Seat(name, Path(directory) / name / 'gpu.sock', Path(directory) / name / 'surface.sock')
+                 for name in broker.SEATS}
+        return broker.Broker(None, Path(directory) / 'token', None, seats=seats, usage_dir=Path(directory))
+
+    def session(self, instance, features=frozenset()):
+        session = broker.Session(instance, b'a' * 16, 1, None, Writer(), indexed=True, features=features)
+        ready = asyncio.Event(); ready.set()
+        for process_id, seat in ((1, 'owner'), (2, 'agent')):
+            session.processes[process_id] = {'ready': ready, 'pid': 100 + process_id, 'start': 7, 'seat': seat,
+                                             'surfaces': set(), 'streams': set(), 'to_phone': 0, 'from_phone': 0}
+        session.bindings = mock.Mock()
+        read, write = os.pipe(); os.close(write)
+        session.bindings.duplicate_process_identity.side_effect = lambda _g, process: ((0, 100 + process, 7), os.dup(read))
+        self.addCleanup(os.close, read)
+        instance.session = session
+        return session
+
+    async def test_a_bind_asks_its_own_seats_compositor_and_only_a_seat_routing_phone_sees_the_agent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            instance = self.shared(directory)
+            sent = []
+            async def send_control(data, fd=None, seat=None): sent.append((control_protocol.decode(data, 1).request, seat))
+            instance.send_control = send_control
+            plain = self.session(instance)
+            with self.assertRaisesRegex(PermissionError, 'does not show the agent seat'), mock.patch('builtins.print'):
+                await instance.request_bind(plain, 2, 9)
+            self.assertEqual(sent, [])
+            routed = self.session(instance, {'seat-routing'})
+            self.enterContext(mock.patch.object(broker, 'pidfd_alive', return_value=True))
+            pids = iter((101, 102))
+            self.enterContext(mock.patch.object(broker, 'pidfd_pid', side_effect=lambda _fd: next(pids)))
+            for process_id, seat, epoch in ((1, 'owner', b'o' * 16), (2, 'agent', b'a' * 16)):
+                task = asyncio.create_task(instance.request_bind(routed, process_id, 9))
+                for _ in range(50):
+                    if instance.pending_binds: break
+                    await asyncio.sleep(0)
+                request, = instance.pending_binds
+                self.assertEqual(instance.pending_bind_seats[request], seat)
+                # An answer from the other seat's compositor is refused and left pending.
+                other = 'agent' if seat == 'owner' else 'owner'
+                answer = control_protocol.BindResult(request, 0, epoch, b'g' * 16, 5, 1)
+                with mock.patch('builtins.print') as output:
+                    instance.bind_answered(answer, other)
+                self.assertIn('cross-seat bind answer', output.call_args.args[0])
+                instance.bind_answered(answer, seat)
+                result = await asyncio.wait_for(task, 1)
+                self.assertEqual(routed.surfaces[(epoch, b'g' * 16, 1)]['seat'], seat)
+                self.assertEqual(instance.epoch_seats[result.epoch], seat)
+            self.assertEqual([seat for _request, seat in sent], ['owner', 'agent'])
+            # SURFACE_BIND tells a seat-routing phone each surface's seat in 8 more bytes.
+            self.assertEqual(routed.seat_suffix({'seat': 'agent'}), struct.pack('<II', 1, 0))
+            self.assertEqual(routed.seat_suffix({'seat': 'owner'}), struct.pack('<II', 0, 0))
+            self.assertEqual(plain.seat_suffix({'seat': 'owner'}), b'')
+
+    @unittest.skipUnless(sys.platform == 'linux', 'Linux AF_UNIX SOCK_SEQPACKET')
+    async def test_records_go_to_the_seat_that_minted_the_grant_and_lifecycle_to_every_seat(self):
+        with tempfile.TemporaryDirectory() as directory:
+            instance = self.shared(directory)
+            peers = {}
+            for name, seat in instance.seats.items():
+                ours, theirs = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+                ours.setblocking(False)
+                seat.control, peers[name] = ours, theirs
+            instance.epoch_seats = {b'a' * 16: 'agent', b'o' * 16: 'owner'}
+            retired = control_protocol.GrantRetired(b'a' * 16, b'g' * 16, 1)
+            await instance.send_control(control_protocol.encode_grant_retired(retired))
+            self.assertEqual(control_protocol.decode(peers['agent'].recv(256), 0), retired)
+            peers['owner'].setblocking(False)
+            with self.assertRaises(BlockingIOError): peers['owner'].recv(256)
+            lifecycle = control_protocol.encode_lifecycle(control_protocol.ExecutorLifecycle(4, b'x' * 16, 2))
+            await instance.send_control(lifecycle)
+            for name in broker.SEATS:
+                self.assertEqual(control_protocol.decode(peers[name].recv(256), 0).kind, 4)
+            for name, seat in instance.seats.items():
+                seat.control.close(); peers[name].close()
+
+    async def test_a_seat_cannot_revoke_present_or_lose_the_other_seats_surfaces(self):
+        with tempfile.TemporaryDirectory() as directory:
+            instance = self.shared(directory)
+            session = self.session(instance)
+            owner_key, agent_key = (b'o' * 16, b'g' * 16, 1), (b'a' * 16, b'g' * 16, 1)
+            session.surfaces = {owner_key: {'seat': 'owner'}, agent_key: {'seat': 'agent'}}
+            session.surface_epochs = {'owner': b'o' * 16, 'agent': b'a' * 16}
+            session.request_surface_retire = mock.Mock()
+            session.has_surface = lambda record: (record.epoch, record.grant, record.generation) in session.surfaces
+            for seat in instance.seats.values(): seat.control = mock.Mock()
+            # A revoke from the agent's compositor of an owner surface is refused.
+            with mock.patch.object(broker, 'receive_record', return_value=control_protocol.RevokeGrant(*owner_key)), \
+                    mock.patch('builtins.print') as output:
+                instance.control_ready('agent')
+            session.request_surface_retire.assert_not_called()
+            self.assertIn('cross-seat revoke', output.call_args.args[0])
+            with mock.patch.object(broker, 'receive_record', return_value=control_protocol.RevokeGrant(*agent_key)):
+                instance.control_ready('agent')
+            session.request_surface_retire.assert_called_once_with(control_protocol.RevokeGrant(*agent_key))
+            # A buffer of an owner process is not presented by the agent's compositor.
+            released = []
+            async def release(pairs, seat='owner'): released.append((pairs, seat))
+            session.release_buffers = release
+            session.buffer_registry = mock.Mock()
+            session.buffer_registry.lookup.return_value = (1, mock.Mock(width=4, height=4))
+            present = control_protocol.BufferPresent(5, 3, 1, 2, 4, 4)
+            with mock.patch('builtins.print') as output:
+                session.present_buffer(present, 'agent')
+                await asyncio.sleep(0)
+            self.assertEqual(released, [([(5, errno.ENOENT)], 'agent')])
+            self.assertEqual(session.buffer_windows, {})
+            # The agent's compositor going retires its own surfaces alone.
+            session.request_surface_retire.reset_mock()
+            with mock.patch('builtins.print'):
+                instance.compositor_lost('test', 'agent')
+            session.request_surface_retire.assert_called_once_with(control_protocol.RevokeGrant(*agent_key))
+            self.assertEqual(session.surface_epochs, {'owner': b'o' * 16})
+            self.assertIsNotNone(instance.seats['owner'].control)
+
+    async def test_a_surface_on_the_other_seats_socket_is_refused(self):
+        instance = mock.Mock()
+        session = broker.Session(instance, b'a' * 16, 1, None, Writer())
+        session.processes[1] = {'seat': 'owner'}
+        session.bindings = mock.Mock(); session.bindings.find_process.return_value = 1
+        sock = mock.Mock()
+        with mock.patch.object(broker.PeerIdentity, 'from_socket', return_value=mock.Mock()), \
+                mock.patch('builtins.print') as output:
+            await broker.Broker.surface_client(instance, session, sock, 'agent')
+        self.assertIn('cross-seat surface', output.call_args_list[0].args[0])
+        sock.recvmsg.assert_not_called()
+
+    async def test_the_phone_connects_to_the_shared_broker_with_the_wake_token(self):
+        import base64
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); root.chmod(0o700)
+            (root / 'token').write_text('secret\n')
+            for name in broker.SEATS: (root / name).mkdir(mode=0o700)
+            phone = broker.phone_listener('127.0.0.1:0')
+            port = phone.getsockname()[1]
+            seats = {name: broker.Seat(name, root / name / 'gpu.sock', root / name / 'surface.sock') for name in broker.SEATS}
+            instance = broker.Broker(None, root / 'token', None, seats=seats, phone_listener=phone, usage_dir=root)
+            task = asyncio.create_task(instance.run())
+            loop = asyncio.get_running_loop()
+            def upgrade(token):
+                return (b'GET /gpu HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer ' + token +
+                        b'\r\nX-Caboose-GPU-Computer: computer-1\r\nX-Caboose-GPU-Executor: 00112233-4455-6677-8899-aabbccddeeff'
+                        b'\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\n'
+                        b'Sec-WebSocket-Key: ' + base64.b64encode(b'k' * 16) + b'\r\nSec-WebSocket-Protocol: caboose.gpu.live.v1\r\n\r\n')
+            async def exchange(token):
+                reader, writer = await asyncio.open_connection('127.0.0.1', port)
+                writer.write(upgrade(token)); await writer.drain()
+                data = await asyncio.wait_for(reader.read(64), 5)
+                writer.close()
+                return data
+            try:
+                with mock.patch('builtins.print'):
+                    self.assertEqual(await exchange(b'wrong'), b'')
+                    self.assertTrue((await exchange(b'secret')).startswith(b'HTTP/1.1 101'))
+            finally:
+                instance.closing.set()
+                await asyncio.wait_for(task, 15)
+
+    @unittest.skipUnless(sys.platform == 'linux', 'Linux AF_UNIX SOCK_SEQPACKET')
+    def test_the_shared_broker_makes_a_private_directory_and_control_socket_per_seat(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / 'caboose-gpu'
+            broker.private_directory(root)
+            self.assertEqual(root.stat().st_mode & 0o777, 0o700)
+            (root / 'agent').mkdir(mode=0o755)
+            with self.assertRaises(SystemExit): broker.private_directory(root / 'agent')
+            listener = broker.control_listener(broker.private_directory(root / 'owner') / 'control.sock')
+            self.assertEqual((root / 'owner' / 'control.sock').stat().st_mode & 0o777, 0o600)
+            listener.close()

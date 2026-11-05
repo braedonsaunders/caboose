@@ -292,6 +292,7 @@ struct LaptopKeyHeader: UIViewRepresentable {
 /// division stays black throughout Laptop mode, independently of app window state.
 /// Keyboard occlusion never becomes hinge padding.
 struct LaptopUpperPanel<Content: View>: View {
+    @Environment(\.displayScale) private var displayScale
     let screen: CGRect
     let division: CGRect?
     let active: Bool
@@ -306,9 +307,12 @@ struct LaptopUpperPanel<Content: View>: View {
                 .clipped()
             if active, let division,
                division.width > division.height, division.minY > 0, division.maxY < size.height {
+                // From the top of the pixel row the fold starts in: a part-pixel row above the
+                // fold is the division's, never the wallpaper behind the upper screen.
+                let top = LaptopLayout.divisionTop(division, scale: displayScale)
                 Color.black
-                    .frame(width: size.width, height: division.height)
-                    .offset(y: division.minY)
+                    .frame(width: size.width, height: division.maxY - top)
+                    .offset(y: top)
                     .allowsHitTesting(false)
             }
         }

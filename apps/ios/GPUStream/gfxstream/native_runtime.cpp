@@ -7,6 +7,7 @@
 #include "memory_audit.h"
 #endif
 #include "executor_gate.h"
+#include "executor_stats.h"
 #include "memory_budget.h"
 #include "headless_framebuffer.h"
 #include "process_registry.h"
@@ -17,6 +18,8 @@
 #include <chrono>
 #include <cerrno>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <cstdint>
 #include <limits>
 #include <mutex>
@@ -141,7 +144,12 @@ extern "C" int caboose_gpu_runtime_set_cache_root(const char* root) {
     const int result = caboose::gpuv2::setShaderStoreRoot(root);
     if (mvkCabooseSetPipelineArchivePath) {
         const std::string selected = caboose::gpuv2::cacheRoot();
-        mvkCabooseSetPipelineArchivePath(selected.empty() ? nullptr
+        const char* archiveSetting = std::getenv("CABOOSE_METAL_BINARY_ARCHIVE");
+        // Metal archive lookups crash in the iOS driver callback-copy path.
+        // Keep this optional cache off unless explicitly enabled for diagnostics.
+        const bool disabled = !archiveSetting || std::strcmp(archiveSetting, "1");
+        std::fprintf(stderr, "CABOOSE_METAL_BINARY_ARCHIVE enabled=%d\n", !disabled);
+        mvkCabooseSetPipelineArchivePath(selected.empty() || disabled ? nullptr
                                          : (selected + "/pipeline/metal-binary-archive.bin").c_str());
     }
     return result;
@@ -244,6 +252,11 @@ extern "C" int caboose_gpu_runtime_resume(void) {
 }
 extern "C" int caboose_gpu_runtime_set_memory_limit(uint64_t bytes) {
     caboose::gpuv2::setMemoryLimit(bytes);
+    return 0;
+}
+extern "C" int caboose_gpu_runtime_executor_stats(caboose_gpu_executor_stats* out) {
+    if (!out || out->size != sizeof(*out)) return EINVAL;
+    caboose::gpuv2::stats::read(*out);
     return 0;
 }
 extern "C" void caboose_gpu_runtime_report_teardown(void) {

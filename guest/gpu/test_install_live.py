@@ -111,6 +111,35 @@ class InstalledDriverTests(unittest.TestCase):
             self.assertTrue((extensions / "org.freedesktop.Platform.GL.host/aarch64/1.4/share/drirc.d/caboose-vgem.conf").is_file())
             self.assertIn("DRIRC_CONFIGDIR=/usr/lib/aarch64-linux-gnu/GL/default", override.read_text())
 
+    def test_flatpak_applications_get_the_gbm_backend_and_its_search_path(self):
+        with tempfile.TemporaryDirectory(prefix="caboose-gpu-gbm-") as temporary:
+            base = Path(temporary)
+            root = base / "root"
+            override = root / "var/lib/flatpak/overrides/global"
+            override.parent.mkdir(parents=True)
+            override.write_text("[Environment]\nA=1\n")
+            backend = base / "vgem_gbm.so"
+            backend.write_bytes(b"\x7fELF" + bytes(14) + (62).to_bytes(2, "little") + bytes(44))
+            installer.install_gbm(backend, root, machine="x86_64")
+            extensions = root / "var/lib/flatpak/extension"
+            self.assertEqual((extensions / "org.freedesktop.Platform.GL.host/x86_64/1.4/lib/gbm/vgem_gbm.so").read_bytes(),
+                             backend.read_bytes())
+            self.assertEqual(override.read_text(), "[Environment]\nGBM_BACKENDS_PATH="
+                             "/usr/lib/x86_64-linux-gnu/GL/host/lib/gbm:/run/parent/usr/lib/x86_64-linux-gnu/GL/host/lib/gbm"
+                             ":/usr/lib/x86_64-linux-gnu/GL/default/lib/gbm"
+                             ":/usr/lib/pressure-vessel/overrides/lib/x86_64-linux-gnu/gbm\nA=1\n")
+            installer.install_gbm(backend, root, machine="x86_64")
+            self.assertEqual(override.read_text().count("GBM_BACKENDS_PATH"), 1, "installing again changes nothing")
+            # An i386 build goes to the GL32 extension, and the search path names both.
+            backend32 = base / "vgem_gbm32.so"
+            backend32.write_bytes(b"\x7fELF" + bytes(14) + (3).to_bytes(2, "little") + bytes(44))
+            installer.install_gbm(backend32, root, machine="x86_64")
+            self.assertTrue((extensions / "org.freedesktop.Platform.GL32.host/x86_64/1.4/lib/gbm/vgem_gbm.so").is_file())
+            value = override.read_text().split("GBM_BACKENDS_PATH=")[1].split("\n")[0].split(":")
+            self.assertEqual(value[:4], ["/usr/lib/x86_64-linux-gnu/GL/host/lib/gbm", "/run/parent/usr/lib/x86_64-linux-gnu/GL/host/lib/gbm",
+                                         "/usr/lib/i386-linux-gnu/GL/host/lib/gbm", "/run/parent/usr/lib/i386-linux-gnu/GL/host/lib/gbm"])
+            self.assertIn("/usr/lib/i386-linux-gnu/GL/default/lib/gbm", value)
+
     def test_override_keyfiles_gain_environment_entries(self):
         self.assertEqual(installer.with_environment("", "A", "1"), "[Environment]\nA=1\n")
         self.assertEqual(installer.with_environment("[Context]\nx=1;\n", "A", "1"), "[Context]\nx=1;\n\n[Environment]\nA=1\n")

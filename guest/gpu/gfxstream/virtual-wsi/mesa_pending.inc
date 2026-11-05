@@ -91,16 +91,25 @@ static void pumpRemoteSurface(Surface& surface) {
         if (swap->cancelled && swap->phase==RemotePhase::Dormant) releaseRemoteSwap(*swap);
     if (!surface.bound) {
         if (surface.destroyed && !client.bindPending()) return;
-        if (!tryBind(surface)) {
-            // A refused bind is terminal for the accepted swapchain work, rather than
-            // filling its image ring while an infinite acquire waits for a retry. A bind
-            // the phone failed (its layer was not ready) is retried with backoff, and the
-            // work waits for it, up to kPhoneBindFailuresMax failures.
+        const bool framesWaiting=std::any_of(surface.remoteSwaps.begin(),surface.remoteSwaps.end(),
+            [](const std::shared_ptr<DeviceSwapchain>& swap) { return !swap->pending.empty(); });
+        if (!tryBind(surface,false,std::chrono::steady_clock::duration::zero(),framesWaiting)) {
+            // A bind the compositor keeps refusing is terminal for the accepted swapchain
+            // work, rather than filling its image ring while an infinite acquire waits for a
+            // retry. A refusal is first taken for the window not being bindable yet (an X11
+            // client presents before its window is mapped, a display reconnect replaces the
+            // outputs): the bind is tried again for kRefusedBindPatience. A bind the phone
+            // failed (its layer was not ready) is retried with backoff, and the work waits
+            // for it, up to kPhoneBindFailuresMax failures.
             if (!client.bindPending() && !surface.attempted && surface.bindAttempts && !surface.phoneRetrying) {
-                for (auto& swap:surface.remoteSwaps) { swap->poisoned=true; swap->cancelled=true; }
+                const auto now=std::chrono::steady_clock::now();
+                if (surface.firstRefused==std::chrono::steady_clock::time_point{}) surface.firstRefused=now;
+                if (now-surface.firstRefused>=kRefusedBindPatience)
+                    for (auto& swap:surface.remoteSwaps) { swap->poisoned=true; swap->cancelled=true; }
             }
             return;
         }
+        surface.firstRefused={};
     }
     client.pump();
     std::shared_ptr<DeviceSwapchain> setup, retiring;
@@ -158,8 +167,10 @@ static void pumpRemoteSurface(Surface& surface) {
     }
 }
 
-// Constructed when the first pump starts, after the API-side encoder and registries.
-// Its destructor joins pumps before static Vulkan/ledger state can be destroyed.
+// Constructed when the first pump starts, after the API-side encoder and registries. Never
+// destroyed, like the state its pumps use: a process's exit runs static destructors while its
+// pumps may still wait for an executor (one that left), and joining them there would hold
+// the exit, or end the process if the exiting thread is one of them.
 class SurfaceWorkers {
     struct Worker { std::shared_ptr<std::atomic<bool>> done; std::thread thread; };
     std::mutex mutex_;
@@ -185,7 +196,7 @@ public:
         })});
     }
 };
-static SurfaceWorkers& surfaceWorkers() { static SurfaceWorkers workers; return workers; }
+static SurfaceWorkers& surfaceWorkers() { static SurfaceWorkers& workers=*new SurfaceWorkers; return workers; }
 
 static void startSurfaceWorker(const std::shared_ptr<Surface>& surface) {
     if (surface->workerStarted) return;

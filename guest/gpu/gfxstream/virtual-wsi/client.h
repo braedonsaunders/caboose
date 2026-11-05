@@ -19,14 +19,38 @@ public:
     Record bind(uint64_t instance, uint32_t object, uint32_t width, uint32_t height, Deadline deadline,
                 Space space = WaylandSurface);
     // bind() in two halves: beginBind sends the request; awaitBind waits until `deadline`
-    // for its reply, false if it has not arrived yet (the bind stays outstanding).
+    // for its reply, false if it has not arrived yet (the bind stays outstanding). A `probe`
+    // bind has no frame to show (a query or swapchain set-up of a process that answers its
+    // queries locally): it goes out with the probe flag, which a compositor that presents
+    // the window's own picture refuses (docs/gpu-live.md, "Window identity boundary").
     void beginBind(uint64_t instance, uint32_t object, uint32_t width, uint32_t height, Deadline deadline,
-                   Space space = WaylandSurface);
+                   Space space = WaylandSurface, bool probe = false);
+    bool lastBindProbe() const { return lastBindProbe_; }
     bool awaitBind(Deadline deadline, Record* reply);
     bool bindPending() const { return bindPending_; }
     // Closes a connection whose bind did not succeed, so that a later bind can be tried.
     void reset();
     bool bound() const { return bound_; }
+    // When a surface sends its bind. A bind carries a frame when a present sends it or frames
+    // wait for the bind; otherwise, for a process that answers queries locally, it is a probe.
+    // A refused bind is tried again by queries after the retry delay (`nextBind`), and by a
+    // frame at once; a bind the phone failed waits out its backoff (`nextPhoneBind`) either way.
+    struct BindPolicy {
+        static bool probe(bool present, bool framesWaiting, bool localAnswers) {
+            return localAnswers && !present && !framesWaiting;
+        }
+        static bool mayBind(bool carriesFrame, Deadline now, Deadline nextBind, Deadline nextPhoneBind) {
+            return (carriesFrame || now >= nextBind) && now >= nextPhoneBind;
+        }
+        // How long queries wait before asking again after `refusals` (at least 1) refused binds
+        // in a row: 100 ms, doubling to 1 s. A window that never exists (a toolkit's hidden
+        // surface) then costs one bind a second, not ten; a frame still asks at once.
+        static std::chrono::milliseconds refusedDelay(uint32_t refusals) {
+            const uint32_t shift = refusals < 1 ? 0 : refusals - 1 > 4 ? 4 : refusals - 1;
+            const auto delay = std::chrono::milliseconds(100) * (1u << shift);
+            return delay > std::chrono::milliseconds(1000) ? std::chrono::milliseconds(1000) : delay;
+        }
+    };
     Record query(uint64_t request, uint64_t physical, Deadline deadline);
     // Sends a query without waiting; its reply is kept when it arrives (pump or any wait)
     // and taken with takeQuery. One such query is outstanding at a time.
@@ -131,6 +155,7 @@ private:
     std::map<uint64_t,Swapchain> swapchains_;
     std::map<uint64_t,Record> acquireReplies_;
     bool bindPending_ = false;
+    bool lastBindProbe_ = false;
     uint64_t pendingCreate_ = 0, pendingMap_ = 0, pendingRetire_ = 0;
     uint32_t pendingCreateMinimum_ = 0;
     bool createArrived_ = false, mapArrived_ = false, retireArrived_ = false;

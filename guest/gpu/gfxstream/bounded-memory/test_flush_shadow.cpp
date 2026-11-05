@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 #include "flush_shadow.h"
+#include <algorithm>
 #include <cassert>
 #include <string>
 #include <utility>
@@ -41,22 +42,24 @@ int main() {
     assert(shadow.emitChanged(1, local.data(), size, 0, size, remote.sender(local)) == success);
     assert(remote.sends.empty());
 
-    // Two separated edits send two block-aligned runs; the tail block ends at the range end.
+    // Of known blocks, the changed 8-byte words are sent; the tail word ends at the range end.
     local[5000] ^= 1;
     local[size - 1] ^= 1;
     assert(shadow.emitChanged(1, local.data(), size, 0, size, remote.sender(local)) == success);
     assert(remote.sends.size() == 2);
-    assert(remote.sends[0] == std::make_pair(uint64_t(4864), uint64_t(256)));
-    assert(remote.sends[1] == std::make_pair(uint64_t(64 * 1024), uint64_t(100)));
+    assert(remote.sends[0] == std::make_pair(uint64_t(5000), uint64_t(8)));
+    assert(remote.sends[1] == std::make_pair(uint64_t(size - 4), uint64_t(4)));
     assert(remote.bytes == local);
 
-    // Adjacent changed blocks merge into one run, across a page boundary too.
+    // Changed words of neighbouring blocks go as one run, across a page boundary too; words
+    // further apart than a fragment's overhead go apart.
     remote.sends.clear();
-    local[8191] ^= 1; local[8192] ^= 1; local[8448] ^= 1; local[12288] ^= 1;
+    local[8191] ^= 1; local[8192] ^= 1; local[8448] ^= 1; local[8480] ^= 1; local[12288] ^= 1;
     assert(shadow.emitChanged(1, local.data(), size, 0, size, remote.sender(local)) == success);
-    assert(remote.sends.size() == 2);
-    assert(remote.sends[0] == std::make_pair(uint64_t(7936), uint64_t(768)));
-    assert(remote.sends[1] == std::make_pair(uint64_t(12288), uint64_t(256)));
+    assert(remote.sends.size() == 3);
+    assert(remote.sends[0] == std::make_pair(uint64_t(8184), uint64_t(16)));
+    assert(remote.sends[1] == std::make_pair(uint64_t(8448), uint64_t(40)));  // 8448 and 8480, 24 bytes apart
+    assert(remote.sends[2] == std::make_pair(uint64_t(12288), uint64_t(8)));
     assert(remote.bytes == local);
 
     // A partial block is sent within the chunk bounds and never trusted later.
@@ -79,9 +82,11 @@ int main() {
     assert(fresh.sends.empty());
     other[8192 + 700] ^= 1;
     assert(shadow.emitChanged(2, other.data(), size, 8192, 4096, fresh.sender(other)) == success);
-    assert(fresh.sends.size() == 2);
-    assert(fresh.sends[0] == std::make_pair(uint64_t(8192), uint64_t(768)));  // unknown, then the edit
-    assert(fresh.sends[1] == std::make_pair(uint64_t(8192 + 1536), uint64_t(4096 - 1536)));
+    assert(fresh.sends.size() == 3);
+    assert(fresh.sends[0] == std::make_pair(uint64_t(8192), uint64_t(512)));  // unknown blocks, whole
+    assert(fresh.sends[1] == std::make_pair(uint64_t(8192 + 696), uint64_t(8)));  // the edit's word
+    assert(fresh.sends[2] == std::make_pair(uint64_t(8192 + 1536), uint64_t(4096 - 1536)));
+    assert(std::equal(other.begin() + 8192, other.begin() + 8192 + 4096, fresh.bytes.begin() + 8192));
     fresh.sends.clear();
     assert(shadow.emitChanged(2, other.data(), size, 8192, 4096, fresh.sender(other)) == success);
     assert(fresh.sends.empty());
@@ -188,8 +193,58 @@ int main() {
     const std::string line = traffic::counters().take(5000);
     assert(line.find(" hashed_considered_bytes=") != std::string::npos);
     assert(line.find(" hashed_considered_bytes=0 ") == std::string::npos);
+    // A range over part of a hashed block counts as partial.
+    assert(line.find(" hashed_partial_bytes=0") == std::string::npos);
     hashed.forget(4);
     assert(small.used() == 0);
+    // The traffic counters count what went and what whole changed blocks would have sent, in
+    // all and per allocation.
+    {
+        FlushShadow measured{budget};
+        std::vector<uint8_t> small(1024, 7);
+        Remote near{small.size()};
+        assert(measured.emitChanged(9, small.data(), small.size(), 0, small.size(), near.sender(small)) == success);
+        traffic::counters().take(10000);
+        small[10] ^= 1; small[200] ^= 1;   // block 0: words 8 and 200, 184 bytes apart
+        small[300] ^= 1; small[330] ^= 1;  // block 1: words 296 and 328, 24 bytes apart
+        near.sends.clear();
+        assert(measured.emitChanged(9, small.data(), small.size(), 0, small.size(), near.sender(small), 0x10) == success);
+        assert(near.sends.size() == 3);
+        assert(near.sends[0] == std::make_pair(uint64_t(8), uint64_t(8)));
+        assert(near.sends[1] == std::make_pair(uint64_t(200), uint64_t(8)));
+        assert(near.sends[2] == std::make_pair(uint64_t(296), uint64_t(40)));
+        assert(near.bytes == small);
+        const std::string counted = traffic::counters().take(15000);
+        assert(counted.find(" copied_considered_bytes=1024 copied_sent_bytes=56 ") != std::string::npos);
+        assert(counted.find(" copied_runs=3 ") != std::string::npos);
+        assert(counted.find(" block_bytes=512 block_runs=1 ") != std::string::npos);
+        assert(counted.find("\nCABOOSE_GPU_MEMORY_ALLOCATION rank=1 shadow=copied bytes=1024 usage=0x10 "
+                            "considered_bytes=1024 sent_bytes=56 runs=3 block_bytes=512 block_runs=1") != std::string::npos);
+        measured.forget(9);
+    }
+    // A word the app writes while a flush runs (after the flush compared it, before the flush
+    // recorded the block) is sent by the next flush: the shadow records what was compared,
+    // never a newer value the host did not get.
+    {
+        FlushShadow racing{budget};
+        std::vector<uint8_t> app(512, 0);
+        Remote phone{512};
+        assert(racing.emitChanged(11, app.data(), 512, 0, 512, phone.sender(app)) == success);
+        app[0] = 1; app[200] = 1;  // two runs in block 0: the first is sent while block 0 is open
+        bool wrote = false;
+        auto send = [&](uint64_t offset, uint64_t length) {
+            if (!wrote) { app[100] = 7; wrote = true; }  // the app writes word 96..104 meanwhile
+            std::memcpy(phone.bytes.data() + offset, app.data() + offset, size_t(length));
+            phone.sends.emplace_back(offset, length);
+            return int(success);
+        };
+        assert(racing.emitChanged(11, app.data(), 512, 0, 512, send) == success);
+        assert(wrote);
+        phone.sends.clear();
+        assert(racing.emitChanged(11, app.data(), 512, 0, 512, phone.sender(app)) == success);
+        assert(phone.bytes == app);
+        racing.forget(11);
+    }
     // XXH64 of the empty input and of "abc", as published.
     assert(blockHash(nullptr, 0) == 0xEF46DB3751D8E999ull);
     assert(blockHash(reinterpret_cast<const uint8_t*>("abc"), 3) == 0x44BC2CF5AD770999ull);

@@ -18,6 +18,7 @@ mod gpu_grant;
 #[allow(dead_code)] // Control handling is unavailable until the private bridge is connected.
 mod gpu_control;
 mod gpu_peer;
+mod gpu_pending;
 mod gpu_x11;
 mod hints;
 mod icons;
@@ -201,8 +202,9 @@ const GPU_LIVE_ICD: &str = "/usr/local/lib/caboose-gpu-live/icd.json";
 /// (`LIBGL_KOPPER_DRI2`); it presents through the driver's X11 windows (Kopper) but, without a DRM
 /// render node, not through Wayland: toolkits that draw with OpenGL (Qt 5 Quick, SDL games)
 /// run as X11 clients. The phone has no geometry shaders or transform feedback, so
-/// Zink would offer only OpenGL 2.1; the version override offers what the computer's own
-/// renderer offers when no phone is attached, and only those two features are missing.
+/// Zink would offer only OpenGL 2.1 and OpenGL ES 2.0; the version overrides offer what the
+/// computer's own renderer offers when no phone is attached, and only those two features are
+/// missing.
 const GPU_LIVE_TOOLKIT_ENV: &[(&str, &str)] = &[
     ("GSK_RENDERER", "vulkan"),
     ("QSG_RHI_BACKEND", "vulkan"),
@@ -215,6 +217,7 @@ const GPU_LIVE_TOOLKIT_ENV: &[(&str, &str)] = &[
     ("GALLIUM_DRIVER", "zink"),
     ("MESA_GL_VERSION_OVERRIDE", "4.5COMPAT"),
     ("MESA_GLSL_VERSION_OVERRIDE", "450"),
+    ("MESA_GLES_VERSION_OVERRIDE", "3.2"),
     // Zink settles its descriptor mode on a process's first device; one started without a
     // phone would keep the CPU device's descriptor buffers and fail on the phone's GPU.
     ("ZINK_DESCRIPTORS", render::ZINK_DESCRIPTORS),
@@ -232,6 +235,9 @@ fn apply_gpu_live(env: &mut Vec<(String, String)>, config: &Config, icd: &std::p
     let (Some(stream), Some(surface)) = (&config.private_gpu_stream, &config.private_gpu_surface) else {
         return;
     };
+    // The agent seat's applications draw on the computer: only its compositor's picture
+    // reaches the phone, so its tools never depend on one.
+    if config.gpu_seat() == Some("agent") { return; }
     if !icd.is_file() {
         tracing::warn!("no GPU driver at {}; applications draw on the computer", icd.display());
         return;
@@ -576,6 +582,9 @@ fn run(config: Config) -> Result<(), String> {
         children: Default::default(),
         gpu_bind_new_child: None,
         gpu_bind_larger: false,
+        gpu_bind_holdable: false,
+        gpu_pending_binds: Default::default(),
+        gpu_pending_sweep: false,
         x11_identity: None,
         ibus: None,
         ibus_shown: None,
@@ -625,9 +634,17 @@ fn run(config: Config) -> Result<(), String> {
     if let (Some(stream), Some(surface)) = (&state.config.private_gpu_stream, &state.config.private_gpu_surface) {
         let grants = gpu_grant::Grants::new().map_err(|e| format!("private GPU entropy: {e}"))?;
         let token = state.config.token_file.as_ref().ok_or("private GPU requires authentication")?;
-        state.net.enable_private_gpu(token, stream, surface, state.config.private_gpu_indexed, &handle)
-            .map_err(|e| format!("private GPU supervisor: {e}"))?;
-        state.gpu_grants = Some(grants);
+        let broker = state.config.private_gpu_broker.clone();
+        match state.net.enable_private_gpu(token, stream, surface, state.config.private_gpu_indexed, broker.as_deref(), &handle) {
+            Ok(()) => state.gpu_grants = Some(grants),
+            // The computer's shared broker may start after this display: it renders on the
+            // computer meanwhile and joins the broker once it is there.
+            Err(error) if broker.is_some() => {
+                eprintln!("caboose-display: the shared GPU broker is not there yet: {error}");
+                state.schedule_gpu_restart();
+            }
+            Err(error) => return Err(format!("private GPU supervisor: {error}").into()),
+        }
     }
 
     if state.config.audio {
@@ -868,6 +885,7 @@ mod tests {
         // Forcing Zink would leave OpenGL without a renderer when no phone is attached.
         assert_eq!(get(&env, "MESA_LOADER_DRIVER_OVERRIDE"), None);
         assert_eq!(get(&env, "MESA_GL_VERSION_OVERRIDE"), Some("4.5COMPAT"));
+        assert_eq!(get(&env, "MESA_GLES_VERSION_OVERRIDE"), Some("3.2"));
         assert_eq!(get(&env, "QT_QPA_PLATFORM"), Some("xcb;wayland"));
         assert_eq!(get(&env, "SDL_VIDEODRIVER"), Some("x11,wayland"));
         assert_eq!(get(&env, "GSK_RENDERER"), Some("vulkan"));

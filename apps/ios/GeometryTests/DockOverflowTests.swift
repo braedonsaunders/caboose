@@ -19,8 +19,10 @@ final class DockOverflowTests: XCTestCase {
         }
         let ids = ["chromium", "thunar", "xfce4-terminal", "code", "obsidian", "opencode",
                    "mousepad", "libreoffice-writer", "libreoffice-calc", "gimp"]
+        let categories = ["WebBrowser", "FileManager", "TerminalEmulator", "IDE", "TextEditor", "IDE",
+                          "TextEditor", "WordProcessor", "Spreadsheet", "RasterGraphics"]
         model.applyApps(ids.enumerated().map { index, id in
-            .init(id: id, name: id, icon: icon(index == 0 ? .red : .blue), categories: [], exec: "")
+            .init(id: id, name: id, icon: icon(index == 0 ? .red : .blue), categories: [categories[index]], exec: "")
         })
         model.desktop.size = CGSize(width: 400, height: 500)
         model.desktop.ui = 1
@@ -89,9 +91,9 @@ final class DockOverflowTests: XCTestCase {
                 XCTAssertEqual(painted.red.height, rest.height, accuracy: 2, kind)
                 XCTAssertEqual(painted.red.width, rest.width, accuracy: 2, kind)
                 if kind == "tiled" {
-                    // 220 - 32 - (2*34 + 1 + 3*10 + 24) = 65pt app viewport.
-                    XCTAssertLessThanOrEqual(painted.blue.maxX, rest.minX + 66,
-                                             "Scrolled apps must not paint over Overview/All Apps")
+                    // Only All Apps is fixed: 220 - 32 - (34 + 1 + 2*10 + 24) = 109pt.
+                    XCTAssertLessThanOrEqual(painted.blue.maxX, rest.minX + 110,
+                                             "Scrolled apps must not paint over All Apps")
                 }
             }
             XCTAssertLessThan(highest, rest.minY - 3, "\(kind) must actually bounce")

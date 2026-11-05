@@ -25,3 +25,22 @@ struct LiveGPUWindowHealth: Equatable {
         return now - oldest >= Self.stalledAfter ? .stalled : .running
     }
 }
+
+/// Native completion may run before submission returns, including on another thread.
+/// Register the wait first, without holding the health lock across the native call.
+final class LiveGPUWindowHealthTracker: @unchecked Sendable {
+    private let lock = NSLock()
+    private var health = LiveGPUWindowHealth()
+
+    func submit(_ serial: UInt64, at now: TimeInterval,
+                _ operation: () -> LiveGPUSurfaceSubmission) -> LiveGPUSurfaceSubmission {
+        lock.withLock { health.presented(serial, at: now) }
+        let result = operation()
+        if result.disposition == .rejected { released(serial) }
+        return result
+    }
+
+    func released(_ serial: UInt64) { lock.withLock { health.released(serial) } }
+    func deviceLost() { lock.withLock { health.deviceLost() } }
+    func state(at now: TimeInterval) -> LiveGPUWindowHealth.State { lock.withLock { health.state(at: now) } }
+}

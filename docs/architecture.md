@@ -1420,7 +1420,7 @@ guest answer 409 while it is not running.
 | `POST` | `/v1/session/park` | Park now → `{ state }`. 409 while a catalog operation, Craft job or command runs |
 | `GET` | `/v1/display` | **WebSocket**, subprotocol `binary` (required). Relay to the owner's display, port 14600 |
 | `GET` | `/v1/display?seat=agent` | **WebSocket**, subprotocol `binary`. Starts the agent seat if needed, then relays to port 14601; closes with 1011 `agent seat unavailable` if it does not start |
-| `GET` | `/v1/gpu` | **WebSocket**, exact subprotocol `caboose.gpu.live.v1`. Bounded binary relay to `/gpu` on the owner's existing display service; no query parameters or agent seat. One pending/connected executor per computer; a second returns 409. Requires a matching guest GPU service; does not advertise driver capabilities |
+| `GET` | `/v1/gpu` | **WebSocket**, exact subprotocol `caboose.gpu.live.v1`. Bounded binary relay to `/gpu` on the computer's GPU broker service (port 14602, shared by both seats) where the guest runs one, else on the owner's existing display service; no query parameters or seat selection. One pending/connected executor per computer; a second returns 409. Requires a matching guest GPU service; does not advertise driver capabilities |
 | `GET` | `/v1/control` | **WebSocket.** JSON events (below). `?foreground=1` marks the app's foreground connection; `?phone=1` subscribes to phone handoff events; with it, `?scan=1` says the app answers scan requests |
 | `GET` | `/v1/apps` | Launchable applications from the guest's desktop entries: `[{ id, name, icon (PNG data URL), categories, exec, actions, startupWMClass }]`. `startupWMClass` is the entry’s declared window class (at most 256 characters), or null; older hosts may omit it. The phone matches this class as well as desktop IDs. `actions` is the entry's desktop actions (`Actions=` with a `[Desktop Action …]` group, a Name, and an Exec unless the entry is D-Bus activated): at most 16 `{ id, name }`, ids `[A-Za-z0-9-]{1,64}`, names at most 100 characters |
 | `POST` | `/v1/apps/:id/launch` | Start a desktop entry on the owner's display with its launch environment → `{ launched: true }`. An optional `{ action }` runs one of its `actions` instead (GLib runs its Exec or activates it over D-Bus); 400 for an invalid id, 404 for an entry or action the computer does not have |
@@ -2923,6 +2923,9 @@ view's bounds, including while a resize stretches the previous picture.
   same ready session, and is cancelled when its desktop leaves the screen, a card is shown,
   the app leaves the foreground or the session changes.
   Launchpad pages through the available apps, with its controls above the dock.
+  In Laptop mode, the outer Laptop overlay alone draws the desktop menu and cursor
+  and measures the menu's pointer hit regions. The desktop stage underneath does not
+  register a second set of menu rows at its smaller UI scale.
   An external display scene supplies its current size and scale to the shared desktop;
   changes reconfigure the display without transferring geometry ownership to an app card.
   The green title-bar button maximizes above the dock: its title bar meets the desktop's
@@ -3284,7 +3287,8 @@ one normal display close request, leaving unsaved-change handling to the applica
 keeping the tile until the server removes the window. Releasing a close drag does not
 open the window. A changed session, connection generation or window cancels the drag.
 
-`caboose://task/<id>` opens a task, `caboose://command/<id>` a command (its id is 32
+`caboose://task/<id>` opens a task, `caboose://task/<id>/watch` the same with its agent's newest
+seat window full screen once it has one, `caboose://command/<id>` a command (its id is 32
 lowercase hex digits) and `caboose://airplay` runs Home's AirPlay action.
 Pinned and recent apps are kept on the phone per computer.
 
@@ -4051,3 +4055,24 @@ other tabs follow Home’s selected computer without separate switching controls
 
 The authenticated GPU relay forwards the negotiated `one-way-start` and
 `executor-stats` feature names to the guest. Unknown feature names remain filtered.
+Persistent Metal pipeline binary archives are disabled by default: archive lookup
+can crash the iOS GPU driver during callback copying. Shader and Vulkan pipeline
+caches remain enabled. `CABOOSE_METAL_BINARY_ARCHIVE=1` enables the archive only
+for diagnostic launches.
+
+Window GPU health registers pending work before native presentation can call back.
+An early source release clears that work; a rejected submission leaves no pending wait.
+Uncertain work remains tracked until release or device loss.
+
+The frame-rate overlay appears at the top right by default, with a persistent
+Show Frame Rate switch in device integration settings. Desktop, full-screen app cards,
+gamepad presentations and detached window scenes display it; cards and detached scenes
+measure their own window. The rate counts accepted GPU presents over the last two seconds
+and disappears when that window has no recent presents.
+
+Desktop Launchpad retains its page-arrow hit regions while changing pages. Repeated
+pointer clicks advance through the available pages; an arrow at either end consumes
+the click without dismissing Launchpad or moving beyond the page range.
+Its search field stays above the grid, filters app names across all pages, and returns
+to the first page when the query changes. Search and clear controls accept pointer
+clicks without dismissing the launcher. Closing Launchpad clears the query.

@@ -49,7 +49,7 @@ private final class TestSurfaceBackend: LiveGPUSurfaceBackend, @unchecked Sendab
     var throwsBindError = false
     var retainsFailedResource = false
     func bind(identity: LiveGPUSurfaceIdentity, processToken: UInt64, window: UInt64,
-              instance: UInt64, width: UInt32, height: UInt32) throws -> LiveGPUSurfaceBinding {
+              instance: UInt64, width: UInt32, height: UInt32, seat: LiveGPUSeat) throws -> LiveGPUSurfaceBinding {
         bindings.append((processToken, window))
         if throwsBindError { throw LiveGPUBindingError.native(operation: "bind", code: bindError) }
         let target = customResource ?? resource

@@ -7,6 +7,7 @@
 #endif
 #include "presentation_api_draft.h"
 #include "presentation_swapchain_api_draft.h"
+#include "executor_stats_abi.h"
 #ifdef __cplusplus
 extern "C" {
 #endif

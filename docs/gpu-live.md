@@ -9,10 +9,14 @@ describes.
 ## Connection and authority
 
 The host route is `/v1/gpu`, without query parameters, using the exact WebSocket
-subprotocol `caboose.gpu.live.v1`. It relays to the owner's display service `/gpu`
-on its existing port. There is no agent-seat GPU route. WebSocket messages are
-binary, uncompressed, at most 256 KiB, with at most 1 MiB and 64 pending messages
-in each direction. Vulkan replies use this connection independently of media.
+subprotocol `caboose.gpu.live.v1`. It relays to `/gpu` on the computer's GPU broker
+service (port 14602), one broker shared by both seats ([Seats](#seats)), where the guest runs
+it (the host connects only once a listener answers there); otherwise to the owner's display
+service `/gpu` on its existing port, whose own broker serves the owner's seat alone. The phone
+never names a seat or a destination. There is one executor per computer and one GPU route.
+WebSocket messages are binary, uncompressed, at most 256 KiB. The broker queues at most 8 MiB
+in 256 messages toward the phone ([Priority toward the phone](#priority-toward-the-phone)).
+Vulkan replies use this connection independently of media.
 
 The host sends the current per-wake display token as upstream `Authorization:
 Bearer …`, together with host-created `X-Caboose-GPU-Executor` UUID and
@@ -59,6 +63,36 @@ or duplicates, invalid scopes, oversized payloads and truncated EOF terminate th
 connection. There is no resynchronization scan. These checks do not validate
 arbitrary generated Vulkan fields, object handles or application synchronization.
 
+### Priority toward the phone
+
+The broker queues what it sends the phone in two lanes, together at most 8 MiB (as much as
+the resume window holds) in 256 messages; a local stream reads its next 64 KiB only once that
+much of the queue is free. The acquires, acquire cancellations and indexed presents
+(SWAPCHAIN_ACQUIRE, SWAPCHAIN_CANCEL_ACQUIRE, SWAPCHAIN_PRESENT, SWAPCHAIN_PRESENT_ORDERED) a
+process sends on its surface socket, and WebSocket pongs, take the control lane. Everything
+else takes the bulk lane: DATA, FIN, process and stream openings and stops, session messages,
+the close, the other surface controls, and the surface controls the broker sends itself
+(buffer presents, retirements, the cancellation of a departed process's acquire). The writer
+takes the control lane first, but never past a bulk message queued before it that is not DATA:
+a control overtakes only DATA. Each lane is first in, first out, so every stream's DATA and
+FIN reach the phone in the order the broker read them, every surface's controls keep their
+order across both lanes, and a control follows any opening, end, stop or other surface control
+queued before it. An envelope's sequence is written as it leaves the queue, so the phone
+receives consecutive sequences, and zstd records continue their stream in that order. A
+control queued while the resume window is full is the first message written once it opens.
+
+What the control lane overtakes is only DATA, and no order between a process's device stream
+and its surface socket is carried by the transport anyway: the broker reads each local socket
+on its own, so a surface message could already reach the phone before device-stream bytes the
+process wrote earlier. The process orders the two itself, and that is what the control lane
+relies on. Before an acquire or an unordered present names objects or work of its device
+stream, the process reads that stream's replies through its last create or submit
+(`drainObjects`), so the phone has decoded them. An ordered present names an ORDER mark, and
+the phone runs it only once the decoder has passed the mark ([Ordered
+presents](#ordered-presents)). An acquire made ahead of the application names a semaphore
+created before the swapchain was mapped, behind such a drain, and reuses it only after the
+hand-off that waited on it has completed.
+
 | Kind | Name | Scope | Payload |
 | --- | --- | --- | --- |
 | 1 | SESSION | Session | 48-byte private feature hello |
@@ -100,6 +134,31 @@ process and zero stream ID; stream scope has both nonzero. Process and stream ID
 are monotonic and never reused within a generation. The initial admission limits
 are 16 active processes and 64 active streams; retirement releases capacity without
 resetting identity counters.
+
+### Toward guest streams
+
+The broker never waits for a guest process to read before it reads the phone's next message.
+Each local stream's socket has its own writer queue, written in order as the socket takes
+bytes, so the replies and the end of one stream never wait behind another's, nor behind
+another process's. That matters because a process reads its device stream lazily: it leaves
+deferred replies unread while it works ([Completion feed](#completion-feed) records arrive on
+another stream meanwhile), and a broker that waited on that stream would stop reading the
+phone, so the feed records the process is waiting for would never arrive. A stream's FIN is
+written after every byte queued before it. Surface sockets have their own queues too, at most
+64 replies and 8 MiB; a surface socket past either, or with a reply unread for 5 s, is ended
+alone.
+
+The protocol has no per-stream credit toward the guest, so the broker cannot hold back the
+phone for one stream, and holding back the whole connection for one stream would stall every
+stream behind it; it bounds what it holds instead. One stream holds at most 8 MiB its process has
+not read (as much as the resume window holds), all streams together at most 32 MiB. A message
+past either bound ends one stream: the one it is for, or, past the total, the stream holding
+the most. The broker drops what it holds for that stream and shuts its socket, so the process
+reads the end of its device stream and loses its device; the phone's further bytes for it are
+discarded until its FIN, as for a process that exited. Replies a process leaves unread for a
+second after its stream's FIN are dropped the same way. The session and every other stream
+go on. A process that reads its replies never comes near the bound: it keeps its owed replies
+within 64 KiB ([bounded memory](../guest/gpu/gfxstream/bounded-memory/README.md)).
 
 ### Compressed commands
 
@@ -205,7 +264,10 @@ native decoder.
 
 The guest scopes its exact format/image-format cache to this nonce, negotiated protocol
 and features, queried backend/device/driver properties, and guest source fingerprint.
-Consequently a replacement executor or backend cannot reuse a previous session's file.
+Consequently a replacement executor or backend cannot reuse a previous session's file. The
+instance scope also keeps the session's instance extensions, physical device count and the
+identity of its one GPU, so a process starting later in the session asks none of its
+capability answers again (bounded-memory README, Physical capability cache).
 The seat-owned files contain bounded scalar query results, not authorization data;
 [`static_query_cache.h`](../guest/gpu/gfxstream/bounded-memory/README.md#physical-capability-cache)
 describes validation and the existing sandbox mount used for storage.
@@ -218,8 +280,14 @@ only known names, lowercased and sorted: `guest-handles`, `guest-handle-arrays`,
 `completion-feed`, `ordered-present`, `guest-images`, `guest-query-pools`,
 `shader-cache`, `executor-resume`, `zstd-stream` ([Compressed commands](#compressed-commands)),
 `upload-cache` ([Upload cache](#upload-cache)), `guest-buffer-views`,
-`batched-descriptor-sets` and `batched-descriptor-sets-inline`
-([Batched descriptor sets](#batched-descriptor-sets)).
+`batched-descriptor-sets`, `batched-descriptor-sets-inline`
+([Batched descriptor sets](#batched-descriptor-sets)), `guest-set-ids`
+([Guest-chosen set ids](#guest-chosen-set-ids)), `completion-payloads`
+([Completion payloads](#completion-payloads)), `wait-serial` ([Completion feed](#completion-feed)),
+`silent-success` ([Silent success](#silent-success)), `one-way-start`
+([One-way start](#one-way-start)) and `executor-stats` ([Executor stats](#executor-stats)). A host
+that does not know a name drops it, so the phone must be paired with a host at least as new as its
+features.
 The broker reads them from the authenticated upgrade request.
 
 A local process on the indexed v4 path may offer optional features in its 48-byte
@@ -228,21 +296,57 @@ hello by setting bits above the required mask `0x70`: `0x80` (guest-assigned han
 `0x200` (completion feed), `0x400` (ordered presents), `0x800` (guest-owned swapchain
 images), `0x1000` (guest-assigned query pools; requires `0x80`) and `0x2000` (shader
 cache), `0x8000` (upload cache), `0x10000` (guest-assigned buffer views; requires `0x80`),
-`0x40000` (batched descriptor sets without inline uniform blocks) and `0x80000` (batched
-descriptor sets with inline uniform blocks).
+`0x40000` (batched descriptor sets without inline uniform blocks), `0x80000` (batched
+descriptor sets with inline uniform blocks), `0x100000` (guest-chosen set ids; requires `0x80`),
+`0x200000` (completion payloads; requires `0x200`), `0x400000` (WAIT_SERIAL; requires `0x200`),
+`0x800000` (silent success; requires `0x80` and `0x200`) and `0x1000000` (one-way start;
+requires `0x80`, `0x200` and `0x800000`).
 The broker replies with the required mask plus the offered bits whose capability
 the phone declared (`guest-handles`, `guest-handle-arrays`, `completion-feed`,
 `ordered-present`, `guest-images`, `guest-query-pools`, `shader-cache`, `upload-cache`,
-`guest-buffer-views`, `batched-descriptor-sets`, `batched-descriptor-sets-inline`
-respectively); it drops `0x100`, `0x1000` and `0x10000` when it does not
-grant `0x80`. An offer with unknown bits, one of those without `0x80`, or any other difference from the v4
-hello closes the local connection. A process falls back to offering fewer features.
+`guest-buffer-views`, `batched-descriptor-sets`, `batched-descriptor-sets-inline`, `guest-set-ids`,
+`completion-payloads`, `wait-serial`, `silent-success`, `one-way-start` respectively); it drops
+`0x100`, `0x1000`, `0x10000`, `0x100000`, `0x800000` and `0x1000000` when it does not grant `0x80`,
+`0x200000`, `0x400000`, `0x800000` and `0x1000000` when it does not grant `0x200`, and `0x1000000`
+when it does not grant `0x800000`. An offer with unknown bits, one of those without `0x80`,
+`0x200000`, `0x400000`, `0x800000` or `0x1000000` without `0x200`, `0x1000000` without `0x800000`,
+or any other difference from the v4 hello closes the local connection. A process falls back to offering fewer features.
+
+### Feature negotiation
+
+Every name above and its hello bit are listed once, in
+[`guest/gpu/gfxstream/gpu-features.json`](../guest/gpu/gfxstream/gpu-features.json), with the
+features each requires and whether the phone app declares it. A name a component does not
+know is dropped there without an error, and the phone then runs without it, so
+`gpu_features.py check REPO` (run by `test_feature_lists.py`, by the host's
+`gpu-relay.test.ts` and by `guest/release/stage-gpu-stack.sh`) fails when the phone app's list,
+the Linux executor's, the DXVK check's, the host relay's, the broker's admission and
+`HELLO_FEATURES` (with its requirements) or the driver's first offer differ from it.
+
+At run time each stage says what it passed on:
+
+- The host relay forwards the phone's whole well-formed list beside the known names, as
+  `X-Caboose-GPU-Declared`, and logs `CABOOSE_GPU_RELAY_FEATURES dropped=… forwarded=…` when it
+  drops a name.
+- The broker logs one line per executor session:
+  `CABOOSE_GPU_SESSION_FEATURES source=relay|direct declared=… forwarded=… received=… bits=…`
+  (`declared` is `-` from a relay that does not report it; `source=direct` is a session that
+  did not come through the relay, such as a seat check's executor).
+- Each process logs the hello it was granted, `CABOOSE_GPU_HELLO features=0x…`.
+
+A release carries `/usr/local/libexec/caboose-gpu/expected-features.json`, written by
+`gpu_features.py expected`: the phone's declared names and the hello a process of this release
+is granted with them. `check_session_features.py COMPUTER` compares the last relayed session
+in the owner display's log with it, and names the stage that dropped each missing feature:
+the phone app, the host relay, the broker's admission, or the hello. It exits 1 on a
+mismatch, 2 when there is no relayed session yet.
 
 ### Batched descriptor sets
 
 With `0x80000` the process allocates and writes descriptor sets itself, inline uniform blocks
 included. A descriptor pool asks the phone once, at creation and without waiting, for the ids
-of its sets (`vkCollectDescriptorPoolIdsGOOGLE`); allocations, frees and writes then stay in
+of its sets (`vkCollectDescriptorPoolIdsGOOGLE`), unless it chose them itself
+([Guest-chosen set ids](#guest-chosen-set-ids)); allocations, frees and writes then stay in
 the process. Just before a submit, on the same stream, one
 `vkQueueCommitDescriptorSetUpdatesGOOGLE` carries every set the submit's command buffers bind
 that was allocated or written since: the pending allocations (pool, layout and set id) and the
@@ -258,6 +362,21 @@ Each executor connection decides whether the process batches: a process that out
 executor (the compositor) follows the next one, batched or not, and the objects it made under
 the last are lost with it.
 
+### Guest-chosen set ids
+
+With `0x100000` (granted with `0x80`) and batched descriptor sets, a process chooses its pools'
+set ids and never asks for them. Creating a pool of `maxSets` sets takes `1 + maxSets`
+consecutive guest-assigned handles in one block of the 32-bit counter: the pool is the first,
+`P`, and its set ids are `P+1` through `P+maxSets`. Its `VkDescriptorPoolCreateInfo.flags`
+carries `0x40000000`, outside every flag Vulkan defines, which says so; the decoder takes the
+flag off before the create reaches the driver and registers those ids for the pool instead of
+minting them. A flagged pool without batched descriptor sets, under a handle the guest did not
+assign, or whose ids would run past the counter is an invalid command, as is an id already in
+use. The flag is per pool because the decoder does not see a process's hello: an executor that
+does not grant the feature leaves new pools unflagged, asking for their ids, and pools that
+were made either way coexist. A pool whose handle and ids do not fit one block (`maxSets` of
+`0xFFFFFFFF`) asks for its ids.
+
 ### Guest-assigned handles
 
 With `0x80`, a create command carries an output handle the process chose, with `0xCA`
@@ -269,16 +388,40 @@ is not refused: the decoder registers a stand-in under the same handle, with the
 layout, render pass and dynamic state, that runs a trivial vertex stage with rasterization
 discarded (or an empty kernel), so that pipeline's draws and dispatches do nothing, and the
 phone prints `CABOOSE_GPU_STANDIN kind=… handle=… index=… error=…` beside the provider's
-compile error. Pipeline libraries are refused as before. This covers device memory, fences, semaphores, buffers, images and
+compile error. Pipeline libraries are refused as before. Under guest-assigned handles the
+phone compiles pipelines off the decode thread, on a lane of two workers that holds at most
+256 pipelines: the decoder registers each handle at once and decodes on, and the first
+command that names the pipeline (a bind, a destroy, a library or base pipeline of another
+create) waits for that compile alone. Destroying a shader module, pipeline layout, render
+pass, descriptor set layout, sampler, pipeline cache, pipeline or the device first waits for
+the device's compiles. The reply is then success; a pipeline that could neither compile nor
+be stood in for ends the connection at its first use, which the process sees as device
+loss. A create whose result the process reads back (creation feedback, or
+fail-on-compile-required) and a create past the lane's bound compile in place. This covers device memory, fences, semaphores, buffers, images and
 views, samplers, shader modules, pipeline caches and layouts, descriptor set layouts
 and pools, command pools, render passes, framebuffers and pipelines; with `0x10000`, buffer
 views too. With `0x100` it
 also covers descriptor sets and command buffers: the decoder registers the i-th created
-object under the i-th guest handle. A descriptor set allocation whose handles the guest
-assigned never fails for lack of pool space: when the application's pool reports
-`VK_ERROR_OUT_OF_POOL_MEMORY` or `VK_ERROR_FRAGMENTED_POOL`, the decoder allocates the
-sets from an overflow pool it creates with the same flags and sizes. Overflow pools are
-reset and destroyed with their application pool, and their sets are freed back to them.
+object under the i-th guest handle. The guest counts each descriptor pool's sets and
+descriptors (a layout's full count for each binding, as the batched path does) and returns
+`VK_ERROR_OUT_OF_POOL_MEMORY` for an allocation the pool cannot hold, as a device does:
+applications such as DXVK move to another pool, and recycle a full one, only on that result.
+An allocation the guest counted as fitting does not fail on the phone: when the pool still
+reports `VK_ERROR_OUT_OF_POOL_MEMORY` or `VK_ERROR_FRAGMENTED_POOL` (MoltenVK returns the
+latter for pools that free individual sets), the decoder allocates the sets from an overflow
+pool it creates with the same flags and sizes. Overflow pools are reset and destroyed with
+their application pool, and their sets are freed back to them.
+
+The decoder also takes guest-assigned handles for the dispatchable objects that start a
+process's Vulkan: `vkCreateInstance` and `vkCreateDevice` register the instance or device
+under the handle the process wrote as their output. Physical devices and queues exist
+before the process names them, so `vkEnumeratePhysicalDevices` (the i-th physical device under
+the i-th handle of the array) and `vkGetDeviceQueue`/`vkGetDeviceQueue2` register the object
+under the process's handle the first time it names one; naming it again with the same handle,
+or with a value without `0xCA` in its top byte, reads it back, and naming it with another
+guest-assigned handle ends the stream as invalid input. Physical devices enumerated again
+keep their handles. A decoder that has these offers `one-way-start`
+([One-way start](#one-way-start)); an older one mints these handles whatever the process wrote.
 
 ### Invalid commands
 
@@ -305,6 +448,9 @@ completion commands use the ordinary 8-byte packet header, little-endian:
 | COMPLETION_FEED | `0x4342FE01` | 16 | version u32 = 1, reserved u32 = 0 |
 | COMPLETION_WATCH | `0x4342FE02` | 24 | boxed queue u64, serial u64 (both nonzero) |
 | COMPLETION_ORDER | `0x4342FE03` | 16 | order serial u64 (nonzero) |
+| WAIT_SERIAL | `0x4342FE04` | 16 | watch serial u64 (nonzero) |
+| COMPLETION_WATCH2 | `0x4342FE05` | 32 + 32 × count | boxed queue u64, serial u64, count u32, flags u32 = 0, then the entries ([Completion payloads](#completion-payloads)) |
+| REPLY_MODE | `0x4342FE06` | 16 | mode u32 = 1 (silent success) or 3 ([one-way start](#one-way-start)), reserved u32 = 0 |
 
 After each queue submission that signals a fence or timeline semaphore, sets or resets an
 event, ends or resets a query or writes coherent memory, the process sends
@@ -313,27 +459,121 @@ on its own stream. A process that holds a free until the work before it has comp
 sends one for a queue whose latest submissions no watch follows. The decoder serves both commands itself. For a watch it
 submits, under the queue's lock, an empty batch whose new fence signals once all work
 submitted to that queue before it has completed, holding the queue's instance and
-device alive until a watcher thread has waited for and destroyed that fence. Queues of
+device alive until a watcher thread has waited for and destroyed that fence. Each queue
+has its own watcher, so a record is written as soon as its queue's work completes, whatever
+another queue is still doing. Queues of
 another process and virtually shared queues are not watched. On the feed stream the
-phone writes one 16-byte record per watch: serial u64, status i32 and reserved u32
-zero. Status 0 means the work completed, `-4` the device was lost, and `1` the queue
-cannot be watched. Records may arrive in any order. Watches made before the feed stream
+phone writes one record per watch: serial u64, status i32 and payload bytes u32, which is
+zero except for a COMPLETION_WATCH2 watch, followed by that many bytes. Status 0 means the
+work completed, `-4` the device was lost, and `1` the queue cannot be watched. Records may
+arrive in any order. A record with serial 0 is not a completion but the phone's own: a FAULT
+([Silent success](#silent-success)), or one a process does not know, which it skips, payload
+included. Watches made before the feed stream
 attaches are kept for it. Further bytes from the process on the feed stream are a
 protocol error; its end, or process stop, ends the feed. Watches still outstanding are
 waited for, and their records discarded.
+
+With `0x400000` a process may send `WAIT_SERIAL` on a device stream, with no reply: the
+decoder decodes nothing more from that stream until the watch with that serial has its
+record (its marker completed, its device was lost, or its queue cannot be watched), so
+work the process sends after it reaches the GPU after the work the watch names, without the
+process waiting for the feed. A serial above the process's last watch is a protocol error
+that ends the stream; process stop ends the wait.
+
+The guest uses it to speculate: a blocking `vkWaitForFences` or `vkWaitSemaphores` returns at
+once for submissions whose completion the process can observe only through the fence and
+timeline state it reports. Their batches write no host-visible memory the guest refreshes,
+set, reset or wait for no event, end or reset no query, and signal no fence or semaphore whose
+payload is imported or exportable. A speculated watch takes every earlier watch of its queue
+with it, and the watches that signal the timeline values its batches wait for; each must
+qualify, and none may wait for something the process has not yet sent (a timeline value no
+watch signals, an event, an imported payload), since the held stream is how it would arrive.
+The process speculates on a queue once one of its records arrived, with at most three
+speculated watches per queue whose records are still to come, and only while one device
+stream carries all its work. Before the next command it sends on that stream, it sends
+`WAIT_SERIAL` for the latest speculated watch of each queue; another device stream of the
+process waits for the records instead. A record that reports device loss is device loss,
+and a value reported reached stays reached. `CABOOSE_GPU_SPECULATE=0` turns speculation off.
+
+A wait the guest answers from the feed with a timeout of a second or more ends only once that
+long has passed without the phone completing work on the queues of the submissions it waits
+for, while those have been sent and are watched, and at the latest at the smaller of four times
+its timeout and its timeout plus thirty seconds; shorter waits end at their timeout. Applications use such a
+timeout to detect a hung GPU (DXVK gives every submission five seconds, then reports the device
+lost), and a submission behind a phone's pipeline compiles can take longer while the phone is
+not hung: after a speculated wait, the next wait also covers the work before it. A wait still
+unsatisfied after ten seconds writes `CABOOSE_GPU_WAIT_STALLED` with what it waits for and what
+the guest knows of it, and the other threads' waits of five seconds or more, then again every
+minute; so does an encoder held behind speculated records.
+
+With `0x800000` a process may send `REPLY_MODE(1)` once on a device stream, which needs the
+process's completion feed (without one the stream ends). From then on the commands listed in
+`apps/ios/GPUStream/gfxstream/silent-success-opcodes.inc` (the commands whose replies the
+guest defers: guest-assigned creates and allocates, submits, binds, event sets) write no
+reply on that stream. One that fails writes a FAULT record on the feed instead: serial 0,
+status `0x7FFF0001`, 8 payload bytes of opcode u32 and result i32; the process treats it as
+loss of its devices.
 
 The process then knows the state of every fence and timeline semaphore whose signal
 operations it has seen, of its events, and whether each query's result is available.
 `vkGetFenceStatus`, `vkWaitForFences`, `vkGetSemaphoreCounterValue`, `vkWaitSemaphores` and
 `vkGetEventStatus` resolve locally, waiting for feed records without holding the device
 stream; `vkGetQueryPoolResults` without `WAIT` asks the device only once the result is
-available. Frees and destroys of memory, buffers, images and their views are held until
+available, and not at all for queries the records capture ([Completion
+payloads](#completion-payloads)). Frees and destroys of memory, buffers, images and their views are held until
 every submission sent before them has completed, so work still running on any queue never
 loses an object it keeps resident. A fence or semaphore whose payload is
 imported or exportable, a fence signaled by the presentation engine's acquire, sparse
 binding signals and unwatched queues are asked about on the device stream as before.
 A reported timeline value can trail the device's actual value, as a status query on any
-device can; it never exceeds it.
+device can. It exceeds it only after a speculated wait (`0x400000`, above), and then nothing the process
+sends afterwards reaches the GPU before the device has caught up.
+
+### Completion payloads
+
+With `0x200000` (granted with `0x200`) a watch also names what the phone captures for its
+record: the queries a batch ends and the coherent memory it writes. A batch with either is
+watched with COMPLETION_WATCH2 instead of COMPLETION_WATCH. Its size counts the 8-byte header,
+like every completion command: `32 + 32 × count`, little-endian, with boxed queue u64, serial
+u64 (both nonzero), count u32 (1 to 256) and flags u32 = 0, then from byte 32 `count` entries of
+32 bytes: kind u32, reserved u32 = 0, handle u64, a u64 and b u64.
+
+| Kind | Handle | a | b | Captured data |
+| --- | --- | --- | --- | --- |
+| 1, query range | boxed `VkQueryPool` | first query | query count | b × {value u64, availability u64}: `vkGetQueryPoolResults` with 64-bit results and availability |
+| 2, memory range | boxed `VkDeviceMemory` | offset | size | b bytes of the allocation |
+
+Once the watch's marker has completed, the phone captures each entry and the record's
+payload holds, per entry in order, a 32-byte head (kind u32, status i32, the capture's
+`VkResult`, handle u64, a u64, b u64) and its data, padded to 8 bytes. A reader stops at a kind
+it does not know. A record carries at most 1 MiB of payload, and a process at most 16 MiB of
+records not yet written; past either, the record's payload bytes are 0 and nothing was
+captured; a lost device's record carries none either. A capture whose status is neither `VK_SUCCESS` nor, for queries, `VK_NOT_READY` holds
+nothing usable.
+
+The process names only what the phone can capture safely. A query range names a pool of the
+watched queue's device whose queries report one value each (occlusion and timestamp pools);
+pipeline statistics, transform feedback and other pools are asked about on the device as
+before. The phone destroys a query pool without a lock against capturing it, so the process
+holds `vkDestroyQueryPool` until every record that captures the pool has arrived. A memory
+range names coherent memory the batch's commands write on the GPU (copies into a buffer,
+query results copied into one); the phone validates and captures it under its decoder lock,
+so a free needs no hold.
+
+`vkGetQueryPoolResults` for captured queries is answered in the process: every flag (64- or
+32-bit, availability, `PARTIAL`, `WAIT`, which waits for the records) and any stride and size
+that fit, without the device stream; a batch an idle wait reported complete keeps its
+queries pending until its record arrives. A query captured unavailable (later work reset
+it), one whose record came without a payload, and any range the process cannot answer are
+asked on the device as before. Captured memory is stored in the allocation's guest shadow, where an invalidate would
+write it, before the watch's submission is reported complete; a capture of memory a later
+batch also writes, or whose submission an idle wait already reported complete, is not stored.
+The driver's invalidate after a wait does not read stored ranges from the phone again; it
+reads only the GPU-written ranges no record stored (left out of a record for size, captured
+for an older batch, failed, or written without completion payloads). Copies into buffers the
+GPU also reads are not captured. What the invalidate reads, it reads on first use where it
+can: the blocks are filled from the phone when the application or the kernel first touches
+them, and never when nothing does (`bounded-memory/README.md`, Lazy readback).
 
 ### Ordered presents
 
@@ -474,10 +714,23 @@ store. The byte-exact forms are in `guest/gpu/gfxstream/upload-cache/vectors.jso
 The broker sends SESSION after the WebSocket upgrade. SESSION_READY requires
 actual native initialization and exact feature agreement. PROCESS_READY requires
 successful native process creation. STREAM_READY reserves the bounded socketpair
-and run/read workers for that process; it does not mean decoder TLS admission,
-command execution or GPU completion. A subsequent run failure revokes the lease.
+and the stream's run, reply-read and input-write workers for that process; it does not
+mean decoder TLS admission, command execution or GPU completion. Each stream's DATA waits
+in that stream's own input queue for its writer, so a decoder that is busy (a pipeline
+compile, a wait in the driver) holds back only its own stream; the serial worker never
+writes to a decoder. Queued input keeps its ingress charge until it is in the stream's
+socket, so the ingress limit still bounds it. The socketpair holds up to 1 MiB of commands
+and 256 KiB of replies where the kernel allows it. A subsequent run failure revokes the lease.
 The private hello is consumed at session negotiation; DATA begins with the real
 upstream client-flags word and ordered command bytes.
+
+The phone takes a process's PROCESS_OPEN, its streams' STREAM_OPEN and their DATA in the
+order the broker sends them, and answers each opening before anything the data after it
+asks for. The broker therefore answers a guest's local hello as soon as it has sent the
+openings, and relays the guest's data behind them without waiting a round trip for each
+answer; replies are relayed only after the stream's STREAM_READY. An opening the phone
+never answers fails the session, as it does when the broker waits for it. A surface bind a
+process asks for before its PROCESS_READY waits for it.
 
 FIN is a half-close after preceding DATA, not permission to discard reverse
 replies. PROCESS_STOP revokes admission and interrupts active native runs.
@@ -491,7 +744,9 @@ Disconnected streams send FIN, discard undeliverable reverse DATA, and wait for
 the phone's reverse FIN; a truncated stream closed by a crashing peer at `FIN` or
 `PROCESS_STOP` completes that stream's retirement rather than failing the session.
 Disconnected surfaces cancel any pending indexed acquisition
-(`SWAPCHAIN_CANCEL_ACQUIRE`), request compositor grant revocation (`RevokeRequest`),
+(`SWAPCHAIN_CANCEL_ACQUIRE`), request compositor grant revocation (`RevokeRequest`;
+the compositor answers a request for a grant it has already retired by doing nothing,
+so a late request is never a control failure),
 wait for the crashed process's active command streams to drain before sending
 `SURFACE_RETIRE`, and release the compositor grant (`GrantRetired`) only after
 receiving the phone's `SURFACE_RETIRED` receipt, followed by `PROCESS_STOP` and
@@ -509,8 +764,12 @@ force local cleanup but cannot produce a remote-retirement receipt. On abrupt lo
 the phone drops every object of the lost connection; once the broker has ended every
 local client of that generation it reports the generation retired to the compositor,
 which ends every surface grant the generation held, and then releases the lease. A
-reconnect (which may wait up to 5 s for that) is admitted as a new generation and served
-by the same broker. Reconnect never replays stale
+reconnect is admitted as a new generation and served by the same broker. The newest
+executor connection is the phone's: one that arrives while an earlier connection still
+holds the lease (the host may hold a phone's transport for a resume the phone has given
+up) ends that connection as an abrupt loss and is admitted once its teardown, bounded at
+10 s, has released the lease (`CABOOSE_GPU_BROKER executor generation N superseded by a
+new executor`). Reconnect never replays stale
 handles or command history. A refused or abnormally ended executor session is logged
 as `CABOOSE_GPU_BROKER executor session ended: <reason>`. A TCP executor connection whose
 peer vanished without closing it counts as an abrupt loss within about 30 s: the broker
@@ -542,6 +801,251 @@ whose worker frees it once the GPU is done (`CABOOSE_GPU_TEARDOWN_DEFERRED`, `_F
 `_PENDING` every 30 s), and the teardown goes on. When cleanup has not returned by its
 deadline, and every 10 s after, the phone prints where each process stands
 (`CABOOSE_GPU_TEARDOWN_STEP`, `CABOOSE_GPU_TEARDOWN_PROCESS`).
+
+## Executor stats
+
+A phone that declares `executor-stats` keeps a few always-on counters in its executor: commands
+decoded and the time inside the decoder, bytes read from the computer's streams and the time
+waiting for them, the time writing replies, completion watches submitted and completed (their
+submit-to-completion time, and the time the GPU had watched work in flight, counted once however
+many queues overlap), and the watches waiting now and the most waiting at once. Each is a
+relaxed atomic add; nothing is gated by build configuration or the environment.
+
+After the session is ready the broker sends `STATS_REQUEST` (kind 48, session scope, 8 bytes:
+interval in milliseconds as u32, then a reserved u32; the broker asks for 1000). The phone then
+sends `EXECUTOR_STATS` (kind 47, session scope, 96 bytes: `caboose_gpu_executor_stats`, twelve
+u64 totals since its runtime started, the first the record's size) at that interval, except
+while suspended, until the session ends. A second request, an interval outside 100 to 60 000 ms,
+or stats nobody asked for end the connection. Every 5 s the broker prints what changed:
+
+`CABOOSE_GPU_EXECUTOR_STATS elapsed_ms=… commands=… decode_ms=… read_bytes=… read_wait_ms=…
+flush_ms=… submitted=… completed=… completion_mean_us=… gpu_busy_pct=… outstanding=…
+outstanding_max=… at=…`
+
+These sit beside the broker's own `CABOOSE_GPU_SURFACE_STATS` (presents per second, gaps and
+link bytes per surface; see the broker's README), which need nothing from the phone. Both are
+counters only, never handles, payloads or identities. The phone's frame-lab pictures and its
+console mirror stay opt-in diagnostics.
+
+## Executor generations
+
+A computer outlives its executors: the phone app closes, relaunches, loses the network or
+the phone locks, and a new executor (perhaps another phone) takes its place while the
+compositor, Xwayland and the applications keep running. Each executor a process connects to
+after losing the previous one is a new **executor generation**, and everything that belongs
+to an executor belongs to its generation:
+
+- **Objects.** Every dispatchable Vulkan object a guest process makes (instance, physical
+  device, device, queue, command buffer) records the generation it was made under
+  (`caboose::completion::connectionGeneration`, driver patch 0077). A call on an object of
+  an earlier generation reports `VK_ERROR_DEVICE_LOST` at the encoder's entry and never
+  reaches the executor, which does not know its handles; a surface of an earlier
+  generation's instance reports `VK_ERROR_SURFACE_LOST_KHR` and never binds. A process
+  connects to the new executor with its next `vkCreateInstance`, so an application recovers
+  by making a new instance, as Chromium's GPU process, Zink contexts and the compositor do.
+  One that cannot recover ends, as a DXVK game does.
+- **Results.** A lost device gives the results its specification allows: a call that may
+  report the loss reports `VK_ERROR_DEVICE_LOST`; any other (mapping, allocation, enumeration,
+  image-format queries, exports) succeeds locally or fails as that command may, and memory
+  allocated while lost is local zeroed memory that maps (`bounded-memory/lost_memory.h`).
+- **Answers and tables.** What the driver keeps of an executor's answers is either keyed by
+  generation (the capability cache's connection identity, the shader and upload cache
+  inventories, the completion feed, deferred replies, extension lists) or forgotten through
+  one reset hook (`caboose::completion::onNewGeneration`) that runs on the reconnecting
+  thread before the first call of the new generation: cached memory types, heaps and budget,
+  the instance extension table, the device features the driver emulates around, devices'
+  presentation queues, completion watches owed to old queues and host allocations shared
+  through dma-bufs. A capability answer read while its executor was leaving is never stored
+  under the next one.
+- **Connections.** The device stream reconnects with the next instance. A connection that
+  reaches another executor's socket than the process last connected to starts a new
+  generation even if none of its streams had ended (an idle process learns of the change only
+  by connecting), and the generation advances before the loss is cleared, so another thread
+  calling on an object of the old generation meanwhile never reaches the new executor. A process's dma-buf
+  registrations (`dmabuf/registration.h`) belong to the broker session they were made
+  under, which the broker's device socket identifies; the process keeps the registrations of
+  its live buffers and sends them again on every new connection of the same session, and
+  drops those of an earlier session.
+- **Broker.** Each admitted executor is a new `Session`; its processes, streams, surfaces,
+  buffer registrations and grants end with it. Ready is reported to the compositor only once
+  the session's device and surface sockets exist, so a renderer rebuilt on the report finds
+  the executor. The session's buffer binds and retries are cancelled when it ends, so nothing
+  of it is answered after its loss. A registration of a buffer another process registered
+  first (the compositor importing a client's buffer) registers nothing and ends nothing, and
+  a generation admits up to 64 processes.
+- **Executor.** A new generation reaches the executor as many processes at once (the
+  compositor, the capability warm-up and every application making a new instance). The
+  Vulkan loader's tables of instances and drivers are not safe for that, so the executor
+  makes and destroys instances and devices and enumerates physical devices (the fork) and
+  makes surfaces, surface queries and swapchains (`presentation_driver_lock.h`) under one
+  driver lock. It never waits for a presentation while holding the lock.
+- **Compositor.** A ready executor supersedes a previous one whose loss or retirement report
+  never arrived; a stale loss, retirement or buffer release is ignored instead of restarting
+  the broker. It never composes a client's phone-resident buffer (its pixels exist only in
+  its own process's phone memory; importing it elsewhere gets memory nobody drew into), so a
+  window shows a client buffer only when the broker presents it. An output that goes away is
+  disabled before it is destroyed, so an application starting during a display reconnect is
+  not ended by a protocol error. Its own process runs with `CABOOSE_GPU_ON_LOSS=quiet`: it
+  learns of a loss from its broker, so its lost device answers as a working one (submissions
+  are dropped and complete, waits are satisfied, no call reports `VK_ERROR_DEVICE_LOST`) and Zink
+  never takes its device-loss paths, whose teardown did not end. A call made after the loss, or
+  one whose reply was lost because the executor left during it, gets stand-in outputs: unique
+  local handles for what it creates or allocates, supported layouts, plausible sizes; never a
+  null handle. The renderer is made again
+  on the broker's report, and once a second for up to ten tries when it could not be made.
+
+`apps/ios/GPUStream/gfxstream/linux-executor/check_chaos.py` holds the stack to this: a seat
+of its own with the compositor, a long-lived Chromium, Steam's CEF client, and fresh
+Chromium, GL and DXVK applications, through random executor kills, network drops, stalls,
+viewer reconnects and losses during application startup, with every application required to
+present real pictures (not noise, not blank) after each. The release seal runs it.
+
+### Silent success
+
+With `0x800000` (granted with `0x80` and `0x200`), a process's device streams can leave out the
+replies of the commands it does not wait for. A device stream switches with one packet, sent on
+it after the client-flags word like any command:
+
+| Command | Opcode | Size | Payload |
+| --- | --- | --- | --- |
+| REPLY_MODE | `0x4342FE06` | 16 | mode u32 = 1 (silent success) or 3 ([one-way start](#one-way-start)), reserved u32 = 0 |
+
+It has no reply, and it holds for that stream until the stream's next REPLY_MODE. The process
+sends `REPLY_MODE(1)` once on each device stream, including a stream it connects again after its
+executor changed, only while its completion feed runs, and before the first command whose reply
+it will not read; with [one-way start](#one-way-start) it switches to `REPLY_MODE(3)` for a
+start command and back to `REPLY_MODE(1)` after it. A stream without the switch is answered as
+before. The decoder ends the stream of a process without a
+feed that sends it (`EPROTO`). The decoder does not see the hello, so the switch is the only
+signal.
+
+On a switched stream the decoder writes no reply for the commands in
+`apps/ios/GPUStream/gfxstream/silent-success-opcodes.inc` when their result is `VK_SUCCESS`; a
+command of that list without a result counts as succeeded. They are the commands the guest
+does not wait for: guest-assigned creates and allocations (memory, fences, semaphores, query
+pools, buffers, images and views, buffer views, shader modules, pipeline caches, graphics and
+compute pipelines, pipeline layouts, samplers, descriptor set layouts and pools, descriptor
+sets, framebuffers, render passes, command pools and command buffers), queue submits with
+their staged command buffer begins and ends, buffer and image binds, and host event sets and
+resets. Only an encoder on a device stream switches; one recording a command buffer into
+local staging never sends REPLY_MODE. A command of the list that fails writes no reply
+either: the decoder sends one FAULT record on the process's feed, 24 bytes, little-endian:
+
+| Field | Value |
+| --- | --- |
+| serial u64 | 0 |
+| status i32 | `0x7FFF0001` |
+| payload bytes u32 | 8 |
+| opcode u32 | the failed command |
+| result i32 | its result |
+
+A FAULT made before the feed stream attaches is kept for it, as watches are.
+A FAULT is the loss of the process's device, as an [invalid command](#invalid-commands) is: the
+process prints `CABOOSE_GPU_SILENT_FAULT opcode=… result=…` and `CABOOSE_GPU_EXECUTOR_LOST`, its
+calls return `VK_ERROR_DEVICE_LOST`, and an application that recovers creates a new instance.
+A feed that ends while a switched stream is still open is the same loss
+(`CABOOSE_GPU_SILENT_FEED_ENDED`): the failures of its commands could no longer arrive. A feed
+that ends after the process closed its switched streams itself (its device or instance
+destroyed, its connections torn down at exit) is its own teardown and loses nothing.
+
+The guest's list is `guest/gpu/gfxstream/bounded-memory/silent_success.h`;
+`test_silent_success_list.py` fails when it differs from the decoder's, and every driver build
+checks (`driver/check_silent_success.py`) that the encoder defers the reply of each command in
+it and of no other. The guest uses silent success only when `0x80`, `0x100`, `0x200`, `0x1000`
+and `0x10000` are granted with it, so that every create of the list takes a guest-assigned
+handle. Those commands' replies are not queued: they do not count toward the 6 MiB of commands
+or 64 KiB of replies a process lets the phone owe, and no drain before a synchronous command
+reads them. On a switched stream every allocation takes a guest-assigned handle; one that
+would otherwise have waited for its reply (an import, an export, or one past the guest's
+allocation budget) is followed by the round trip below before it returns, and a plain one
+that would take its heap past the heap's size, counting the process's own allocations alone,
+returns `VK_ERROR_OUT_OF_DEVICE_MEMORY` without being sent. A pipeline
+create with `VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT` compiles: the flag is
+cleared, since `VK_PIPELINE_COMPILE_REQUIRED` would arrive as a FAULT. Before the presentation
+channel names objects or work the stream made, the process reads the reply of one
+`vkEnumerateInstanceVersion` sent after its last silent command, so the phone has decoded them.
+An allocation or create the phone refuses is then device loss, never a result the application
+sees.
+
+### One-way start
+
+With `0x1000000` (granted with `0x80`, `0x200` and `0x800000`) a process may send
+`REPLY_MODE(3)` instead of `REPLY_MODE(1)`. Mode 3 is silent success, and it also silences the
+commands that start a process's Vulkan, whose handles the process chooses itself
+([Guest-assigned handles](#guest-assigned-handles)):
+
+| Command | Opcode | A failure |
+| --- | --- | --- |
+| `vkCreateInstance` | 20000 | its result |
+| `vkEnumeratePhysicalDevices` | 20002 | its result, `VK_INCOMPLETE` included; `VK_ERROR_INITIALIZATION_FAILED` when it found fewer than the process named |
+| `vkCreateDevice` | 20011 | its result; `VK_ERROR_INITIALIZATION_FAILED`, without reaching the driver, for queues the physical device does not have |
+| `vkGetDeviceQueue` | 20017 | `VK_ERROR_INITIALIZATION_FAILED` when no queue matches |
+| `vkGetDeviceQueue2` | 20155 | `VK_ERROR_INITIALIZATION_FAILED` when no queue matches |
+
+On success the decoder writes nothing for them; a failure is a FAULT record with the opcode and
+that result, as for silent success. A decoder without one-way start ends a stream that sends
+`REPLY_MODE(3)` (`EPROTO`), so a process sends it only with `0x1000000` granted. The process
+predicts each answer from an identical call that succeeded earlier in the session (a
+vkEnumeratePhysicalDevices count, a device's queues); a prediction the phone does not bear out
+is a FAULT, and the device lost. `apps/ios/GPUStream/gfxstream/silent_replies.h` holds the mode
+and the commands; `caboose_gpu_native_one_way_start` checks them against the real decoder
+(`apps/ios/GPUStream/gfxstream/README.md`).
+
+The guest driver offers `0x1000000` with everything else it offers, and with it granted names
+every instance, physical device, device and queue it makes. Its device stream stays in
+`REPLY_MODE(1)`: a start command goes one-way inside `REPLY_MODE(3)` … `REPLY_MODE(1)` around it,
+in order on the stream, only when an identical one succeeded earlier in the executor session.
+An instance is identical when its flags, application, layers and extensions are (the loader's
+own structures aside; any other chained structure is always asked); a device when its
+fingerprint is ([Physical capability cache](#physical-capability-cache)) on the session's one
+GPU; a queue when its device's fingerprint, flags, family and index are; a list of physical
+devices when it asks for as many as the session's earlier list found. The first of each is asked
+and waited for, and its success is kept in the session's instance scope, so every process after
+it in the session starts without those round trips; a new executor connection starts with none.
+A process's first start command may come before its feed runs: it waits up to 100 ms for the
+feed, then asks the command instead (`guest/gpu/gfxstream/bounded-memory/one_way_start.h`).
+`CABOOSE_ONE_WAY_START=0` asks every start command. Once a FAULT has lost the device, the
+process's destroys of what it made (the refused instance or device among them) stay in the
+process: every command checks for the loss before it is sent. A destroy the process sends
+before the FAULT reaches it names an object the phone never made, and the phone ends that
+process's streams, which the process sees as the same loss; the executor and every other
+process go on.
+
+## Launch timeline
+
+The guest driver writes where a process's start went, always, to standard error
+(`guest/gpu/gfxstream/bounded-memory/launch_timeline.h`). Once each, in milliseconds since the
+process started: its first instance, device, shader module and pipeline, and its first present
+(`CABOOSE_GPU_LAUNCH pid=… process=… event=first_device ms=…`; the process name is the
+executable's under Wine). For its first fifteen minutes, every ten seconds in which it made
+anything, one line with what those seconds made: shader modules and their bytes, pipelines (a
+`vkCreate*Pipelines` call each), presents, and commands and their bytes, with the running
+totals of modules, pipelines and presents. Shaders a pipeline carries inline
+(`VK_KHR_maintenance5`, as DXVK passes them) count in its command's bytes, not as modules.
+
+The decoder writes the phone's side every ten seconds in which it compiled a pipeline, waited
+for one or looked one up in the Metal binary archive
+(`apps/ios/GPUStream/gfxstream/pipeline_report.h`): `CABOOSE_GPU_PIPELINES` with the pipelines
+its compile lane made and the time the lane's jobs ran, those made in place on a decode thread
+and their time, the longest job, how often and for how long a decode thread waited for a
+compile it needed (time it decoded nothing else), and the archive's hits and misses. Where the process waited
+for the phone in the same time is the read profile's (`CABOOSE_READ_PROFILE=1`), and what it
+sent the memory traffic line's.
+
+## Lock order
+
+The guest driver's locks form one hierarchy; a thread holding a lock takes only locks below it:
+the encoder's stream lock, then the flush shadow, the tracker (`ResourceTracker::mLock`), the
+deferred replies, the completion tracker and the write watch. Lazy readback's fills take none
+of them: they read on an auxiliary stream of the process's own. The silent-success switch table
+(`bounded-memory/silent_success.h`) is taken under the encoder's lock and takes no other lock,
+and the memory traffic counters' allocation table (`bounded-memory/memory_traffic.h`) is taken
+under any of them and takes no other lock. Taking the same lock again (the tracker's is
+recursive) or another encoder's is allowed. `bounded-memory/lock_order.h` holds the hierarchy and
+a checker: with `CABOOSE_LOCK_ORDER=1` every acquisition of those locks is checked and a lock
+taken above one already held is reported once with its calling frames
+(`CABOOSE_LOCK_ORDER took=… holding=…`); `CABOOSE_LOCK_ORDER=abort` also aborts there. Unset, an
+acquisition costs one load.
 
 ## Resuming an executor
 
@@ -659,9 +1163,15 @@ resumable session last at least the host's longest hold, since the phone may be 
 while the relay holds its transport. A process or stream the phone has not yet opened is
 never given up on alone: the phone would then receive its surfaces and further openings
 under identities it does not know. Local
-processes keep their streams and bindings throughout; nothing is reported to the
-compositor, whose grants stay as they were, unless the relay's hold expires and the executor
-is lost.
+processes keep their streams and bindings throughout, and the compositor's grants stay as they
+were, unless the relay's hold expires and the executor is lost. The compositor itself is held
+only briefly: its main thread draws and also accepts every client, so a call of its renderer
+the gate holds would leave every new application waiting for the phone. Once a suspension
+outlasts 3 s (`COMPOSITOR_HOLD_SECONDS`) the broker ends the streams of its parent process,
+the compositor, which then sees its device lost quietly, and sends it executor lifecycle record
+11 (CGB1, the layout of records 4 to 6); the compositor drops its renderer and draws nothing.
+On EXECUTOR_RESUME the broker sends record 12 and the compositor makes its renderer again on
+the phone. A compositor that connects later is told only the executor's state (4, 5 or 6).
 
 ## Window identity boundary
 
@@ -673,7 +1183,17 @@ the display association. A new epoch does not erase outstanding native work.
 A surface bind names a native Wayland surface or an X11 window on the display's
 Xwayland: the trailing 32-bit field of the CGLS bind request and of the CGB1 bind
 record is the object's namespace, 0 for a `wl_surface` protocol ID and 1 for an X11
-window ID; any other value is malformed. Only the compositor can bind an actual
+window ID; any other value is malformed. A bind either carries a frame or is a probe. A
+process that answers its surface queries itself (guest-owned images) binds with a frame
+when a present sends the bind or frames wait for it, and otherwise (a query, swapchain
+set-up) binds as a probe: its CGLS bind request has 32 bytes, adding flags (1) and a reserved
+word (0), and the broker sends it as a version-2 CGB1 bind record of 64 bytes with the same
+two words. A 24-byte request and a version-1 record carry a frame, as every bind from a
+process without local answers does. The compositor refuses every probe: a window keeps
+the picture the compositor presents of it until its application has a frame for it, and
+an application that makes a surface on its own window and never presents there (Steam's
+CEF browser process) does not take the window's picture away. A frame finding its probe
+refused binds again at once, without the retry delay of queries. Only the compositor can bind an actual
 client/surface to a current owner window; an application-provided window number or
 X11 `_NET_WM_PID` is not authority.
 
@@ -699,6 +1219,18 @@ X11 `_NET_WM_PID` is not authority.
   X11 has no client isolation: any client of the seat's Xwayland can create a child
   window inside another's toplevel, so an X11 grant proves only that the bound
   process made the window it presents to on the owner's own display.
+- An X11 bind (with a frame) of a window that is not bindable yet, because it is not
+  mapped or the compositor has not taken in its map, is held rather than refused when the
+  X server records the bound process as the window's maker and the broker's pidfd
+  identifies it. Toolkits bind a surface as soon as they make its window (a menu, a
+  top-level or a child), before it is shown. The compositor answers a held bind, by the
+  rules above, as soon as the window maps, looking again every 100 ms. It refuses it when
+  the window is destroyed, the process ends, a newer bind of the same window by the same
+  process arrives, or it has been held 4 s, inside the broker's 5 s wait for the answer;
+  at most 16 are held, and one more is refused at once. A window whose bind waited out
+  the 4 s is not held again (of the last 64 such windows): its later binds are refused at
+  once until it is bindable, so a window that never maps costs its process one wait. A
+  broker that ends takes its held binds with it, unanswered.
 - An inset surface, an X11 descendant of such a toplevel that does not cover it (a
   browser view CEF draws in its own child window) or a subsurface of a Wayland toplevel,
   bound by the process that made it (the same X-Resource and pidfd checks), becomes a
@@ -740,6 +1272,52 @@ Neither a WebSocket send, a queue-submit return nor a local cleanup callback mea
 an image was displayed.
 
 
+## Seats
+
+The computer's shared broker serves both displays from one executor. It runs as a service
+beside them:
+
+    caboose-gpu-broker --dir $XDG_RUNTIME_DIR/caboose-gpu --listen 0.0.0.0:14602 \
+        --token-file /run/caboose/display-token --private-indexed
+
+`--dir` is a private directory (mode 0700) with one subdirectory per seat, `owner` and
+`agent`, each also 0700, each holding the seat's `control.sock` (its compositor's channel, a
+Unix sequenced-packet socket of mode 0600) and, while an executor serves, its `gpu.sock` and
+`surface.sock`. The phone's executor connects to `--listen` with `GET /gpu` and the same
+per-wake token, `X-Caboose-GPU-*` headers and resume semantics as through a display.
+`usage.json` is written to `--dir` itself.
+
+A client's seat is the socket it reached, and nothing crosses seats:
+
+- A process belongs to the seat whose `gpu.sock` its first stream reached; a stream of it on
+  the other seat's socket is refused (`CABOOSE_GPU_BROKER refused a cross-seat stream`), and
+  so is a surface connection on the other seat's `surface.sock`.
+- A bind is asked of the process's own seat's compositor, and only that compositor's answer
+  is taken. Its grant's epoch is that compositor's: revokes, retirements and releases of the
+  grant go to it alone, and a revoke from the other seat's compositor is refused.
+- A seat's compositor presents only buffers of its own seat's processes; window IDs are each
+  compositor's own.
+- A seat's compositor going retires that seat's surfaces alone; the executor and the other
+  seat go on. Executor lifecycle records (4, 5, 6, 11, 12) go to every seat's compositor.
+
+The phone routes each surface to its seat's display session from the seat in
+`SURFACE_BIND` ([Surface records](#surface-records)), sent when it declares the transport
+feature `seat-routing`. A phone that does not declare it is shown the owner seat alone: an
+agent-seat bind is refused before its compositor is asked. The phone (LiveGPUSeatSurfaces)
+presents an owner-seat surface in the owner's display session and an agent-seat surface in the
+agent seat's display session, the Watch view, through the one executor. While no agent-seat
+session is open it answers an agent-seat bind `ENOENT` and drops it, so a window of one seat is
+never shown in the other's display; a surface bound while the session was open ends with that
+session. The Linux executor shows one display, the owner's, and answers every agent-seat bind
+the same way.
+
+A compositor joins the shared broker with `--private-gpu-broker DIR/SEAT/control.sock` and its
+seat's `gpu.sock` and `surface.sock`, and starts no broker of its own. Until the broker is there,
+and whenever no executor serves, it renders on the computer's own device, as without a phone:
+the agent seat's screenshots and computer use never depend on the phone. The agent seat's
+applications always draw on the computer; only its compositor's picture uses the broker. The
+agent seat may take only `DIR/agent`, and the owner seat never takes it.
+
 ## Surface records
 
 Every surface payload starts with the same 40-byte identity: 16 nonzero compositor
@@ -762,7 +1340,7 @@ The remaining fields follow the common identity, without padding:
 
 | Record | Fields |
 | --- | --- |
-| BIND | Nonzero window uint64, boxed instance uint64, width and height uint32 |
+| BIND | Nonzero window uint64, boxed instance uint64, width and height uint32; for a phone that declared `seat-routing`, then the seat uint32 (0 owner, 1 agent) and a reserved uint32 zero |
 | BOUND | Status |
 | QUERY | Nonzero request ID uint64 and boxed physical-device uint64 |
 | CAPS | Request ID uint64, status, then capability data only on actual success |
@@ -944,6 +1522,9 @@ and `CABOOSE_METAL_STALLED` is printed until it recovers). Over a window whose G
 present reported its device lost) or not responding (a present has waited 2 s for the GPU
 to release its source), one line says so, "GPU lost" or "GPU not responding", until it
 recovers, with `CABOOSE_GPU_WINDOW_HEALTH window=… state=…` on each change.
+The health tracker records a present before calling native submission, so a completion
+that arrives before the call returns clears the wait. Rejected submissions remove their
+wait; uncertain submissions retain it until source release or device loss.
 Each end is printed on standard output as `CABOOSE_GPU_OWNER_ENDED cause=… cleanup=…
 retirement_confirmed=0|1`.
 
@@ -1185,9 +1766,9 @@ reaches the compositor as shared memory. Mesa reports that renderer as unacceler
 application that declines unaccelerated OpenGL draws with its own CPU renderer. The driver offers the logic operations and
 custom border colours Zink needs for desktop OpenGL where the phone lacks them
 (`gfxstream/feature-emulation`). The phone has no geometry shaders or transform feedback,
-for which Zink would offer only OpenGL 2.1: `MESA_GL_VERSION_OVERRIDE=4.5COMPAT` and
-`MESA_GLSL_VERSION_OVERRIDE=450` offer what the computer's renderer offers without a phone,
-and a shader that uses either feature fails to compile or draw. Zink settles its descriptor mode once per process, on the first
+for which Zink would offer only OpenGL 2.1 and OpenGL ES 2.0: `MESA_GL_VERSION_OVERRIDE=4.5COMPAT`,
+`MESA_GLSL_VERSION_OVERRIDE=450` and `MESA_GLES_VERSION_OVERRIDE=3.2` offer what the computer's
+renderer offers without a phone, and a shader that uses either feature fails to compile or draw. Zink settles its descriptor mode once per process, on the first
 device it opens: the CPU device has descriptor buffers and the phone's GPU has none, so a
 process that started without a phone would fail every later renderer on it.
 `ZINK_DESCRIPTORS=lazy`, set for applications and for caboose-display itself, keeps one mode
@@ -1212,7 +1793,10 @@ and the i386 builds as `org.freedesktop.Platform.GL32.host`, for the runtime's 3
 compatibility libraries,
 and adds `xdg-run/caboose-gpu`, the broker's socket directory, to the system-wide Flatpak
 override. Mesa in the sandbox opens the render node with Zink as Mesa on the computer does
-([gpu-buffers.md](gpu-buffers.md#opengl-on-the-render-node)). The launch environment's variables pass into the sandbox unchanged;
+([gpu-buffers.md](gpu-buffers.md#opengl-on-the-render-node)). `install-live.py --gbm` puts the
+vgem GBM backend in each extension's `lib/gbm` and sets `GBM_BACKENDS_PATH` in that override,
+so GBM in the sandbox allocates and exports buffers as on the computer
+([gpu-buffers.md](gpu-buffers.md)). The launch environment's variables pass into the sandbox unchanged;
 `PRESSURE_VESSEL_FILESYSTEMS_RW` names the socket directory to Steam's container runtime,
 which shares no other part of the runtime directory with games.
 

@@ -93,6 +93,15 @@ swift test --jobs 1 --filter 'LiveGPUTransportTests|LiveGPUEnvelopeTests|LiveGPU
 
 These tests use injected runtime operations and socketpairs, not phone GPU work.
 
+### Executor stats
+
+Every build keeps the counters in `gfxstream/executor_stats.h`: commands decoded and time in
+the decoder, bytes read and time waiting for them, time writing replies, and completion
+watches with their latency, GPU busy time and queue depth. `caboose_gpu_runtime_executor_stats`
+(`gfxstream/executor_stats_abi.h`, part of the packaged headers) reads them; the app sends them
+to the computer as `EXECUTOR_STATS` ([docs/gpu-live.md](../../../docs/gpu-live.md#executor-stats)).
+`tests/executor_stats_test.cpp` covers them (`CABOOSE_GFXSTREAM_RUNTIME_TESTS`).
+
 ### Opt-in decoder terminal diagnostics
 
 The memory-audit build emits `CABOOSE_GPU_DECODE_TERMINAL` only when the actual

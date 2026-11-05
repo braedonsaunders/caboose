@@ -4,6 +4,7 @@
 #import <QuartzCore/CATransaction.h>
 #include "caboose_pipeline_cache.h"
 #include "metal_surface_internal.h"
+#include "presentation_driver_lock.h"
 #include <cerrno>
 #include <new>
 #ifdef CABOOSE_GPU_MEMORY_AUDIT
@@ -92,7 +93,10 @@ int createMetalSurface(VkInstance instance, void* metalLayer, MetalSurface** out
     VkMetalSurfaceCreateInfoEXT info{};
     info.sType = VK_STRUCTURE_TYPE_METAL_SURFACE_CREATE_INFO_EXT;
     info.pLayer = surface->layer;
-    *vulkanResult = create(instance, &info, nullptr, &surface->surface);
+    {
+        DriverLock driver;
+        *vulkanResult = create(instance, &info, nullptr, &surface->surface);
+    }
     if (*vulkanResult != VK_SUCCESS) { delete surface; return EIO; }
     id layerDevice = surface->layer.device;
     if (layerDevice) {
@@ -109,7 +113,10 @@ int destroyMetalSurface(MetalSurface** surface) {
     if (!surface || !*surface) return EINVAL;
     if (![NSThread isMainThread]) return EPERM;
     MetalSurface* owned = *surface;
-    owned->destroy(owned->instance, owned->surface, nullptr);
+    {
+        DriverLock driver;
+        owned->destroy(owned->instance, owned->surface, nullptr);
+    }
     delete owned;
     *surface = nullptr;
     return 0;

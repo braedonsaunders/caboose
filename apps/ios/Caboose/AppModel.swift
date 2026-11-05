@@ -28,6 +28,8 @@ final class AppModel {
     private(set) var phase: Phase
     private(set) var agents = AgentCenter()
     var notificationTaskID: String?
+    /// A task whose agent's seat window opens full screen as soon as it has one (`caboose://task/<id>/watch`).
+    var watchTaskID: String?
     /// A command to show, from its link, notification or Live Activity.
     var notificationCommandID: String?
     var askFocusRequested = false
@@ -233,6 +235,10 @@ final class AppModel {
         agents.onControlClosed = { [weak self] in
             guard let self, self.connectionRevision == revision else { return }
             self.bridge.controlClosed()
+        }
+        agents.onSeatChanged = { [weak self] seat in
+            guard let self, self.connectionRevision == revision else { return }
+            self.liveGPUOwner?.update(agentDisplay: seat)
         }
     }
 
@@ -1292,7 +1298,7 @@ final class AppModel {
                 liveGPUOwner = nil; liveGPUIdentity = nil
             } else {
                 if liveGPUIdentity != identity { owner.close() }
-                else { owner.update(display: display) }
+                else { owner.update(display: display); owner.update(agentDisplay: agents.seat) }
                 return
             }
         }
@@ -1310,6 +1316,7 @@ final class AppModel {
             liveGPUGeneration = generation; liveGPUIdentity = identity; liveGPUOwner = owner
             liveGPUStartedAt = Date()
             owner.update(display: display)
+            owner.update(agentDisplay: agents.seat)
         } catch {
             // The endpoint may be unavailable for a while (a broker restarting): try again.
             retryLiveGPU()
@@ -1786,6 +1793,7 @@ final class AppModel {
         switch link {
         case .tab(let tab): selectedTab = tab == .terminal && !TerminalSlot.isFilled ? .home : tab
         case .task(let id): notificationTaskID = id
+        case .watch(let id): notificationTaskID = id; watchTaskID = id
         case .command(let id): notificationCommandID = id
         case .airPlay: selectedTab = .home; airPlay.connect()
         }

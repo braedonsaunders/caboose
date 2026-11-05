@@ -9,6 +9,8 @@ import type { AgentGuest } from './agents.js'
  */
 export const OWNER_DISPLAY_PORT = 14600
 export const AGENT_DISPLAY_PORT = 14601
+/** The computer's GPU broker, shared by both seats (docs/gpu-live.md): the phone's executor connects to it here. */
+export const GPU_BROKER_PORT = 14602
 export const DISPLAY_ENV_PATH = '/run/caboose/display.env'
 export const AGENT_DISPLAY_ENV_PATH = '/run/caboose/agent-display.env'
 /** The per-wake token both instances and the file service check, written by the host. */

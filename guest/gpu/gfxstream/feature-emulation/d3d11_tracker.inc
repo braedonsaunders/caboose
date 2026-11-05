@@ -271,7 +271,7 @@ void ResourceTracker::cabooseCreateNullObjects(VkPhysicalDevice physicalDevice, 
     enc->vkDestroyCommandPool(device, pool, nullptr, true /* do lock */);
     if (cleared != VK_SUCCESS) return fail("clearing the null objects");
 
-    std::lock_guard<std::recursive_mutex> lock(mLock);
+    std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
     mCabooseNullObjects[device] = null;
 }
 
@@ -288,7 +288,7 @@ void ResourceTracker::cabooseReleaseNullObjects(VkEncoder* enc, VkDevice device,
 void ResourceTracker::cabooseDestroyNullObjects(VkDevice device) {
     CabooseNullDevice null;
     {
-        std::lock_guard<std::recursive_mutex> lock(mLock);
+        std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
         auto found = mCabooseNullObjects.find(device);
         if (found == mCabooseNullObjects.end()) return;
         null = found->second;
@@ -298,7 +298,7 @@ void ResourceTracker::cabooseDestroyNullObjects(VkDevice device) {
 }
 
 caboose::features::NullObjects ResourceTracker::cabooseNullObjects(VkDevice device) {
-    std::lock_guard<std::recursive_mutex> lock(mLock);
+    std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
     auto found = mCabooseNullObjects.find(device);
     return found == mCabooseNullObjects.end() ? caboose::features::NullObjects() : found->second.objects;
 }

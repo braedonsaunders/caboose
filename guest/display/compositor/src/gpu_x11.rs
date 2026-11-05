@@ -2,8 +2,10 @@
 //! the window it was created for: a managed top-level, a child window that covers one
 //! (Chromium's GPU process draws into such a child), or a child inset in one (a browser
 //! view CEF draws in its own child window), which the phone shows as a child window of
-//! the top-level (docs/display.md, "Child windows"). Only the X server's own record of the
-//! process that created the window is authority, never a window property.
+//! the top-level (docs/display.md, "Child windows"). A bind of an override-redirect window
+//! that is not bindable yet (not mapped yet) is held until it is (gpu_pending.rs). Only the
+//! X server's own record of the process that created the window is authority, never a
+//! window property.
 use std::os::unix::net::UnixStream;
 use x11rb::{
     connection::Connection,
@@ -63,6 +65,29 @@ impl X11Windows {
             }
         }
         Ok(self.client_pid(window)?.map(|pid| Resolved { toplevel, pid, larger, inset }))
+    }
+
+    /// Whether a bind of `window` by process `pid` is held until the window is bindable
+    /// (gpu_pending.rs): the window exists in an override-redirect window (or is one) that
+    /// no top-level in `toplevels` holds yet, because it is not mapped or the compositor has
+    /// not taken in its map yet, and the X server records `pid` as the client that created it.
+    pub fn holds_until_bindable(&self, window: Window, toplevels: &[Window], pid: u32) -> Result<bool, Error> {
+        if self.toplevel_of(window, toplevels)?.is_some() { return Ok(false); }
+        // A window still in the tree (destroyed ones are not).
+        if self.outermost(window)?.is_none() { return Ok(false); }
+        Ok(crate::gpu_pending::holdable(self.client_pid(window)?, pid))
+    }
+
+    /// The child of the root window that `window` is or is in.
+    fn outermost(&self, window: Window) -> Result<Option<Window>, Error> {
+        let mut current = window;
+        for _ in 0..MAX_DEPTH {
+            let parent = self.conn.query_tree(current)?.reply()?.parent;
+            if parent == self.root { return Ok(Some(current)); }
+            if parent == x11rb::NONE { return Ok(None); }
+            current = parent;
+        }
+        Ok(None)
     }
 
     /// Where an inset child is in its top-level now, in X pixels relative to the top-level:

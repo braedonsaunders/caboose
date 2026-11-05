@@ -35,7 +35,7 @@ protocol LiveGPUReceiveFlow: AnyObject {
 final class LiveGPUBudget: @unchecked Sendable {
     static let messageLimit = 256 * 1024
     /// Outbound work the phone may queue while the network or host is slower than the
-    /// decoder's replies: replies leave the native bridge in 16 KiB pieces, so a busy
+    /// decoder's replies: replies leave the native bridge in pieces of up to 64 KiB, so a busy
     /// stream (video, a pipeline compile backlog) queues many small messages.
     static let byteLimit = 8 * 1024 * 1024
     static let countLimit = 2048
@@ -190,8 +190,12 @@ public final class LiveGPUConnection: NSObject, LiveGPUResumeSocket, URLSessionW
     /// modules to take later ones by hash (docs/gpu-live.md, "Shader cache"), and resumes
     /// its executor on a new socket ("Resuming an executor"), and decodes commands sent as one
     /// zstd stream ("Optional bounded command compression"), keeps uploaded data by hash
-    /// ("Upload cache"), and registers buffer views under guest-assigned handles.
-    static let features = "guest-handles,guest-handle-arrays,completion-feed,ordered-present,guest-images,guest-query-pools,shader-cache,executor-resume,zstd-stream,upload-cache,guest-buffer-views,batched-descriptor-sets-inline"
+    /// ("Upload cache"), registers buffer views under guest-assigned handles, batches descriptor
+    /// sets ("Batched descriptor sets"), takes the set ids a guest chose for its pools
+    /// ("Guest-chosen set ids"), brings watched queries and memory back in completion records
+    /// ("Completion payloads"), takes WAIT_SERIAL ordering marks, and leaves out the replies of
+    /// the commands a guest does not wait for ("Silent success").
+    static let features = "guest-handles,guest-handle-arrays,completion-feed,ordered-present,guest-images,guest-query-pools,shader-cache,executor-resume,zstd-stream,upload-cache,guest-buffer-views,batched-descriptor-sets-inline,guest-set-ids,completion-payloads,wait-serial,silent-success,one-way-start,executor-stats,seat-routing"
     static let resumeHeader = "X-Caboose-GPU-Resume"
     /// A resume attempt waits this long for its upgrade; the next follows at once.
     static let resumeTimeout: TimeInterval = 3

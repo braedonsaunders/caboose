@@ -108,7 +108,7 @@ VkResult ResourceTracker::cabooseAllocateImportedMemory(VkEncoder* enc, VkDevice
 
     uint32_t typeBits = 0;
     {
-        std::lock_guard<std::recursive_mutex> lock(mLock);
+        std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
         auto it = info_VkImage.find(dedicated->image);
         if (it == info_VkImage.end() || !it->second.cabooseDmabuf || it->second.device != device)
             return reject("image");
@@ -138,7 +138,7 @@ VkResult ResourceTracker::cabooseAllocateImportedMemory(VkEncoder* enc, VkDevice
     // closed when the memory is freed.
     setDeviceMemoryInfo(device, *pMemory, 0, nullptr, hostInfo.memoryTypeIndex, nullptr,
                         true /* imported */, ZX_HANDLE_INVALID, nullptr, importFd->fd);
-    std::lock_guard<std::recursive_mutex> lock(mLock);
+    std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
     CabooseImport& import = mCabooseImports[*pMemory];
     import.device = device;
     import.image = dedicated->image;
@@ -156,7 +156,7 @@ VkResult ResourceTracker::cabooseAllocateImportedMemory(VkEncoder* enc, VkDevice
 void ResourceTracker::cabooseForgetMemory(VkDeviceMemory memory) {
     VkImage image = VK_NULL_HANDLE;
     {
-        std::lock_guard<std::recursive_mutex> lock(mLock);
+        std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
         auto it = mCabooseImports.find(memory);
         if (it == mCabooseImports.end()) return;
         if (it->second.map) munmap(const_cast<uint8_t*>(it->second.map), it->second.size);
@@ -169,7 +169,7 @@ void ResourceTracker::cabooseForgetMemory(VkDeviceMemory memory) {
 
 void ResourceTracker::cabooseForgetImage(VkImage image) {
     {
-        std::lock_guard<std::recursive_mutex> lock(mLock);
+        std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
         for (auto& [memory, import] : mCabooseImports)
             if (import.image == image) import.image = VK_NULL_HANDLE;
     }
@@ -178,7 +178,7 @@ void ResourceTracker::cabooseForgetImage(VkImage image) {
 }
 
 void ResourceTracker::cabooseRecordImageBind(VkImage image, VkDeviceMemory memory, VkDeviceSize offset) {
-    std::lock_guard<std::recursive_mutex> lock(mLock);
+    std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
     auto it = mCabooseImports.find(memory);
     if (it == mCabooseImports.end()) return;
     it->second.image = image;
@@ -199,7 +199,7 @@ VkResult ResourceTracker::cabooseLatchMedia(VkEncoder* enc, VkQueue queue) {
     };
     std::vector<Candidate> candidates;
     {
-        std::lock_guard<std::recursive_mutex> lock(mLock);
+        std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
         if (mCabooseImports.empty()) return VK_SUCCESS;
         for (auto& [memory, import] : mCabooseImports) {
             if (import.device != device || import.image == VK_NULL_HANDLE) continue;
@@ -222,7 +222,7 @@ VkResult ResourceTracker::cabooseLatchMedia(VkEncoder* enc, VkQueue queue) {
             CB_GM_LATCH_HEAD + caboose::media::encodedSize(entry) > CB_GM_LATCH_MAX_PACKET) {
             // The phone's stream reader takes packets of at most 16 MiB: pixels that do not
             // fit (4K 10-bit and larger) are not carried, and the image keeps its contents.
-            std::lock_guard<std::recursive_mutex> lock(mLock);
+            std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
             auto it = mCabooseImports.find(c.memory);
             if (it != mCabooseImports.end() && !it->second.reportedMismatch) {
                 it->second.reportedMismatch = true;
@@ -232,7 +232,7 @@ VkResult ResourceTracker::cabooseLatchMedia(VkEncoder* enc, VkQueue queue) {
         } else if (decision == caboose::media::Decision::latch) {
             entries.push_back(std::move(entry));
         } else if (decision == caboose::media::Decision::mismatch) {
-            std::lock_guard<std::recursive_mutex> lock(mLock);
+            std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
             auto it = mCabooseImports.find(c.memory);
             if (it != mCabooseImports.end() && !it->second.reportedMismatch) {
                 it->second.reportedMismatch = true;

@@ -1,5 +1,6 @@
 // Copyright 2026 Caboose contributors. SPDX-License-Identifier: Apache-2.0
 #include "headless_surface_internal.h"
+#include "presentation_driver_lock.h"
 #include <cerrno>
 #include <new>
 
@@ -24,7 +25,10 @@ int createHeadlessSurface(VkInstance instance, HeadlessSurface** out, VkResult* 
     surface->destroy = destroy;
     VkHeadlessSurfaceCreateInfoEXT info{};
     info.sType = VK_STRUCTURE_TYPE_HEADLESS_SURFACE_CREATE_INFO_EXT;
-    *vulkanResult = create(instance, &info, nullptr, &surface->surface);
+    {
+        DriverLock driver;
+        *vulkanResult = create(instance, &info, nullptr, &surface->surface);
+    }
     if (*vulkanResult != VK_SUCCESS) { delete surface; return EIO; }
     *out = surface;
     return 0;
@@ -32,7 +36,10 @@ int createHeadlessSurface(VkInstance instance, HeadlessSurface** out, VkResult* 
 int destroyHeadlessSurface(HeadlessSurface** surface) {
     if (!surface || !*surface) return EINVAL;
     HeadlessSurface* owned = *surface;
-    owned->destroy(owned->instance, owned->surface, nullptr);
+    {
+        DriverLock driver;
+        owned->destroy(owned->instance, owned->surface, nullptr);
+    }
     delete owned;
     *surface = nullptr;
     return 0;

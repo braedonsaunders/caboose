@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 #pragma once
+#include "lock_order.h"
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -14,6 +15,7 @@
 #include "completion_feed.h"
 #include "handles.h"
 #include "query_results.h"
+#include "silent_success.h"
 
 namespace caboose::memory {
 inline thread_local uint32_t lastOpcode = 0;
@@ -41,14 +43,21 @@ bool drainDeferredReplies(uint32_t& pending, Stream* stream) {
     return true;
 }
 
-// Deferred commands in flight before their replies must be read. Past 6 MiB of commands
-// the phone has not answered, a send waits for the oldest half: the broker would take more
-// (its flow control paces only the transport), but every byte queued ahead of a present or a
-// synchronous call delays it by the time the phone takes to decode it. What must also stay
-// small is the replies left unread: they wait in the socket back to the process, and a full
-// socket would stall the broker's writer and with it the phone. Replies that have arrived
-// are read without blocking once a little is owed.
-inline constexpr uint64_t deferredByteLimit = 6 * 1024 * 1024;
+// Deferred commands in flight before their replies must be read, bounded two ways; past
+// either bound a send waits for the oldest replies, down to half of both.
+// - Reply bytes owed, 64 KiB, so at most 16384 replies (each at least a 4-byte result) and
+//   about 1.25 MiB of their `Reply` records (only one encoder defers). Replies that have
+//   arrived wait unread in the local socket back to the process and the broker's queue for
+//   that stream, which holds back no other stream and ends the stream past 8 MiB unread
+//   (docs/gpu-live.md, "Toward guest streams"). Replies that have arrived are read without
+//   blocking once a little is owed.
+// - Command bytes the phone has not answered, 24 MiB: eight frames of a game that sends
+//   3 MiB a frame. The guest keeps none of these bytes: they wait in the broker's queue and
+//   resume window (8 MiB each), the phone's ingress and its decoder's socket, and a send past
+//   what those take blocks in the socket. Frame pacing (two unretired ordered presents,
+//   DXVK's frame latency) is what limits the frames in flight; this bound only keeps a burst
+//   of uploads from queueing seconds of decoding ahead of a present or a synchronous call.
+inline constexpr uint64_t deferredByteLimit = 24 * 1024 * 1024;
 inline constexpr uint64_t deferredReplyByteLimit = 64 * 1024;
 inline constexpr uint64_t deferredReapBytes = 256 * 1024, deferredReapReplyBytes = 4096;
 
@@ -80,8 +89,8 @@ class DeferredReplies {
 public:
     // Before sending a deferred command of `bytes`: once some commands or replies are owed,
     // consume the replies that have already arrived on the socket without blocking; if still
-    // past the bound, drain only the oldest prefix needed to bring the remaining queue within
-    // half the bound, rather than blocking on the newest just-sent command.
+    // past a bound, drain only the oldest prefix needed to bring the remaining queue within
+    // half of both bounds, rather than blocking on the newest just-sent command.
     template<class Stream, class Available>
     bool reserve(const void* encoder, Stream* stream, uint64_t bytes,
                  uint64_t limit, Available available) {
@@ -91,7 +100,7 @@ public:
         };
         bool reapAvailable = false;
         {
-            std::lock_guard<std::mutex> lock(mutex_);
+            std::lock_guard<decltype(mutex_)> lock(mutex_);
             auto found = pending_.find(encoder);
             if (found == pending_.end()) return true;
             if (fits(found->second)) {
@@ -104,7 +113,7 @@ public:
         if (reapAvailable) return true;
         std::vector<Reply> replies;
         {
-            std::lock_guard<std::mutex> lock(mutex_);
+            std::lock_guard<decltype(mutex_)> lock(mutex_);
             auto found = pending_.find(encoder);
             if (found == pending_.end() || fits(found->second)) return true;
             auto& queued = found->second.replies;
@@ -155,7 +164,7 @@ public:
 
     void add(const void* encoder, uint32_t replies, uint64_t bytes) {
         if (!replies) return;
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<decltype(mutex_)> lock(mutex_);
         auto& entry = pending_[encoder];
         entry.replies.insert(entry.replies.end(), replies, Reply{});
         entry.replies.back().bytes = bytes;
@@ -171,7 +180,8 @@ public:
     // A create of `count` objects whose consecutive handles start at `first`: its reply
     // is those handles, then one result.
     void addHandleCreates(const void* encoder, uint64_t first, uint32_t count, uint64_t bytes) {
-        std::lock_guard<std::mutex> lock(mutex_);
+        if (silentReply(encoder)) return;
+        std::lock_guard<decltype(mutex_)> lock(mutex_);
         auto& entry = pending_[encoder];
         entry.replies.push_back({0, 0, first, false, count, bytes, nullptr, lastOpcode});
         entry.bytes += bytes;
@@ -181,7 +191,7 @@ public:
     // A command whose reply is data and then a result (or only data, `withResult` false),
     // kept in `reply` when it is read (query_results.h).
     void addDataReply(const void* encoder, std::shared_ptr<QueryReply> reply, uint64_t bytes, bool withResult = true) {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<decltype(mutex_)> lock(mutex_);
         auto& entry = pending_[encoder];
         Reply value; value.data = std::move(reply); value.bytes = bytes; value.dataResult = withResult;
         entry.replies.push_back(std::move(value));
@@ -193,9 +203,11 @@ public:
     void addCheckedResult(const void* encoder, uint64_t bytes) {
         addCheckedResults(encoder, 1, bytes);
     }
+    // Every result is a listed command's (a staged submit's command buffer begins and ends, then
+    // the submit): under silent success none of them comes (silent_success.h).
     void addCheckedResults(const void* encoder, uint32_t results, uint64_t bytes) {
-        if (!results) return;
-        std::lock_guard<std::mutex> lock(mutex_);
+        if (!results || silentReply(encoder)) return;
+        std::lock_guard<decltype(mutex_)> lock(mutex_);
         auto& entry = pending_[encoder];
         entry.replies.insert(entry.replies.end(), results, Reply{0, 0, 0, true, 1, 0, nullptr});
         entry.replies.back().bytes = bytes;
@@ -204,7 +216,7 @@ public:
         total_.fetch_add(results, std::memory_order_relaxed);
     }
     void addFenceWait(const void* encoder, uint64_t fence, uint64_t bytes) {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<decltype(mutex_)> lock(mutex_);
         auto& entry = pending_[encoder];
         entry.replies.push_back({fence, generations_[fence], 0, false, 1, bytes, nullptr});
         entry.bytes += bytes;
@@ -226,7 +238,7 @@ public:
         if (!total_.load(std::memory_order_relaxed)) return true;
         std::vector<Reply> replies;
         {
-            std::lock_guard<std::mutex> lock(mutex_);
+            std::lock_guard<decltype(mutex_)> lock(mutex_);
             auto found = pending_.find(encoder);
             if (found == pending_.end()) return true;
             auto& queued = found->second.replies;
@@ -273,7 +285,7 @@ public:
         for (;;) {
             Reply reply;
             {
-                std::lock_guard<std::mutex> lock(mutex_);
+                std::lock_guard<decltype(mutex_)> lock(mutex_);
                 auto found = pending_.find(encoder);
                 if (found == pending_.end()) return true;
                 auto& queued = found->second.replies;
@@ -294,7 +306,7 @@ public:
     // True when a prefetched wait for the fence's current generation is still in flight.
     bool prefetchPending(const void* encoder, uint64_t fence) {
         if (!fence || !total_.load(std::memory_order_relaxed)) return false;
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<decltype(mutex_)> lock(mutex_);
         auto found = pending_.find(encoder);
         if (found == pending_.end()) return false;
         auto generation = generations_.find(fence);
@@ -308,7 +320,7 @@ public:
     template<class Handle>
     bool signaled(const Handle* fences, uint32_t count, bool waitAll) {
         if (!count || !signaledCount_.load(std::memory_order_relaxed)) return false;
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<decltype(mutex_)> lock(mutex_);
         uint32_t known = 0;
         for (uint32_t i = 0; i < count; ++i)
             known += signaled_.count(caboose::handle_key(fences[i])) ? 1 : 0;
@@ -317,7 +329,7 @@ public:
 
     void markSignaled(uint64_t fence) {
         if (!fence) return;
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<decltype(mutex_)> lock(mutex_);
         signaled_.insert(fence);
         signaledCount_.store(signaled_.size(), std::memory_order_relaxed);
     }
@@ -326,7 +338,7 @@ public:
     // prefetch in flight. Generations are kept so a reused handle cannot match.
     void forgetFence(uint64_t fence) {
         if (!fence) return;
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<decltype(mutex_)> lock(mutex_);
         signaled_.erase(fence);
         signaledCount_.store(signaled_.size(), std::memory_order_relaxed);
         ++generations_[fence];
@@ -350,12 +362,20 @@ public:
     // The connection these replies were owed on ended: none of them will ever arrive, and
     // a new connection must not wait for them.
     void forgetAll() {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<decltype(mutex_)> lock(mutex_);
         pending_.clear();
         total_.store(0, std::memory_order_relaxed);
     }
 
 private:
+    // The command just sent (lastOpcode) has no reply on success: its stream is silent and it
+    // is one of silent success's commands. Noted, so a later drainObjects confirms it.
+    static bool silentReply(const void* encoder) {
+        auto& mode = caboose::silent::replyMode();
+        if (!caboose::silent::silentOpcode(lastOpcode) || !mode.silent(encoder)) return false;
+        mode.sentSilently(encoder);
+        return true;
+    }
     struct Reply;
     static size_t wireSize(const Reply& reply) {
         if (reply.data) return reply.data->data.size() + (reply.dataResult ? sizeof(int32_t) : 0);
@@ -418,7 +438,7 @@ private:
             return true;
         }
         if (result != 0) return true;
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<decltype(mutex_)> lock(mutex_);
         auto generation = generations_.find(reply.fence);
         if (generation != generations_.end() && generation->second == reply.generation) {
             signaled_.insert(reply.fence);
@@ -434,7 +454,7 @@ private:
         bool dataResult = true;  // a data reply's data is followed by a result
     };
     struct Entry { std::vector<Reply> replies; uint64_t bytes = 0, replyBytes = 0; };
-    std::mutex mutex_;
+    caboose::lock_order::Mutex<std::mutex, caboose::lock_order::kDeferredReplies> mutex_;
     std::unordered_map<const void*, Entry> pending_;
     std::unordered_map<uint64_t, uint64_t> generations_;
     std::unordered_set<uint64_t> signaled_;
@@ -444,6 +464,8 @@ private:
     std::atomic<size_t> signaledCount_{0};
 };
 
-inline DeferredReplies deferredReplies;
+// Never destroyed: a process's exit runs static destructors while its other threads may
+// still be inside the driver.
+inline DeferredReplies& deferredReplies = *new DeferredReplies;
 
 } // namespace caboose::memory

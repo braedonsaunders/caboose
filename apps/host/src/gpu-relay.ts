@@ -1,3 +1,4 @@
+import { connect } from 'node:net'
 import { WebSocket, type RawData } from 'ws'
 
 export const GPU_PROTOCOL = 'caboose.gpu.live.v1'
@@ -23,16 +24,52 @@ export const GPU_SUSPENDED_CLOSE = 4001
  * so it frees the executor at once (docs/gpu-live.md, "Resuming an executor"). */
 export const GPU_EXECUTOR_ENDED_CLOSE = 4410
 /** GPU capabilities a phone may declare; the host forwards only these, never other text. */
-export const GPU_FEATURES = ['guest-handles', 'guest-handle-arrays', 'completion-feed', 'ordered-present', 'guest-images', 'guest-query-pools', 'shader-cache', 'executor-resume', 'zstd-stream', 'upload-cache', 'guest-buffer-views', 'batched-descriptor-sets', 'batched-descriptor-sets-inline', 'guest-set-ids', 'completion-payloads', 'wait-serial', 'silent-success', 'one-way-start', 'executor-stats'] as const
+export const GPU_FEATURES = ['guest-handles', 'guest-handle-arrays', 'completion-feed', 'ordered-present', 'guest-images', 'guest-query-pools', 'shader-cache', 'executor-resume', 'zstd-stream', 'upload-cache', 'guest-buffer-views', 'batched-descriptor-sets', 'batched-descriptor-sets-inline', 'guest-set-ids', 'completion-payloads', 'wait-serial', 'silent-success', 'one-way-start', 'executor-stats', 'seat-routing'] as const
 
 /** The known features named in a phone's `X-Caboose-GPU-Features` header, sorted. */
 export function gpuFeatures(header: string | string[] | undefined): string[] {
-  const values = (Array.isArray(header) ? header.join(',') : header ?? '').split(',')
   const known = new Set<string>(GPU_FEATURES)
-  return [...new Set(values.map(value => value.trim().toLowerCase()).filter(value => known.has(value)))].sort()
+  return declaredGPUFeatures(header).filter(value => known.has(value))
 }
 
-/** The owner's existing guest service; never a client-supplied destination. */
+/** Every feature name a phone declared, known or not, sorted: at most 64 names of the
+ * feature-name form, so the guest can log what the relay dropped (docs/gpu-live.md,
+ * "Feature negotiation"). */
+export function declaredGPUFeatures(header: string | string[] | undefined): string[] {
+  const values = (Array.isArray(header) ? header.join(',') : header ?? '').split(',')
+  const names = values.map(value => value.trim().toLowerCase()).filter(value => /^[a-z0-9][a-z0-9-]{0,63}$/.test(value))
+  return [...new Set(names)].sort().slice(0, 64)
+}
+
+/** One line for the host's log naming the declared features this relay does not forward;
+ * empty when it forwards them all. */
+export function droppedGPUFeaturesLine(declared: readonly string[]): string {
+  const known = new Set<string>(GPU_FEATURES)
+  const dropped = declared.filter(name => !known.has(name))
+  return dropped.length ? `CABOOSE_GPU_RELAY_FEATURES dropped=${dropped.join(',')} forwarded=${declared.filter(name => known.has(name)).join(',')}` : ''
+}
+
+/** Whether a TCP listener answers at a ws: or wss: URL's host and port, within `timeout`. */
+export function reachable(url: string, timeout = 1500): Promise<boolean> {
+  const { hostname, port, protocol } = new URL(url)
+  return new Promise(resolve => {
+    const socket = connect({ host: hostname, port: Number(port) || (protocol === 'wss:' ? 443 : 80) })
+    const done = (answer: boolean) => { socket.destroy(); resolve(answer) }
+    socket.setTimeout(timeout, () => done(false))
+    socket.once('connect', () => done(true))
+    socket.once('error', () => done(false))
+  })
+}
+
+/**
+ * Where the phone's executor goes: the computer's GPU broker service, shared by both seats,
+ * where the guest runs it; else the owner's display, whose own broker serves that seat alone.
+ */
+export async function gpuServiceURL(brokerURL: string | undefined, displayURL: string, answers = reachable): Promise<string> {
+  return brokerURL && await answers(brokerURL) ? brokerURL : displayURL
+}
+
+/** The guest's GPU service at a guest URL; never a client-supplied destination. */
 export function gpuUpstreamURL(displayURL: string): string {
   const url = new URL(displayURL)
   if (!['ws:', 'wss:'].includes(url.protocol) || url.username || url.password) throw new Error('Invalid guest display URL')
@@ -88,6 +125,7 @@ export function relayGPU(client: WebSocket, options: {
   computer: string
   executor: string
   features?: readonly string[]
+  declared?: readonly string[]
 }): Promise<void> {
   return startGPURelay(client, options).done
 }
@@ -103,6 +141,9 @@ export function startGPURelay(first: WebSocket, options: {
   computer: string
   executor: string
   features?: readonly string[]
+  /** Every name the phone declared (declaredGPUFeatures), told to the guest beside the
+   * forwarded ones so a feature this relay drops is visible there. */
+  declared?: readonly string[]
   resumable?: boolean
 }): GPURelay {
   if (first.readyState !== WebSocket.OPEN) return { done: Promise.resolve(), attach: () => false, end: () => {}, ended: true }
@@ -117,6 +158,7 @@ export function startGPURelay(first: WebSocket, options: {
       'x-caboose-gpu-computer': options.computer,
       'x-caboose-gpu-executor': options.executor,
       ...(options.features?.length ? { 'x-caboose-gpu-features': options.features.join(',') } : {}),
+      ...(options.declared?.length ? { 'x-caboose-gpu-declared': options.declared.join(',') } : {}),
     },
   })
   let attachPhone: (client: WebSocket) => boolean = () => false

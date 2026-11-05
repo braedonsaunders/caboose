@@ -52,7 +52,7 @@ typedef struct {
     uint32_t links; Link chain[kMaxChain];
 } Question;
 static Question questions[kMaxQuestions];
-static size_t asked;
+static size_t asked, skipped;
 // The logged scopes' identities, which name the device each was asked of.
 static unsigned char* identities[kMaxIdentities];
 static size_t identitySizes[kMaxIdentities], identityCount;
@@ -104,8 +104,21 @@ static int known(const Question* question) {
     return 0;
 }
 
+// The pointer width a log's process had, from its identity (patch 0064: the cache's marker,
+// the driver's 64-digit source identity, then the width); 0 when it has none. A question's
+// chain was laid out for that width, and its answers belong to that width's scope.
+static uint32_t log_width(const unsigned char* identity, size_t size) {
+    static const char marker[] = "caboose-format-cache-v1:";
+    const size_t at = sizeof(marker) - 1 + 64;
+    const unsigned char* found = memmem(identity, size, marker, sizeof(marker) - 1);
+    uint32_t width = 0;
+    if (found && (size_t)(identity + size - found) >= at + sizeof(width)) memcpy(&width, found + at, sizeof(width));
+    return width;
+}
+
 // One log: an 8-byte magic, the identity, then checksummed records. Only answers are
 // read ('P' keys: scope, then opcode and parameters); damaged records end the file.
+// Logs of processes of another pointer width are left to the warm-up built for it.
 static void read_log(const char* path) {
     FILE* file = fopen(path, "rb");
     if (!file) return;
@@ -116,6 +129,7 @@ static void read_log(const char* path) {
     if (size < 12 || memcmp(bytes, "CBCQ\2\0\0\0", 8)) return;
     memcpy(&identity, bytes + 8, 4);
     if (identity > size - 12) return;
+    if (log_width(bytes + 12, identity) != sizeof(void*)) { ++skipped; return; }
     if (identityCount < kMaxIdentities && (identities[identityCount] = malloc(identity)))
         memcpy(identities[identityCount], bytes + 12, identity), identitySizes[identityCount++] = identity;
     size_t at = 12 + (size_t)identity;
@@ -230,7 +244,8 @@ static int ask_share(size_t first, size_t step) {
     const char* extensions[] = {VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME};
     info.enabledExtensionCount = 1; info.ppEnabledExtensionNames = extensions;
     VkInstance instance;
-    if (create(&info, NULL, &instance) != VK_SUCCESS) { fprintf(stderr, "caboose-gpu-warmup: no Vulkan instance\n"); return 1; }
+    const VkResult created = create(&info, NULL, &instance);
+    if (created != VK_SUCCESS) { fprintf(stderr, "caboose-gpu-warmup: no Vulkan instance: %d\n", created); return 1; }
     PFN_vkEnumeratePhysicalDevices enumerate = (PFN_vkEnumeratePhysicalDevices)proc(instance, "vkEnumeratePhysicalDevices");
     PFN_vkGetPhysicalDeviceProperties2 properties = (PFN_vkGetPhysicalDeviceProperties2)proc(instance, "vkGetPhysicalDeviceProperties2");
     formatProperties = (PFN_vkGetPhysicalDeviceFormatProperties)proc(instance, "vkGetPhysicalDeviceFormatProperties");
@@ -250,11 +265,13 @@ static int ask_share(size_t first, size_t step) {
         !formatProperties2KHR || !imageProperties2KHR || !semaphoreProperties || !deviceProperties ||
         !queueFamilies || !deviceExtensions || !properties2 || !properties2KHR ||
         enumerate(instance, &deviceCount, NULL) != VK_SUCCESS || !deviceCount) {
+        fprintf(stderr, "caboose-gpu-warmup: no device or entry point (%u devices)\n", deviceCount);
         if (destroy) destroy(instance, NULL);
         return 1;
     }
     devices = calloc(deviceCount, sizeof(*devices));
-    if (!devices || (enumerate(instance, &deviceCount, devices) != VK_SUCCESS)) return 1;
+    VkResult listed = devices ? enumerate(instance, &deviceCount, devices) : VK_ERROR_OUT_OF_HOST_MEMORY;
+    if (listed != VK_SUCCESS) { fprintf(stderr, "caboose-gpu-warmup: devices not listed: %d\n", listed); return 1; }
     // The properties query is what identifies each device to the cache; only devices the
     // logs were asked of are asked again (all of them when none can be told apart).
     uint32_t kept = 0;
@@ -275,7 +292,10 @@ static int ask_share(size_t first, size_t step) {
 static int replay(int count, char** logs) {
     const double started = now();
     for (int i = 0; i < count; ++i) read_log(logs[i]);
-    if (!asked) return 0;
+    if (!asked) {
+        printf("CABOOSE_GPU_WARMUP bits=%zu replayed=0 skipped_logs=%zu\n", sizeof(void*) * 8, skipped);
+        return 0;
+    }
     const size_t processes = asked < kProcesses ? asked : kProcesses;
     pid_t children[kProcesses];
     size_t forked = 0;
@@ -288,10 +308,14 @@ static int replay(int count, char** logs) {
     int failed = ask_share(0, processes);
     for (size_t k = 0; k < forked; ++k) {
         int status = 0;
-        if (waitpid(children[k], &status, 0) != children[k] || !WIFEXITED(status) || WEXITSTATUS(status)) failed = 1;
+        if (waitpid(children[k], &status, 0) != children[k]) status = -1;
+        if (status == 0) continue;
+        failed = 1;
+        if (status > 0 && WIFSIGNALED(status))
+            fprintf(stderr, "caboose-gpu-warmup: process %zu ended by signal %d\n", k + 1, WTERMSIG(status));
     }
-    printf("CABOOSE_GPU_WARMUP replayed=%zu processes=%zu ms=%.1f%s\n", asked, forked + 1, now() - started,
-           failed ? " incomplete" : "");
+    printf("CABOOSE_GPU_WARMUP bits=%zu replayed=%zu processes=%zu skipped_logs=%zu ms=%.1f%s\n", sizeof(void*) * 8,
+           asked, forked + 1, skipped, now() - started, failed ? " incomplete" : "");
     return failed;
 }
 

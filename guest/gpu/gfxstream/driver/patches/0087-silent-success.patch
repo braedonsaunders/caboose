@@ -1,0 +1,364 @@
+From: Caboose <caboose@local>
+Subject: [PATCH 87/91] Leave out the replies of commands the guest does not wait for
+
+Guest-assigned creates and allocations, binds, submits with their staged command buffer
+begins and ends, and host event operations are sent without waiting, but each reply still
+crossed back to the process, counted against the deferred-reply bounds and was drained
+before every synchronous command. With hello 0x800000 granted (with guest handles, handle
+arrays, query pools, buffer views and the completion feed), each device stream switches to
+silent success: at the first encoder lock hold once the feed runs, before anything that hold
+sends, the encoder writes one REPLY_MODE packet, and from then on those commands queue no
+reply (caboose-bounded-memory/silent_success.h). A failure arrives as a FAULT record on the
+feed and is the loss of the process's device. Only encoders on a device stream switch; one
+recording a command buffer into local staging never does. Under it the synchronous paths of
+those commands are never taken: a command buffer begun or ended on its own does not wait, a
+second encoder no longer turns their deferral off, every allocation is sent with its guest
+handle (an import, export or allocation past the budget then waits for one round trip, and
+one that would take its heap past its size counting this process's allocations is refused
+locally with VK_ERROR_OUT_OF_DEVICE_MEMORY), and a pipeline create that may skip compilation
+compiles instead. Before the presentation channel names objects, drainObjects waits for the
+reply of one vkEnumerateInstanceVersion sent after the silent commands.
+---
+diff --git a/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp b/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp
+--- a/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp
++++ b/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp
+@@ -12,6 +12,7 @@
+ #include "ResourceTracker.h"
+ #include "caboose-bounded-memory/deferred_destroys.h"
+ #include "caboose-bounded-memory/guest_set_ids.h"
++#include "caboose-bounded-memory/silent_success.h"
+ #include "caboose-bounded-memory/static_query_cache.h"
+ #include "caboose-bounded-memory/source_identity.h"
+ 
+@@ -4303,9 +4304,23 @@ static VkResult cabooseEncodeAllocateMemory(VkEncoder* enc, VkDevice device,
+                 caboose::memory::asyncAllocationBudget.reserve(dev, heap, props.memoryHeaps[heap].size,
+                                                                info->allocationSize);
+     }
++    // Under silent success the encoder sends every allocation without waiting, and a refusal is
++    // device loss: a plain allocation that would take its heap past its size counting this
++    // process's own allocations alone is refused here, where the application sees it.
++    if (!async && plain && heap < props.memoryHeapCount && caboose::silent::replyMode().silent(enc) &&
++        info->allocationSize > props.memoryHeaps[heap].size -
++                                   std::min(props.memoryHeaps[heap].size,
++                                            caboose::memory::asyncAllocationBudget.committed(dev, heap)))
++        return VK_ERROR_OUT_OF_DEVICE_MEMORY;
+     caboose::memory::asyncAllocation = async;
+     VkResult result = enc->vkAllocateMemory(device, info, pAllocator, pMemory, true /* do lock */);
+     caboose::memory::asyncAllocation = false;
++    // An allocation that would have waited for its reply (an import or export, or one past the
++    // budget) still waits under silent success until the phone has decoded it, so other channels
++    // can name it at once.
++    if (result == VK_SUCCESS && !async && caboose::silent::replyMode().silent(enc) &&
++        !enc->cabooseDrainDeferredObjects(true /* do lock */))
++        result = VK_ERROR_DEVICE_LOST;
+     if (result != VK_SUCCESS) {
+         if (async) caboose::memory::asyncAllocationBudget.cancel(dev, heap, info->allocationSize);
+         return result;
+diff --git a/src/gfxstream/guest/vulkan_enc/VkEncoder.cpp.inl b/src/gfxstream/guest/vulkan_enc/VkEncoder.cpp.inl
+--- a/src/gfxstream/guest/vulkan_enc/VkEncoder.cpp.inl
++++ b/src/gfxstream/guest/vulkan_enc/VkEncoder.cpp.inl
+@@ -86,14 +86,27 @@ class VkEncoder::Impl {
+     std::atomic<long> mOwner{0};
+ };
+ 
+-VkEncoder::~VkEncoder() {}
++// Only an encoder on a device stream may switch to silent success; one recording a command
++// buffer into local staging never does (caboose-bounded-memory/silent_success.h).
++VkEncoder::~VkEncoder() { caboose::silent::replyMode().encoderGone(this); }
+ 
+ VkEncoder::VkEncoder(gfxstream::guest::IOStream* stream)
+-    : mImpl(new VkEncoder::Impl(stream)) {}
++    : mImpl(new VkEncoder::Impl(stream)) {
++    caboose::silent::replyMode().encoderMade(this, stream);
++}
+ 
+ void VkEncoder::flush() { mImpl->flush(); }
+ 
+-void VkEncoder::lock() { mImpl->lock(); }
++// Silent success: a device stream switches with REPLY_MODE at the first lock hold once its feed
++// runs, before anything that hold sends (caboose-bounded-memory/silent_success.h).
++void VkEncoder::lock() {
++    mImpl->lock();
++    if (caboose::silent::replyMode().due(this, caboose::completion::feedActive.load(std::memory_order_acquire))) {
++        auto* stream = mImpl->stream();
++        caboose::silent::encodeReplyMode(stream->reserve(caboose::silent::kReplyModePacketSize));
++        stream->flush();
++    }
++}
+ 
+ void VkEncoder::unlock() { mImpl->unlock(); }
+ 
+diff --git a/src/gfxstream/guest/vulkan_enc/autogenerated/VkEncoder.cpp b/src/gfxstream/guest/vulkan_enc/autogenerated/VkEncoder.cpp
+--- a/src/gfxstream/guest/vulkan_enc/autogenerated/VkEncoder.cpp
++++ b/src/gfxstream/guest/vulkan_enc/autogenerated/VkEncoder.cpp
+@@ -2601,8 +2601,10 @@ VkResult VkEncoder::vkQueueSubmit(VkQueue queue, uint32_t submitCount, const VkS
+     caboose_read_profile::currentOpcode = OP_vkQueueSubmit;
+     // A submit's failure is device loss once the application has moved on: with guest
+     // handles it never waits for its result.
++    // Under silent success its reply never comes: it is never waited for.
+     const bool cabooseDeferredSubmit = !queueSubmitWithCommandsEnabled && caboose_guest_handles::enabled() &&
+-                                       caboose::memory::deferredReplies.singleEncoder(this);
++                                       (caboose::memory::deferredReplies.singleEncoder(this) ||
++                                        caboose::silent::replyMode().silent(this));
+     if (!cabooseDeferredSubmit) caboose::memory::deferredReplies.drain(this, stream);
+     auto pool = mImpl->pool();
+     VkQueue local_queue;
+@@ -2914,7 +2916,10 @@ VkResult VkEncoder::vkAllocateMemory(VkDevice device, const VkMemoryAllocateInfo
+     }
+     /* is handle, possibly out */;
+     uint64_t cgen_var_2;
+-    const bool cabooseGuestHandle = caboose_guest_handles::enabled() && caboose::memory::asyncAllocation && pMemory;
++    // Under silent success an allocation has no reply on success: every one is sent this way.
++    const bool cabooseGuestHandle = caboose_guest_handles::enabled() &&
++                                    (caboose::memory::asyncAllocation || caboose::silent::replyMode().silent(this)) &&
++                                    pMemory;
+     if (cabooseGuestHandle) *pMemory = caboose::to_handle<VkDeviceMemory>(caboose_guest_handles::next());
+     *&cgen_var_2 = (uint64_t)((*pMemory));
+     memcpy(*streamPtrPtr, (uint64_t*)&cgen_var_2, 8);
+@@ -3628,7 +3633,8 @@ VkResult VkEncoder::vkBindBufferMemory(VkDevice device, VkBuffer buffer, VkDevic
+     caboose_read_profile::currentOpcode = OP_vkBindBufferMemory;
+     // A deferred bind reads no reply now: earlier replies stay queued behind it.
+     const bool cabooseDeferredBind =
+-        caboose_guest_handles::enabled() && caboose::memory::deferredReplies.singleEncoder(this);
++        caboose_guest_handles::enabled() && (caboose::memory::deferredReplies.singleEncoder(this) ||
++                                             caboose::silent::replyMode().silent(this));
+     if (!cabooseDeferredBind) caboose::memory::deferredReplies.drain(this, stream);
+     auto pool = mImpl->pool();
+     VkDevice local_device;
+@@ -3717,7 +3723,8 @@ VkResult VkEncoder::vkBindImageMemory(VkDevice device, VkImage image, VkDeviceMe
+     caboose_read_profile::currentOpcode = OP_vkBindImageMemory;
+     // A deferred bind reads no reply now: earlier replies stay queued behind it.
+     const bool cabooseDeferredBind =
+-        caboose_guest_handles::enabled() && caboose::memory::deferredReplies.singleEncoder(this);
++        caboose_guest_handles::enabled() && (caboose::memory::deferredReplies.singleEncoder(this) ||
++                                             caboose::silent::replyMode().silent(this));
+     if (!cabooseDeferredBind) caboose::memory::deferredReplies.drain(this, stream);
+     auto pool = mImpl->pool();
+     VkDevice local_device;
+@@ -6630,7 +6637,11 @@ VkResult VkEncoder::cabooseEndCommandBufferBatched(VkCommandBuffer commandBuffer
+     uint64_t hostCb = get_host_u64_VkCommandBuffer(commandBuffer);
+     memcpy(streamPtr, &hostCb, sizeof(uint64_t));
+     VkResult replies[2] = {VK_SUCCESS, VK_SUCCESS};
+-    if (!stream->tryRead(replies, sizeof(replies))) {
++    // Under silent success the begin and end have no reply on success.
++    if (caboose::silent::replyMode().silent(this)) {
++        stream->flush();
++        caboose::silent::replyMode().sentSilently(this);
++    } else if (!stream->tryRead(replies, sizeof(replies))) {
+         stream->invalidate();
+         return static_cast<VkResult>(caboose_rpc_timing.finish(VK_ERROR_DEVICE_LOST));
+     }
+@@ -6747,7 +6758,14 @@ uint64_t VkEncoder::cabooseSendOrderMark(uint32_t doLock) {
+ 
+ bool VkEncoder::cabooseDrainDeferredObjects(uint32_t doLock) {
+     if (doLock) this->lock();
+-    const bool drained = caboose::memory::deferredReplies.drainObjects(this, mImpl->stream());
++    bool drained = caboose::memory::deferredReplies.drainObjects(this, mImpl->stream());
++    // Silent commands have no reply to read: the reply of a command sent after them shows the
++    // device has decoded them (caboose-bounded-memory/silent_success.h).
++    if (drained && caboose::silent::replyMode().takeUnconfirmed(this)) {
++        uint32_t version = 0;
++        drained = vkEnumerateInstanceVersion_cabooseAsk(&version, 0 /* doLock */) == VK_SUCCESS &&
++                  !caboose::completion::executorLost.load(std::memory_order_acquire);
++    }
+     if (doLock) this->unlock();
+     return drained;
+ }
+@@ -7007,7 +7025,9 @@ VkResult VkEncoder::vkBeginCommandBuffer(VkCommandBuffer commandBuffer,
+     if (!queueSubmitWithCommandsEnabled && doLock) caboose_rpc_timing.lock([&] { this->lock(); });
+     auto stream = mImpl->stream();
+     caboose_read_profile::currentOpcode = OP_vkBeginCommandBuffer;
+-    caboose::memory::deferredReplies.drain(this, stream);
++    // Under silent success this command has no reply on success: it neither drains nor waits.
++    const bool cabooseSilent = caboose::silent::replyMode().silent(this);
++    if (!cabooseSilent) caboose::memory::deferredReplies.drain(this, stream);
+     auto pool = mImpl->pool();
+     VkCommandBuffer local_commandBuffer;
+     VkCommandBufferBeginInfo* local_pBeginInfo;
+@@ -7051,7 +7071,12 @@ VkResult VkEncoder::vkBeginCommandBuffer(VkCommandBuffer commandBuffer,
+                                              (VkCommandBufferBeginInfo*)(local_pBeginInfo),
+                                              streamPtrPtr);
+     VkResult vkBeginCommandBuffer_VkResult_return = (VkResult)0;
+-    caboose_read_profile::read(stream, &vkBeginCommandBuffer_VkResult_return, sizeof(VkResult));
++    if (cabooseSilent) {
++        stream->flush();
++        caboose::silent::replyMode().sentSilently(this);
++    } else {
++        caboose_read_profile::read(stream, &vkBeginCommandBuffer_VkResult_return, sizeof(VkResult));
++    }
+     ++encodeCount;
+     if (0 == encodeCount % POOL_CLEAR_INTERVAL) {
+         pool->freeAll();
+@@ -7072,7 +7097,9 @@ VkResult VkEncoder::vkEndCommandBuffer(VkCommandBuffer commandBuffer, uint32_t d
+     if (!queueSubmitWithCommandsEnabled && doLock) caboose_rpc_timing.lock([&] { this->lock(); });
+     auto stream = mImpl->stream();
+     caboose_read_profile::currentOpcode = OP_vkEndCommandBuffer;
+-    caboose::memory::deferredReplies.drain(this, stream);
++    // Under silent success this command has no reply on success: it neither drains nor waits.
++    const bool cabooseSilent = caboose::silent::replyMode().silent(this);
++    if (!cabooseSilent) caboose::memory::deferredReplies.drain(this, stream);
+     auto pool = mImpl->pool();
+     VkCommandBuffer local_commandBuffer;
+     local_commandBuffer = commandBuffer;
+@@ -7099,7 +7126,12 @@ VkResult VkEncoder::vkEndCommandBuffer(VkCommandBuffer commandBuffer, uint32_t d
+         *streamPtrPtr += 1 * 8;
+     }
+     VkResult vkEndCommandBuffer_VkResult_return = (VkResult)0;
+-    caboose_read_profile::read(stream, &vkEndCommandBuffer_VkResult_return, sizeof(VkResult));
++    if (cabooseSilent) {
++        stream->flush();
++        caboose::silent::replyMode().sentSilently(this);
++    } else {
++        caboose_read_profile::read(stream, &vkEndCommandBuffer_VkResult_return, sizeof(VkResult));
++    }
+     ++encodeCount;
+     if (0 == encodeCount % POOL_CLEAR_INTERVAL) {
+         pool->freeAll();
+@@ -8620,7 +8652,8 @@ VkResult VkEncoder::vkSetEvent(VkDevice device, VkEvent event, uint32_t doLock)
+     // replies, a failure being device loss, as for a submit. The event's state is known
+     // locally (completion_feed.h, events), and later commands on this stream follow it.
+     const bool cabooseDeferred = !queueSubmitWithCommandsEnabled && caboose_guest_handles::enabled() &&
+-                                 caboose::memory::deferredReplies.singleEncoder(this);
++                                 (caboose::memory::deferredReplies.singleEncoder(this) ||
++                                  caboose::silent::replyMode().silent(this));
+     if (!cabooseDeferred) caboose::memory::deferredReplies.drain(this, stream);
+     auto pool = mImpl->pool();
+     VkDevice local_device;
+@@ -8689,7 +8722,8 @@ VkResult VkEncoder::vkResetEvent(VkDevice device, VkEvent event, uint32_t doLock
+     // replies, a failure being device loss, as for a submit. The event's state is known
+     // locally (completion_feed.h, events), and later commands on this stream follow it.
+     const bool cabooseDeferred = !queueSubmitWithCommandsEnabled && caboose_guest_handles::enabled() &&
+-                                 caboose::memory::deferredReplies.singleEncoder(this);
++                                 (caboose::memory::deferredReplies.singleEncoder(this) ||
++                                  caboose::silent::replyMode().silent(this));
+     if (!cabooseDeferred) caboose::memory::deferredReplies.drain(this, stream);
+     auto pool = mImpl->pool();
+     VkDevice local_device;
+@@ -8759,7 +8793,8 @@ VkResult VkEncoder::vkCreateBufferView(VkDevice device, const VkBufferViewCreate
+     caboose_read_profile::currentOpcode = OP_vkCreateBufferView;
+     // With hello feature 0x10000 the guest assigns the view's handle and reads the reply later.
+     const bool cabooseGuestHandle = caboose_guest_handles::enabled() && caboose_gfxstream_guest_buffer_views == 1 &&
+-                                    pView && caboose::memory::deferredReplies.singleEncoder(this);
++                                    pView && (caboose::memory::deferredReplies.singleEncoder(this) ||
++                                              caboose::silent::replyMode().silent(this));
+     if (!cabooseGuestHandle) caboose::memory::deferredReplies.drain(this, stream);
+     auto pool = mImpl->pool();
+     VkDevice local_device;
+@@ -9585,8 +9620,10 @@ VkResult VkEncoder::vkCreateComputePipelines(VkDevice device, VkPipelineCache pi
+     caboose_read_profile::currentOpcode = OP_vkCreateComputePipelines;
+     // The guest assigns the created objects' handles and reads the device's reply later.
+     bool cabooseGuestHandles = caboose_guest_handles::enabled() && createInfoCount && pPipelines;
+-    // A create that may skip compilation reports that in its result: it waits.
+-    for (uint32_t k = 0; cabooseGuestHandles && pCreateInfos && k < createInfoCount; ++k)
++    // A create that may skip compilation reports that in its result: it waits. Under silent
++    // success no result comes, so it compiles instead (below).
++    const bool cabooseSilent = caboose::silent::replyMode().silent(this);
++    for (uint32_t k = 0; cabooseGuestHandles && !cabooseSilent && pCreateInfos && k < createInfoCount; ++k)
+         if (pCreateInfos[k].flags & VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT)
+             cabooseGuestHandles = false;
+     const uint64_t cabooseGuestFirst =
+@@ -9611,6 +9648,10 @@ VkResult VkEncoder::vkCreateComputePipelines(VkDevice device, VkPipelineCache pi
+                 (VkComputePipelineCreateInfo*)(local_pCreateInfos + i));
+         }
+     }
++    // Silent success: the create cannot answer VK_PIPELINE_COMPILE_REQUIRED, which is not an
++    // error; an implementation may always compile.
++    for (uint32_t i = 0; cabooseSilent && local_pCreateInfos && i < createInfoCount; ++i)
++        local_pCreateInfos[i].flags &= ~VkPipelineCreateFlags(VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT);
+     // Deepcopy intentionally skipped for `const VkAllocationCallbacks* pAllocator`
+     local_pAllocator = nullptr;
+     if (local_pCreateInfos) {
+@@ -11824,8 +11865,10 @@ VkResult VkEncoder::vkCreateGraphicsPipelines(VkDevice device, VkPipelineCache p
+     caboose_read_profile::currentOpcode = OP_vkCreateGraphicsPipelines;
+     // The guest assigns the created objects' handles and reads the device's reply later.
+     bool cabooseGuestHandles = caboose_guest_handles::enabled() && createInfoCount && pPipelines;
+-    // A create that may skip compilation reports that in its result: it waits.
+-    for (uint32_t k = 0; cabooseGuestHandles && pCreateInfos && k < createInfoCount; ++k)
++    // A create that may skip compilation reports that in its result: it waits. Under silent
++    // success no result comes, so it compiles instead (below).
++    const bool cabooseSilent = caboose::silent::replyMode().silent(this);
++    for (uint32_t k = 0; cabooseGuestHandles && !cabooseSilent && pCreateInfos && k < createInfoCount; ++k)
+         if (pCreateInfos[k].flags & VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT)
+             cabooseGuestHandles = false;
+     const uint64_t cabooseGuestFirst =
+@@ -11850,6 +11893,10 @@ VkResult VkEncoder::vkCreateGraphicsPipelines(VkDevice device, VkPipelineCache p
+                 (VkGraphicsPipelineCreateInfo*)(local_pCreateInfos + i));
+         }
+     }
++    // Silent success: the create cannot answer VK_PIPELINE_COMPILE_REQUIRED, which is not an
++    // error; an implementation may always compile.
++    for (uint32_t i = 0; cabooseSilent && local_pCreateInfos && i < createInfoCount; ++i)
++        local_pCreateInfos[i].flags &= ~VkPipelineCreateFlags(VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT);
+     // Deepcopy intentionally skipped for `const VkAllocationCallbacks* pAllocator`
+     local_pAllocator = nullptr;
+     if (local_pCreateInfos) {
+@@ -14120,7 +14167,9 @@ VkResult VkEncoder::vkBindBufferMemory2(VkDevice device, uint32_t bindInfoCount,
+     if (!queueSubmitWithCommandsEnabled && doLock) this->lock();
+     auto stream = mImpl->stream();
+     caboose_read_profile::currentOpcode = OP_vkBindBufferMemory2;
+-    const bool cabooseDeferredBind = caboose_guest_handles::enabled() && caboose::memory::deferredReplies.singleEncoder(this);
++    const bool cabooseDeferredBind = caboose_guest_handles::enabled() &&
++                                     (caboose::memory::deferredReplies.singleEncoder(this) ||
++                                      caboose::silent::replyMode().silent(this));
+     if (!cabooseDeferredBind) caboose::memory::deferredReplies.drain(this, stream);
+     auto pool = mImpl->pool();
+     VkDevice local_device;
+@@ -14213,7 +14262,9 @@ VkResult VkEncoder::vkBindImageMemory2(VkDevice device, uint32_t bindInfoCount,
+     if (!queueSubmitWithCommandsEnabled && doLock) this->lock();
+     auto stream = mImpl->stream();
+     caboose_read_profile::currentOpcode = OP_vkBindImageMemory2;
+-    const bool cabooseDeferredBind = caboose_guest_handles::enabled() && caboose::memory::deferredReplies.singleEncoder(this);
++    const bool cabooseDeferredBind = caboose_guest_handles::enabled() &&
++                                     (caboose::memory::deferredReplies.singleEncoder(this) ||
++                                      caboose::silent::replyMode().silent(this));
+     if (!cabooseDeferredBind) caboose::memory::deferredReplies.drain(this, stream);
+     auto pool = mImpl->pool();
+     VkDevice local_device;
+@@ -18234,8 +18285,10 @@ VkResult VkEncoder::vkQueueSubmit2(VkQueue queue, uint32_t submitCount,
+     caboose_read_profile::currentOpcode = OP_vkQueueSubmit2;
+     // A submit's failure is device loss once the application has moved on: with guest
+     // handles it never waits for its result.
++    // Under silent success its reply never comes: it is never waited for.
+     const bool cabooseDeferredSubmit = !queueSubmitWithCommandsEnabled && caboose_guest_handles::enabled() &&
+-                                       caboose::memory::deferredReplies.singleEncoder(this);
++                                       (caboose::memory::deferredReplies.singleEncoder(this) ||
++                                        caboose::silent::replyMode().silent(this));
+     if (!cabooseDeferredSubmit) caboose::memory::deferredReplies.drain(this, stream);
+     auto pool = mImpl->pool();
+     VkQueue local_queue;
+@@ -24405,7 +24458,9 @@ VkResult VkEncoder::vkBindBufferMemory2KHR(VkDevice device, uint32_t bindInfoCou
+     if (!queueSubmitWithCommandsEnabled && doLock) this->lock();
+     auto stream = mImpl->stream();
+     caboose_read_profile::currentOpcode = OP_vkBindBufferMemory2KHR;
+-    const bool cabooseDeferredBind = caboose_guest_handles::enabled() && caboose::memory::deferredReplies.singleEncoder(this);
++    const bool cabooseDeferredBind = caboose_guest_handles::enabled() &&
++                                     (caboose::memory::deferredReplies.singleEncoder(this) ||
++                                      caboose::silent::replyMode().silent(this));
+     if (!cabooseDeferredBind) caboose::memory::deferredReplies.drain(this, stream);
+     auto pool = mImpl->pool();
+     VkDevice local_device;
+@@ -24499,7 +24554,9 @@ VkResult VkEncoder::vkBindImageMemory2KHR(VkDevice device, uint32_t bindInfoCoun
+     if (!queueSubmitWithCommandsEnabled && doLock) this->lock();
+     auto stream = mImpl->stream();
+     caboose_read_profile::currentOpcode = OP_vkBindImageMemory2KHR;
+-    const bool cabooseDeferredBind = caboose_guest_handles::enabled() && caboose::memory::deferredReplies.singleEncoder(this);
++    const bool cabooseDeferredBind = caboose_guest_handles::enabled() &&
++                                     (caboose::memory::deferredReplies.singleEncoder(this) ||
++                                      caboose::silent::replyMode().silent(this));
+     if (!cabooseDeferredBind) caboose::memory::deferredReplies.drain(this, stream);
+     auto pool = mImpl->pool();
+     VkDevice local_device;
+@@ -25673,8 +25730,10 @@ VkResult VkEncoder::vkQueueSubmit2KHR(VkQueue queue, uint32_t submitCount,
+     caboose_read_profile::currentOpcode = OP_vkQueueSubmit2KHR;
+     // A submit's failure is device loss once the application has moved on: with guest
+     // handles it never waits for its result.
++    // Under silent success its reply never comes: it is never waited for.
+     const bool cabooseDeferredSubmit = !queueSubmitWithCommandsEnabled && caboose_guest_handles::enabled() &&
+-                                       caboose::memory::deferredReplies.singleEncoder(this);
++                                       (caboose::memory::deferredReplies.singleEncoder(this) ||
++                                        caboose::silent::replyMode().silent(this));
+     if (!cabooseDeferredSubmit) caboose::memory::deferredReplies.drain(this, stream);
+     auto pool = mImpl->pool();
+     VkQueue local_queue;
+-- 
+2.43.0

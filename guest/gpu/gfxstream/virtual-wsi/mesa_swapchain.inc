@@ -62,7 +62,8 @@ struct DeviceSwapchain {
     std::chrono::steady_clock::time_point extentChecked{};
     VkImageUsageFlags imageUsage=0;
 };
-static std::map<VkSwapchainKHR,std::shared_ptr<DeviceSwapchain>> swapchains;
+// Never destroyed, like the surfaces.
+static std::map<VkSwapchainKHR,std::shared_ptr<DeviceSwapchain>>& swapchains=*new std::map<VkSwapchainKHR,std::shared_ptr<DeviceSwapchain>>;
 // 1 when presents are ordered behind device-stream ORDER marks and not waited for
 // (hello feature 0x400, SocketStream.cpp).
 extern "C" int caboose_gfxstream_ordered_present;
@@ -306,9 +307,9 @@ static VkResult allocateImages(DeviceSwapchain& swap, const VkImageCreateInfo& i
         if (result!=VK_SUCCESS) return result;
         VkMemoryDedicatedRequirements dedicated{}; dedicated.sType=VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS;
         VkMemoryRequirements2 returned{}; returned.sType=VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2; returned.pNext=&dedicated;
-        VkImageMemoryRequirementsInfo2 queryInfo{}; queryInfo.sType=VK_STRUCTURE_TYPE_IMAGE_MEMORY_REQUIREMENTS_INFO_2;
-        queryInfo.image=image.image;
-        encoder->vkGetImageMemoryRequirements2(device->internal_object,&queryInfo,&returned,true);
+        // An image made like one of an earlier swapchain, in any process, has its answer cached.
+        gfxstream::vk::ResourceTracker::get()->cabooseImageRequirements(encoder,device->internal_object,
+            image.image,&returned);
         auto requirements=returned.memoryRequirements;
         // The first compatible type the guest never maps, else the first compatible type
         // (lavapipe has only mapped ones). Later types may be lazily allocated (patch 0010
@@ -829,6 +830,7 @@ static VkResult VKAPI_CALL present(VkQueue handle, const VkPresentInfoKHR* info)
     overall=executorResult(overall);
     if (overall!=VK_ERROR_INITIALIZATION_FAILED && overall!=VK_ERROR_DEVICE_LOST)
         if (auto swap=lookupSwapchain(info->pSwapchains[0])) commitWayland(swap->surfaceHandle);
+    if (overall==VK_SUCCESS || overall==VK_SUBOPTIMAL_KHR) caboose::launch::presented();
     if (info && info->swapchainCount==1 && info->pResults) info->pResults[0]=overall;
     return overall;
 }

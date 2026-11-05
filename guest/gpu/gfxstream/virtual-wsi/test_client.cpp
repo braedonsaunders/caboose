@@ -192,6 +192,67 @@ static void exercise(int scenario) {
     int result; assert(waitpid(child,&result,0)==child && WIFEXITED(result) && !WEXITSTATUS(result));
     assert(unlink(path.c_str())==0); assert(rmdir(dir)==0);
 }
+// A probe (no frame to show) carries the probe flag; the compositor refuses it, which ends
+// its connection like any refused bind. The next bind with a frame goes out at once, without
+// the probe flag (the original form), and is granted.
+static void exerciseProbeRefusedThenPresentGranted() {
+    using Policy=Client::BindPolicy;
+    assert(Policy::probe(false,false,true));
+    assert(!Policy::probe(true,false,true) && !Policy::probe(false,true,true));
+    assert(!Policy::probe(false,false,false));  // without local answers a query needs the bind
+    char dir[]="/tmp/caboose-wsi-test-XXXXXX"; assert(mkdtemp(dir));
+    std::string path=std::string(dir)+"/surface";
+    int listener=socket(AF_UNIX,SOCK_SEQPACKET|SOCK_CLOEXEC,0); assert(listener>=0);
+    sockaddr_un address{}; address.sun_family=AF_UNIX; strcpy(address.sun_path,path.c_str());
+    assert(bind(listener,reinterpret_cast<sockaddr*>(&address),sizeof(address))==0);
+    assert(listen(listener,2)==0);
+    pid_t child=fork(); assert(child>=0);
+    if (!child) {
+        int probe=accept(listener,nullptr,nullptr); assert(probe>=0);
+        auto first=recvPacket(probe,16);
+        assert(first.size()==48 && u32(first,36)==Client::X11Window && u32(first,40)==1 && u32(first,44)==0);
+        close(probe);  // refused
+        int fd=accept(listener,nullptr,nullptr); assert(fd>=0); close(listener);
+        auto second=recvPacket(fd,16);
+        assert(second.size()==40 && u32(second,24)==0x400003);  // a bind with a frame: no flags
+        Bytes bound; put64(bound,9); auto ident=id(); bound.insert(bound.end(),ident.begin(),ident.end()); appendStatus(bound);
+        sendPacket(fd,17,bound);
+        close(fd); _exit(0);
+    }
+    close(listener);
+    auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(3);
+    Client client; client.connect(path.c_str(),deadline);
+    client.beginBind(7,0x400003,0,0,deadline,Client::X11Window,true);
+    assert(client.lastBindProbe());
+    bool refused=false;
+    Record reply;
+    try { client.awaitBind(deadline,&reply); } catch (const std::system_error&) { refused=true; }
+    assert(refused && !client.bound());
+    client.reset();
+    // As tryBind does after a refusal: queries wait out the retry delay, a frame does not.
+    const auto now=std::chrono::steady_clock::now(), nextBind=now+std::chrono::milliseconds(100);
+    assert(!Policy::mayBind(false,now,nextBind,now));
+    assert(Policy::mayBind(true,now,nextBind,now));
+    assert(!Policy::mayBind(true,now,nextBind,now+std::chrono::seconds(1)));  // a phone failure's backoff holds
+    // Refusals in a row space queries out: 100 ms, doubling to at most 1 s.
+    assert(Policy::refusedDelay(1)==std::chrono::milliseconds(100));
+    assert(Policy::refusedDelay(2)==std::chrono::milliseconds(200));
+    assert(Policy::refusedDelay(4)==std::chrono::milliseconds(800));
+    assert(Policy::refusedDelay(5)==std::chrono::milliseconds(1000));
+    assert(Policy::refusedDelay(1000)==std::chrono::milliseconds(1000));
+    {
+        const auto later=now+Policy::refusedDelay(6);
+        assert(!Policy::mayBind(false,now+std::chrono::milliseconds(999),later,now));
+        assert(Policy::mayBind(true,now+std::chrono::milliseconds(999),later,now));  // a frame binds at once
+    }
+    client.connect(path.c_str(),deadline);
+    client.beginBind(7,0x400003,0,0,deadline,Client::X11Window,false);
+    assert(!client.lastBindProbe());
+    assert(client.awaitBind(deadline,&reply) && status(reply.body,48).success() && client.bound());
+    int code=0; assert(waitpid(child,&code,0)==child && WIFEXITED(code) && WEXITSTATUS(code)==0);
+    unlink(path.c_str()); rmdir(dir);
+}
+
 int main(int argc, char**) {
     if (argc>1) {
         std::string hex;
@@ -209,4 +270,6 @@ int main(int argc, char**) {
     std::cout<<"X11 window bind passed\n";
     exerciseRefusedBind();
     std::cout<<"refused bind and rebind passed\n";
+    exerciseProbeRefusedThenPresentGranted();
+    std::cout<<"probe refused, then a frame's bind granted, passed\n";
 }

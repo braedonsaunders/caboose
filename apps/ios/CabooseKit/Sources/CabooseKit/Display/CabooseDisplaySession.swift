@@ -65,6 +65,8 @@ public final class CabooseDisplaySession: DisplaySession {
     public var onBell: (() -> Void)?
     public var onRaise: ((Int) -> Void)?
     public var onOpenURL: ((URL) -> Void)?
+    /// Each time the display becomes ready (its hello, including after a reconnect).
+    public var onReady: (() -> Void)?
     /// Window ids survive reconnects: a frame kept from before becomes a window's picture
     /// for thumbnails until its GPU layer presents again.
     public var cachedFrame: ((Int) -> CGImage?)?
@@ -313,6 +315,7 @@ public final class CabooseDisplaySession: DisplaySession {
         placement[id] = nil
         pendingGeometry[id] = nil
         windowDisplays[id] = nil
+        liveGPUWindowsChanged()
         if focusedWindow == id { focusedWindow = nil }
         if textInput?.window == id { textInput = nil }
         if surroundingText?.window == id { surroundingText = nil }
@@ -435,6 +438,8 @@ public final class CabooseDisplaySession: DisplaySession {
         server = hello
         if !sameServer { dropRetained() }
         state = .ready
+        liveGPUWindowsChanged()
+        onReady?()
         let now = CACurrentMediaTime()
         watchdog?.ready(at: now)
         lastPing = now
@@ -544,6 +549,7 @@ public final class CabooseDisplaySession: DisplaySession {
                                   })
         apply(fields, to: window)
         windows[id] = window
+        liveGPUWindowsChanged()
         if let frame = cachedFrame?(id) { window.snapshot.store(image: frame) }
     }
 
@@ -581,6 +587,7 @@ public final class CabooseDisplaySession: DisplaySession {
         placement[id] = nil
         pendingGeometry[id] = nil
         windowDisplays[id] = nil
+        liveGPUWindowsChanged()
         if focusedWindow == id { focusedWindow = nil }
         if textInput?.window == id { textInput = nil }
         if surroundingText?.window == id { surroundingText = nil }
@@ -638,6 +645,15 @@ public final class CabooseDisplaySession: DisplaySession {
     private func childrenChanged() {
         #if canImport(UIKit)
         liveGPUPresentation?.update(children: children)
+        #endif
+    }
+
+    /// Its windows or its GPU epoch changed: the GPU presentation owners for this display (the
+    /// owner's or the agent seat's) follow without waiting for the app to resync them.
+    private func liveGPUWindowsChanged() {
+        #if canImport(UIKit)
+        guard state == .ready else { return }
+        liveGPUPresentation?.update(epoch: server?.gpuLiveEpoch, windows: windows, children: children)
         #endif
     }
 

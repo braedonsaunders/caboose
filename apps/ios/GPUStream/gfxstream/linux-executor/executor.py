@@ -40,7 +40,8 @@ from surfaces import FrameLog, NativeError, ProtocolViolation, SerialQueue, Surf
 PROTOCOL = 'caboose.gpu.live.v1'
 # The phone's capabilities (LiveGPUConnection.features).
 FEATURES = ('guest-handles,guest-handle-arrays,completion-feed,ordered-present,guest-images,guest-query-pools,'
-            'shader-cache,executor-resume,zstd-stream,upload-cache,guest-buffer-views,batched-descriptor-sets-inline')
+            'shader-cache,executor-resume,zstd-stream,upload-cache,guest-buffer-views,batched-descriptor-sets-inline,guest-set-ids,'
+            'completion-payloads,wait-serial,silent-success,one-way-start,executor-stats,seat-routing')
 HELLO = (b'CBGLREF1' + struct.pack('<II', 4, 0x70) +
          bytes.fromhex('20d3bb2e30337cabf0febb006ed102ab25ccf6d9ddbfaf624c7e68f9040969c0'))
 MAX_MESSAGE = 256 * 1024
@@ -48,6 +49,34 @@ MAX_PACKET, MAX_REPLY = 16 * 1024 * 1024, 1024 * 1024
 REPLY_PIECE = 16 * 1024
 SURFACE_KINDS = frozenset((16, 18, 20, 23, 25, 27, 29, 31, 32, 34, 39))
 _GUID = b'258EAFA5-E914-47DA-95CA-C5AB0DC85B11'
+
+
+class Unavailable(OSError):
+    """The broker answered 503: it is not serving executors right now (restarting, say)."""
+
+
+# How long an executor keeps trying a broker that answers 503 before giving up: a broker
+# restart (the compositor restarts it on a control failure) takes about a second.
+UNAVAILABLE_SECONDS = 10
+
+
+def connect_retrying(attempt, deadline, unavailable_deadline, sleep=time.sleep, now=time.monotonic):
+    """`attempt()` until it connects. A refused or unreachable broker is tried again until
+    `deadline`; one that answers 503 until `unavailable_deadline`, with a backoff from 0.25 s
+    to 2 s."""
+    delay = 0.25
+    while True:
+        try:
+            return attempt()
+        except Unavailable:
+            if now() >= unavailable_deadline:
+                raise
+            sleep(delay)
+            delay = min(delay * 2, 2.0)
+        except OSError:
+            if now() >= deadline:
+                raise
+            sleep(0.5)
 
 
 class Closed(Exception):
@@ -87,6 +116,9 @@ class WebSocket:
         lines = head.split(b'\r\n')
         headers = {k.strip().lower(): v.strip() for k, _, v in (line.partition(b':') for line in lines[1:])}
         accept = base64.b64encode(hashlib.sha1(key + _GUID).digest())
+        if lines[0].startswith(b'HTTP/1.1 503 '):
+            sock.close()
+            raise Unavailable('broker unavailable: ' + lines[0].decode(errors='replace'))
         if (not lines[0].startswith(b'HTTP/1.1 101 ') or headers.get(b'sec-websocket-accept') != accept or
                 headers.get(b'sec-websocket-protocol') != PROTOCOL.encode() or b'sec-websocket-extensions' in headers):
             raise Closed('invalid upgrade response: ' + lines[0].decode(errors='replace'))
@@ -242,6 +274,7 @@ class Executor:
         self.failure = None
         self.cancelled = False
         self.inbox = queue.Queue(maxsize=2048)
+        self.stats_stop = None
 
     # Output ---------------------------------------------------------------------------
     def send(self, kind, process=0, stream=0, payload=b''):
@@ -485,6 +518,11 @@ class Executor:
                 self._retire(ident, process)
                 self.send(Kind.PROCESS_RETIRED, process=ident)
             self.retirements.submit(retire)
+        elif kind == Kind.STATS_REQUEST:
+            interval = struct.unpack_from('<I', frame.payload)[0]
+            if not 100 <= interval <= 60_000 or self.stats_stop is not None:
+                raise ProtocolViolation('unexpected stats request')
+            self._start_stats(interval)
         elif kind == Kind.REVOKE:
             self.peer_revoked = True
             self.retirements.sync(lambda: None)
@@ -604,8 +642,26 @@ class Executor:
             raise process.cleanup_error
         log(f'process retired id={ident} token={process.token}')
 
+    def _start_stats(self, interval):
+        """EXECUTOR_STATS every `interval` ms, as the phone sends them (docs/gpu-live.md,
+        "Executor stats"), until the session ends."""
+        stop = self.stats_stop = threading.Event()
+
+        def run():
+            while not stop.wait(interval / 1000):
+                payload = native.executor_stats(self.rt)
+                if payload is None or self.cancelled:
+                    continue
+                try:
+                    self.send(Kind.EXECUTOR_STATS, payload=payload)
+                except Exception:
+                    return
+        threading.Thread(target=run, name='caboose-stats', daemon=True).start()
+
     # Teardown -------------------------------------------------------------------------
     def revoke(self):
+        if self.stats_stop is not None:
+            self.stats_stop.set()
         with self.lock:
             self.cancelled = True
             snapshot = list(self.processes.values())
@@ -655,11 +711,17 @@ def main():
     parser.add_argument('--extra-formats', default='', metavar='FORMAT:SPACE,...',
                         help='surface formats to report beyond the implementation\'s (VkFormat:VkColorSpaceKHR numbers)')
     parser.add_argument('--no-checksums', action='store_true', help='do not capture presented pictures')
+    parser.add_argument('--pictures', type=Path, metavar='DIR',
+                        help="write each window's newest captured picture to DIR/window-ID.ppm, with its content "
+                             'measures in the log (the repeat fraction and colours: surfaces.content), at most ten a second')
     parser.add_argument('--fail-binds', type=int, default=0, metavar='N',
                         help="answer each session's first N surface binds with EAGAIN, as a phone whose layer is not ready does")
     parser.add_argument('--sessions', type=int, default=1, metavar='N',
                         help='connect again after a session ends, as the phone does, for N sessions in all')
     options = parser.parse_args()
+    if options.pictures:
+        options.pictures.mkdir(parents=True, exist_ok=True)
+        surfaces.PICTURES['directory'] = str(options.pictures)
     surfaces.EXTRA_FORMATS[:] = [tuple(int(n) for n in pair.split(':')) for pair in options.extra_formats.split(',') if pair]
     width, _, height = options.display.partition('x')
     options.display = (int(width), int(height))
@@ -686,17 +748,16 @@ def main():
     code = 1
     for session in range(options.sessions):
         # A later session waits for the broker to come back, as the phone reconnects.
-        deadline = time.monotonic() + (0 if session == 0 else 60)
-        while True:
-            try:
-                token = options.token_file.read_bytes().strip()
-                executor_id = uuid.uuid4()
-                socket_ = WebSocket.connect(options.connect, token, options.computer, executor_id, options.features)
-                break
-            except OSError:
-                if time.monotonic() >= deadline:
-                    raise
-                time.sleep(0.5)
+        started = time.monotonic()
+        deadline = started + (0 if session == 0 else 60)
+
+        def attempt():
+            nonlocal executor_id
+            token = options.token_file.read_bytes().strip()
+            executor_id = uuid.uuid4()
+            return WebSocket.connect(options.connect, token, options.computer, executor_id, options.features)
+        executor_id = None
+        socket_ = connect_retrying(attempt, deadline, max(deadline, started + UNAVAILABLE_SECONDS))
         log(f'connected to {options.connect} executor={executor_id} features={options.features} '
             f'session={session + 1} rss={resident_bytes() // (1 << 20)} MiB')
         executor = Executor(runtime, socket_, options)

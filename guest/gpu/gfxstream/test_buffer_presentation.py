@@ -37,7 +37,9 @@ class RegistryTests(unittest.TestCase):
         # The first image bound to a buffer stays its image.
         registry.register('a', 7, (1, 9), IMAGE.__class__(1, 2, 3, 5, 44, 1280, 720, 0))
         self.assertEqual(registry.lookup((1, 9))[1].image, 4)
-        with self.assertRaises(ValueError): registry.register('b', 8, (1, 9), IMAGE)
+        # Another process importing the buffer registers nothing and keeps its connection.
+        self.assertFalse(registry.register('b', 8, (1, 9), IMAGE))
+        self.assertEqual(registry.lookup((1, 9)), (7, IMAGE))
         registry.forget('b', (1, 9))
         self.assertIsNotNone(registry.lookup((1, 9)))
         registry.register('a', 7, (1, 10), IMAGE)
@@ -49,8 +51,9 @@ class RegistryTests(unittest.TestCase):
         registry = b.Registry()
         for inode in range(b.MAX_BUFFERS_PER_PROCESS):
             registry.register('a', 7, (1, inode + 1), IMAGE)
-        with self.assertRaises(ValueError): registry.register('a', 7, (1, 0), IMAGE)
-        registry.register('b', 8, (2, 1), IMAGE)
+        self.assertFalse(registry.register('a', 7, (1, 0), IMAGE))
+        self.assertIsNone(registry.lookup((1, 0)))
+        self.assertTrue(registry.register('b', 8, (2, 1), IMAGE))
 
 
 class WindowTests(unittest.TestCase):
@@ -113,6 +116,20 @@ class WindowTests(unittest.TestCase):
         self.assertEqual(window.extent, (1920, 1080))
         self.assertEqual(window.bind_finished(('k2',), True), 'send')
         self.assertEqual(window.in_flight.request, 3)
+
+    def test_images_of_a_new_renderer_retire_and_rebind(self):
+        # The compositor made its renderer again: the same window's images are another device's.
+        window = self.bound()
+        remade = IMAGE.__class__(11, 12, 13, 14, 44, 1280, 720, 0)
+        self.assertEqual(window.offer(frame(2, image=remade)), 'retire')
+        self.assertEqual(window.retired(), 'bind')
+        self.assertEqual(window.source, (11, 12))
+        self.assertEqual(window.bind_finished(('k2',), True), 'send')
+        self.assertEqual(window.in_flight.request, 2)
+        # Frames of the same device present on the new grant.
+        self.assertIsNone(window.source_released(1))
+        self.assertIsNone(window.offer(frame(3, image=remade)))
+        self.assertFalse(window.retiring)
 
     def test_failed_bind_releases_and_retires_its_grant(self):
         window = b.Window(5)

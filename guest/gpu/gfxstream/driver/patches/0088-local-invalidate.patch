@@ -1,0 +1,372 @@
+From: Caboose <caboose@local>
+Subject: [PATCH 88/91] Skip the invalidate after a wait for ranges completion
+ records delivered
+
+After every satisfied fence or semaphore wait cabooseInvalidateCoherentMappings read every
+GPU-written range of coherent memory back from the phone, in 64 KiB round trips, whether or
+not the application ever read it: in five seconds of Halo 26 calls on DXVK's queue thread
+waited 519 ms. With completion payloads (hello 0x200000) the record of the batch that wrote
+a range already stored its bytes in the shadow. The tracker now notes, before the batch
+completes, which ranges each record stored (caboose-bounded-memory/completion_feed.h
+takeDelivered); the invalidate after the wait subtracts them from the batch's writes and
+reads only the rest: ranges a record left out for size, wrote for an older batch, a capture
+that failed, and every write without the feed or the grant are read as before.
+
+The writes a command buffer, a submission or an unwatched copy marks are kept per
+allocation as up to eight disjoint spans instead of one hull
+(caboose-bounded-memory/gpu_writes.h), and the invalidate reads each span as its own range
+unless reading neighbours as one takes no more round trips; all ranges still go in one call,
+which publishes all of them or none. A copy from an image marks the bytes it writes, from the
+copied aspect's texel blocks and the region's row length, image height, extent and layers,
+instead of 16 bytes per texel of the whole extent. CABOOSE_GPU_MEMORY_TRAFFIC reports the
+ranges and bytes delivered (coherent_delivered, coherent_delivered_bytes) beside those read
+back (coherent_invalidates, coherent_invalidated_bytes).
+---
+diff --git a/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp b/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp
+--- a/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp
++++ b/src/gfxstream/guest/vulkan_enc/ResourceTracker.cpp
+@@ -63,6 +63,7 @@ PERFETTO_DEFINE_CATEGORIES(
+ #endif // HAVE_PERFETTO
+ 
+ #include "vk_util.h"
++#include "vk_format.h"
+ 
+ #if DETECT_OS_LINUX
+ #include <drm_fourcc.h>
+@@ -1659,6 +1660,10 @@ VkResult ResourceTracker::cabooseInvalidateCoherentMappings(VkEncoder* enc, VkDe
+         VkBufferUsageFlags usageMask;
+     };
+     std::vector<InvalidateItem> mapped;
++    // Caboose: ranges a completion record already stored in the shadow (completion payloads,
++    // caboose-bounded-memory/completion_feed.h): not read again. The flush shadow and the write
++    // watch were told of them before their batch completed.
++    uint64_t deliveredRanges = 0, deliveredBytes = 0;
+     {
+         std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+         const bool feedOn = caboose::completion::feedActive.load(std::memory_order_acquire);
+@@ -1673,16 +1678,13 @@ VkResult ResourceTracker::cabooseInvalidateCoherentMappings(VkEncoder* enc, VkDe
+                   VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
+                 continue;
+             }
+-            VkDeviceSize dirtyBegin = 0;
+-            VkDeviceSize dirtyEnd = 0;
+-            bool hasDirty = false;
++            const VkDeviceSize mapBegin = info.socketMapOffset;
++            const VkDeviceSize mapEnd = info.socketMapOffset + info.socketMapSize;
++            caboose::memory::gpu::Spans dirty;
+             if (info.socketGpuWritten) {
+-                dirtyBegin = info.socketGpuWrittenBegin;
+-                dirtyEnd = info.socketGpuWrittenEnd;
+-                hasDirty = true;
++                dirty.add(info.socketGpuWrittenSpans);
+                 info.socketGpuWritten = false;
+-                info.socketGpuWrittenBegin = 0;
+-                info.socketGpuWrittenEnd = 0;
++                info.socketGpuWrittenSpans.clear();
+             }
+             if (!info.socketPendingGpuWrites.empty()) {
+                 size_t keep = 0;
+@@ -1690,52 +1692,42 @@ VkResult ResourceTracker::cabooseInvalidateCoherentMappings(VkEncoder* enc, VkDe
+                     const auto& w = info.socketPendingGpuWrites[wi];
+                     const bool ready = !feedOn || w.serial == 0 ||
+                         caboose::completion::tracker().serialCompleted(w.serial);
+-                    if (ready) {
+-                        if (!hasDirty || dirtyEnd <= dirtyBegin) {
+-                            dirtyBegin = w.begin;
+-                            dirtyEnd = w.end;
+-                            hasDirty = true;
+-                        } else {
+-                            if (w.begin < dirtyBegin) dirtyBegin = w.begin;
+-                            if (w.end > dirtyEnd) dirtyEnd = w.end;
+-                        }
+-                    } else {
++                    if (!ready) {
+                         info.socketPendingGpuWrites[keep++] = w;
++                        continue;
++                    }
++                    // What the batch's record delivered is in the shadow already; the rest is
++                    // read from the phone.
++                    caboose::memory::gpu::Spans rest = w.spans, delivered;
++                    if (w.serial &&
++                        caboose::completion::tracker().takeDelivered(caboose::handle_key(mem), w.serial, &delivered)) {
++                        rest.subtract(delivered);
++                        delivered.clip(mapBegin, mapEnd);
++                        deliveredRanges += delivered.size();
++                        deliveredBytes += delivered.bytes();
+                     }
++                    dirty.add(rest);
+                 }
+                 info.socketPendingGpuWrites.resize(keep);
+             }
+-            if (!hasDirty) continue;
+-            const VkDeviceSize mapBegin = info.socketMapOffset;
+-            const VkDeviceSize mapEnd = info.socketMapOffset + info.socketMapSize;
+-            if (dirtyEnd <= dirtyBegin) {
+-                dirtyBegin = mapBegin;
+-                dirtyEnd = mapEnd;
+-            }
+-            if (dirtyBegin < mapBegin) dirtyBegin = mapBegin;
+-            if (dirtyEnd > mapEnd) dirtyEnd = mapEnd;
+-            if (dirtyEnd <= dirtyBegin) continue;
++            if (dirty.empty()) continue;
++            // Each span is read as its own range unless reading neighbours as one takes no more
++            // round trips; all of them go in one call, which publishes all or nothing.
+             const VkDeviceSize atom = std::max<VkDeviceSize>(1, devIt->second.props.limits.nonCoherentAtomSize);
+-            dirtyBegin = (dirtyBegin / atom) * atom;
+-            if (dirtyBegin < mapBegin) dirtyBegin = mapBegin;
+-            if (dirtyEnd < info.allocationSize) {
+-                const VkDeviceSize rem = dirtyEnd % atom;
+-                if (rem != 0) {
+-                    dirtyEnd = std::min<VkDeviceSize>(info.allocationSize, dirtyEnd + (atom - rem));
+-                }
++            for (const auto& span : caboose::memory::gpu::invalidateRanges(
++                     dirty, atom, mapBegin, mapEnd, info.allocationSize, caboose::memory::payloadBytes)) {
++                VkMappedMemoryRange range{};
++                range.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
++                range.memory = mem;
++                range.offset = span.begin;
++                range.size = span.end - span.begin;
++                mapped.push_back(InvalidateItem{
++                    info.device, range, info.allocationSize, info.memoryTypeIndex, info.socketBufferUsageMask
++                });
+             }
+-            if (dirtyEnd > mapEnd) dirtyEnd = mapEnd;
+-            if (dirtyEnd <= dirtyBegin) continue;
+-            VkMappedMemoryRange range{};
+-            range.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
+-            range.memory = mem;
+-            range.offset = dirtyBegin;
+-            range.size = dirtyEnd - dirtyBegin;
+-            mapped.push_back(InvalidateItem{
+-                info.device, range, info.allocationSize, info.memoryTypeIndex, info.socketBufferUsageMask
+-            });
+         }
+     }
++    if (deliveredRanges) caboose::memory::traffic::counters().delivered(deliveredBytes, deliveredRanges);
+     if (mapped.empty()) return VK_SUCCESS;
+     const uint64_t invOrd = gCabooseCoherentInvalidateOrdinal.fetch_add(1, std::memory_order_relaxed);
+     gCabooseCoherentPendingPostInvalidateLog.store(true, std::memory_order_relaxed);
+@@ -1909,24 +1901,46 @@ void ResourceTracker::cabooseMarkBufferGpuWritten(VkCommandBuffer commandBuffer,
+         auto& ranges = mCabooseCommandDirtyRanges[caboose::handle_key(commandBuffer)];
+         for (auto& existing : ranges) {
+             if (existing.memory == bufIt->second.currentBacking) {
+-                if (absBegin < existing.begin) existing.begin = absBegin;
+-                if (absEnd > existing.end) existing.end = absEnd;
++                existing.spans.add(absBegin, absEnd);
+                 return;
+             }
+         }
+-        ranges.push_back(CabooseCommandDirtyRange{bufIt->second.currentBacking, absBegin, absEnd});
++        CabooseCommandDirtyRange range{bufIt->second.currentBacking, {}};
++        range.spans.add(absBegin, absEnd);
++        ranges.push_back(range);
+         return;
+     }
+-    if (!memInfo.socketGpuWritten || memInfo.socketGpuWrittenEnd <= memInfo.socketGpuWrittenBegin) {
+-        memInfo.socketGpuWrittenBegin = absBegin;
+-        memInfo.socketGpuWrittenEnd = absEnd;
+-    } else {
+-        if (absBegin < memInfo.socketGpuWrittenBegin) memInfo.socketGpuWrittenBegin = absBegin;
+-        if (absEnd > memInfo.socketGpuWrittenEnd) memInfo.socketGpuWrittenEnd = absEnd;
+-    }
++    memInfo.socketGpuWrittenSpans.add(absBegin, absEnd);
+     memInfo.socketGpuWritten = true;
+ }
+ 
++VkDeviceSize ResourceTracker::cabooseImageCopyBytes(VkImage image, VkImageAspectFlags aspect, uint32_t rowLength,
++                                                    uint32_t imageHeight, VkExtent3D extent, uint32_t baseLayer,
++                                                    uint32_t layerCount) {
++    VkFormat format = VK_FORMAT_UNDEFINED;
++    uint32_t layers = layerCount;
++    {
++        std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
++        auto found = info_VkImage.find(image);
++        if (found == info_VkImage.end()) return VK_WHOLE_SIZE;
++        format = found->second.createInfo.format;
++        if (layerCount == VK_REMAINING_ARRAY_LAYERS)
++            layers = found->second.createInfo.arrayLayers > baseLayer ? found->second.createInfo.arrayLayers - baseLayer : 0;
++    }
++    // One aspect of the format, as a copy names it: a depth or stencil part, or a plane.
++    if (format == VK_FORMAT_UNDEFINED || __builtin_popcount(aspect) != 1 || !(vk_format_aspects(format) & aspect))
++        return VK_WHOLE_SIZE;
++    constexpr VkImageAspectFlags kCopyAspects = VK_IMAGE_ASPECT_COLOR_BIT | VK_IMAGE_ASPECT_DEPTH_BIT |
++        VK_IMAGE_ASPECT_STENCIL_BIT | VK_IMAGE_ASPECT_PLANE_0_BIT | VK_IMAGE_ASPECT_PLANE_1_BIT |
++        VK_IMAGE_ASPECT_PLANE_2_BIT;
++    if (!(aspect & kCopyAspects)) return VK_WHOLE_SIZE;
++    const VkFormat part = vk_format_get_aspect_format(format, aspect);
++    const uint64_t bytes = caboose::memory::gpu::imageCopyBytes(
++        vk_format_get_blocksize(part), vk_format_get_blockwidth(part), vk_format_get_blockheight(part), rowLength,
++        imageHeight, extent.width, extent.height, uint64_t(std::max<uint32_t>(1, extent.depth)) * layers);
++    return bytes && bytes != UINT64_MAX ? VkDeviceSize(bytes) : VK_WHOLE_SIZE;
++}
++
+ bool ResourceTracker::cabooseHasCommandBuffersGpuWritten(const std::vector<uint64_t>& commandBuffers) {
+     if (commandBuffers.empty()) return false;
+     std::lock_guard<ResourceTracker::TrackerMutex> lock(mLock);
+@@ -1946,8 +1960,9 @@ std::vector<caboose::completion::Tracker::MemoryWrite> ResourceTracker::cabooseC
+         if (it == mCabooseCommandDirtyRanges.end()) continue;
+         for (const auto& r : it->second) {
+             auto memIt = info_VkDeviceMemory.find(r.memory);
+-            if (memIt == info_VkDeviceMemory.end() || !memIt->second.socketShadow || r.end <= r.begin) continue;
+-            out.push_back({caboose::handle_key(r.memory), 0, uint64_t(r.begin), uint64_t(r.end - r.begin)});
++            if (memIt == info_VkDeviceMemory.end() || !memIt->second.socketShadow) continue;
++            for (const auto& span : r.spans)
++                out.push_back({caboose::handle_key(r.memory), 0, span.begin, span.end - span.begin});
+         }
+     }
+     return out;
+@@ -1986,24 +2001,17 @@ void ResourceTracker::cabooseSubmitCommandBuffersGpuWritten(const std::vector<ui
+                 bool merged = false;
+                 for (auto& pending : memInfo.socketPendingGpuWrites) {
+                     if (pending.serial == serial) {
+-                        if (r.begin < pending.begin) pending.begin = r.begin;
+-                        if (r.end > pending.end) pending.end = r.end;
++                        pending.spans.add(r.spans);
+                         merged = true;
+                         break;
+                     }
+                 }
+                 if (!merged) {
+                     memInfo.socketPendingGpuWrites.push_back(
+-                        VkDeviceMemory_Info::CaboosePendingGpuWrite{serial, r.begin, r.end});
++                        VkDeviceMemory_Info::CaboosePendingGpuWrite{serial, r.spans});
+                 }
+             } else {
+-                if (!memInfo.socketGpuWritten || memInfo.socketGpuWrittenEnd <= memInfo.socketGpuWrittenBegin) {
+-                    memInfo.socketGpuWrittenBegin = r.begin;
+-                    memInfo.socketGpuWrittenEnd = r.end;
+-                } else {
+-                    if (r.begin < memInfo.socketGpuWrittenBegin) memInfo.socketGpuWrittenBegin = r.begin;
+-                    if (r.end > memInfo.socketGpuWrittenEnd) memInfo.socketGpuWrittenEnd = r.end;
+-                }
++                memInfo.socketGpuWrittenSpans.add(r.spans);
+                 memInfo.socketGpuWritten = true;
+             }
+         }
+@@ -9577,8 +9585,7 @@ void ResourceTracker::on_vkCmdExecuteCommands(void* context, VkCommandBuffer com
+                 bool merged = false;
+                 for (auto& existing : dstRanges) {
+                     if (existing.memory == r.memory) {
+-                        if (r.begin < existing.begin) existing.begin = r.begin;
+-                        if (r.end > existing.end) existing.end = r.end;
++                        existing.spans.add(r.spans);
+                         merged = true;
+                         break;
+                     }
+diff --git a/src/gfxstream/guest/vulkan_enc/ResourceTracker.h b/src/gfxstream/guest/vulkan_enc/ResourceTracker.h
+--- a/src/gfxstream/guest/vulkan_enc/ResourceTracker.h
++++ b/src/gfxstream/guest/vulkan_enc/ResourceTracker.h
+@@ -13,6 +13,7 @@
+ #include "caboose-bounded-memory/async_allocation.h"
+ #include "caboose-bounded-memory/requirements_cache.h"
+ #include "caboose-bounded-memory/completion_feed.h"
++#include "caboose-bounded-memory/gpu_writes.h"
+ #include "caboose-bounded-memory/static_query_cache.h"
+ #include "caboose-features/feature_emulation.h"
+ #include "caboose-features/d3d11_emulation.h"
+@@ -568,6 +569,12 @@ class ResourceTracker {
+     void cabooseMarkBufferGpuWritten(VkBuffer buffer, VkDeviceSize dstOffset = 0, VkDeviceSize size = VK_WHOLE_SIZE, bool requireReadbackBuffer = false) {
+         cabooseMarkBufferGpuWritten(VK_NULL_HANDLE, buffer, dstOffset, size, requireReadbackBuffer);
+     }
++    // Caboose: the bytes a copy of `image`'s `aspect` writes in a buffer from the region's
++    // bufferOffset, from the format's texel blocks; VK_WHOLE_SIZE when the image or the block
++    // is not known.
++    VkDeviceSize cabooseImageCopyBytes(VkImage image, VkImageAspectFlags aspect, uint32_t rowLength,
++                                       uint32_t imageHeight, VkExtent3D extent, uint32_t baseLayer,
++                                       uint32_t layerCount);
+     bool cabooseHasCommandBuffersGpuWritten(const std::vector<uint64_t>& commandBuffers);
+     // Caboose: the coherent memory these command buffers write on the GPU, for a completion
+     // watch's captures (handles left for the encoder to fill), and the shadow a capture of an
+@@ -864,12 +871,12 @@ class ResourceTracker {
+         bool socketMapped = false;
+         bool socketGpuWritten = false;
+         bool socketGpuWrittenEver = false;
+-        VkDeviceSize socketGpuWrittenBegin = 0;
+-        VkDeviceSize socketGpuWrittenEnd = 0;
++        // Caboose: what the GPU wrote here that no completion feed follows, and per watched
++        // submission what it writes, as disjoint spans (caboose-bounded-memory/gpu_writes.h).
++        caboose::memory::gpu::Spans socketGpuWrittenSpans;
+         struct CaboosePendingGpuWrite {
+             uint64_t serial = 0;
+-            VkDeviceSize begin = 0;
+-            VkDeviceSize end = 0;
++            caboose::memory::gpu::Spans spans;
+         };
+         std::vector<CaboosePendingGpuWrite> socketPendingGpuWrites;
+         VkBufferUsageFlags socketBufferUsageMask = 0;
+@@ -1083,8 +1090,7 @@ class ResourceTracker {
+     std::optional<VkPhysicalDeviceMemoryBudgetPropertiesEXT> mCachedMemoryBudgetProps;
+     struct CabooseCommandDirtyRange {
+         VkDeviceMemory memory = VK_NULL_HANDLE;
+-        VkDeviceSize begin = 0;
+-        VkDeviceSize end = 0;
++        caboose::memory::gpu::Spans spans;
+     };
+     std::unordered_map<uint64_t, std::vector<CabooseCommandDirtyRange>> mCabooseCommandDirtyRanges;
+ 
+diff --git a/src/gfxstream/guest/vulkan_enc/autogenerated/VkEncoder.cpp b/src/gfxstream/guest/vulkan_enc/autogenerated/VkEncoder.cpp
+--- a/src/gfxstream/guest/vulkan_enc/autogenerated/VkEncoder.cpp
++++ b/src/gfxstream/guest/vulkan_enc/autogenerated/VkEncoder.cpp
+@@ -7531,12 +7531,13 @@ void VkEncoder::vkCmdCopyImageToBuffer(VkCommandBuffer commandBuffer, VkImage sr
+     // The executor is gone: report device loss, and never read garbage replies into outputs.
+     if (caboose::completion::lostCall(cabooseGenerationOf(commandBuffer))) return;
+     if (pRegions && regionCount > 0) {
++        // Caboose: the bytes each region writes, from the format's texel blocks.
+         for (uint32_t i = 0; i < regionCount; ++i) {
+-            const VkDeviceSize rowLen = pRegions[i].bufferRowLength ? pRegions[i].bufferRowLength : pRegions[i].imageExtent.width;
+-            const VkDeviceSize imgHeight = pRegions[i].bufferImageHeight ? pRegions[i].bufferImageHeight : pRegions[i].imageExtent.height;
+-            const VkDeviceSize layers = std::max<VkDeviceSize>(1, std::max<uint32_t>(pRegions[i].imageExtent.depth, pRegions[i].imageSubresource.layerCount));
+-            const VkDeviceSize estBytes = rowLen * imgHeight * layers * 16;
+-            sResourceTracker->cabooseMarkBufferGpuWritten(commandBuffer, dstBuffer, pRegions[i].bufferOffset, estBytes, false);
++            const auto& reg = pRegions[i];
++            const VkDeviceSize bytes = sResourceTracker->cabooseImageCopyBytes(
++                srcImage, reg.imageSubresource.aspectMask, reg.bufferRowLength, reg.bufferImageHeight,
++                reg.imageExtent, reg.imageSubresource.baseArrayLayer, reg.imageSubresource.layerCount);
++            sResourceTracker->cabooseMarkBufferGpuWritten(commandBuffer, dstBuffer, reg.bufferOffset, bytes, false);
+         }
+     } else {
+         sResourceTracker->cabooseMarkBufferGpuWritten(commandBuffer, dstBuffer, 0, VK_WHOLE_SIZE, false);
+@@ -18584,14 +18585,15 @@ void VkEncoder::vkCmdCopyImageToBuffer2(VkCommandBuffer commandBuffer,
+     if (caboose::completion::lostCall(cabooseGenerationOf(commandBuffer))) return;
+     if (pCopyImageToBufferInfo) {
+         if (pCopyImageToBufferInfo->pRegions && pCopyImageToBufferInfo->regionCount > 0) {
++            // Caboose: the bytes each region writes, from the format's texel blocks.
+             for (uint32_t i = 0; i < pCopyImageToBufferInfo->regionCount; ++i) {
+                 const auto& reg = pCopyImageToBufferInfo->pRegions[i];
+-                const VkDeviceSize rowLen = reg.bufferRowLength ? reg.bufferRowLength : reg.imageExtent.width;
+-                const VkDeviceSize imgHeight = reg.bufferImageHeight ? reg.bufferImageHeight : reg.imageExtent.height;
+-                const VkDeviceSize layers = std::max<VkDeviceSize>(1, std::max<uint32_t>(reg.imageExtent.depth, reg.imageSubresource.layerCount));
+-                const VkDeviceSize estBytes = rowLen * imgHeight * layers * 16;
++                const VkDeviceSize bytes = sResourceTracker->cabooseImageCopyBytes(
++                    pCopyImageToBufferInfo->srcImage, reg.imageSubresource.aspectMask, reg.bufferRowLength,
++                    reg.bufferImageHeight, reg.imageExtent, reg.imageSubresource.baseArrayLayer,
++                    reg.imageSubresource.layerCount);
+                 sResourceTracker->cabooseMarkBufferGpuWritten(
+-                    commandBuffer, pCopyImageToBufferInfo->dstBuffer, reg.bufferOffset, estBytes, false);
++                    commandBuffer, pCopyImageToBufferInfo->dstBuffer, reg.bufferOffset, bytes, false);
+             }
+         } else {
+             sResourceTracker->cabooseMarkBufferGpuWritten(commandBuffer, pCopyImageToBufferInfo->dstBuffer, 0, VK_WHOLE_SIZE, false);
+@@ -26026,14 +26028,15 @@ void VkEncoder::vkCmdCopyImageToBuffer2KHR(VkCommandBuffer commandBuffer,
+     if (caboose::completion::lostCall(cabooseGenerationOf(commandBuffer))) return;
+     if (pCopyImageToBufferInfo) {
+         if (pCopyImageToBufferInfo->pRegions && pCopyImageToBufferInfo->regionCount > 0) {
++            // Caboose: the bytes each region writes, from the format's texel blocks.
+             for (uint32_t i = 0; i < pCopyImageToBufferInfo->regionCount; ++i) {
+                 const auto& reg = pCopyImageToBufferInfo->pRegions[i];
+-                const VkDeviceSize rowLen = reg.bufferRowLength ? reg.bufferRowLength : reg.imageExtent.width;
+-                const VkDeviceSize imgHeight = reg.bufferImageHeight ? reg.bufferImageHeight : reg.imageExtent.height;
+-                const VkDeviceSize layers = std::max<VkDeviceSize>(1, std::max<uint32_t>(reg.imageExtent.depth, reg.imageSubresource.layerCount));
+-                const VkDeviceSize estBytes = rowLen * imgHeight * layers * 16;
++                const VkDeviceSize bytes = sResourceTracker->cabooseImageCopyBytes(
++                    pCopyImageToBufferInfo->srcImage, reg.imageSubresource.aspectMask, reg.bufferRowLength,
++                    reg.bufferImageHeight, reg.imageExtent, reg.imageSubresource.baseArrayLayer,
++                    reg.imageSubresource.layerCount);
+                 sResourceTracker->cabooseMarkBufferGpuWritten(
+-                    commandBuffer, pCopyImageToBufferInfo->dstBuffer, reg.bufferOffset, estBytes, false);
++                    commandBuffer, pCopyImageToBufferInfo->dstBuffer, reg.bufferOffset, bytes, false);
+             }
+         } else {
+             sResourceTracker->cabooseMarkBufferGpuWritten(commandBuffer, pCopyImageToBufferInfo->dstBuffer, 0, VK_WHOLE_SIZE, false);
+-- 
+2.43.0

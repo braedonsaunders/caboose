@@ -22,8 +22,8 @@ import signal
 import time
 
 import buffer_presentation as buffers
-from executor_lease import ExecutorLease, MAX_QUEUED_BYTES, MAX_QUEUED_MESSAGES
-from gpu_admission import MAX_REQUEST, MAX_TOKEN, admit, features as admission_features
+from executor_lease import ExecutorLease, MAX_QUEUED_BYTES, MAX_QUEUED_FRAMES, MAX_QUEUED_MESSAGES
+from gpu_admission import MAX_REQUEST, MAX_TOKEN, admit, declared as admission_declared, features as admission_features, forwarded as admission_forwarded
 from gpu_websocket import Decoder as WebSocketDecoder, server_frame
 from ipc_handoff import receive_record
 import control_protocol
@@ -32,7 +32,7 @@ from process_binding import PeerIdentity, ProcessBindings, pidfd_alive, pidfd_pi
 from live_compression import (CONFIG as TRANSPORT_CONFIG, CONFIG_ZSTD_STREAM, StreamCompressor, compress_data,
                               zstd_stream_window)
 import live_zstd
-from live_protocol import Decoder as EnvelopeDecoder, Envelope, Kind, UNSEQUENCED, encode, is_surface
+from live_protocol import Decoder as EnvelopeDecoder, Envelope, HEADER as ENVELOPE_HEADER, Kind, UNSEQUENCED, encode, is_surface
 
 HELLO = (b'CBGLREF1' + bytes((3, 0, 0, 0, 48, 0, 0, 0)) + bytes.fromhex(
     '20d3bb2e30337cabf0febb006ed102ab25ccf6d9ddbfaf624c7e68f9040969c0'))
@@ -49,16 +49,44 @@ HELLO_V4 = HELLO[:8] + struct.pack('<II', 4, 0x70) + HELLO[16:]
 # persistent store (docs/gpu-live.md, "Upload cache"), 0x10000 guest-assigned buffer views
 # (requires 0x80), 0x40000 descriptor sets allocated and written in the guest and sent with
 # the next submit in one vkQueueCommitDescriptorSetUpdatesGOOGLE (docs/gpu-live.md, "Batched
-# descriptor sets"). The reply grants the offered features the phone declared.
+# descriptor sets"), 0x100000 descriptor pools whose set ids the guest chooses (requires 0x80;
+# docs/gpu-live.md, "Guest-chosen set ids"), 0x200000 completion watches that name queries and
+# memory the phone captures into their records (requires 0x200; docs/gpu-live.md, "Completion
+# payloads"), 0x400000 WAIT_SERIAL, which holds a device stream's decoding until a watch's
+# record (requires 0x200; docs/gpu-live.md, "Completion feed"), 0x800000 device streams without
+# replies for the commands the process does not wait for, failures reported on the feed
+# (requires 0x80 and 0x200; docs/gpu-live.md, "Silent success"), 0x1000000 one-way start:
+# guest-assigned instance, physical device, device and queue handles, and REPLY_MODE(3), under
+# which the commands that start a process's Vulkan also reply only on failure (requires 0x80,
+# 0x200 and 0x800000; docs/gpu-live.md, "One-way start"). The reply grants the offered
+# features the phone declared.
 HELLO_FEATURES = {'guest-handles': 0x80, 'guest-handle-arrays': 0x100, 'completion-feed': 0x200,
                   'ordered-present': 0x400, 'guest-images': 0x800, 'guest-query-pools': 0x1000,
                   'shader-cache': 0x2000, 'executor-resume': 0x4000, 'upload-cache': 0x8000,
                   'guest-buffer-views': 0x10000, 'batched-descriptor-sets': 0x40000,
-                  'batched-descriptor-sets-inline': 0x80000}
+                  'batched-descriptor-sets-inline': 0x80000,
+                  'guest-set-ids': 0x100000, 'completion-payloads': 0x200000,
+                  'wait-serial': 0x400000, 'silent-success': 0x800000, 'one-way-start': 0x1000000}
 # Features that need guest-assigned handles (0x80) granted with them.
 CACHE_SESSION = 0x20000  # broker-local reply trailer, not a native decoder feature
-NEEDS_GUEST_HANDLES = 0x100 | 0x1000 | 0x10000
+NEEDS_GUEST_HANDLES = 0x100 | 0x1000 | 0x10000 | 0x100000 | 0x800000 | 0x1000000
+# Features that need the completion feed (0x200) granted with them.
+NEEDS_COMPLETION_FEED = 0x200000 | 0x400000 | 0x800000 | 0x1000000
+# Features that need silent success (0x800000) granted with them.
+NEEDS_SILENT_SUCCESS = 0x1000000
 HELLO_V4_GUEST_HANDLES = HELLO[:8] + struct.pack('<II', 4, 0xF0) + HELLO[16:]
+
+
+def session_features_line(declared, forwarded, received):
+    """The executor session's features, one line per session (docs/gpu-live.md, "Feature
+    negotiation"): what the phone declared, as the host relay reports it ("-" from a relay that
+    does not), what the relay forwarded, what the broker admitted, and the hello bits that
+    leaves the phone supporting. check_session_features.py compares it with the release."""
+    bits = sum(HELLO_FEATURES.get(name, 0) for name in received)
+    names = lambda values: ','.join(sorted(values)) or '-'
+    return (f'CABOOSE_GPU_SESSION_FEATURES source={"relay" if declared is not None else "direct"} '
+            f'declared={names(declared) if declared is not None else "-"} forwarded={names(forwarded)} '
+            f'received={names(received)} bits={bits:#x}')
 
 
 def negotiate_hello(offered, phone_features):
@@ -68,13 +96,17 @@ def negotiate_hello(offered, phone_features):
     mask = struct.unpack_from('<I', offered, 12)[0]
     known = CACHE_SESSION
     for value in HELLO_FEATURES.values(): known |= value
-    if mask & 0x70 != 0x70 or mask & ~(0x70 | known) or (mask & NEEDS_GUEST_HANDLES and not mask & 0x80):
+    if mask & 0x70 != 0x70 or mask & ~(0x70 | known) or (mask & NEEDS_GUEST_HANDLES and not mask & 0x80) or \
+            (mask & NEEDS_COMPLETION_FEED and not mask & 0x200) or \
+            (mask & NEEDS_SILENT_SUCCESS and not mask & 0x800000):
         return None
     granted = mask & CACHE_SESSION
     for name in phone_features:
         granted |= HELLO_FEATURES.get(name, 0)
     granted &= mask
     if not granted & 0x80: granted &= ~NEEDS_GUEST_HANDLES
+    if not granted & 0x200: granted &= ~NEEDS_COMPLETION_FEED
+    if not granted & 0x800000: granted &= ~NEEDS_SILENT_SUCCESS
     return HELLO_V4[:12] + struct.pack('<I', 0x70 | granted) + HELLO_V4[16:]
 
 
@@ -89,6 +121,8 @@ ACK_DELAY = 0.05
 # The host's longest hold of a phone's transport (apps/host/src/gpu-relay.ts, the suspended
 # hold), with a margin.
 RESUME_HOLD_SECONDS = 31 * 60
+# How long a suspension may hold the compositor's own streams before they are ended.
+COMPOSITOR_HOLD_SECONDS = 3
 
 
 class IndexedSurface:
@@ -212,6 +246,12 @@ CONTROL_HEADROOM_BYTES = 65536
 CONTROL_HEADROOM_MESSAGES = 8
 # An exited process whose surfaces have not retired this long after its last stream is stopped anyway.
 STALLED_SURFACE_SECONDS = 3
+# Toward the guest (docs/gpu-live.md, "Toward guest streams"): each local stream's transport
+# is its own writer queue, so the phone reader never waits for a process to read. A stream
+# may hold at most this many bytes its process has not read yet, all streams together at most
+# GUEST_HELD_BYTES; past either the stream holding the most loses its device, not the session.
+GUEST_STREAM_BYTES = RESUME_WINDOW_BYTES
+GUEST_HELD_BYTES = 4 * RESUME_WINDOW_BYTES
 
 
 class LocalSocketReader:
@@ -246,6 +286,11 @@ class LocalSocketReader:
             data.extend(chunk)
         return bytes(data)
 
+    def shutdown(self):
+        """Ends the stream for its process: it reads end of file and its writes fail."""
+        with contextlib.suppress(OSError):
+            self.socket.shutdown(socket.SHUT_RDWR)
+
     def close(self):
         self.socket.close()
 
@@ -261,6 +306,98 @@ class DataCredit:
         self.owner.reserved_bytes -= DATA_CREDIT_BYTES
         self.owner.reserved_count -= 1
         self.owner.capacity_changed.set()
+
+
+def websocket_frame_size(payload):
+    """The size of a server WebSocket frame carrying `payload` bytes."""
+    return payload + (2 if payload < 126 else 4 if payload < 65536 else 10)
+
+
+# What a zstd-stream record may add to the envelope it carries: its CGLZ header and zstd's
+# bound on incompressible input (as in DATA_CREDIT_BYTES).
+ZSTD_RECORD_GROWTH = 16 + 287
+# An envelope's sequence, the last field of its header.
+SEQUENCE_OFFSET = ENVELOPE_HEADER.size - 8
+NO_COMPRESSION, DEFLATE_RECORD, ZSTD_RECORD = 0, 1, 2
+# The presentation controls a process sends on its surface socket that go to the phone ahead
+# of queued DATA: acquires, their cancellation and presents. The process orders each against
+# its device stream itself (docs/gpu-live.md, "Priority toward the phone").
+PRIORITY_KINDS = frozenset((Kind.SWAPCHAIN_ACQUIRE, Kind.SWAPCHAIN_CANCEL_ACQUIRE,
+                            Kind.SWAPCHAIN_PRESENT, Kind.SWAPCHAIN_PRESENT_ORDERED))
+
+
+class PhoneQueue:
+    """Frames queued toward the phone, in two lanes (docs/gpu-live.md, "Priority toward the
+    phone"). A process's acquires and presents (PRIORITY_KINDS) and WebSocket pongs take the
+    control lane, everything else the bulk lane. The control lane goes first, but never past a bulk
+    frame queued before it that is not DATA: a control overtakes only DATA. Each lane keeps
+    its own order, so every stream and every surface keeps its order. An entry is finished
+    (`finish`) as it leaves, so an envelope takes its sequence, and DATA is compressed, in
+    the order the phone receives them."""
+
+    def __init__(self, finish):
+        self._finish = finish
+        self._control, self._bulk = deque(), deque()
+        self._barriers = deque()  # ordinals of the bulk lane's frames other than DATA
+        self._ordinal = 0
+        self._unfinished = 0
+        self._idle = asyncio.Event()
+        self._idle.set()
+        self._added = asyncio.Event()
+
+    def put(self, entry, *, control=False, barrier=True):
+        self._ordinal += 1
+        if control:
+            self._control.append((self._ordinal, entry))
+        else:
+            self._bulk.append((self._ordinal, entry))
+            if barrier: self._barriers.append(self._ordinal)
+        self._unfinished += 1
+        self._idle.clear()
+        self._added.set()
+
+    def empty(self):
+        return not self._control and not self._bulk
+
+    def qsize(self):
+        return len(self._control) + len(self._bulk)
+
+    def _lane(self):
+        # A barrier ahead of the control lane's first frame is in the bulk lane, so that
+        # lane is not empty whenever it holds the control lane back.
+        if self._control and (not self._barriers or self._control[0][0] < self._barriers[0]):
+            return self._control
+        return self._bulk if self._bulk else self._control
+
+    def peek(self):
+        """The entry that leaves next."""
+        if self.empty(): raise asyncio.QueueEmpty
+        return self._lane()[0][1]
+
+    def pop(self):
+        """The next frame, finished: (frame, charge, sequence or None)."""
+        if self.empty(): raise asyncio.QueueEmpty
+        ordinal, entry = self._lane().popleft()
+        if self._barriers and self._barriers[0] == ordinal: self._barriers.popleft()
+        return self._finish(entry)
+
+    def get_nowait(self):
+        frame, charge, _sequence = self.pop()
+        return frame, charge
+
+    async def get(self):
+        while self.empty():
+            self._added.clear()
+            await self._added.wait()
+        return self.get_nowait()
+
+    def task_done(self):
+        if self._unfinished <= 0: raise ValueError('task_done() called too many times')
+        self._unfinished -= 1
+        if not self._unfinished: self._idle.set()
+
+    async def join(self):
+        await self._idle.wait()
 
 
 class FrameTiming:
@@ -435,6 +572,50 @@ class SurfaceStats:
         self.restart(now)
 
 
+class ExecutorStats:
+    """Always on (feature executor-stats): the phone's executor counters (EXECUTOR_STATS, the
+    totals of caboose_gpu_executor_stats), and every 5 s one CABOOSE_GPU_EXECUTOR_STATS line
+    with what changed in that window: commands decoded and time in the decoder, bytes read
+    and time waiting for them, time writing replies, completion watches submitted and
+    completed, their mean submit-to-completion time, the share of the window the GPU had
+    watched work in flight, the watches waiting at the end and the most waiting at once, and
+    when the window ended (UTC). Counters only; no payloads, handles or identities."""
+    REQUEST_MS = 1000
+    INTERVAL_NS = 5_000_000_000
+    RECORD = struct.Struct('<12Q')
+    FIELDS = ('size', 'commands', 'decode_us', 'read_bytes', 'read_wait_us', 'flush_us', 'submitted',
+              'completed', 'completion_us', 'gpu_busy_us', 'outstanding', 'outstanding_max')
+
+    def __init__(self):
+        self.start = self.first = None
+        self.deepest = 0
+
+    def receive(self, payload, now=None):
+        if len(payload) != self.RECORD.size: raise ValueError('bad executor stats')
+        record = dict(zip(self.FIELDS, self.RECORD.unpack(payload)))
+        if record['size'] != self.RECORD.size: raise ValueError('bad executor stats')
+        now = time.monotonic_ns() if now is None else now
+        self.deepest = max(self.deepest, record['outstanding_max'])
+        if self.start is None:
+            self.start, self.first, self.deepest = now, record, record['outstanding']
+            return None
+        elapsed = now - self.start
+        if elapsed < self.INTERVAL_NS: return None
+        d = {k: max(0, record[k] - self.first[k]) for k in self.FIELDS[1:10]}
+        mean = d['completion_us'] // d['completed'] if d['completed'] else 0
+        line = (f'CABOOSE_GPU_EXECUTOR_STATS elapsed_ms={elapsed // 1_000_000} commands={d["commands"]} '
+                f'decode_ms={d["decode_us"] // 1000} read_bytes={d["read_bytes"]} '
+                f'read_wait_ms={d["read_wait_us"] // 1000} flush_ms={d["flush_us"] // 1000} '
+                f'submitted={d["submitted"]} completed={d["completed"]} completion_mean_us={mean} '
+                f'gpu_busy_pct={min(100.0, d["gpu_busy_us"] * 100_000 / elapsed):.1f} '
+                f'outstanding={record["outstanding"]} outstanding_max={self.deepest} '
+                f'at={time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}')
+        with contextlib.suppress(OSError):
+            print(line, file=sys.stderr, flush=True)
+        self.start, self.first, self.deepest = now, record, record['outstanding']
+        return line
+
+
 HISTORY_LOGS = 4
 
 
@@ -442,7 +623,8 @@ def retire_capabilities(directory):
     """Moves earlier executor sessions' capability logs (static_query_cache.h) from the
     seat's `capabilities/` into `capabilities/history/`, keeping the newest HISTORY_LOGS.
     Their answers belonged to those sessions and are never read as answers again; the
-    warm-up asks the new executor the same questions (warmup/README.md)."""
+    warm-up asks the new executor the same questions (warmup/README.md). Logs of the
+    instance scope hold no question worth asking again and end with their session."""
     try:
         fd = os.open(directory / 'capabilities', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
     except OSError:
@@ -458,6 +640,11 @@ def retire_capabilities(directory):
         if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o077:
             return
         for name in os.listdir(fd):
+            if name.startswith('instance-') and len(name) <= 64:
+                with contextlib.suppress(OSError):
+                    if stat.S_ISREG(os.stat(name, dir_fd=fd, follow_symlinks=False).st_mode):
+                        os.unlink(name, dir_fd=fd)
+                continue
             if not name.startswith('formats-') or len(name) > 64:
                 continue
             with contextlib.suppress(OSError):
@@ -505,6 +692,9 @@ async def start_warmup(program, socket_path):
 # reply, all that time. Keepalive probes find an idle dead peer in about 25 s; data left
 # unacknowledged for 30 s (the host's own hold for a phone that left) ends the connection.
 # A phone that is away is unseen here: its host holds the transport and acknowledges.
+# How long a new executor connection waits for the one it supersedes to end its session: its
+# local clients and lifecycle reports are each bounded at 2 s, its sockets at 1 s.
+SUPERSEDE_SECONDS = 10
 DEAD_PEER_IDLE_S, DEAD_PEER_INTERVAL_S, DEAD_PEER_PROBES, DEAD_PEER_UNACKED_MS = 10, 5, 3, 30_000
 
 
@@ -529,6 +719,8 @@ class Session:
     def __init__(self, broker, executor, generation, reader, writer, indexed=False, features=frozenset()):
         self.broker, self.executor, self.generation = broker, executor, generation
         self.reader, self.writer = reader, writer
+        # A newer executor connection ended this one (Broker.supersede).
+        self.superseded = False
         # Broker-to-phone DATA of an indexed (v4) session is compressed (live_compression.py)
         # unless CABOOSE_PRIVATE_GPU_DEFLATE=0; asking for it explicitly without v4 is refused.
         setting = os.environ.get("CABOOSE_PRIVATE_GPU_DEFLATE")
@@ -554,12 +746,13 @@ class Session:
         self.stream_compressor = None
         # Executor resume: the phone's splices are invisible here but for its RESUME.
         self.resumable = 'executor-resume' in self.features
+        self.stats_requested = False
+        self.executor_stats = ExecutorStats()
         self.decoder = EnvelopeDecoder(executor, generation, replay=self.resumable)
         self.retained = deque()  # (sequence, frame) written and not yet acknowledged
         self.retained_bytes = 0
         self.acknowledged = 0  # the highest sequence the phone acknowledged
         self.urgent = deque()  # frames written before the queue: ACK, RESUME, retransmits
-        self.pending_sequences = deque()  # each queued frame's sequence (None: not sequenced)
         self.wakeup = asyncio.Event()
         self.unacked_bytes = 0  # received since the last ACK sent
         self.ack_timer = None
@@ -571,11 +764,17 @@ class Session:
         self.guest_reads = 0
         self.guest_reads_done = asyncio.Event()
         self.suspended = False
+        # The compositor is not an application the suspension may hold: its main thread draws
+        # and also accepts every client. Once a suspension outlasts COMPOSITOR_HOLD_SECONDS its
+        # own streams are ended (it sees its device lost, quietly) and it is told (lifecycle 11);
+        # on the resume it is told again (12) and makes its renderer anew.
+        self.compositor_released = False
+        self.compositor_release = None
         self.ws = WebSocketDecoder()
         self.bindings = ProcessBindings()
         self.binding_generation = self.bindings.begin()
-        self.sequence = 1
-        self.pending = asyncio.Queue(maxsize=MAX_QUEUED_MESSAGES)
+        self.sequence = 1  # the next envelope's, given as it leaves the queue
+        self.pending = PhoneQueue(self.finish_frame)
         self.pending_bytes = 0
         self.pending_count = 0
         self.reserved_bytes = 0
@@ -586,7 +785,8 @@ class Session:
         self.wire_to_phone = 0  # bytes written to the phone's connection, after compression
         self.send_blocked_ns = 0  # time the sender waited for the connection to drain
         self.processes, self.streams, self.surfaces = {}, {}, {}
-        self.surface_epoch = None
+        # Each seat's compositor epoch, from its first grant in this session.
+        self.surface_epochs = {}
         self.surface_count = 0  # surfaces bound in this session, numbering their stats lines
         self.session_ready = asyncio.Event()
         self.revoked = asyncio.Event()
@@ -664,7 +864,7 @@ class Session:
                 if self.failed or self.closing_ws or self.draining or self.sender_stopped:
                     raise ConnectionError('session failed or draining')
                 if (self.credit_waiters[0] is waiter and
-                    self.pending_count + self.reserved_count < MAX_QUEUED_MESSAGES - CONTROL_HEADROOM_MESSAGES and
+                    self.pending_count + self.reserved_count < MAX_QUEUED_FRAMES - CONTROL_HEADROOM_MESSAGES and
                     DATA_CREDIT_BYTES <= MAX_QUEUED_BYTES - CONTROL_HEADROOM_BYTES - self.pending_bytes - self.reserved_bytes):
                     credit = DataCredit(self)
                     self.reserved_count += 1
@@ -678,45 +878,73 @@ class Session:
             self.credit_waiters.remove(waiter)
             self.capacity_changed.set()
 
-    def enqueue_frame(self, frame, credit=None, *, charge=None, sequence=None):
-        charge = len(frame) if charge is None else charge
-        if charge < len(frame):
-            raise RuntimeError("invalid queue charge")
+    def enqueue(self, entry, charge, credit=None, *, control=False, barrier=True):
         if credit is not None:
             if credit.owner is not self or not credit.active or charge > DATA_CREDIT_BYTES:
                 raise RuntimeError('invalid data credit')
             # No await between releasing the reservation and publishing its frame.
             credit.release()
-        if self.pending_count + self.reserved_count >= MAX_QUEUED_MESSAGES or charge > MAX_QUEUED_BYTES - self.pending_bytes - self.reserved_bytes:
+        if self.pending_count + self.reserved_count >= MAX_QUEUED_FRAMES or charge > MAX_QUEUED_BYTES - self.pending_bytes - self.reserved_bytes:
             raise BufferError('executor queue full')
-        self.pending.put_nowait((frame, charge))
-        self.pending_sequences.append(sequence)
+        self.pending.put(entry, control=control, barrier=barrier)
         self.pending_bytes += charge
         self.pending_count += 1
         self.wakeup.set()
 
-    def send(self, kind, process=0, stream=0, payload=b'', *, credit=None):
+    def enqueue_frame(self, frame, credit=None, *, charge=None, control=False):
+        """A WebSocket frame outside the envelope sequence: a close (bulk, after everything
+        queued) or a pong (`control`)."""
+        charge = len(frame) if charge is None else charge
+        if charge < len(frame):
+            raise RuntimeError("invalid queue charge")
+        self.enqueue((None, frame, charge, NO_COMPRESSION), charge, credit, control=control, barrier=not control)
+
+    def send(self, kind, process=0, stream=0, payload=b'', *, credit=None, priority=False):
+        """Queues an envelope for the phone; `priority` (PRIORITY_KINDS from a process's
+        surface socket only) takes the control lane."""
         if self.failed or self.closing_ws or self.sender_stopped: raise ConnectionError('session failed or closing')
-        data = encode(Envelope(kind, self.executor, self.generation, process, stream, self.sequence, payload))
-        frame = server_frame(2, data)
-        charge = len(frame)
+        if priority and kind not in PRIORITY_KINDS: raise ValueError('not a priority control')
+        # Encoded now, so an invalid envelope is refused here; its sequence is written as it
+        # leaves the queue (finish_frame).
+        data = encode(Envelope(kind, self.executor, self.generation, process, stream, 1, payload))
+        charge = websocket_frame_size(len(data))
+        compression = NO_COMPRESSION
         if self.stream_compressor is not None and kind == Kind.DATA:
-            # Every DATA continues the stream, so a refusal past this point ends the session
-            # (local streams fail it on any send error). An incompressible record is charged
-            # its own, larger size.
-            frame = server_frame(2, self.stream_compressor.compress_data(data))
-            charge = max(charge, len(frame))
+            # An incompressible record is charged its own, larger size.
+            compression = ZSTD_RECORD
+            charge = websocket_frame_size(len(data) + ZSTD_RECORD_GROWTH)
         elif self.deflate_enabled and kind == Kind.DATA:
-            frame = server_frame(2, compress_data(data))
-        self.enqueue_frame(frame, credit, charge=charge, sequence=self.sequence)
-        self.sequence += 1
+            compression = DEFLATE_RECORD
+        self.enqueue((kind, data, charge, compression), charge, credit,
+                     control=priority, barrier=kind != Kind.DATA)
         owner = self.processes.get(process) if kind == Kind.DATA else None
         if owner is not None:
             owner['to_phone'] = owner.get('to_phone', 0) + len(payload)
         if kind == Kind.DATA and self.frame_timing.enabled and self.frame_timing.started is not None and self.frame_timing.records < 128:
             self.frame_timing.data_bytes += len(payload)
-            self.frame_timing.wire_data_bytes += len(frame)
         self.surface_progress("queued_to_phone", kind)
+
+    def finish_frame(self, entry):
+        """A queued entry as it leaves: its frame, charge and sequence (None outside it)."""
+        kind, data, charge, compression = entry
+        if kind is None: return data, charge, None
+        sequence = self.sequence
+        self.sequence += 1
+        data = bytearray(data)
+        struct.pack_into('<Q', data, SEQUENCE_OFFSET, sequence)
+        data = bytes(data)
+        if compression == ZSTD_RECORD:
+            # Every DATA continues the stream, in sequence order: a refusal here ends the session.
+            data = self.stream_compressor.compress_data(data)
+        elif compression == DEFLATE_RECORD:
+            data = compress_data(data)
+        frame = server_frame(2, data)
+        if len(frame) > charge:
+            self.pending_bytes += len(frame) - charge
+            charge = len(frame)
+        if kind == Kind.DATA and self.frame_timing.enabled and self.frame_timing.started is not None and self.frame_timing.records < 128:
+            self.frame_timing.wire_data_bytes += len(frame)
+        return frame, charge, sequence
 
     async def close_after_retirement(self):
         if self.failed or self.closing_ws or not self.revoking or not self.revoked.is_set():
@@ -755,15 +983,15 @@ class Session:
                     if self.urgent or not self.pending.empty(): continue
                     await self.wakeup.wait()
                     continue
-                data, charge = self.pending.get_nowait()
-                sequence = self.pending_sequences.popleft()
-                if self.resumable and sequence is not None:
-                    # A full window waits for the phone's acknowledgement, still writing
-                    # what must go first (a RESUME and its retransmits).
-                    while self.window_full():
-                        self.wakeup.clear()
-                        await self.write_urgent()
-                        if self.window_full(): await self.wakeup.wait()
+                if self.resumable and self.pending.peek()[0] is not None and self.window_full():
+                    # A full window waits for the phone's acknowledgement, still writing what
+                    # must go first (a RESUME and its retransmits); a control queued meanwhile
+                    # is taken next.
+                    self.wakeup.clear()
+                    await self.write_urgent()
+                    if self.window_full(): await self.wakeup.wait()
+                    continue
+                data, charge, sequence = self.pending.pop()
                 # Retained before it is written: a RESUME handled while it drains must send it
                 # again, since the phone discards what reached it before the broker's RESUME.
                 if self.resumable and sequence is not None:
@@ -779,6 +1007,12 @@ class Session:
             # A dead sender cannot release queued bytes as successfully drained.
             self.sender_stopped = True
             self.capacity_changed.set()
+
+    def request_stats(self):
+        """Asks a phone that declared executor-stats for its counters every second."""
+        if 'executor-stats' not in self.features or self.stats_requested: return
+        self.stats_requested = True
+        self.send(Kind.STATS_REQUEST, payload=struct.pack('<II', ExecutorStats.REQUEST_MS, 0))
 
     def acknowledge(self, value):
         """The phone has every sequenced envelope up to `value`."""
@@ -830,13 +1064,44 @@ class Session:
             await self.guest_reads_done.wait()
         self.send(Kind.QUIESCE)
         print('CABOOSE_GPU_BROKER executor suspending: guest streams held', file=sys.stderr, flush=True)
+        if self.compositor_release is None or self.compositor_release.done():
+            self.compositor_release = asyncio.create_task(self.release_compositor())
+
+    def compositor_streams(self):
+        """The local streams of every seat's compositor's own process."""
+        if self.broker is None: return []
+        seats = getattr(self.broker, 'seats', None)
+        compositors = ({(seat.compositor_pid, seat.compositor_start) for seat in seats.values()} if seats is not None
+                       else {(self.broker.compositor_pid, self.broker.compositor_start)}) - {(None, None)}
+        return [(stream_id, stream) for stream_id, stream in self.streams.items()
+                if (process := self.processes.get(stream['process'])) is not None
+                and (process['pid'], process['start']) in compositors]
+
+    async def release_compositor(self):
+        """Ends the compositor's own streams once the suspension outlasts COMPOSITOR_HOLD_SECONDS.
+        A call of its renderer the gate holds would otherwise block its main thread, and with it
+        every Wayland client's connection, for as long as the phone stays away."""
+        await asyncio.sleep(COMPOSITOR_HOLD_SECONDS)
+        if not self.suspended or self.failed or self.broker is None: return
+        streams = self.compositor_streams()
+        for stream_id, stream in streams:
+            if not stream.get('discard_reply'): self.end_unread_stream(stream_id, stream, 'the executor is suspended')
+        self.compositor_released = True
+        print(f'CABOOSE_GPU_BROKER executor suspended {COMPOSITOR_HOLD_SECONDS} s: ended {len(streams)} '
+              'compositor streams so it keeps serving', file=sys.stderr, flush=True)
+        await self.broker.report_lifecycle(self, 11)
 
     def resume_executor(self, payload):
         mode, reserved = struct.unpack('<II', payload)
         if not self.suspended or mode not in (0, 1) or reserved: raise ValueError('unexpected EXECUTOR_RESUME')
         self.suspended = False
         self.guest_open.set()
+        if self.compositor_release is not None: self.compositor_release.cancel()
         print(f'CABOOSE_GPU_BROKER executor resumed {"in place" if mode == 0 else "from a snapshot"}', file=sys.stderr, flush=True)
+        if self.compositor_released:
+            self.compositor_released = False
+            task = asyncio.create_task(self.broker.report_lifecycle(self, 12))
+            self.lifecycle_tasks.add(task); task.add_done_callback(self.lifecycle_tasks.discard)
 
     def fail(self, reason):
         """Ends the executor session from inside, saying why (its reader then sees the end)."""
@@ -914,6 +1179,7 @@ class Session:
                 self.send(Kind.TRANSPORT_CONFIG, payload=self.transport_config)
             else:
                 self.session_ready.set()
+                self.request_stats()
             return
         if frame.kind == Kind.TRANSPORT_READY:
             # Algorithm 2's READY names the window the phone takes, no larger than offered;
@@ -935,8 +1201,13 @@ class Session:
                     with contextlib.suppress(OSError):
                         print('CABOOSE_GPU_TRANSPORT deflate=1 max_decoded=65600', file=sys.stderr, flush=True)
             self.session_ready.set()
+            self.request_stats()
             return
         if not self.session_ready.is_set(): raise ValueError('session not ready')
+        if frame.kind == Kind.EXECUTOR_STATS:
+            if not self.stats_requested or frame.process or frame.stream: raise ValueError('unexpected executor stats')
+            self.executor_stats.receive(frame.payload)
+            return
         if frame.kind == Kind.EXECUTOR_DRAIN:
             if self.draining: raise ValueError('duplicate drain')
             self.draining = True
@@ -1045,12 +1316,7 @@ class Session:
                 surface['owner'](frame.kind, frame.payload)
             if surface.get('replies') is not None:
                 body = (struct.pack('<Q', surface['window']) if frame.kind == Kind.SURFACE_BOUND else b'') + frame.payload
-                data = surface_wire.encode_reply(frame.kind, body)
-                if len(data) > MAX_QUEUED_BYTES - surface['reply_bytes']:
-                    raise ValueError('surface reply byte limit')
-                surface['reply_bytes'] += len(data)
-                try: surface['replies'].put_nowait(data)
-                except asyncio.QueueFull: raise ValueError('surface reply queue full') from None
+                self.queue_surface_reply(surface, surface_wire.encode_reply(frame.kind, body))
             return
         if frame.kind == Kind.SURFACE_RETIRED:
             key = (frame.payload[:16], frame.payload[16:32], struct.unpack_from('<Q', frame.payload, 32)[0])
@@ -1077,12 +1343,7 @@ class Session:
                         raise
             await self.broker.send_control(control_protocol.encode_grant_retired(control_protocol.GrantRetired(*key)))
             if surface.get('replies') is not None:
-                data = surface_wire.encode_reply(frame.kind, frame.payload)
-                if len(data) > MAX_QUEUED_BYTES - surface['reply_bytes']:
-                    raise ValueError('surface reply byte limit')
-                surface['reply_bytes'] += len(data)
-                try: surface['replies'].put_nowait(data)
-                except asyncio.QueueFull: raise ValueError('surface reply queue full') from None
+                self.queue_surface_reply(surface, surface_wire.encode_reply(frame.kind, frame.payload))
             surface['retired'].set()
             process['surfaces'].discard(key)
             process.get('forced_surfaces', set()).discard(key)
@@ -1118,20 +1379,63 @@ class Session:
                 stream['remote_fin'].set(); return
             raise ValueError('unexpected draining stream message')
         if frame.kind == Kind.DATA:
-            try:
-                stream['writer'].write(frame.payload)
-                await stream['writer'].drain()
-            except OSError:
-                stream['discard_reply'] = True
+            self.write_local(frame.stream, stream, frame.payload)
             return
         if frame.kind == Kind.FIN:
+            # Sent once the transport has written everything queued before it.
             try:
-                stream['writer'].write_eof()
-                await stream['writer'].drain()
+                if not stream['writer'].transport.is_closing(): stream['writer'].write_eof()
             except OSError:
                 stream['discard_reply'] = True
             stream['remote_fin'].set(); return
         raise ValueError('unexpected executor message')
+
+    def write_local(self, stream_id, stream, payload):
+        """Queues phone bytes on one local stream's transport, never waiting for its process to
+        read them: the transport writes them in order as the socket takes them. A process that
+        leaves more than GUEST_STREAM_BYTES unread, or the stream holding the most once all
+        streams hold GUEST_HELD_BYTES, loses that stream (docs/gpu-live.md, "Toward guest
+        streams")."""
+        transport = stream['writer'].transport
+        if transport.is_closing():
+            # The process closed the socket or a write failed: what remains is not delivered.
+            stream['discard_reply'] = True
+            return
+        if transport.get_write_buffer_size() + len(payload) > GUEST_STREAM_BYTES:
+            self.end_unread_stream(stream_id, stream)
+            return
+        held = {key: item['writer'].transport.get_write_buffer_size() for key, item in self.streams.items()
+                if not item.get('discard_reply') and not item['writer'].transport.is_closing()}
+        while sum(held.values()) + len(payload) > GUEST_HELD_BYTES:
+            largest = max(held, key=held.get)
+            self.end_unread_stream(largest, self.streams[largest])
+            if largest == stream_id: return
+            del held[largest]
+        stream['writer'].write(payload)
+
+    def end_unread_stream(self, stream_id, stream, why=None):
+        """Ends one local stream whose process stopped reading (or, with `why`, that must not
+        wait): its queued bytes are dropped, the process sees its device stream end, and the
+        phone's further bytes for it are discarded until its FIN, as for a process that exited."""
+        transport = stream['writer'].transport
+        what = 'stream' if why else 'unread stream'
+        why = why or f'{transport.get_write_buffer_size()} bytes not read'
+        print(f'CABOOSE_GPU_BROKER ended {what} {stream_id} of process {stream["process"]}: {why}',
+              file=sys.stderr, flush=True)
+        stream['discard_reply'] = True
+        transport.abort()
+        if stream.get('reader') is not None: stream['reader'].shutdown()
+
+    @staticmethod
+    def queue_surface_reply(surface, data):
+        """Queues a reply for a surface socket's own sender, never waiting for its process. A
+        process that leaves MAX_QUEUED_MESSAGES replies or MAX_QUEUED_BYTES unread loses that
+        surface socket, not the session."""
+        if len(data) > MAX_QUEUED_BYTES - surface['reply_bytes'] or surface['replies'].full():
+            surface['abort_client']('surface replies not read')
+            return
+        surface['reply_bytes'] += len(data)
+        surface['replies'].put_nowait(data)
 
     @staticmethod
     def unfinished_presents(surface):
@@ -1146,27 +1450,42 @@ class Session:
         task.add_done_callback(self.buffer_tasks.discard)
         return task
 
+    def seat_suffix(self, surface):
+        """A phone that routes by seat (feature seat-routing) is told each surface's seat: a
+        72-byte SURFACE_BIND, `{seat u32, reserved u32}` after the 64 bytes. Without it only the
+        owner seat's surfaces are bound, as 64 bytes."""
+        if 'seat-routing' not in self.features: return b''
+        return struct.pack('<II', SEAT_INDEX[surface.get('seat', 'owner')], 0)
+
     def register_buffer(self, connection, process_id, fd, body):
         """A driver's registration of a phone-resident dma-buf and its image."""
         image = buffers.decode_register(body)
         info = os.fstat(fd)
         self.buffer_registry.register(connection, process_id, (info.st_dev, info.st_ino), image)
 
-    def present_buffer(self, record):
-        """The compositor's commit of a registered buffer to a window."""
+    def present_buffer(self, record, seat='owner'):
+        """A seat's compositor's commit of a registered buffer to one of its windows: only a
+        buffer of a process of that seat."""
         found = self.buffer_registry.lookup((record.device, record.inode))
-        if (found is None or (found[1].width, found[1].height) != (record.width, record.height) or
+        foreign = found is not None and self.processes.get(found[0], {}).get('seat', 'owner') != seat
+        if foreign:
+            print(f'CABOOSE_GPU_BROKER refused a cross-seat buffer present from {seat}', file=sys.stderr, flush=True)
+        if (found is None or foreign or (found[1].width, found[1].height) != (record.width, record.height) or
                 record.window >= 1 << 32 or self.draining):
-            self.task(self.release_buffers([(record.request, errno.ENOENT if found is None else errno.EINVAL)]))
+            self.task(self.release_buffers([(record.request, errno.ENOENT if found is None or foreign else errno.EINVAL)], seat))
             return
         process, image = found
-        window = self.buffer_windows.setdefault(record.window, buffers.Window(record.window))
+        # Window IDs are each compositor's own.
+        window = self.buffer_windows.get((seat, record.window))
+        if window is None:
+            window = self.buffer_windows[(seat, record.window)] = buffers.Window(record.window)
+            window.seat = seat
         self.buffer_step(window, window.offer(buffers.Frame(record.request, process, image)))
 
-    async def release_buffers(self, released):
+    async def release_buffers(self, released, seat='owner'):
         for request, status in released:
             await self.broker.send_control(control_protocol.encode_buffer_released(
-                control_protocol.BufferReleased(request, status)))
+                control_protocol.BufferReleased(request, status)), seat=seat)
 
     def buffer_step(self, window, action):
         if action == 'bind':
@@ -1184,9 +1503,9 @@ class Session:
                     control_protocol.RevokeRequest(*window.key))))
         released = window.take_released()
         if released:
-            self.task(self.release_buffers(released))
+            self.task(self.release_buffers(released, getattr(window, 'seat', 'owner')))
         if window.key is None and not window.binding and window.waiting is None and window.in_flight is None:
-            self.buffer_windows.pop(window.window, None)
+            self.buffer_windows.pop((getattr(window, 'seat', 'owner'), window.window), None)
 
     async def bind_buffer_window(self, window):
         try:
@@ -1207,7 +1526,7 @@ class Session:
             # No extent: the phone binds the window at its view's own size, and a buffer of
             # another size (one lengthened along an axis) shows its top-left part.
             self.send(Kind.SURFACE_BIND, window.process, payload=identity +
-                      struct.pack('<QQII', window.window, image.instance, 0, 0))
+                      struct.pack('<QQII', window.window, image.instance, 0, 0) + self.seat_suffix(surface))
             surface['bind_sent'] = True
             self.maybe_send_surface_retire(key)
             ok = await asyncio.wait_for(bound, 5)
@@ -1393,15 +1712,28 @@ class Session:
                 if kind == 'close': raise ConnectionError('executor closed')
                 if kind == 'ping':
                     if not self.closing_ws:
-                        self.enqueue_frame(server_frame(10, payload))
+                        self.enqueue_frame(server_frame(10, payload), control=True)
                 if kind != 'binary': continue
                 messages = []
                 self.decoder.feed(payload, messages.append)
                 for message in messages: await self.message(message)
 
-    async def local(self, reader, writer):
+    async def opened(self, process, stream, process_id, stream_id):
+        """Waits for the phone's answers to a stream's openings (its process's and its own),
+        which `local` answers the guest's hello without waiting for; failing the
+        session when one never comes, as waiting for it there did."""
+        try:
+            await self.phone_answer(process['ready'], 10)
+            await self.phone_answer(stream['ready'], 10)
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            self.fail(f'local stream {stream_id} of process {process_id}: no answer to its opening: {type(error).__name__}: {error}')
+
+    async def local(self, reader, writer, seat='owner'):
         peer = None
         process_id = stream_id = None
+        opening = None
         local_aborted = False
         try:
             sock = writer.get_extra_info('socket')
@@ -1423,21 +1755,30 @@ class Session:
                 local_aborted = True
                 return
             process = self.processes.get(process_id)
+            if process is not None and process.get('seat', 'owner') != seat:
+                # A process belongs to the seat whose socket it reached first.
+                print(f'CABOOSE_GPU_BROKER refused a cross-seat stream: a {process.get("seat")} process on the {seat} socket',
+                      file=sys.stderr, flush=True)
+                local_aborted = True
+                return
             if process is None:
                 process = {'ready': asyncio.Event(), 'retired': asyncio.Event(), 'stopping': False, 'streams': set(), 'surfaces': set(),
-                           'pid': identity[0], 'start': identity[1], 'to_phone': 0, 'from_phone': 0}
+                           'pid': identity[0], 'start': identity[1], 'to_phone': 0, 'from_phone': 0, 'seat': seat}
                 self.processes[process_id] = process
                 self.send(Kind.PROCESS_OPEN, process_id)
             if process['stopping']:
                 local_aborted = True
                 return
             process['streams'].add(stream_id)
-            await self.phone_answer(process['ready'], 10)
-            stream = {'process': process_id, 'writer': writer, 'ready': asyncio.Event(),
+            stream = {'process': process_id, 'writer': writer, 'reader': reader, 'ready': asyncio.Event(),
                       'remote_fin': asyncio.Event(), 'local_eof': False, 'discard_reply': False}
             self.streams[stream_id] = stream
+            # The phone takes PROCESS_OPEN, STREAM_OPEN and the stream's data in the order they
+            # are sent, and answers the openings before anything the data asks for: the guest's
+            # hello is answered now, without waiting a round trip for each opening. An opening
+            # the phone leaves unanswered still fails the session, as before (`opened`).
             self.send(Kind.STREAM_OPEN, process_id, stream_id)
-            await self.phone_answer(stream['ready'], 10)
+            opening = asyncio.ensure_future(self.opened(process, stream, process_id, stream_id))
             try:
                 writer.write(reply)
                 if struct.unpack_from('<I',reply,12)[0] & CACHE_SESSION:
@@ -1499,6 +1840,7 @@ class Session:
                     break
                 finally:
                     if credit is not None: credit.release()
+            await opening
             await self.phone_answer(stream['remote_fin'], 10)
         except OverflowError:
             # Reject an excess local stream without taking ownership or poisoning
@@ -1507,12 +1849,20 @@ class Session:
         except (OSError, ValueError, RuntimeError, BufferError, asyncio.TimeoutError, asyncio.IncompleteReadError) as error:
             self.fail(f'local stream {stream_id} of process {process_id}: {type(error).__name__}: {error}')
         finally:
+            if opening is not None and not opening.done(): opening.cancel()
             if peer is not None: peer.close()
             reader.close()
             abort_writer = (local_aborted or self.draining or self.failed or
                             (stream_id is not None and self.streams.get(stream_id, {}).get('discard_reply', False)))
+            # Replies the process has still not read when its close times out are its own
+            # loss: the transport is aborted and the session goes on.
+            unread = 0 if abort_writer else writer.transport.get_write_buffer_size()
             if not await close_owned_writer(writer, abort=abort_writer):
-                self.failed = True
+                if unread:
+                    print(f'CABOOSE_GPU_BROKER ended unread stream {stream_id} of process {process_id}: '
+                          f'{unread} bytes not read at close', file=sys.stderr, flush=True)
+                else:
+                    self.failed = True
             if stream_id is not None and not self.draining:
                 self.streams.pop(stream_id, None)
                 with contextlib.suppress(RuntimeError, KeyError): self.bindings.unbind_stream(self.binding_generation, stream_id)
@@ -1528,43 +1878,139 @@ class Session:
                             self.fail(f'retiring process {process_id}: {type(error).__name__}: {error}')
 
 
+SEATS = ('owner', 'agent')
+# The seat byte of a SURFACE_BIND for a phone that declared seat-routing.
+SEAT_INDEX = {'owner': 0, 'agent': 1}
+
+
+class SeatSockets:
+    """The local stream servers and surface listeners of every seat for one executor session."""
+
+    def __init__(self):
+        self.servers, self.listeners, self.accepts, self.owned = [], [], [], []
+        self.watch = None
+
+    @property
+    def accepting(self):
+        """A task that ends, raising, when any seat's surface accepting does."""
+        if not self.accepts: return None
+        if self.watch is None: self.watch = asyncio.ensure_future(self._accepting())
+        return self.watch
+
+    async def _accepting(self):
+        done, _ = await asyncio.wait(self.accepts, return_when=asyncio.FIRST_COMPLETED)
+        for task in done: task.result()
+        raise ConnectionError('surface accepting ended')
+
+    def close(self):
+        for server in self.servers: server.close()
+
+    async def wait_closed(self):
+        for server in self.servers: await server.wait_closed()
+
+    async def cleanup(self):
+        self.close()
+        for listener in self.listeners: listener.close()
+        for task in self.accepts + ([self.watch] if self.watch else []): task.cancel()
+        for task in self.accepts + ([self.watch] if self.watch else []):
+            with contextlib.suppress(asyncio.CancelledError, OSError): await task
+        for path, inode in self.owned:
+            with contextlib.suppress(OSError):
+                if path.lstat().st_ino == inode: path.unlink()
+        self.owned = []
+
+
+class Seat:
+    """One display's view of the broker: its compositor's control channel and the local sockets
+    its applications and its renderer connect to. A client's seat is the socket it reached,
+    and grants, binds, surfaces and buffers stay inside it."""
+
+    def __init__(self, name, socket_path, surface_path=None, control=None, listener=None):
+        self.name = name
+        self.socket_path = Path(socket_path)
+        self.surface_path = None if surface_path is None else Path(surface_path)
+        self.control, self.listener = control, listener
+        self.compositor_pid = self.compositor_start = None
+        # Epochs of this seat's compositors that went: their grants ended with them.
+        self.stale_epochs = set()
+
+
 class Broker:
     """`control` is the compositor's channel inherited from it, its parent, and the broker
     ends with it. With `listener` instead the broker runs on its own (supervised beside the
     display): it serves one compositor at a time, connected to the listening socket, and a
     compositor that goes ends only its own grants, while the executor and the phone stay."""
-    listener = None
     lifecycle = None
-    stale_epochs = frozenset()
     warmup = None
+    phone_listener = None
 
-    def __init__(self, control, token_file, socket_path, surface_path=None, indexed=False, listener=None):
+    def __init__(self, control, token_file, socket_path, surface_path=None, indexed=False, listener=None,
+                 seats=None, phone_listener=None, usage_dir=None):
         if os.environ.get("CABOOSE_PRIVATE_GPU_DEFLATE") == "1" and not indexed:
             raise ValueError("private GPU DEFLATE requires indexed v4")
-        self.control, self.token_file, self.socket_path = control, token_file, socket_path
-        self.listener = listener
-        self.surface_path = surface_path
+        self.token_file = token_file
+        # Every seat the broker serves: the owner's alone for a compositor's own broker, both
+        # for the computer's shared broker (`--dir`), each with its own control socket.
+        if seats is None:
+            seats = {'owner': Seat('owner', socket_path, surface_path, control=control, listener=listener)}
+        self.seats = seats
+        # The phone's executor connects here itself (`--listen`), not through a compositor.
+        self.phone_listener = phone_listener
+        self.usage_dir = Path(usage_dir) if usage_dir is not None else self.seats['owner'].socket_path.parent
+        # Which seat minted each compositor epoch: records naming a grant go to its compositor.
+        self.epoch_seats = {}
+        self.pending_bind_seats = {}
         self.indexed = indexed
         # Installed beside the broker's own modules (README.md); absent, sessions start cold.
         self.warmup = Path(__file__).resolve().parent / 'caboose-gpu-warmup-session'
-        self.compositor_pid = self.compositor_start = None
         if control is not None:
-            self.compositor_pid = os.getppid()
-            self.compositor_start = process_start_ticks(Path(f'/proc/{self.compositor_pid}/stat').read_text())
-        # Epochs of compositors that went: their grants ended with them, and nothing more
-        # about them is sent to the next one.
-        self.stale_epochs = set()
+            owner = self.seats['owner']
+            owner.compositor_pid = os.getppid()
+            owner.compositor_start = process_start_ticks(Path(f'/proc/{owner.compositor_pid}/stat').read_text())
         self.lifecycle = None  # the last executor lifecycle record, for a compositor that connects later
         self.lease = ExecutorLease()
         self.tasks = set(); self.closing = asyncio.Event()
         self.session = None
+        # The executor connection that holds the lease, from its admission until its end.
+        self.holder = None
         self.next_bind = 0
         self.pending_binds = {}
         self.bind_send_lock = asyncio.Lock()
 
+    # The owner seat's channel, for a compositor's own broker (and the tests that drive one).
+    @property
+    def owner(self): return self.seats['owner']
+    @property
+    def socket_path(self): return self.owner.socket_path
+    @socket_path.setter
+    def socket_path(self, value):
+        if 'seats' not in self.__dict__: self.seats = {'owner': Seat('owner', value)}
+        else: self.owner.socket_path = Path(value)
+    @property
+    def surface_path(self): return self.owner.surface_path
+    @surface_path.setter
+    def surface_path(self, value): self.owner.surface_path = None if value is None else Path(value)
+    @property
+    def control(self): return self.owner.control
+    @control.setter
+    def control(self, value): self.owner.control = value
+    @property
+    def listener(self): return self.owner.listener
+    @property
+    def compositor_pid(self): return self.owner.compositor_pid
+    @property
+    def compositor_start(self): return self.owner.compositor_start
+    @property
+    def stale_epochs(self): return self.owner.stale_epochs
+
     async def request_bind(self, session, process_id, object_id, expected_epoch=None,
-                           space=control_protocol.WAYLAND_SURFACE):
+                           space=control_protocol.WAYLAND_SURFACE, probe=False):
         """Ask the compositor to bind a live process and its native Wayland surface or X11 window."""
+        if (self.session is session and not session.draining and process_id in session.processes and
+                not session.processes[process_id]['ready'].is_set()):
+            # A process's hello is answered before the phone answers its opening: a bind it asks
+            # for meanwhile waits for that answer.
+            await session.phone_answer(session.processes[process_id]['ready'], 10)
         if (self.session is not session or session.draining or process_id not in session.processes or
             not session.processes[process_id]['ready'].is_set()):
             raise RuntimeError('process is not ready for surface binding')
@@ -1572,19 +2018,29 @@ class Broker:
             raise ValueError('invalid expected compositor epoch')
         if len(self.pending_binds) >= 64 or self.next_bind == (1 << 64) - 1:
             raise OverflowError('surface bind capacity')
+        # A process binds on its own seat's display, and only a phone that routes by seat is
+        # shown another seat's windows.
+        seat = session.processes[process_id].get('seat', 'owner')
+        if seat != 'owner' and 'seat-routing' not in session.features:
+            print(f'CABOOSE_GPU_BROKER refused the {seat} seat a bind: the phone does not route by seat',
+                  file=sys.stderr, flush=True)
+            raise PermissionError(f'the phone does not show the {seat} seat')
         (uid, pid, start), pidfd = session.bindings.duplicate_process_identity(session.binding_generation, process_id)
         self.next_bind += 1
         request = self.next_bind
         future = asyncio.get_running_loop().create_future()
         self.pending_binds[request] = future
+        self.pending_bind_seats[request] = seat
         try:
-            data = control_protocol.encode_bind(control_protocol.Bind(request, process_id, uid, pid, start, object_id, space))
-            await self.send_control(data, pidfd)
+            data = control_protocol.encode_bind(control_protocol.Bind(request, process_id, uid, pid, start, object_id, space, probe))
+            await self.send_control(data, pidfd, seat=seat)
             result = await asyncio.wait_for(future, 5)
             if result.status:
                 raise PermissionError('surface bind denied')
+            epoch = session.surface_epochs.get(seat)
             if ((expected_epoch is not None and result.epoch != expected_epoch) or
-                (session.surface_epoch is not None and result.epoch != session.surface_epoch)):
+                (epoch is not None and result.epoch != epoch) or
+                self.epoch_seats.get(result.epoch, seat) != seat):
                 # Another compositor answered: its grant cannot be told apart from a stale one.
                 # Retire the entire service rather than expose or silently leak it.
                 self.closing.set()
@@ -1596,16 +2052,17 @@ class Broker:
                 # back and refuse this bind alone; every other process goes on.
                 if result.status == 0:
                     await self.send_control(control_protocol.encode_revoke_request(
-                        control_protocol.RevokeRequest(result.epoch, result.grant, result.generation)))
+                        control_protocol.RevokeRequest(result.epoch, result.grant, result.generation)), seat=seat)
                 raise PermissionError('surface bind for an ended process')
             key = (result.epoch, result.grant, result.generation)
             if key in session.surfaces:
                 self.closing.set()
                 raise ValueError('duplicate surface grant')
-            session.surface_epoch = result.epoch
+            session.surface_epochs[seat] = result.epoch
+            self.epoch_seats[result.epoch] = seat
             session.surface_count += 1
             session.surfaces[key] = {
-                'process': process_id, 'window': result.window,
+                'process': process_id, 'window': result.window, 'seat': seat,
                 'retiring': False, 'retire_sent': False, 'revoke_requested': False,
                 'bind_sent': False, 'disconnected': False, 'retired': asyncio.Event(),
                 'stats': SurfaceStats(session.surface_count, session.processes[process_id], session)
@@ -1615,12 +2072,18 @@ class Broker:
         finally:
             os.close(pidfd)
             self.pending_binds.pop(request, None)
+            self.pending_bind_seats.pop(request, None)
 
-    def bind_answered(self, record):
+    def bind_answered(self, record, seat='owner'):
         """The compositor's answer to a bind request. A request given up meanwhile (its
         surface connection ended, or the answer came after the deadline) is only logged, and a
         grant made for it is handed back."""
         future = self.pending_binds.get(record.request)
+        if future is not None and self.pending_bind_seats.get(record.request, 'owner') != seat:
+            # Only the compositor a bind was asked of answers it.
+            print(f'CABOOSE_GPU_BROKER refused a cross-seat bind answer: request {record.request} from {seat}',
+                  file=sys.stderr, flush=True)
+            return
         if future is not None and not future.done():
             future.set_result(record)
             return
@@ -1628,16 +2091,26 @@ class Broker:
               file=sys.stderr, flush=True)
         if record.status == 0:
             task = asyncio.create_task(self.send_control(control_protocol.encode_revoke_request(
-                control_protocol.RevokeRequest(record.epoch, record.grant, record.generation))))
+                control_protocol.RevokeRequest(record.epoch, record.grant, record.generation)), seat=seat))
             self.tasks.add(task); task.add_done_callback(self.tasks.discard)
 
-    async def send_control(self, data, fd=None):
+    async def send_control(self, data, fd=None, seat=None):
+        """Sends one record to a seat's compositor: `seat`, or the seat that minted the record's
+        grant; an executor lifecycle record goes to every seat's compositor."""
         loop = asyncio.get_running_loop()
         try: record = control_protocol.decode(data, 0 if fd is None else 1)
         except control_protocol.ControlError: record = None
-        if getattr(record, 'epoch', None) in self.stale_epochs:
+        if seat is None and isinstance(record, control_protocol.ExecutorLifecycle) and len(self.seats) > 1:
+            for name in self.seats:
+                await self.send_control(data, fd, seat=name)
+            return
+        if seat is None:
+            seat = self.epoch_seats.get(getattr(record, 'epoch', None), 'owner')
+        target = self.seats.get(seat)
+        if target is None: raise ConnectionError(f'no seat {seat}')
+        if getattr(record, 'epoch', None) in target.stale_epochs:
             return  # a grant of a compositor that went
-        if self.control is None:
+        if target.control is None:
             # No compositor: grants and buffers ended with the last one, a lifecycle record
             # reaches the next one when it connects, and a bind cannot be asked.
             if isinstance(record, (control_protocol.RevokeRequest, control_protocol.GrantRetired,
@@ -1646,7 +2119,7 @@ class Broker:
             raise ConnectionError('no compositor connected')
         ancillary = [] if fd is None else [(socket.SOL_SOCKET, socket.SCM_RIGHTS, array.array('i', [fd]))]
         async with self.bind_send_lock:
-            control = self.control
+            control = target.control
             if control is None: raise ConnectionError('no compositor connected')
             deadline = loop.time() + 5
             while True:
@@ -1664,21 +2137,22 @@ class Broker:
                 except OSError as error:
                     # On its own the broker outlives a compositor that went while it sent: the
                     # record goes with that compositor, and a bind is refused.
-                    if self.listener is None: raise
-                    if self.control is control: self.compositor_lost(f'{type(error).__name__}: {error}')
+                    if target.listener is None: raise
+                    if target.control is control: self.compositor_lost(f'{type(error).__name__}: {error}', target.name)
                     if fd is not None: raise ConnectionError('compositor control closed') from error
                     return
 
     async def report_lifecycle(self, session, kind):
         if kind == 5 and session.lost_reported: return
         data = control_protocol.encode_lifecycle(control_protocol.ExecutorLifecycle(kind, session.executor, session.generation))
-        self.lifecycle = data
+        # A compositor that connects later is told the executor's state, not a suspension's.
+        if kind in (4, 5, 6): self.lifecycle = data
         await self.send_control(data)
         if kind == 4: session.ready_reported = True
         if kind == 5: session.lost_reported = True
         if kind == 6: session.retired_reported = True
 
-    async def surface_client(self, session, sock):
+    async def surface_client(self, session, sock, seat='owner'):
         """Forward one authenticated surface's actual native controls and replies."""
         peer = None
         key = None
@@ -1728,6 +2202,12 @@ class Broker:
         try:
             peer = PeerIdentity.from_socket(sock, os.getuid(), allow_seqpacket=True)
             process_id = session.bindings.find_process(session.binding_generation, peer)
+            process_seat = session.processes.get(process_id, {}).get('seat', 'owner')
+            if process_seat != seat:
+                # A surface is its process's seat's: another seat's socket refuses it.
+                print(f'CABOOSE_GPU_BROKER refused a cross-seat surface: a {process_seat} process on the {seat} socket',
+                      file=sys.stderr, flush=True)
+                raise PermissionError('cross-seat surface')
             def verify_peer():
                 if not peer.alive() or session.bindings.find_process(session.binding_generation, peer) != process_id:
                     raise PermissionError('surface peer exited or changed')
@@ -1737,8 +2217,10 @@ class Broker:
                 await self.buffer_client(session, sock, process_id, verify_peer, receive, received_fds, kind, body)
                 return
             if kind != 16: raise ValueError('surface bind required')
-            instance, obj, width, height, space = struct.unpack('<QIIII', body)
-            result = await self.request_bind(session, process_id, obj, space=space)
+            instance, obj, width, height, space = struct.unpack_from('<QIIII', body)
+            # A 32-byte bind is a probe (surface_local_protocol): the compositor refuses it
+            # for a window whose own picture it presents.
+            result = await self.request_bind(session, process_id, obj, space=space, probe=len(body) == 32)
             key = (result.epoch, result.grant, result.generation)
             surface = session.surfaces[key]
             identity = result.epoch + result.grant + struct.pack('<Q', result.generation)
@@ -1759,7 +2241,8 @@ class Broker:
                 if not task.cancelled() and task.exception() is not None:
                     abort_client(f'reply sender: {task.exception()!r}')
             sender.add_done_callback(sender_done)
-            session.send(Kind.SURFACE_BIND, process_id, payload=identity + struct.pack('<QQII', result.window, instance, width, height))
+            session.send(Kind.SURFACE_BIND, process_id, payload=identity + struct.pack('<QQII', result.window, instance, width, height) +
+                         session.seat_suffix(surface))
             surface['bind_sent'] = True
             session.maybe_send_surface_retire(key)
             while not session.draining:
@@ -1804,7 +2287,7 @@ class Broker:
                     surface['indexed'].send(kind, body)
                     if kind in (34, 39):
                         session.frame_timing.begin(surface, surface['presents'][serial])
-                    session.send(Kind(kind), process_id, payload=identity + body)
+                    session.send(Kind(kind), process_id, payload=identity + body, priority=kind in PRIORITY_KINDS)
                 elif kind == 23:
                     if not surface['retiring'] and not surface.get('revoke_requested'):
                         surface['revoke_requested'] = True
@@ -1872,12 +2355,13 @@ class Broker:
         finally:
             session.buffer_registry.drop(connection)
 
-    def control_ready(self):
-        """One record from the compositor: a handoff, a bind answer, a revoke or a buffer."""
+    def control_ready(self, name='owner'):
+        """One record from a seat's compositor: a handoff, a bind answer, a revoke or a buffer."""
+        seat = self.seats[name]
         try:
-            record = receive_record(self.control, os.getuid(), self.compositor_pid, self.compositor_start)
+            record = receive_record(seat.control, os.getuid(), seat.compositor_pid, seat.compositor_start)
             if isinstance(record, control_protocol.BindResult):
-                self.bind_answered(record)
+                self.bind_answered(record, name)
                 return
             if isinstance(record, control_protocol.RevokeGrant):
                 # A revoke can cross the end of its session or surface: nothing is left
@@ -1885,21 +2369,26 @@ class Broker:
                 if self.session is None or not self.session.has_surface(record):
                     print('CABOOSE_GPU_BROKER revoke for a surface that is already gone', file=sys.stderr, flush=True)
                     return
+                surface_seat = self.session.surfaces[(record.epoch, record.grant, record.generation)].get('seat', 'owner')
+                if surface_seat != name:
+                    print(f'CABOOSE_GPU_BROKER refused a cross-seat revoke from {name} of a {surface_seat} surface',
+                          file=sys.stderr, flush=True)
+                    return
                 self.session.request_surface_retire(record)
                 return
             if isinstance(record, control_protocol.BufferPresent):
                 if self.session is None or not self.session.session_ready.is_set():
                     task = asyncio.create_task(self.send_control(control_protocol.encode_buffer_released(
-                        control_protocol.BufferReleased(record.request, errno.ENODEV))))
+                        control_protocol.BufferReleased(record.request, errno.ENODEV)), seat=name))
                     self.tasks.add(task); task.add_done_callback(self.tasks.discard)
                 else:
-                    self.session.present_buffer(record)
+                    self.session.present_buffer(record, name)
                 return
             stream = record
         except BlockingIOError: return
         except (OSError, ValueError, PermissionError) as error:
-            if self.listener is not None:
-                self.compositor_lost(f'{type(error).__name__}: {error}')
+            if seat.listener is not None:
+                self.compositor_lost(f'{type(error).__name__}: {error}', name)
                 return
             print(f'CABOOSE_GPU_BROKER control channel failed: {type(error).__name__}: {error}', file=sys.stderr, flush=True)
             self.closing.set(); return
@@ -1909,10 +2398,11 @@ class Broker:
         task = asyncio.create_task(self.remote(stream))
         self.tasks.add(task); task.add_done_callback(self.tasks.discard)
 
-    def compositor_connecting(self):
-        """A compositor connected to the listening socket: it replaces any current one."""
+    def compositor_connecting(self, name='owner'):
+        """A compositor connected to a seat's listening socket: it replaces that seat's current one."""
+        seat = self.seats[name]
         try:
-            connection, _ = self.listener.accept()
+            connection, _ = seat.listener.accept()
         except (BlockingIOError, InterruptedError): return
         except OSError as error:
             print(f'CABOOSE_GPU_BROKER control socket accept failed: {error}', file=sys.stderr, flush=True)
@@ -1923,52 +2413,64 @@ class Broker:
         except (OSError, ValueError, PermissionError) as error:
             print(f'CABOOSE_GPU_BROKER refused a compositor: {type(error).__name__}: {error}', file=sys.stderr, flush=True)
             connection.close(); return
-        if self.control is not None:
-            self.compositor_lost('a new compositor connected')
+        if seat.control is not None:
+            self.compositor_lost('a new compositor connected', name)
         connection.setblocking(False)
-        self.control, self.compositor_pid, self.compositor_start = connection, pid, start
-        asyncio.get_running_loop().add_reader(connection.fileno(), self.control_ready)
-        print(f'CABOOSE_GPU_BROKER compositor connected pid={pid}', file=sys.stderr, flush=True)
+        seat.control, seat.compositor_pid, seat.compositor_start = connection, pid, start
+        asyncio.get_running_loop().add_reader(connection.fileno(), self.control_ready, name)
+        print(f'CABOOSE_GPU_BROKER compositor connected pid={pid}' + (f' seat={name}' if len(self.seats) > 1 else ''),
+              file=sys.stderr, flush=True)
         # A compositor that comes while an executor serves learns of it at once.
         if self.lifecycle is not None and control_protocol.decode(self.lifecycle, 0).kind == 4:
-            task = asyncio.create_task(self.send_control(self.lifecycle))
+            task = asyncio.create_task(self.send_control(self.lifecycle, seat=name))
             self.tasks.add(task); task.add_done_callback(self.tasks.discard)
 
-    def compositor_lost(self, reason):
-        """The compositor went (a display restart): its windows and grants went with it. Its
-        surfaces retire on the phone as if revoked, and the executor goes on."""
-        print(f'CABOOSE_GPU_BROKER compositor ended: {reason}', file=sys.stderr, flush=True)
-        with contextlib.suppress(OSError, ValueError):
-            asyncio.get_running_loop().remove_reader(self.control.fileno())
-        with contextlib.suppress(OSError): self.control.close()
-        self.control = self.compositor_pid = self.compositor_start = None
-        for future in self.pending_binds.values():
-            if not future.done(): future.set_exception(ConnectionError('compositor control closed'))
+    def compositor_lost(self, reason, name='owner'):
+        """A seat's compositor went (a display restart): its windows and grants went with it. Its
+        surfaces retire on the phone as if revoked, and the executor and other seats go on."""
+        seat = self.seats[name]
+        print(f'CABOOSE_GPU_BROKER compositor ended: {reason}' + (f' seat={name}' if len(self.seats) > 1 else ''),
+              file=sys.stderr, flush=True)
+        with contextlib.suppress(OSError, ValueError, AttributeError):
+            asyncio.get_running_loop().remove_reader(seat.control.fileno())
+        with contextlib.suppress(OSError, AttributeError): seat.control.close()
+        seat.control = seat.compositor_pid = seat.compositor_start = None
+        for request, future in self.pending_binds.items():
+            if self.pending_bind_seats.get(request, 'owner') == name and not future.done():
+                future.set_exception(ConnectionError('compositor control closed'))
         session = self.session
         if session is None: return
-        for key in tuple(session.surfaces):
-            self.stale_epochs.add(key[0])
+        for key, surface in tuple(session.surfaces.items()):
+            if surface.get('seat', 'owner') != name: continue
+            seat.stale_epochs.add(key[0])
             with contextlib.suppress(ValueError, OSError, RuntimeError, BufferError):
                 session.request_surface_retire(control_protocol.RevokeGrant(*key))
-        session.surface_epoch = None
+        session.surface_epochs.pop(name, None)
 
     async def run(self):
         loop = asyncio.get_running_loop()
-        if self.control is not None:
-            self.control.setblocking(False)
-            loop.add_reader(self.control.fileno(), self.control_ready)
-        if self.listener is not None:
-            self.listener.setblocking(False)
-            loop.add_reader(self.listener.fileno(), self.compositor_connecting)
+        for name, seat in self.seats.items():
+            if seat.control is not None:
+                seat.control.setblocking(False)
+                loop.add_reader(seat.control.fileno(), self.control_ready, name)
+            if seat.listener is not None:
+                seat.listener.setblocking(False)
+                loop.add_reader(seat.listener.fileno(), self.compositor_connecting, name)
+        if self.phone_listener is not None:
+            self.phone_listener.setblocking(False)
+            loop.add_reader(self.phone_listener.fileno(), self.phone_connecting)
         usage = asyncio.create_task(self.publish_usage())
         try: await self.closing.wait()
         finally:
             usage.cancel()
             with contextlib.suppress(OSError): self.usage_path.unlink()
-            if self.listener is not None:
-                loop.remove_reader(self.listener.fileno()); self.listener.close()
-            if self.control is not None:
-                loop.remove_reader(self.control.fileno()); self.control.close()
+            if self.phone_listener is not None:
+                loop.remove_reader(self.phone_listener.fileno()); self.phone_listener.close()
+            for seat in self.seats.values():
+                if seat.listener is not None:
+                    loop.remove_reader(seat.listener.fileno()); seat.listener.close()
+                if seat.control is not None:
+                    loop.remove_reader(seat.control.fileno()); seat.control.close()
             for future in self.pending_binds.values():
                 if not future.done(): future.set_exception(ConnectionError('compositor control closed'))
             if self.tasks:
@@ -1978,7 +2480,22 @@ class Broker:
 
     @property
     def usage_path(self):
-        return Path(self.socket_path).parent / 'usage.json'
+        return self.usage_dir / 'usage.json'
+
+    def phone_connecting(self):
+        """The phone's executor connected to `--listen` itself: its `GET /gpu` is admitted with
+        the same token and headers as one a compositor hands over."""
+        try:
+            connection, _ = self.phone_listener.accept()
+        except (BlockingIOError, InterruptedError): return
+        except OSError as error:
+            print(f'CABOOSE_GPU_BROKER executor accept failed: {error}', file=sys.stderr, flush=True)
+            return
+        if len(self.tasks) >= MAX_QUEUED_MESSAGES:
+            connection.close(); return
+        connection.setblocking(False)
+        task = asyncio.create_task(self.remote(connection))
+        self.tasks.add(task); task.add_done_callback(self.tasks.discard)
 
     async def publish_usage(self):
         """Once a second, the session's per-process GPU use beside the local socket, when it
@@ -1994,12 +2511,81 @@ class Broker:
                 except OSError as error:
                     print(f'CABOOSE_GPU_BROKER usage file: {error}', file=sys.stderr, flush=True)
 
+    async def supersede(self, timeout=SUPERSEDE_SECONDS):
+        """Ends the executor connection holding the lease, if any, and waits until its session
+        has ended and released the lease, at most `timeout` seconds."""
+        if self.lease.idle:
+            return
+        holder = self.holder
+        if holder is not None and not holder.superseded:
+            holder.superseded = True
+            print(f'CABOOSE_GPU_BROKER executor generation {holder.generation} superseded by a new executor',
+                  file=sys.stderr, flush=True)
+            with contextlib.suppress(OSError, AttributeError):
+                holder.writer.transport.abort()
+        deadline = asyncio.get_running_loop().time() + timeout
+        while not self.lease.idle and asyncio.get_running_loop().time() < deadline:
+            await asyncio.sleep(0.05)
+
+    async def open_seat_sockets(self, session):
+        """Each seat's local sockets for this executor session, in that seat's private directory."""
+        sockets = SeatSockets()
+        try:
+            for name, seat in self.seats.items():
+                directory = seat.socket_path.parent
+                info = directory.lstat()
+                if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or
+                    stat.S_IMODE(info.st_mode) != 0o700 or os.path.lexists(seat.socket_path)):
+                    raise PermissionError('unsafe local socket directory or existing path')
+                retire_capabilities(directory)
+                def start_local(local_reader, local_writer, name=name):
+                    if len(session.local_tasks) >= MAX_QUEUED_MESSAGES:
+                        local_writer.transport.abort(); return
+                    try:
+                        raw_reader = LocalSocketReader(local_writer)
+                    except OSError:
+                        local_writer.transport.abort(); return
+                    task = asyncio.create_task(session.local(raw_reader, local_writer, name))
+                    session.local_tasks.add(task)
+                    def finished(local_task):
+                        session.local_tasks.discard(local_task)
+                        # Cancellation may precede the coroutine's first instruction.
+                        raw_reader.close()
+                        if not local_writer.is_closing(): local_writer.transport.abort()
+                    task.add_done_callback(finished)
+                server = await asyncio.start_unix_server(start_local, path=str(seat.socket_path))
+                os.chmod(seat.socket_path, 0o600)
+                sockets.servers.append(server)
+                sockets.owned.append((seat.socket_path, seat.socket_path.lstat().st_ino))
+                if seat.surface_path is None: continue
+                if seat.surface_path.parent != directory or os.path.lexists(seat.surface_path):
+                    raise PermissionError('unsafe surface socket path')
+                listener = socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET | socket.SOCK_CLOEXEC)
+                listener.setblocking(False)
+                listener.bind(str(seat.surface_path))
+                os.chmod(seat.surface_path, 0o600)
+                sockets.listeners.append(listener)
+                sockets.owned.append((seat.surface_path, seat.surface_path.lstat().st_ino))
+                listener.listen(64)
+                async def accept_surfaces(listener=listener, name=name):
+                    while True:
+                        client, _ = await asyncio.get_running_loop().sock_accept(listener)
+                        if session.draining or len(session.local_tasks) >= MAX_QUEUED_MESSAGES:
+                            client.close(); continue
+                        task = asyncio.create_task(self.surface_client(session, client, name))
+                        session.local_tasks.add(task)
+                        task.add_done_callback(session.local_tasks.discard)
+                sockets.accepts.append(asyncio.create_task(accept_surfaces()))
+        except BaseException:
+            await sockets.cleanup()
+            raise
+        return sockets
+
     async def remote(self, stream):
-        writer = server = None
-        surface_listener = surface_accept = None
+        writer = server = sockets = None
+        surface_accept = None
         session = executor = generation = None
         sender = receiver = stop_wait = drain_wait = None
-        owned_socket = None
         warmup = None
         try:
             detect_dead_peer(stream)
@@ -2011,13 +2597,16 @@ class Broker:
                 raise ValueError('token file too large')
             _computer, executor, response = admit(raw, token.strip())
             phone_features = admission_features(raw)
-            # A reconnect can arrive while the lost session is still ending its local clients.
-            for _ in range(50):
-                if self.lease.idle: break
-                await asyncio.sleep(0.1)
+            print(session_features_line(admission_declared(raw), admission_forwarded(raw), phone_features), file=sys.stderr, flush=True)
+            # The newest executor is the phone's: a phone that made a new executor has given up
+            # the previous one, whose connection may still look alive (the host holds a phone's
+            # transport for a resume that will never come). The previous connection is ended,
+            # as a loss, and the new one waits for its teardown, which is bounded.
+            await self.supersede()
             generation = self.lease.admit(executor.bytes)
             session = Session(self, executor.bytes, generation, reader, writer, indexed=self.indexed,
                               features=phone_features)
+            self.holder = session
             writer.write(response); await writer.drain()
             sender = asyncio.create_task(session.send_loop())
             receiver = asyncio.create_task(session.read_loop())
@@ -2035,53 +2624,16 @@ class Broker:
             finally:
                 if not ready_wait.done(): ready_wait.cancel()
                 await asyncio.gather(ready_wait, return_exceptions=True)
+            sockets = await self.open_seat_sockets(session)
+            server = sockets
+            surface_accept = sockets.accepting
+            # Ready only once both sockets exist: the compositor rebuilds its renderer on the
+            # report, and a renderer that found no socket would stay on the computer's device.
+            self.session = session
             await self.report_lifecycle(session, 4)
             self.lease.ready(executor.bytes, generation)
-            self.session = session
-            directory = self.socket_path.parent
-            info = directory.lstat()
-            if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or
-                stat.S_IMODE(info.st_mode) != 0o700 or os.path.lexists(self.socket_path)):
-                raise PermissionError('unsafe local socket directory or existing path')
-            retire_capabilities(directory)
-            def start_local(local_reader, local_writer):
-                if len(session.local_tasks) >= MAX_QUEUED_MESSAGES:
-                    local_writer.transport.abort(); return
-                try:
-                    raw_reader = LocalSocketReader(local_writer)
-                except OSError:
-                    local_writer.transport.abort(); return
-                task = asyncio.create_task(session.local(raw_reader, local_writer))
-                session.local_tasks.add(task)
-                def finished(local_task):
-                    session.local_tasks.discard(local_task)
-                    # Cancellation may precede the coroutine's first instruction.
-                    raw_reader.close()
-                    if not local_writer.is_closing(): local_writer.transport.abort()
-                task.add_done_callback(finished)
-            server = await asyncio.start_unix_server(start_local, path=str(self.socket_path))
-            os.chmod(self.socket_path, 0o600)
-            owned_socket = self.socket_path.lstat().st_ino
-            if self.surface_path is not None:
-                if self.surface_path.parent != directory or os.path.lexists(self.surface_path):
-                    raise PermissionError('unsafe surface socket path')
-                surface_listener = socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET | socket.SOCK_CLOEXEC)
-                surface_listener.setblocking(False)
-                surface_listener.bind(str(self.surface_path))
-                os.chmod(self.surface_path, 0o600)
-                surface_inode = self.surface_path.lstat().st_ino
-                surface_listener.listen(64)
-                async def accept_surfaces():
-                    while True:
-                        client, _ = await asyncio.get_running_loop().sock_accept(surface_listener)
-                        if session.draining or len(session.local_tasks) >= MAX_QUEUED_MESSAGES:
-                            client.close(); continue
-                        task = asyncio.create_task(self.surface_client(session, client))
-                        session.local_tasks.add(task)
-                        task.add_done_callback(session.local_tasks.discard)
-                surface_accept = asyncio.create_task(accept_surfaces())
             # Only once the session is serving, so it never delays the session or a first frame.
-            warmup = await start_warmup(self.warmup, self.socket_path)
+            warmup = await start_warmup(self.warmup, self.owner.socket_path)
             stop_wait = asyncio.create_task(self.closing.wait())
             drain_wait = asyncio.create_task(session.drain_requested.wait())
             watchers = (sender, receiver, stop_wait, drain_wait) + ((surface_accept,) if surface_accept else ())
@@ -2112,25 +2664,22 @@ class Broker:
             print(f'CABOOSE_GPU_BROKER executor session ended: {type(error).__name__}: {error}', file=sys.stderr, flush=True)
         finally:
             stop_warmup(warmup)
-            if surface_listener:
-                surface_listener.close()
-                if surface_accept:
-                    surface_accept.cancel()
-                    with contextlib.suppress(asyncio.CancelledError, OSError): await surface_accept
-                with contextlib.suppress(OSError, UnboundLocalError):
-                    if self.surface_path.lstat().st_ino == surface_inode: self.surface_path.unlink()
+            if sockets is not None:
+                await sockets.cleanup()
             if self.session is session:
                 self.session = None
+            if self.holder is session:
+                self.holder = None
             if server:
                 server.close()
-            if owned_socket is not None:
-                with contextlib.suppress(OSError):
-                    if self.socket_path.lstat().st_ino == owned_socket: self.socket_path.unlink()
             if session:
                 if session.ready_reported and not session.lost_reported:
                     with contextlib.suppress(OSError, asyncio.TimeoutError):
                         await self.report_lifecycle(session, 5)
                 session.failed = True
+                # Buffer binds and retries of this executor end with it: nothing it held is
+                # answered after its loss is reported.
+                for task in tuple(session.buffer_tasks): task.cancel()
                 for task in tuple(session.local_tasks): task.cancel()
                 if session.local_tasks:
                     try:
@@ -2141,7 +2690,9 @@ class Broker:
                     with contextlib.suppress(RuntimeError): self.lease.revoke(executor.bytes, generation)
                 for task in tuple(session.lifecycle_tasks): task.cancel()
                 if session.lifecycle_tasks:
-                    await asyncio.gather(*tuple(session.lifecycle_tasks), return_exceptions=True)
+                    # Bounded: a task that does not end when cancelled must not hold the lease.
+                    with contextlib.suppress(asyncio.TimeoutError):
+                        await asyncio.wait_for(asyncio.gather(*tuple(session.lifecycle_tasks), return_exceptions=True), 2)
                 with contextlib.suppress(RuntimeError): session.bindings.finish(session.binding_generation)
                 # The phone dropped this generation's objects with its connection, and every
                 # local client of it has ended: release the lease so the executor can return.
@@ -2166,36 +2717,87 @@ class Broker:
             else: stream.close()
 
 
+def private_directory(path):
+    """`path` as a private directory of this user (mode 0700), made if absent."""
+    with contextlib.suppress(FileExistsError):
+        path.mkdir(mode=0o700)
+    info = path.lstat()
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o700:
+        raise SystemExit(f'{path} is not a private directory of this user')
+    return path
+
+
+def control_listener(path):
+    """A seat's compositor channel: a Unix sequenced-packet socket of mode 0600."""
+    with contextlib.suppress(FileNotFoundError): path.unlink()
+    listener = socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+    previous = os.umask(0o177)
+    try: listener.bind(str(path))
+    finally: os.umask(previous)
+    listener.listen(2)
+    return listener
+
+
+def phone_listener(address):
+    host, _, port = address.rpartition(':')
+    if not host or not port.isdigit(): raise SystemExit(f'--listen wants HOST:PORT, not {address}')
+    family = socket.AF_INET6 if ':' in host.strip('[]') else socket.AF_INET
+    listener = socket.socket(family, socket.SOCK_STREAM)
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listener.bind((host.strip('[]'), int(port)))
+    listener.listen(16)
+    return listener
+
+
 def main():
+    # SIGUSR1 prints every thread's stack to the log: a broker that stops answering can be
+    # seen where it waits.
+    import faulthandler
+    faulthandler.register(signal.SIGUSR1, all_threads=True)
     parser = argparse.ArgumentParser()
-    control_source = parser.add_mutually_exclusive_group(required=True)
+    control_source = parser.add_mutually_exclusive_group()
     control_source.add_argument('--control-fd', type=int,
                                 help="the compositor's channel, inherited: the broker ends with it")
     control_source.add_argument('--control-socket', type=Path,
                                 help='listen for the compositor here (mode 0600) and outlive it')
+    control_source.add_argument('--dir', type=Path,
+                                help="the computer's shared broker: a private directory with a "
+                                     "subdirectory per seat (owner, agent), each with its compositor's "
+                                     "control.sock and its applications' gpu.sock and surface.sock")
+    parser.add_argument('--listen', help="HOST:PORT: accept the phone's executor (GET /gpu) here")
     parser.add_argument('--token-file', type=Path, required=True)
-    parser.add_argument('--socket', type=Path, required=True)
+    parser.add_argument('--socket', type=Path)
     parser.add_argument('--surface-socket', type=Path)
     parser.add_argument('--private-indexed', action='store_true')
     args = parser.parse_args()
-    if args.private_indexed and args.surface_socket is None:
+    if args.control_fd is None and args.control_socket is None and args.dir is None:
+        parser.error('one of --control-fd, --control-socket or --dir is required')
+    if args.dir is None and args.socket is None:
+        parser.error('--socket is required without --dir')
+    if args.dir is not None and (args.socket is not None or args.surface_socket is not None):
+        parser.error('--dir names every socket itself')
+    if args.private_indexed and args.surface_socket is None and args.dir is None:
         parser.error('--private-indexed requires --surface-socket')
-    control = listener = None
-    if args.control_fd is not None:
+    control = listener = seats = usage_dir = None
+    if args.dir is not None:
+        root = private_directory(args.dir)
+        seats = {}
+        for name in SEATS:
+            directory = private_directory(root / name)
+            seats[name] = Seat(name, directory / 'gpu.sock', directory / 'surface.sock',
+                               listener=control_listener(directory / 'control.sock'))
+        usage_dir = root
+    elif args.control_fd is not None:
         control = socket.socket(fileno=args.control_fd)
         if control.family != socket.AF_UNIX or control.getsockopt(socket.SOL_SOCKET, socket.SO_TYPE) != socket.SOCK_SEQPACKET:
             raise SystemExit('private Unix sequenced-packet control socket required')
     else:
-        with contextlib.suppress(FileNotFoundError): args.control_socket.unlink()
-        listener = socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET)
-        previous = os.umask(0o177)
-        try: listener.bind(str(args.control_socket))
-        finally: os.umask(previous)
-        listener.listen(2)
+        listener = control_listener(args.control_socket)
+    phone = phone_listener(args.listen) if args.listen else None
     # The supervisor restarts the broker; its log says why each one ended.
     try:
         asyncio.run(Broker(control, args.token_file, args.socket, args.surface_socket, args.private_indexed,
-                           listener=listener).run())
+                           listener=listener, seats=seats, phone_listener=phone, usage_dir=usage_dir).run())
     except BaseException as error:
         print(f'CABOOSE_GPU_BROKER_EXIT error {type(error).__name__}: {error}', file=sys.stderr, flush=True)
         raise
