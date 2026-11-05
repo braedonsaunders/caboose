@@ -1023,6 +1023,125 @@ static void coherentRewriteCase(void) {
            (double)worstUs / 1000.0);
 }
 
+// Host-coherent memory another thread writes while a submit flushes it, as DXVK's application
+// thread fills the next frame's constant-buffer slots while its submit thread flushes: 1 MiB of
+// 256-byte blocks, each 32 8-byte slots. Each iteration the main thread writes slots 0 and 31 of
+// every block (two changed words further apart than a flush fragment's overhead, so the flush
+// sends the first while the block is still open) and submits a copy of the whole buffer;
+// meanwhile a helper thread sweeps the blocks once, writing one slot between them in each, spread
+// over the time a submit takes, and is done before the next submit starts. The next submit's copy
+// must hold every one of the helper's values: a flush that records a word it did not send leaves
+// the device with the old one for good.
+#define COHERENT_BLOCKS 4096u
+static atomic_int coherentGo;     // the iteration whose submit is running, or -1
+static atomic_int coherentDone;   // the last iteration the helper finished
+static atomic_int coherentStop;
+static atomic_uint coherentSweepUs;
+static volatile uint64_t* coherentSlots;
+static void* coherentWriter(void* unused) {
+    (void)unused;
+    int last = -1;
+    while (!atomic_load(&coherentStop)) {
+        const int k = atomic_load(&coherentGo);
+        if (k < 0 || k == last) continue;
+        const uint64_t start = nowUs(), span = atomic_load(&coherentSweepUs);
+        const unsigned slot = 1u + (unsigned)k % 30u;
+        for (unsigned b = 0; b < COHERENT_BLOCKS; ++b) {
+            // Block b is written about when the flush, walking upward, reaches it.
+            const uint64_t due = start + span * b / COHERENT_BLOCKS;
+            while (nowUs() < due) {}
+            coherentSlots[(size_t)b * 32u + slot] = (uint64_t)k + 1;
+        }
+        last = k;
+        atomic_store(&coherentDone, k);
+    }
+    return NULL;
+}
+static void concurrentCoherentWritesCase(void) {
+    const VkDeviceSize size = (VkDeviceSize)COHERENT_BLOCKS * 256u;
+    VkBufferCreateInfo bufferInfo = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    bufferInfo.size = size;
+    bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+    VkBuffer source, target;
+    CHECK(vkCreateBuffer(device, &bufferInfo, NULL, &source));
+    bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    CHECK(vkCreateBuffer(device, &bufferInfo, NULL, &target));
+    const VkMemoryPropertyFlags coherent = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+    VkMemoryRequirements req;
+    VkMemoryAllocateInfo alloc = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    VkDeviceMemory sourceMemory, targetMemory;
+    vkGetBufferMemoryRequirements(device, source, &req);
+    alloc.allocationSize = req.size;
+    alloc.memoryTypeIndex = memoryType(req.memoryTypeBits, coherent);
+    CHECK(vkAllocateMemory(device, &alloc, NULL, &sourceMemory));
+    CHECK(vkBindBufferMemory(device, source, sourceMemory, 0));
+    vkGetBufferMemoryRequirements(device, target, &req);
+    alloc.allocationSize = req.size;
+    alloc.memoryTypeIndex = memoryType(req.memoryTypeBits, coherent);
+    CHECK(vkAllocateMemory(device, &alloc, NULL, &targetMemory));
+    CHECK(vkBindBufferMemory(device, target, targetMemory, 0));
+    void *sourceMapped, *targetMapped;
+    CHECK(vkMapMemory(device, sourceMemory, 0, VK_WHOLE_SIZE, 0, &sourceMapped));
+    CHECK(vkMapMemory(device, targetMemory, 0, VK_WHOLE_SIZE, 0, &targetMapped));
+    coherentSlots = (volatile uint64_t*)sourceMapped;
+    const volatile uint64_t* readback = (const volatile uint64_t*)targetMapped;
+    memset(sourceMapped, 0, (size_t)size);
+    const VkBufferCopy region = {0, 0, size};
+    // The first flush sends every block whole; later flushes compare word by word.
+    begin();
+    vkCmdCopyBuffer(cb, source, target, 1, &region);
+    waitTimeline(submit2(1));
+    atomic_store(&coherentGo, -1);
+    atomic_store(&coherentDone, -1);
+    atomic_store(&coherentStop, 0);
+    atomic_store(&coherentSweepUs, 0);
+    pthread_t writer;
+    if (pthread_create(&writer, NULL, coherentWriter, NULL)) fail("pthread_create", VK_ERROR_UNKNOWN);
+    const int iterations = 2000;
+    int k = 0, lost = 0, badIteration = -1, badBlock = -1, badSlot = -1;
+    uint64_t submitUs = 0, expected = 0, got = 0;
+    for (; k < iterations && !lost; ++k) {
+        for (unsigned b = 0; b < COHERENT_BLOCKS; ++b) {
+            coherentSlots[(size_t)b * 32u] = (uint64_t)k;
+            coherentSlots[(size_t)b * 32u + 31u] = (uint64_t)k;
+        }
+        begin();
+        vkCmdCopyBuffer(cb, source, target, 1, &region);
+        const uint64_t t0 = nowUs();
+        atomic_store(&coherentGo, k);  // the helper sweeps its slots while this submit flushes
+        const uint64_t value = submit2(1);
+        submitUs += nowUs() - t0;
+        // Spread the next sweep over the time a submit takes.
+        atomic_store(&coherentSweepUs, (unsigned)(submitUs / (uint64_t)(k + 1)));
+        waitTimeline(value);
+        while (atomic_load(&coherentDone) != k) {}  // the helper's writes are complete before the next submit
+        const unsigned previous = k ? 1u + (unsigned)(k - 1) % 30u : 0u;
+        for (unsigned b = 0; b < COHERENT_BLOCKS && !lost; ++b) {
+            const size_t base = (size_t)b * 32u;
+            const uint64_t checks[3][2] = {{0, (uint64_t)k}, {31, (uint64_t)k}, {previous, (uint64_t)k}};
+            for (int c = 0; c < (k ? 3 : 2) && !lost; ++c)
+                if (readback[base + checks[c][0]] != checks[c][1]) {
+                    lost = 1; badIteration = k; badBlock = (int)b; badSlot = (int)checks[c][0];
+                    expected = checks[c][1]; got = readback[base + checks[c][0]];
+                }
+        }
+    }
+    atomic_store(&coherentStop, 1);
+    pthread_join(writer, NULL);
+    vkUnmapMemory(device, sourceMemory);
+    vkUnmapMemory(device, targetMemory);
+    vkDestroyBuffer(device, source, NULL);
+    vkDestroyBuffer(device, target, NULL);
+    vkFreeMemory(device, sourceMemory, NULL);
+    vkFreeMemory(device, targetMemory, NULL);
+    if (lost)
+        report("concurrent_coherent_writes", 0, "iteration=%d block=%d slot=%d expected=%llu got=%llu", badIteration,
+               badBlock, badSlot, (unsigned long long)expected, (unsigned long long)got);
+    else
+        report("concurrent_coherent_writes", 1, "iterations=%d blocks=%u mean_submit_us=%.0f", k, COHERENT_BLOCKS,
+               (double)submitUs / (k ? k : 1));
+}
+
 // A swapchain on one X11 window, presenting frames cleared to a color.
 struct Presenter {
     VkSurfaceKHR surface;
@@ -2105,6 +2224,7 @@ int main(int argc, char** argv) {
     RUN("child_windows", childWindowsCase());
     RUN("one_shot", oneShotCase());
     RUN("coherent_rewrite", coherentRewriteCase());
+    RUN("concurrent_coherent_writes", concurrentCoherentWritesCase());
     RUN("exit_latency", exitLatencyCase());
     RUN("abandoned_work", abandonedWorkCase());
     if (!only || strstr("one_way_start", only) || strstr("one_way_misprediction", only) ||
