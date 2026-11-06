@@ -181,7 +181,7 @@ final class LiveGPUOutboundQueue {
 
 /// Dedicated live socket, independent of the display/replay transport. Events are ordered
 /// on a private network queue; consumers must admit and dispatch blocking work elsewhere.
-public final class LiveGPUConnection: NSObject, LiveGPUResumeSocket, URLSessionWebSocketDelegate, @unchecked Sendable {
+public final class LiveGPUConnection: LiveGPUResumeSocket, @unchecked Sendable {
     public static let subprotocolName = "caboose.gpu.live.v1"
     /// Capabilities of this app's native decoder that a computer may use: it registers
     /// objects under Vulkan handles the guest assigns (patch 0026), including descriptor
@@ -193,6 +193,9 @@ public final class LiveGPUConnection: NSObject, LiveGPUResumeSocket, URLSessionW
     /// ("Upload cache"), and registers buffer views under guest-assigned handles.
     static let features = "guest-handles,guest-handle-arrays,completion-feed,ordered-present,guest-images,guest-query-pools,shader-cache,executor-resume,zstd-stream,upload-cache,guest-buffer-views,batched-descriptor-sets"
     static let resumeHeader = "X-Caboose-GPU-Resume"
+    /// The close code of a socket given up while the app is suspended: the host keeps the
+    /// executor for a resume.
+    static let suspendedCloseCode = 4001
     /// A resume attempt waits this long for its upgrade; the next follows at once.
     static let resumeTimeout: TimeInterval = 3
     /// The host relay ends a phone silent for 3 s; one that hears no pong for as long has
@@ -204,8 +207,7 @@ public final class LiveGPUConnection: NSObject, LiveGPUResumeSocket, URLSessionW
     private let queue = DispatchQueue(label: "caboose.gpu.network")
     private let budget = LiveGPUBudget()
     private lazy var outbound = LiveGPUOutboundQueue(budget: budget)
-    private var session: URLSession?
-    private var task: URLSessionWebSocketTask?
+    private var socket: HTTP1WebSocket?
     private var event: (@Sendable (LiveGPUTransportEvent) -> Void)?
     private var started = false
     private var ended = false
@@ -214,9 +216,8 @@ public final class LiveGPUConnection: NSObject, LiveGPUResumeSocket, URLSessionW
     /// even while delivery to a busy decoder holds back receiving (and so pong replies).
     private let pingQueue = DispatchQueue(label: "caboose.gpu.ping")
     private var pinger: DispatchSourceTimer?
-    private var closeCode = URLSessionWebSocketTask.CloseCode.normalClosure
-    /// A resume attempt: its upgrade must complete within `resumeTimeout`. The request's own
-    /// timeout stays as it is, since URLSession also applies it to an open socket's idle time.
+    private var closeCode = 1000
+    /// A resume attempt: its upgrade must complete within `resumeTimeout`.
     private var resuming = false
     private let credentialLock = NSLock()
     private var credential: String? // set on queue before .opened, under credentialLock
@@ -229,9 +230,6 @@ public final class LiveGPUConnection: NSObject, LiveGPUResumeSocket, URLSessionW
         return Double(Self.clock() &- heard) / 1e9
     }
     private var heardAt = LiveGPUConnection.clock() // under credentialLock
-    /// Receiving held back by the session (on `queue`), and whether a receive is outstanding.
-    private var receivePaused = false
-    private var receiving = false
     private func heard() { credentialLock.withLock { heardAt = Self.clock() } }
     private static func clock() -> UInt64 { clock_gettime_nsec_np(CLOCK_MONOTONIC) }
 
@@ -284,10 +282,24 @@ public final class LiveGPUConnection: NSObject, LiveGPUResumeSocket, URLSessionW
         }
     }
 
-    static func binaryBytes(_ message: URLSessionWebSocketTask.Message) throws -> Data {
+    static func binaryBytes(_ message: HTTP1WebSocket.Message) throws -> Data {
         guard case .data(let data) = message else { throw LiveGPUError.textMessage }
         guard data.count <= LiveGPUBudget.messageLimit else { throw LiveGPUError.messageTooLarge }
         return data
+    }
+
+    /// The upgrade as `HTTP1WebSocket` sends it: the request's headers, its subprotocol
+    /// offered as one, over HTTP/1.1.
+    static func socket(for request: URLRequest) -> HTTP1WebSocket? {
+        guard let url = request.url else { return nil }
+        let subprotocols = request.value(forHTTPHeaderField: "Sec-WebSocket-Protocol").map { [$0] } ?? []
+        let headers = (request.allHTTPHeaderFields ?? [:])
+            .filter { $0.key.caseInsensitiveCompare("Sec-WebSocket-Protocol") != .orderedSame }
+            .sorted { $0.key < $1.key }
+            .map { (name: $0.key, value: $0.value) }
+        return HTTP1WebSocket(url: url, subprotocols: subprotocols, headers: headers,
+                              maximumMessageSize: LiveGPUBudget.messageLimit, timeout: request.timeoutInterval,
+                              label: "caboose.gpu.socket")
     }
 
     public func open(_ event: @escaping @Sendable (LiveGPUTransportEvent) -> Void) {
@@ -295,17 +307,16 @@ public final class LiveGPUConnection: NSObject, LiveGPUResumeSocket, URLSessionW
             guard !started, !ended else { return }
             started = true; self.event = event
             guard budget.active else { finish(LiveGPUError.closed); return }
-            let config = URLSessionConfiguration.ephemeral
-            config.waitsForConnectivity = false
-            config.httpCookieStorage = nil
-            config.urlCredentialStorage = nil
-            let delegate = OperationQueue()
-            delegate.underlyingQueue = queue; delegate.maxConcurrentOperationCount = 1
-            let session = URLSession(configuration: config, delegate: self, delegateQueue: delegate)
-            let task = session.webSocketTask(with: request)
-            task.maximumMessageSize = LiveGPUBudget.messageLimit
-            self.session = session; self.task = task
-            task.resume()
+            guard let socket = Self.socket(for: request) else { finish(LiveGPUError.invalidEndpoint); return }
+            self.socket = socket
+            if receivePaused { socket.setReceivingPaused(true) }
+            socket.open { [weak self, weak socket] incoming in
+                guard let self else { return }
+                self.queue.async { [self] in
+                    guard let socket, socket === self.socket else { return }
+                    self.handle(incoming, from: socket)
+                }
+            }
             if resuming {
                 queue.asyncAfter(deadline: .now() + Self.resumeTimeout) { [weak self] in
                     guard let self, !self.ended, !self.ready else { return }
@@ -313,7 +324,7 @@ public final class LiveGPUConnection: NSObject, LiveGPUResumeSocket, URLSessionW
                     self.finish(LiveGPUError.silent)
                 }
             }
-            // Receive starts only after exact subprotocol validation.
+            // Messages are delivered only after exact subprotocol validation.
         }
     }
 
@@ -344,15 +355,15 @@ public final class LiveGPUConnection: NSObject, LiveGPUResumeSocket, URLSessionW
     func closeSuspended() {
         budget.revoke()
         queue.async { [self] in
-            closeCode = URLSessionWebSocketTask.CloseCode(rawValue: 4001) ?? .goingAway
+            closeCode = Self.suspendedCloseCode
             finish(nil)
         }
     }
 
     private func pump() {
-        guard !ended, budget.active, !outbound.isSending, let task,
+        guard !ended, budget.active, !outbound.isSending, let socket,
               let batch = outbound.nextBatch() else { return }
-        task.send(.data(batch.data)) { [self] error in
+        socket.send(.data(batch.data)) { [self] error in
             queue.async { [self] in
                 _ = outbound.completeInFlight()
                 guard !ended, budget.active else { return }
@@ -361,58 +372,49 @@ public final class LiveGPUConnection: NSObject, LiveGPUResumeSocket, URLSessionW
         }
     }
 
-    private func receive() {
-        guard !ended, budget.active, !receivePaused, !receiving, let task else { return }
-        receiving = true
-        task.receive { [self] result in
-            queue.async { [self] in
-                receiving = false
-                guard !ended, budget.active else { return }
-                switch result {
-                case .success(let message):
-                    heard() // any message proves the host is there
-                    do { event?(.bytes(try Self.binaryBytes(message))); receive() }
-                    catch { finish(error) }
-                case .failure(let error): finish(error)
-                }
-            }
-        }
-    }
+    /// Receiving held back by the session (on `queue`).
+    private var receivePaused = false
 
     func setReceivingPaused(_ paused: Bool) {
         queue.async { [self] in
             guard receivePaused != paused else { return }
             receivePaused = paused
-            if !paused && ready { receive() }
+            socket?.setReceivingPaused(paused)
         }
     }
 
-    private func finish(_ error: Error?) {
+    private func handle(_ incoming: HTTP1WebSocket.Event, from socket: HTTP1WebSocket) {
         guard !ended else { return }
-        ended = true; ready = false; budget.revoke()
-        pinger?.cancel(); pinger = nil
-        outbound.discardPending()
-        task?.cancel(with: error == nil ? closeCode : .policyViolation, reason: nil)
-        session?.invalidateAndCancel()
-        task = nil; session = nil
-        event?(.closed(error)); event = nil
+        switch incoming {
+        case .opened(let response):
+            guard budget.active else { return }
+            opened(response, socket: socket)
+        case .message(let message):
+            guard ready, budget.active else { return }
+            heard() // any message proves the host is there
+            do { event?(.bytes(try Self.binaryBytes(message))) }
+            catch { finish(error) }
+        case .closed(let close):
+            LiveGPUResumableTransport.log("socket closed ready=\(ready ? 1 : 0) status=\(close.refusedStatus ?? 0) code=\(close.code ?? 0) failure=\(close.failure ?? "none")")
+            if !ready, close.refusedStatus == 410 { finish(LiveGPUError.resumeRefused); return }
+            // Only the host's own close frame with code 1000 is a normal close: anything else
+            // cannot release an executor lease.
+            finish(close.refusedStatus == nil && close.failure == nil && close.code == 1000 ? nil : LiveGPUError.closed)
+        }
     }
 
-    public func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask,
-                           didOpenWithProtocol selected: String?) {
-        guard webSocketTask === task, !ended, budget.active else { return }
+    private func opened(_ response: WebSocketHandshake.Response, socket: HTTP1WebSocket) {
         do {
-            let response = webSocketTask.response as? HTTPURLResponse
-            try Self.validateUpgrade(selected: selected, extensions: response?.value(forHTTPHeaderField: "Sec-WebSocket-Extensions"))
-            let issued = response?.value(forHTTPHeaderField: Self.resumeHeader).flatMap { Self.validCredential($0) ? $0 : nil }
+            try Self.validateUpgrade(selected: response.subprotocol, extensions: response.value("Sec-WebSocket-Extensions"))
+            let issued = response.value(Self.resumeHeader).flatMap { Self.validCredential($0) ? $0 : nil }
             credentialLock.withLock { credential = issued }
-            ready = true; event?(.opened); receive()
+            ready = true; event?(.opened)
             heard()
             let timer = DispatchSource.makeTimerSource(queue: pingQueue)
             timer.schedule(deadline: .now() + 1, repeating: 1)
-            timer.setEventHandler { [weak self, weak webSocketTask] in
-                guard let self, let webSocketTask else { return }
-                webSocketTask.sendPing { [weak self] error in
+            timer.setEventHandler { [weak self, weak socket] in
+                guard let self, let socket else { return }
+                socket.ping { [weak self] error in
                     guard let self, error == nil else { return }
                     self.heard()
                 }
@@ -428,28 +430,14 @@ public final class LiveGPUConnection: NSObject, LiveGPUResumeSocket, URLSessionW
         } catch { finish(error) }
     }
 
-    public func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask,
-                           didCloseWith closeCode: URLSessionWebSocketTask.CloseCode, reason: Data?) {
-        guard webSocketTask === task else { return }
-        LiveGPUResumableTransport.log("socket peer close code=\(closeCode.rawValue)")
-        finish(closeCode == .normalClosure ? nil : LiveGPUError.closed)
-    }
-
-    public func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-        guard task === self.task else { return }
-        LiveGPUResumableTransport.log("socket completed ready=\(ready ? 1 : 0) status=\((task.response as? HTTPURLResponse)?.statusCode ?? 0) error=\(error.map { String(describing: $0) } ?? "none")")
-        if !ready, (task.response as? HTTPURLResponse)?.statusCode == 410 {
-            finish(LiveGPUError.resumeRefused); return
-        }
-        // Only didCloseWith(.normalClosure) proves a normal peer close.
-        // Completion without that receipt cannot release an executor lease.
-        finish(error ?? LiveGPUError.closed)
-    }
-
-    public func urlSession(_ session: URLSession, task: URLSessionTask,
-                           willPerformHTTPRedirection response: HTTPURLResponse,
-                           newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
-        completionHandler(nil)
+    private func finish(_ error: Error?) {
+        guard !ended else { return }
+        ended = true; ready = false; budget.revoke()
+        pinger?.cancel(); pinger = nil
+        outbound.discardPending()
+        socket?.close(code: error == nil ? closeCode : 1008)
+        socket = nil
+        event?(.closed(error)); event = nil
     }
 }
 

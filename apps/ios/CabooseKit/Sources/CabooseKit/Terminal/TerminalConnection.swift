@@ -169,107 +169,36 @@ public final class TerminalConnection: @unchecked Sendable {
     }
 }
 
-/// `TerminalTransport` over URLSession.
-public final class URLSessionTerminalTransport: NSObject, TerminalTransport, URLSessionWebSocketDelegate, @unchecked Sendable {
-    private let request: URLRequest
-    private let queue = DispatchQueue(label: "caboose.terminal.socket")
-    private var session: URLSession?
-    private var task: URLSessionWebSocketTask?
-    private var onEvent: (@Sendable (TerminalTransportEvent) -> Void)?
-    private var done = false
+/// `TerminalTransport` over the host's `/v1/terminal` WebSocket (`HTTP1WebSocket`).
+public final class WebSocketTerminalTransport: TerminalTransport, @unchecked Sendable {
+    private let socket: HTTP1WebSocket
 
     /// `timeout` bounds the upgrade, which can include waking the computer.
     public init(url: URL, token: String, timeout: TimeInterval = 120) {
-        var request = URLRequest(url: url, timeoutInterval: timeout)
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        self.request = request
+        socket = HTTP1WebSocket(url: url, headers: [("Authorization", "Bearer \(token)")],
+                                maximumMessageSize: 4 * 1024 * 1024, timeout: timeout, label: "caboose.terminal.socket")
     }
 
     public func open(onEvent: @escaping @Sendable (TerminalTransportEvent) -> Void) {
-        queue.async { [self] in
-            guard task == nil, !done else { return }
-            self.onEvent = onEvent
-            let configuration = URLSessionConfiguration.default
-            configuration.waitsForConnectivity = false
-            configuration.timeoutIntervalForRequest = request.timeoutInterval
-            let delegateQueue = OperationQueue()
-            delegateQueue.underlyingQueue = queue
-            delegateQueue.maxConcurrentOperationCount = 1
-            let session = URLSession(configuration: configuration, delegate: self, delegateQueue: delegateQueue)
-            let task = session.webSocketTask(with: request)
-            task.maximumMessageSize = 4 * 1024 * 1024
-            self.session = session
-            self.task = task
-            task.resume()
-            receive()
+        socket.open { event in
+            switch event {
+            case .opened: break
+            case .message(.data(let data)): onEvent(.message(.data(data)))
+            case .message(.string(let text)): onEvent(.message(.text(text)))
+            case .closed(let close):
+                if let status = close.refusedStatus { onEvent(.refused(status: status)) }
+                else if let failure = close.failure { onEvent(.failed(failure)) }
+                else { onEvent(.closed(code: close.code ?? 1005, reason: close.reason)) }
+            }
         }
     }
 
     public func send(_ message: TerminalTransportMessage, completion: @escaping @Sendable (Error?) -> Void) {
-        queue.async { [self] in
-            guard let task, !done else { completion(URLError(.networkConnectionLost)); return }
-            let outgoing: URLSessionWebSocketTask.Message = switch message {
-            case .data(let data): .data(data)
-            case .text(let text): .string(text)
-            }
-            task.send(outgoing, completionHandler: completion)
+        switch message {
+        case .data(let data): socket.send(.data(data), completion: completion)
+        case .text(let text): socket.send(.string(text), completion: completion)
         }
     }
 
-    public func close() {
-        queue.async { [self] in
-            guard !done else { return }
-            task?.cancel(with: .normalClosure, reason: nil)
-            done = true
-            session?.invalidateAndCancel()
-            onEvent = nil
-        }
-    }
-
-    private func receive() {
-        task?.receive { [weak self] result in
-            guard let self, !self.done else { return }
-            switch result {
-            case .success(.data(let data)): self.onEvent?(.message(.data(data))); self.receive()
-            case .success(.string(let text)): self.onEvent?(.message(.text(text))); self.receive()
-            case .success: self.receive()
-            case .failure(let error):
-                // The close frame's code arrives through the delegate, sometimes just after.
-                self.queue.asyncAfter(deadline: .now() + 0.25) { self.failed(error) }
-            }
-        }
-    }
-
-    private func failed(_ error: Error) {
-        guard !done, let task else { return }
-        if let response = task.response as? HTTPURLResponse, response.statusCode != 101 {
-            finish(.refused(status: response.statusCode))
-        } else if task.closeCode != .invalid {
-            finish(.closed(code: task.closeCode.rawValue, reason: task.closeReason.flatMap { String(data: $0, encoding: .utf8) }))
-        } else {
-            finish(.failed(error.localizedDescription))
-        }
-    }
-
-    private func finish(_ event: TerminalTransportEvent) {
-        guard !done else { return }
-        done = true
-        onEvent?(event)
-        onEvent = nil
-        session?.invalidateAndCancel()
-    }
-
-    public func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask,
-                           didCloseWith closeCode: URLSessionWebSocketTask.CloseCode, reason: Data?) {
-        finish(.closed(code: closeCode.rawValue, reason: reason.flatMap { String(data: $0, encoding: .utf8) }))
-    }
-
-    public func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-        guard let error else { return }
-        if let response = task.response as? HTTPURLResponse, response.statusCode != 101 {
-            finish(.refused(status: response.statusCode))
-        } else {
-            queue.asyncAfter(deadline: .now() + 0.25) { [weak self] in self?.failed(error) }
-        }
-    }
+    public func close() { socket.close() }
 }

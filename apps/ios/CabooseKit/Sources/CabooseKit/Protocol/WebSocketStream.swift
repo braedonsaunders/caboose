@@ -34,7 +34,8 @@ public enum ByteStreamEvent: Sendable {
 /// rides back behind the downstream pictures queued in the Wi-Fi access point: samples sent
 /// every display refresh then leave in one burst hundreds of milliseconds later (measured:
 /// 71 scroll samples sent over 583 ms arrived together after 657 ms). URLSession's WebSocket
-/// task offers no way to set TCP_NODELAY, so the connection is built here.
+/// task offers no way to set TCP_NODELAY, so the connection is built here, its TLS offering only
+/// HTTP/1.1 like every socket the app opens (`HTTP1Upgrade`).
 public final class WebSocketStream: ByteStream, @unchecked Sendable {
     private let url: URL
     private let token: String
@@ -60,7 +61,7 @@ public final class WebSocketStream: ByteStream, @unchecked Sendable {
             tcp.noDelay = true
             tcp.connectionTimeout = 20
             let secure = url.scheme?.lowercased() == "wss" || url.scheme?.lowercased() == "https"
-            let parameters = NWParameters(tls: secure ? NWProtocolTLS.Options() : nil, tcp: tcp)
+            let parameters = NWParameters(tls: secure ? HTTP1Upgrade.tlsOptions() : nil, tcp: tcp)
             let websocket = NWProtocolWebSocket.Options()
             websocket.autoReplyPing = true
             websocket.maximumMessageSize = 64 * 1024 * 1024

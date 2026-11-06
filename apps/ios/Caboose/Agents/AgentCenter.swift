@@ -104,7 +104,7 @@ final class AgentCenter {
     private var deletedChats: Set<String> = []
     private(set) var deletingChats: Set<String> = []
     private var attached = false
-    private var control: URLSessionWebSocketTask?
+    private var control: HTTP1WebSocket?
     var selectedModels: [String: String] = [:]
     private var host: HostClient?
 
@@ -123,7 +123,7 @@ final class AgentCenter {
     func detach() {
         attached = false
         let open = control != nil
-        control?.cancel(with: .goingAway, reason: nil)
+        control?.close(code: 1001)
         control = nil
         if open { onControlClosed?() }
         seat?.disconnect()
@@ -592,32 +592,35 @@ final class AgentCenter {
         // `scan=1`: this app answers the native bridge's scan requests (docs/native-bridge.md).
         components.queryItems = [URLQueryItem(name: "foreground", value: "1"), URLQueryItem(name: "phone", value: "1"),
                                  URLQueryItem(name: "scan", value: "1")]
-        var request = URLRequest(url: components.url!)
-        request.setValue("Bearer \(host.token)", forHTTPHeaderField: "Authorization")
-        let task = URLSession.shared.webSocketTask(with: request)
-        control = task
-        task.resume()
-        receive(on: task)
+        let socket = HTTP1WebSocket(url: components.url!, headers: [("Authorization", "Bearer \(host.token)")],
+                                    label: "caboose.control.socket")
+        control = socket
+        socket.open { [weak self] event in
+            // In order, on the main queue.
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated { self?.controlEvent(event, on: socket) }
+            }
+        }
     }
 
-    private func receive(on task: URLSessionWebSocketTask) {
-        task.receive { [weak self] result in
-            Swift.Task { @MainActor in
-                guard let self, self.control === task else { return }
-                switch result {
-                case .failure:
-                    self.control = nil
-                    self.onControlClosed?()
-                    try? await Swift.Task.sleep(for: .seconds(3))
-                    guard self.attached else { return }
-                    self.openControl()
-                    await self.refresh()
-                    if let id = self.currentChat { await self.loadThread(id) }
-                case .success(let message):
-                    if case .string(let text) = message { self.handle(text) }
-                    if case .data(let data) = message, let text = String(data: data, encoding: .utf8) { self.handle(text) }
-                    self.receive(on: task)
-                }
+    private func controlEvent(_ event: HTTP1WebSocket.Event, on socket: HTTP1WebSocket) {
+        guard control === socket else { return }
+        switch event {
+        case .opened:
+            break
+        case .message(.string(let text)):
+            handle(text)
+        case .message(.data(let data)):
+            if let text = String(data: data, encoding: .utf8) { handle(text) }
+        case .closed:
+            control = nil
+            onControlClosed?()
+            Swift.Task { [weak self] in
+                try? await Swift.Task.sleep(for: .seconds(3))
+                guard let self, self.attached else { return }
+                self.openControl()
+                await self.refresh()
+                if let id = self.currentChat { await self.loadThread(id) }
             }
         }
     }
