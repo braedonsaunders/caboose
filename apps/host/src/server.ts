@@ -53,6 +53,10 @@ import { appsBusy } from './busy.js'
 import type { ComputerNetwork } from './tailnet.js'
 import { ContainerSpecError, type ContainerSpec, type ContainerSpecStore } from './container-spec.js'
 import { MachineSpecError, type MachineSpecStore } from './machine-spec.js'
+import { readBody } from './backup.js'
+import { HostExecInputError, execute, parseExec, parseFileTarget, writeFile as writeGuestFile } from './host-exec.js'
+/** The largest file the operator writes into a computer in one request (a sealed release). */
+const HOST_FILE_LIMIT = 2 * 1024 * 1024 * 1024
 import { BootProgress, type Boot, type BootReport } from './boot.js'
 import { HostSettings } from './host-settings.js'
 import { ComputerCapacityError, PairingCodes, PairingRateLimitError, personName, phoneName, type ComputerAssignment, type ComputerRecord, type ComputerRegistry, type PhoneTokens } from './computers.js'
@@ -1990,6 +1994,25 @@ export function createCabooseServer(options: Partial<ComputerPieces> & {
         return json(response, 200, { ...(options.hostStats?.() ?? {}), computers: { running: live.filter(runtime => runtime.computer.state === 'running').length, total: live.length }, ...(options.machine ? { machine: await options.machine() } : {}), ...(options.sharedStorage ? { sharedStorage: options.sharedStorage() } : {}) })
       }
       if (request.method === 'GET' && path === '/v1/host' && options.host) return json(response, 200, options.host)
+      const hostComputer = /^\/v1\/host\/computers\/([^/]+)\/(exec|file)$/.exec(path)
+      if (hostComputer?.[1]) {
+        // Root in a running computer, whatever its runtime: the operator's alone (sealed releases).
+        const runtime = runtimes.get(decodeURIComponent(hostComputer[1]))
+        if (!runtime || deleting.has(runtime.id)) return json(response, 404, { error: 'computer not found' })
+        const guest = runtime.controller.guest()
+        if (!guest) return json(response, 409, { error: 'The computer is not running' })
+        if (hostComputer[2] === 'exec' && request.method === 'POST') {
+          const { command, args, timeoutMs } = parseExec(await readJson(request))
+          return json(response, 200, await execute(guest, command, args, timeoutMs))
+        }
+        if (hostComputer[2] === 'file' && request.method === 'PUT') {
+          const { path: target, mode } = parseFileTarget(new URL(request.url ?? '/', 'http://localhost').searchParams)
+          await writeGuestFile(guest, target, mode, await readBody(request, HOST_FILE_LIMIT))
+          response.writeHead(204).end()
+          return
+        }
+        return json(response, 405, { error: 'method not allowed' })
+      }
       if (path === '/v1/host/settings' && request.method === 'GET') return json(response, 200, hostView())
       if (path === '/v1/host/settings' && request.method === 'PATCH') {
         await hostSettings.update(await readJson(request), id => runtimes.has(id) && !deleting.has(id))
@@ -2127,7 +2150,7 @@ export function createCabooseServer(options: Partial<ComputerPieces> & {
     })().catch(error => {
       if (response.destroyed) return
       if (error instanceof OwnershipError) return json(response, 409, { error: error.message })
-      if (error instanceof AgentInputError || error instanceof SettingsInputError || error instanceof ContainerSpecError || error instanceof MachineSpecError || error instanceof BridgeInputError || error instanceof NowPlayingInputError || error instanceof IdentityInputError) return json(response, 400, { error: error.message })
+      if (error instanceof AgentInputError || error instanceof SettingsInputError || error instanceof ContainerSpecError || error instanceof MachineSpecError || error instanceof HostExecInputError || error instanceof BridgeInputError || error instanceof NowPlayingInputError || error instanceof IdentityInputError) return json(response, 400, { error: error.message })
       if (error instanceof AgentNotFoundError || error instanceof ScreenElementGoneError || error instanceof TerminalGoneError || error instanceof IdentityNotFoundError) return json(response, 404, { error: error.message })
       if (error instanceof AgentUnavailableError || error instanceof DisplayNotReadyError || error instanceof AgentConflictError || error instanceof ComputerConflictError || error instanceof ComputerCapacityError || error instanceof IdentityConflictError || error instanceof ReachUnavailableError) return json(response, 409, { error: error.message })
       if (error instanceof RequestTooLargeError) return json(response, 413, { error: error.message })

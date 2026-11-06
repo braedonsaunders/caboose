@@ -1072,6 +1072,8 @@ operator account or host phone):
 | --- | --- | --- |
 | `GET` | `/v1/host/settings` | `{ name, displayName, defaultComputer }`. `displayName` is `name`, or `Caboose on <machine name>` while it is null; phones and mDNS list the host by it |
 | `PATCH` | `/v1/host/settings` | `{ name?: string \| null, defaultComputer?: string \| null }` → as `GET`. `name` is 1–80 characters without control characters. 400 for an unknown field or computer |
+| `POST` | `/v1/host/computers/:id/exec` | Operator only. `{ command, args?, timeoutMs? }` (an absolute path, at most 256 arguments, 1–3600 s) → `{ exitCode, stdout, stderr }`: run as root in the running computer, whatever its runtime (`docker exec`, or the microVM's root channel). How `caboose-release` installs into a microVM. 409 while it is parked |
+| `PUT` | `/v1/host/computers/:id/file?path=&mode=` | Operator only. The raw body (at most 2 GiB) written as root to the absolute `path` in the running computer with octal `mode` (default `0600`), beside it first and renamed into place → 204. 409 while it is parked |
 | `POST` | `/v1/host/pairing` | → 201 `{ code, expiresAt }`: a host code, for the owner's phone |
 | `GET` | `/v1/host/phones` | `{ phones: [{ id, name, createdAt, lastUsedAt }] }`: the host phones |
 | `DELETE` | `/v1/host/phones/:phone` | → `{ revoked: true }`. Signs a host phone out: its token stops working, its open sockets on every computer close, and its push and Live Activity registrations are removed |
