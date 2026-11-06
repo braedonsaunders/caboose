@@ -405,6 +405,14 @@ From the repository root:
 - `node guest/computer-use/tests/selftest.mjs` checks the protocol, the tool list and its
   order, schemas, argument validation, and that helper failures come back as tool errors,
   without a display.
+- `guest/computer-use/check/watch.sh [AGENT] [FRAMES]` checks that Watch shows the agent working,
+  on a Mac with Xcode and the phone: it starts a chat through the host's API, opens its
+  `caboose://task/<id>/watch` link on the phone, captures the phone's screen once a second
+  (`devicectl device capture screenshot`) and passes when every frame is a real picture and the
+  frames move. `check/watch_pixels.py FRAME…` is its detector, usable on any pictures: per frame
+  the share of black samples, of flat neighbours and of sharp edges, read as `black`, `noise`,
+  `uniform` or `picture`, and with `--moving` the share of samples that changed since the frame
+  before (`tests/test_watch_pixels.py`).
 - `guest/computer-use/check/check-bounded.sh` runs the Linux Docker gate with a two-CPU,
   4 GiB, 512-process builder (30-minute build timeout) and a two-CPU, 1500 MiB, 256-process
   test container (180-second test timeout). It removes both containers on exit and retains

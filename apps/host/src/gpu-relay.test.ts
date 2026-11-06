@@ -1,4 +1,4 @@
-import { expect, it, vi } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 const state = vi.hoisted(() => ({ created: [] as unknown[] }))
 vi.mock('ws', async () => {
@@ -26,7 +26,7 @@ vi.mock('ws', async () => {
 })
 
 import { WebSocket } from 'ws'
-import { GPU_CLOSE_TIMEOUT_MS, GPU_EXECUTOR_ENDED_CLOSE, GPU_HEARTBEAT_MS, GPU_HEARTBEAT_TIMEOUT_MS, GPU_MAX_MESSAGE, GPU_MAX_PENDING, GPU_MAX_PENDING_MESSAGES, GPU_RESUME_HOLD_MS, GPU_SUSPEND_HOLD_MS, GPU_SUSPENDED_CLOSE, gpuFeatures, gpuUpstreamURL, relayGPU, startGPURelay, suspension } from './gpu-relay.js'
+import { GPU_CLOSE_TIMEOUT_MS, GPU_EXECUTOR_ENDED_CLOSE, GPU_HEARTBEAT_MS, GPU_HEARTBEAT_TIMEOUT_MS, GPU_MAX_MESSAGE, GPU_MAX_PENDING, GPU_MAX_PENDING_MESSAGES, GPU_RESUME_HOLD_MS, GPU_SUSPEND_HOLD_MS, GPU_SUSPENDED_CLOSE, gpuFeatures, gpuServiceURL, gpuUpstreamURL, reachable, relayGPU, startGPURelay, suspension } from './gpu-relay.js'
 
 type ControlledSocket = WebSocket & { pending: Array<(error?: Error) => void>; paused: boolean; closeCodes: number[]; pings: number; peerClose(code: number): void }
 function pair() {
@@ -365,4 +365,31 @@ it('settles once the phone side closes after the guest side ended the relay', as
   await relay.done
   expect(finished).toBe(true)
   expect(relay.attach(new WebSocket('ws://test'))).toBe(false)
+})
+
+describe('the GPU service the phone reaches', () => {
+  it('is the computer\'s broker where it answers, else the owner\'s display', async () => {
+    const answered: string[] = []
+    const answers = async (url: string) => { answered.push(url); return url.includes('14602') }
+    expect(await gpuServiceURL('ws://172.18.0.2:14602/', 'ws://127.0.0.1:20032/', answers)).toBe('ws://172.18.0.2:14602/')
+    expect(await gpuServiceURL('ws://172.18.0.2:14603/', 'ws://127.0.0.1:20032/', answers)).toBe('ws://127.0.0.1:20032/')
+    expect(await gpuServiceURL(undefined, 'ws://127.0.0.1:20032/', answers)).toBe('ws://127.0.0.1:20032/')
+    expect(answered).toEqual(['ws://172.18.0.2:14602/', 'ws://172.18.0.2:14603/'])
+  })
+
+  it('counts only an HTTP answer, not a listener that accepts with nothing behind it', async () => {
+    const { createServer } = await import('node:net')
+    const listen = async (server: import('node:net').Server) => {
+      await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+      return `ws://127.0.0.1:${(server.address() as { port: number }).port}/`
+    }
+    const forwarder = createServer(socket => socket.destroy())
+    const silent = createServer(() => {})
+    const broker = createServer(socket => socket.once('data', () => socket.end('HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n')))
+    const [dead, quiet, live] = [await listen(forwarder), await listen(silent), await listen(broker)]
+    expect(await reachable(dead)).toBe(false)
+    expect(await reachable(quiet, 300)).toBe(false)
+    expect(await reachable(live)).toBe(true)
+    for (const server of [forwarder, silent, broker]) server.close()
+  })
 })
