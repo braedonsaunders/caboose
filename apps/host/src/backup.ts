@@ -148,7 +148,7 @@ function validImage(value: unknown): BackupImage {
   return { baseSha256: image.baseSha256, vmlinux: image.vmlinux, initrd: image.initrd, systemErofs: image.systemErofs }
 }
 
-async function readBody(request: IncomingMessage, limit: number): Promise<Buffer> {
+export async function readBody(request: IncomingMessage, limit: number): Promise<Buffer> {
   const chunks: Buffer[] = []
   let size = 0
   for await (const chunk of request) {

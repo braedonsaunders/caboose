@@ -26,6 +26,11 @@ import { ParkedFilesStore } from './parked-files-store.js'
 import { stageParkedDisk } from './parked-files-clone.js'
 import type { BootReport } from './boot.js'
 import { LEGACY_COMPUTER } from './computers.js'
+import type { HostFolder } from './container-spec.js'
+import { folderTag } from './machine-spec.js'
+
+/** Mounts virtio-fs tag $1 at $2 with option $3 (ro or rw), unless something is mounted there already. */
+export const MOUNT_FOLDER = 'mkdir -p "$2" && { mountpoint -q "$2" || mount -t virtiofs -o "$3" "$1" "$2"; }'
 
 /** Verify the Files service through vsock before choosing it for this guest. */
 export async function probeServiceVsock(desk: DeskHandle, timeoutMs = 2_000): Promise<boolean> {
@@ -128,6 +133,8 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
   splitImage?: string
   systemImageKind?: string
   depotPath?: string
+  /** The computer's folders of the host (machine-spec.ts), shared over virtio-fs and mounted at their targets. */
+  folders?: () => HostFolder[]
   /** Enable only when a compatible parked Files reader is installed. */
   parkedFilesEnabled?: boolean
   progress?: BootReport
@@ -292,11 +299,12 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
       if (paths.template && (api.DESK_TEMPLATE_VERSION !== 3 || typeof api.forkDeskTemplate !== 'function' || typeof api.hostCpuSignature !== 'function')) throw new Error('Template computers require a compatible AppKit desk release')
       const coldStart = paths.template && !desk && existsSync(initializedPath) && !existsSync(snapshotPath) && existsSync(coldStartPath)
       if (paths.template && !desk && existsSync(initializedPath) && !existsSync(snapshotPath) && !coldStart) throw new Error('Template computer memory is missing; recovery is required')
-      if (dependencies.depotPath) {
+      const folders = nativeMac ? [] : dependencies.folders?.() ?? []
+      if (dependencies.depotPath || folders.length) {
         const probe = buildDeskLaunchPlan({ deskId: 'probe', kernelPath: '/kernel', baseImagePath: '/base', overlayPath: '/disk', vsockCid: 3,
           ...{ shares: [{ tag: 'caboose-depot', path: '/depot', readOnly: true }], virtiofsdPath: '/virtiofsd' } },
           { pathExists: () => true, deviceExists: () => true, ...{ isDirectory: () => true } })
-        if (probe.hypervisor !== 'cloud-hypervisor' || !probe.vmm.args.includes('--fs')) throw new Error('MicroVM depot requires an AppKit desk release with read-only shares')
+        if (probe.hypervisor !== 'cloud-hypervisor' || !probe.vmm.args.includes('--fs')) throw new Error('MicroVM shares (the depot, a computer\'s folders) require an AppKit desk release with shares')
       }
       if (nativeMac && await usesSystemImage(bindingPath, overlayPath, snapshotPath, dependencies.splitImage)) throw new Error('Split system images require Cloud Hypervisor')
       const attachmentKind = resolveSystemImageAttachmentKind(dependencies.systemImageKind ?? process.env.CABOOSE_SYSTEM_IMAGE_KIND, Boolean(paths.template && !coldStart))
@@ -345,7 +353,10 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
       progress('start')
       const mac = [6, 0, (slot >>> 24) & 255, (slot >>> 16) & 255, (slot >>> 8) & 255, slot & 255].map(value => value.toString(16).padStart(2, '0')).join(':')
       desk = await host.start({ deskId: id, baseImage: join(imageDirectory, 'base.raw'), overlayPath,
-        ...(dependencies.depotPath ? { shares: [{ tag: 'caboose-depot', path: dependencies.depotPath, readOnly: true }] } : {}),
+        ...(dependencies.depotPath || folders.length ? { shares: [
+          ...(dependencies.depotPath ? [{ tag: 'caboose-depot', path: dependencies.depotPath, readOnly: true }] : []),
+          ...folders.map((folder, index) => ({ tag: folderTag(index), path: folder.source, readOnly: folder.readOnly })),
+        ] } : {}),
         ...(systemImage ? { kernelPath: join(imageDirectory, 'vmlinux'), initramfsPath: join(imageDirectory, 'initrd'), readOnlyAttachments: [systemImageAttachment(systemImage, attachmentKind)] } : {}),
         ...(config.vmFreePageReporting ? { freePageReporting: true } : {}),
         memoryMb: desired.memoryMb, vcpus: desired.vcpus, leaseMs: APPKIT_LEASE_MS,
@@ -377,6 +388,11 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
           // local Flatpak installation remains usable until the next cold restart.
           await command('/bin/systemctl', ['start', 'var-lib-caboose-depot.mount'], 60_000)
             .catch(error => console.error('Shared runtime depot unavailable:', error))
+        }
+        // Each folder at its target, owned as its files are; one already mounted is left as it is.
+        for (const [index, folder] of folders.entries()) {
+          await command('/bin/sh', ['-c', MOUNT_FOLDER, 'sh', folderTag(index), folder.target, folder.readOnly ? 'ro' : 'rw'], 60_000)
+            .catch(error => console.error(`Folder ${folder.source} unavailable at ${folder.target}:`, error))
         }
         await configureGuest(desk, slot, nativeMac ? { host: '10.0.2.2', guest: '10.0.2.15', prefix: 24 } : undefined)
         if (!nativeMac && !relays.size) serviceVsock = await probeServiceVsock(desk)

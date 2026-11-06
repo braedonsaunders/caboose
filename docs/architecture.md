@@ -1011,7 +1011,8 @@ Host state lives in `CABOOSE_IMAGE_ROOT`, each file replaced atomically with mod
   `agent-profiles.json`, `mcp-library.json`, `library-apps.json` (the Library record, under
   Catalog), `keyring-secret` and `commands/` (one
   `<id>.json` per command, directory mode 0700) in `computers/<id>/`; a container computer's
-  `container.json` (its container settings, under Computers) beside its `caboose.json`.
+  `container.json` (its container settings, under Computers) beside its `caboose.json`, and a
+  microVM computer's `machine.json` (its machine settings, likewise).
 - For microVMs, `overlays/<id>.raw` (the disk), `overlays/<id>.snapshot` (parked memory)
   and `overlays/<id>.resources.json` (the resources it was booted with).
 - Phone backups, beside each computer's disk: `<id>.backup/` (captures, download packs and a
@@ -1044,6 +1045,8 @@ of one is reachable from another. microVM computers share one appkit-desk host, 
 | any | `/v1/computers/:id/<route>` | Any computer route (§ Session and display through § Live Activities, and the agent routes of § 5), served by that computer (`/v1/computers/:id/session`, `/v1/computers/:id/fs/list`, `/v1/computers/:id/display`, …) |
 | `GET` | `/v1/computers/:id/container` | Operator only. `{ spec, applied }`: a container computer's container settings (below), and whether its existing container has them (null without a container). 409 for a microVM computer |
 | `PUT` | `/v1/computers/:id/container` | Operator only. A whole `ContainerSpec` → `{ spec, applied }`. Used the next time the host creates the container; an existing container is not changed. 400 for an invalid spec |
+| `GET` | `/v1/computers/:id/machine` | Operator only. `{ spec }`: a microVM computer's machine settings (below). 409 for a container computer |
+| `PUT` | `/v1/computers/:id/machine` | Operator only. A whole `MachineSpec` → `{ spec }`. Used at the computer's next cold start; a parked computer resumes with the shares it was parked with. 400 for an invalid spec |
 | `POST` | `/v1/computers/:id/container/import` | Operator only. Reads the spec from the existing container (`docker inspect`) and saves it → `{ spec, applied }`. 409 without a container |
 | `POST` | `/v1/computers/:id/pairing` | → 201 `{ code, expiresAt }`: a pairing code for one phone (below) |
 | `GET` | `/v1/computers/:id/phones` | `{ phones: [{ id, name, createdAt, lastUsedAt }] }`: the phones signed in to the computer. `lastUsedAt` is written at most once a minute |
@@ -1069,6 +1072,8 @@ operator account or host phone):
 | --- | --- | --- |
 | `GET` | `/v1/host/settings` | `{ name, displayName, defaultComputer }`. `displayName` is `name`, or `Caboose on <machine name>` while it is null; phones and mDNS list the host by it |
 | `PATCH` | `/v1/host/settings` | `{ name?: string \| null, defaultComputer?: string \| null }` → as `GET`. `name` is 1–80 characters without control characters. 400 for an unknown field or computer |
+| `POST` | `/v1/host/computers/:id/exec` | Operator only. `{ command, args?, timeoutMs? }` (an absolute path, at most 256 arguments, 1–3600 s) → `{ exitCode, stdout, stderr }`: run as root in the running computer, whatever its runtime (`docker exec`, or the microVM's root channel). How `caboose-release` installs into a microVM. 409 while it is parked |
+| `PUT` | `/v1/host/computers/:id/file?path=&mode=` | Operator only. The raw body (at most 2 GiB) written as root to the absolute `path` in the running computer with octal `mode` (default `0600`), beside it first and renamed into place → 204. 409 while it is parked |
 | `POST` | `/v1/host/pairing` | → 201 `{ code, expiresAt }`: a host code, for the owner's phone |
 | `GET` | `/v1/host/phones` | `{ phones: [{ id, name, createdAt, lastUsedAt }] }`: the host phones |
 | `DELETE` | `/v1/host/phones/:phone` | → `{ revoked: true }`. Signs a host phone out: its token stops working, its open sockets on every computer close, and its push and Live Activity registrations are removed |
@@ -1132,6 +1137,13 @@ person in that destination and operator access. People are renamed through their
 are checked whenever a computer is made, resized (`PATCH …/computer/settings`), moved or
 woken (see Accounts and tenants); a computer over quota answers 409 with what it would be
 given and the quota.
+
+**Machine settings.** A microVM computer's `machine.json`, beside its `caboose.json`, names
+folders of the host the computer gets, `{ folders?: Array<{ source, target, readOnly }> }`
+(at most 16, checked as container mounts are). Each is a virtio-fs share (tag
+`caboose-folder-<index>`) after the depot's, mounted at its target once the computer is up,
+read-write unless `readOnly`, with its files' owners as the host has them. A folder that cannot
+be mounted is logged and the computer starts without it.
 
 **Container settings.** A container computer's `container.json`, beside its `caboose.json`,
 holds what its container is created with beyond the host's defaults, so creating it again
