@@ -1,0 +1,3 @@
+# No core dumps in the computer (guest/components): a crashing program's memory is not kept on disk.
+kernel.core_pattern = |/bin/false
+fs.suid_dumpable = 0

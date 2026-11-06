@@ -18,6 +18,10 @@ are updated. The installer is safe to repeat. The Thunar action is a system defa
 custom actions can override it. See `docs/architecture.md` § Guest for the API and
 older-container caveat.
 
+Computers keep no core dumps. A microVM's installation sends them nowhere (`kernel.core_pattern`
+`|/bin/false`, `fs.suid_dumpable` 0) and gives systemd's services and sessions a core limit of 0;
+a container gets `--ulimit core=0` from the host, whose kernel it shares.
+
 VM installations include `caboose-workloads.slice` and the root-invoked
 `caboose-owner-run` launcher. The launcher enters a transient scope in that
 slice before switching to the owner; supported owner service units also use the
