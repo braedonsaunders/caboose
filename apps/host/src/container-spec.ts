@@ -11,7 +11,7 @@ import { writePrivateJson } from './settings.js'
 export interface ContainerSpec {
   /** Overrides CABOOSE_CONTAINER_IMAGE for this computer. */
   image?: string
-  mounts?: Array<{ source: string; target: string; readOnly: boolean }>
+  mounts?: HostFolder[]
   /** Host device nodes; `container` defaults to the same path. */
   devices?: Array<{ host: string; container?: string }>
   /** `KEY=value`. */
@@ -35,6 +35,29 @@ function absolute(value: unknown, label: string): string {
   return value.length > 1 ? value.replace(/\/+$/, '') : value
 }
 
+/** A folder of the host a computer gets at `target`, read-write unless `readOnly`. */
+export interface HostFolder { source: string; target: string; readOnly: boolean }
+
+/**
+ * Host folders checked one by one: absolute paths without "..", none over a path the computer's
+ * own setup owns, no two at one target. Shared by container mounts and microVM folders.
+ */
+export function parseFolders(items: unknown[], Failure: new (message: string) => Error): HostFolder[] {
+  const targets = new Set<string>()
+  return items.map(item => {
+    const mount = (item ?? {}) as Record<string, unknown>
+    if (typeof item !== 'object' || Object.keys(mount).some(key => !['source', 'target', 'readOnly'].includes(key))) throw new Failure('A folder is { source, target, readOnly }')
+    let source: string, target: string
+    try { source = absolute(mount.source, 'A folder source'); target = absolute(mount.target, 'A folder target') }
+    catch (error) { throw new Failure((error as Error).message) }
+    if (typeof mount.readOnly !== 'boolean') throw new Failure('A folder needs readOnly true or false')
+    if (RESERVED.includes(target) || target.startsWith('/proc/') || target.startsWith('/sys/') || target.startsWith('/dev/') || target.startsWith('/run/')) throw new Failure(`A host folder cannot replace ${target}`)
+    if (targets.has(target)) throw new Failure(`Two folders share ${target}`)
+    targets.add(target)
+    return { source, target, readOnly: mount.readOnly }
+  })
+}
+
 /** Checks a spec field by field; unknown fields are errors. */
 export function parseContainerSpec(input: unknown): ContainerSpec {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new ContainerSpecError('The container settings must be an object')
@@ -51,19 +74,7 @@ export function parseContainerSpec(input: unknown): ContainerSpec {
     return value[key] as unknown[]
   }
   const mounts = list('mounts', 64)
-  if (mounts) {
-    const targets = new Set<string>()
-    spec.mounts = mounts.map(item => {
-      const mount = (item ?? {}) as Record<string, unknown>
-      if (typeof item !== 'object' || Object.keys(mount).some(key => !['source', 'target', 'readOnly'].includes(key))) throw new ContainerSpecError('A mount is { source, target, readOnly }')
-      const source = absolute(mount.source, 'A mount source'), target = absolute(mount.target, 'A mount target')
-      if (typeof mount.readOnly !== 'boolean') throw new ContainerSpecError('A mount needs readOnly true or false')
-      if (RESERVED.includes(target) || target.startsWith('/proc/') || target.startsWith('/sys/') || target.startsWith('/dev/') || target.startsWith('/run/')) throw new ContainerSpecError(`A host folder cannot replace ${target}`)
-      if (targets.has(target)) throw new ContainerSpecError(`Two mounts share ${target}`)
-      targets.add(target)
-      return { source, target, readOnly: mount.readOnly }
-    })
-  }
+  if (mounts) spec.mounts = parseFolders(mounts, ContainerSpecError)
   const devices = list('devices', 32)
   if (devices) {
     spec.devices = devices.map(item => {

@@ -52,6 +52,7 @@ import { networkBusy, readNetworkActivity, type NetworkServer } from './network-
 import { appsBusy } from './busy.js'
 import type { ComputerNetwork } from './tailnet.js'
 import { ContainerSpecError, type ContainerSpec, type ContainerSpecStore } from './container-spec.js'
+import { MachineSpecError, type MachineSpecStore } from './machine-spec.js'
 import { BootProgress, type Boot, type BootReport } from './boot.js'
 import { HostSettings } from './host-settings.js'
 import { ComputerCapacityError, PairingCodes, PairingRateLimitError, personName, phoneName, type ComputerAssignment, type ComputerRecord, type ComputerRegistry, type PhoneTokens } from './computers.js'
@@ -150,7 +151,7 @@ export type Principal =
   | { kind: 'phone'; phoneId: string; computerId: string }
 
 /** What one computer is made of: its settings, its runtime, and the notifications its phones get. */
-export interface ComputerPieces { /** A container computer's image, folders, devices and options (container-spec.ts). */ containerSpec?: ContainerSpecStore; /** Phone backups and shared storage (storage.ts). */ storage?: ComputerStorage; /** Commands' results, kept in the host's state (commands/). */ commands?: CommandStore; snapshotPath?: string; snapshotTier?: SnapshotTierOptions; /** The computer's MCP Library record (mcp-library.json), private to the host. */ mcpLibraryFile?: string; /** What the owner installed through the Library outside the Flatpak volume (library-apps.json, library-record.ts). */ libraryFile?: string; /** Whether the computer has autostart services (running-apps.ts). */ serviceMemory?: ServiceMemory; prepareKeyring?: () => Promise<void>; /** How long a launch waits for keyring preparation (KEYRING_WAIT_MS). */ keyringWaitMs?: number; settings: SettingsStore; controller: Controller; push?: PushService; activities?: ActivityService; profiles?: AgentProfiles; openRoutines?: (options: RoutineOptions) => Promise<AgentRoutines>; openToolJournal?: (dispatch: ToolDispatcher) => Promise<AgentToolJournal>; /** The steps of the computer's start, reported by its controller (boot.ts). */ boot?: BootProgress; /** Waits for the computer's image, reporting the download; resolves at once when it is present. */ ensureImage?: (report: BootReport) => Promise<void> }
+export interface ComputerPieces { /** A container computer's image, folders, devices and options (container-spec.ts). */ containerSpec?: ContainerSpecStore; /** A microVM computer's folders of the host (machine-spec.ts). */ machineSpec?: MachineSpecStore; /** Phone backups and shared storage (storage.ts). */ storage?: ComputerStorage; /** Commands' results, kept in the host's state (commands/). */ commands?: CommandStore; snapshotPath?: string; snapshotTier?: SnapshotTierOptions; /** The computer's MCP Library record (mcp-library.json), private to the host. */ mcpLibraryFile?: string; /** What the owner installed through the Library outside the Flatpak volume (library-apps.json, library-record.ts). */ libraryFile?: string; /** Whether the computer has autostart services (running-apps.ts). */ serviceMemory?: ServiceMemory; prepareKeyring?: () => Promise<void>; /** How long a launch waits for keyring preparation (KEYRING_WAIT_MS). */ keyringWaitMs?: number; settings: SettingsStore; controller: Controller; push?: PushService; activities?: ActivityService; profiles?: AgentProfiles; openRoutines?: (options: RoutineOptions) => Promise<AgentRoutines>; openToolJournal?: (dispatch: ToolDispatcher) => Promise<AgentToolJournal>; /** The steps of the computer's start, reported by its controller (boot.ts). */ boot?: BootProgress; /** Waits for the computer's image, reporting the download; resolves at once when it is present. */ ensureImage?: (report: BootReport) => Promise<void> }
 
 
 /**
@@ -1481,7 +1482,7 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
     })
   }
 
-  return { quiesceForCheckpoint: () => commands.quiesceForCheckpoint(), disconnectAll: closeSockets, id, controller: pieces.controller, containerSpec: pieces.containerSpec, computer, settings, push, activities, managementStatus, handle, connect, disconnectPhone, shutdown, destroy, startBoot,
+  return { quiesceForCheckpoint: () => commands.quiesceForCheckpoint(), disconnectAll: closeSockets, id, controller: pieces.controller, containerSpec: pieces.containerSpec, machineSpec: pieces.machineSpec, computer, settings, push, activities, managementStatus, handle, connect, disconnectPhone, shutdown, destroy, startBoot,
     /**
      * What the running computer serves (services and listening ports), for the park decision;
      * null when it is not running or tracks no services. Never wakes it.
@@ -2043,6 +2044,18 @@ export function createCabooseServer(options: Partial<ComputerPieces> & {
         }
         return json(response, 405, { error: 'method not allowed' })
       }
+      const machinePath = /^\/v1\/computers\/([^/]+)\/machine$/.exec(path)
+      if (machinePath?.[1]) {
+        // A computer's folders reach into the host: the operator's alone.
+        if (!administers(principal, null)) return json(response, 403, { error: 'Only the operator sets a computer\'s machine' })
+        const runtime = runtimes.get(decodeURIComponent(machinePath[1]))
+        if (!runtime || deleting.has(runtime.id)) return json(response, 404, { error: 'computer not found' })
+        const store = runtime.machineSpec
+        if (!store) return json(response, 409, { error: 'Only microVM computers have machine settings' })
+        if (request.method === 'GET') return json(response, 200, { spec: store.get() })
+        if (request.method === 'PUT') return json(response, 200, { spec: await store.set(await readJson(request)) })
+        return json(response, 405, { error: 'method not allowed' })
+      }
       const computerPath = /^\/v1\/computers\/([^/]+)(?:\/pairing|\/phones(?:\/([^/]+))?)?$/.exec(path)
       if (computerPath?.[1]) {
         const runtime = runtimes.get(decodeURIComponent(computerPath[1]))
@@ -2114,7 +2127,7 @@ export function createCabooseServer(options: Partial<ComputerPieces> & {
     })().catch(error => {
       if (response.destroyed) return
       if (error instanceof OwnershipError) return json(response, 409, { error: error.message })
-      if (error instanceof AgentInputError || error instanceof SettingsInputError || error instanceof ContainerSpecError || error instanceof BridgeInputError || error instanceof NowPlayingInputError || error instanceof IdentityInputError) return json(response, 400, { error: error.message })
+      if (error instanceof AgentInputError || error instanceof SettingsInputError || error instanceof ContainerSpecError || error instanceof MachineSpecError || error instanceof BridgeInputError || error instanceof NowPlayingInputError || error instanceof IdentityInputError) return json(response, 400, { error: error.message })
       if (error instanceof AgentNotFoundError || error instanceof ScreenElementGoneError || error instanceof TerminalGoneError || error instanceof IdentityNotFoundError) return json(response, 404, { error: error.message })
       if (error instanceof AgentUnavailableError || error instanceof DisplayNotReadyError || error instanceof AgentConflictError || error instanceof ComputerConflictError || error instanceof ComputerCapacityError || error instanceof IdentityConflictError || error instanceof ReachUnavailableError) return json(response, 409, { error: error.message })
       if (error instanceof RequestTooLargeError) return json(response, 413, { error: error.message })

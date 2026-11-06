@@ -22,6 +22,7 @@ import { ComputerRegistry, PhoneTokens, type ComputerRecord } from './computers.
 import { HostSettings, settleLegacyComputer } from './host-settings.js'
 import { BOOT_STEPS, BootProgress, formatBytes, type BootReport } from './boot.js'
 import { ContainerSpecStore } from './container-spec.js'
+import { MachineSpecStore } from './machine-spec.js'
 import { createContainerController, DEPOT_VOLUME, securityArgs } from './container-driver.js'
 import { containerDepotRunner, RuntimeDepot } from './depot.js'
 import { FlathubIndex } from './flathub.js'
@@ -153,9 +154,10 @@ async function open(record: ComputerRecord, initial?: ComputerSettings): Promise
   const identity = { id: record.id, slot: record.slot }
   const boot = new BootProgress(BOOT_STEPS[deployment.runtime])
   const containerSpec = deployment.runtime === 'container' ? await ContainerSpecStore.open(join(dir, 'container.json')) : undefined
+  const machineSpec = deployment.runtime === 'microvm' ? await MachineSpecStore.open(join(dir, 'machine.json')) : undefined
   const controller = deployment.runtime === 'container'
     ? createContainerController(deployment, { identity, settings: () => settings.get(), spec: () => containerSpec!.get(), progress: boot.report })
-    : createController(runtimeConfig, { identity, splitImage, progress: boot.report, depotPath: vmDepot, parkedFilesEnabled: deployment.parkedFiles, ...(desks ? { desks } : {}), settings: () => settings.get() })
+    : createController(runtimeConfig, { identity, splitImage, progress: boot.report, depotPath: vmDepot, folders: () => machineSpec?.get().folders ?? [], parkedFilesEnabled: deployment.parkedFiles, ...(desks ? { desks } : {}), settings: () => settings.get() })
   const profiles = await AgentProfiles.open(join(dir, 'agent-profiles.json'))
   const serviceMemory = deployment.runtime === 'container' ? await ServiceMemory.open(join(dir, 'services.json')) : undefined
   const commands = await CommandStore.open(join(dir, 'commands'))
@@ -163,7 +165,7 @@ async function open(record: ComputerRecord, initial?: ComputerSettings): Promise
   const snapshotPath = paths.snapshot
   const useSplit = deployment.runtime === 'microvm' ? () => usesSystemImage(join(deployment.imageRoot, 'overlays', `${record.id}.system-image.json`), paths.disk, snapshotPath, splitImage) : undefined
   const computerStorage = cluster ? undefined : storage.forComputer(record.id, controller, phoneId => phones.list(record.id).find(phone => phone.id === phoneId)?.name)
-  return { ...(computerStorage ? { storage: computerStorage } : {}), ...(deployment.runtime === 'microvm' ? { snapshotPath, ...(!cluster && tierStore && tierKey ? { snapshotTier: { store: tierStore, key: tierKey, delayMs: 4 * 60 * 60_000 } } : {}) } : {}), settings, profiles, commands, mcpLibraryFile: join(dir, 'mcp-library.json'), libraryFile: join(dir, 'library-apps.json'), ...(serviceMemory ? { serviceMemory } : {}), ...(containerSpec ? { containerSpec } : {}), prepareKeyring: () => prepareKeyring(join(dir, 'keyring-secret'), controller.fileService!()), openToolJournal: dispatch => AgentToolJournal.open(join(dir, 'agent-tool-receipts.json'), dispatch), openRoutines: options => AgentRoutines.open(join(dir, 'agent-routines.json'), options), controller: cluster ? cluster.wrap(record.id, controller) : withImage(controller, image, useSplit), boot, ensureImage: report => waitForImage(image, report, useSplit), ...(push ? { push } : {}), ...(activities ? { activities } : {}) }
+  return { ...(computerStorage ? { storage: computerStorage } : {}), ...(deployment.runtime === 'microvm' ? { snapshotPath, ...(!cluster && tierStore && tierKey ? { snapshotTier: { store: tierStore, key: tierKey, delayMs: 4 * 60 * 60_000 } } : {}) } : {}), settings, profiles, commands, mcpLibraryFile: join(dir, 'mcp-library.json'), libraryFile: join(dir, 'library-apps.json'), ...(serviceMemory ? { serviceMemory } : {}), ...(containerSpec ? { containerSpec } : {}), ...(machineSpec ? { machineSpec } : {}), prepareKeyring: () => prepareKeyring(join(dir, 'keyring-secret'), controller.fileService!()), openToolJournal: dispatch => AgentToolJournal.open(join(dir, 'agent-tool-receipts.json'), dispatch), openRoutines: options => AgentRoutines.open(join(dir, 'agent-routines.json'), options), controller: cluster ? cluster.wrap(record.id, controller) : withImage(controller, image, useSplit), boot, ensureImage: report => waitForImage(image, report, useSplit), ...(push ? { push } : {}), ...(activities ? { activities } : {}) }
 }
 
 const existing = []
