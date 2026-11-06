@@ -4,8 +4,9 @@ import { readFile } from 'node:fs/promises'
  * Hands memory back to the host while it is short of it (docs/architecture.md § Memory): every
  * `intervalMs` the host's memory pressure (`some avg10` of /proc/pressure/memory, the share of
  * time some task waited for memory) is read, and above `threshold` every running microVM drops
- * its clean page cache and ages cold memory (`caboose-memory reclaim --mode=pressure`), which
- * free-page reporting returns to the host. At most once per `cooldownMs`.
+ * the clean page cache no process maps (`caboose-memory reclaim --mode=pressure`, which leaves a
+ * running program's memory alone), and free-page reporting returns it to the host. At most once
+ * per `cooldownMs`.
  */
 export interface PressureReclaimOptions {
   computers: () => Array<{ reclaimMemory?(mode?: 'freeze' | 'pressure'): Promise<void> }>
