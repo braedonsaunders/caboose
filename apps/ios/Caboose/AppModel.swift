@@ -1788,7 +1788,14 @@ final class AppModel {
         switch link {
         case .tab(let tab): selectedTab = tab == .terminal && !TerminalSlot.isFilled ? .home : tab
         case .task(let id): notificationTaskID = id
-        case .watch(let id): notificationTaskID = id; watchTaskID = id
+        case .watch(let id):
+            // Watch opens the task's chat, which presents its agent's seat window full screen
+            // as soon as there is one; nothing may be presented over the shell to block it.
+            notificationTaskID = nil
+            presentedWindowID = nil
+            selectedTab = .agents
+            agents.currentChat = id
+            watchTaskID = id
         case .command(let id): notificationCommandID = id
         case .airPlay: selectedTab = .home; airPlay.connect()
         }

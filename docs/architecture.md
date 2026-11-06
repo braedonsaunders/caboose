@@ -3299,8 +3299,8 @@ one normal display close request, leaving unsaved-change handling to the applica
 keeping the tile until the server removes the window. Releasing a close drag does not
 open the window. A changed session, connection generation or window cancels the drag.
 
-`caboose://task/<id>` opens a task, `caboose://task/<id>/watch` the same with its agent's newest
-seat window full screen once it has one, `caboose://command/<id>` a command (its id is 32
+`caboose://task/<id>` opens a task, `caboose://task/<id>/watch` its chat in Agents with its
+agent's newest seat window full screen once it has one, `caboose://command/<id>` a command (its id is 32
 lowercase hex digits) and `caboose://airplay` runs Home's AirPlay action.
 Pinned and recent apps are kept on the phone per computer.
 
