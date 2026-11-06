@@ -1174,9 +1174,12 @@ only briefly: its main thread draws and also accepts every client, so a call of 
 the gate holds would leave every new application waiting for the phone. Once a suspension
 outlasts 3 s (`COMPOSITOR_HOLD_SECONDS`) the broker ends the streams of its parent process,
 the compositor, which then sees its device lost quietly, and sends it executor lifecycle record
-11 (CGB1, the layout of records 4 to 6); the compositor drops its renderer and draws nothing.
-On EXECUTOR_RESUME the broker sends record 12 and the compositor makes its renderer again on
-the phone. A compositor that connects later is told only the executor's state (4, 5 or 6).
+11 (CGB1, the layout of records 4 to 6); the compositor drops that renderer and draws on the
+computer alone (llvmpipe OpenGL ES, which loads no Vulkan driver and so never reaches the
+suspended executor), so screenshots and the agents' tools keep real pictures with the phone
+away. On EXECUTOR_RESUME the broker sends record 12 and the compositor makes its renderer again
+on the phone. `guest/display/scripts/check-headless-render.sh` checks the suspended case in a
+computer: a stand-in broker reports record 11 and a window must still screenshot as a real picture. A compositor that connects later is told only the executor's state (4, 5 or 6).
 
 ## Window identity boundary
 

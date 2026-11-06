@@ -431,6 +431,10 @@ foreground metadata fails its foreground assertion. No owner display is involved
 
 ### Keyboard focus returns without a click
 
+`scripts/check-headless-render.sh COMPOSITOR REPO`, run as root in a computer, checks that a
+broker-client compositor keeps drawing on the computer after its executor suspends (record 11):
+a window must screenshot as a real picture with no phone and no server GPU.
+
 `scripts/check-focus.sh` checks that a native Wayland GTK 3 window keeps the keyboard at
 each step, with no click:
 - when it maps;

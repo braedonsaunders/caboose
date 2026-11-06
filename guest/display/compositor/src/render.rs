@@ -197,7 +197,23 @@ pub fn configure_process(icd: Option<&std::path::Path>, stream: Option<&std::pat
     }
 }
 
+/// The Gallium driver for a renderer on the computer alone (`Gpu::new_local`): llvmpipe draws
+/// OpenGL ES on the CPU without Vulkan, so no Vulkan driver (and so no phone executor that
+/// cannot answer, such as a suspended one) is loaded for it.
+pub const LOCAL_GALLIUM_DRIVER: &str = "llvmpipe";
+
 impl Gpu {
+    /// A renderer on the computer alone, for while no phone executor serves the compositor:
+    /// screenshots and the agents' tools still see real pictures with the phone away.
+    pub fn new_local(render_node: Option<&std::path::Path>) -> Result<Gpu, String> {
+        // SAFETY (set_var): Mesa reads GALLIUM_DRIVER when the EGL display is made, on this
+        // (the compositor's main) thread; the previous renderer and its threads are dropped.
+        std::env::set_var("GALLIUM_DRIVER", LOCAL_GALLIUM_DRIVER);
+        let gpu = Gpu::new(render_node);
+        std::env::set_var("GALLIUM_DRIVER", "zink");
+        gpu
+    }
+
     /// A new renderer on whatever device Zink finds first: the phone's GPU when an executor
     /// is attached, else the computer's CPU device. `render_node` is the computer's vgem
     /// node, on which phone-resident buffers are allocated.

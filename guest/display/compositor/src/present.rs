@@ -83,6 +83,20 @@ impl State {
         }
     }
 
+    /// No executor serves the compositor (the phone suspended past the broker's hold): draws on
+    /// the computer alone, so screenshots and the agents' tools keep real pictures headless,
+    /// until `rebuild_gpu` moves it back to the phone's GPU.
+    pub fn render_locally(&mut self) {
+        self.drop_gpu();
+        match Gpu::new_local(self.render_node.as_deref()) {
+            Ok(gpu) => {
+                tracing::info!("renderer {}: {}, on the computer until the executor resumes", self.gpu_generation, gpu.name);
+                self.gpu = Some(gpu);
+            }
+            Err(e) => tracing::error!("no local renderer: {e}"),
+        }
+    }
+
     pub fn rebuild_gpu_after_loss(&mut self) {
         self.gpu_generation += 1;
         self.gpu = None;
@@ -407,9 +421,41 @@ impl State {
     }
 }
 
+/// What the renderer does on an executor lifecycle record the compositor acts on: 11 (the phone
+/// suspended past the broker's hold) and 12 (it resumed). `presents` is whether the current
+/// renderer is on the phone (None without one).
+#[derive(Debug, PartialEq, Eq)]
+pub enum RendererMove { Keep, Local, Phone }
+
+pub fn renderer_move(kind: u16, presents: Option<bool>) -> RendererMove {
+    match kind {
+        11 => RendererMove::Local,
+        // Resumed: back to the phone, from the local renderer or none; a phone renderer stays.
+        12 if presents != Some(true) => RendererMove::Phone,
+        _ => RendererMove::Keep,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_suspended_executor_leaves_the_compositor_drawing_on_the_computer() {
+        // Suspended past the hold: a local renderer, whatever was there (the phone's, or none).
+        assert_eq!(renderer_move(11, Some(true)), RendererMove::Local);
+        assert_eq!(renderer_move(11, None), RendererMove::Local);
+        // Resumed: back to the phone from the local renderer or from none; a phone renderer stays.
+        assert_eq!(renderer_move(12, Some(false)), RendererMove::Phone);
+        assert_eq!(renderer_move(12, None), RendererMove::Phone);
+        assert_eq!(renderer_move(12, Some(true)), RendererMove::Keep);
+        assert_eq!(renderer_move(4, Some(false)), RendererMove::Keep);
+    }
+
+    #[test]
+    fn the_local_renderer_loads_no_vulkan_driver() {
+        assert_eq!(crate::render::LOCAL_GALLIUM_DRIVER, "llvmpipe");
+    }
 
     #[test]
     fn pictures_keep_their_buffers_density() {

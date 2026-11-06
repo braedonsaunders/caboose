@@ -888,16 +888,19 @@ impl State {
                         // The phone's GPU is gone: render on the computer until it returns.
                         self.rebuild_gpu_after_loss();
                     }
-                    11 => {
-                        // The phone suspended for longer than the broker holds the compositor:
-                        // its streams were ended so a held call cannot block this thread. Draw
-                        // nothing until the executor resumes; the device is gone quietly.
-                        tracing::info!("executor suspended: renderer dropped until it resumes");
-                        self.drop_gpu();
-                    }
-                    12 => {
-                        // The executor resumed after the compositor was released: draw on it again.
-                        if self.gpu.is_none() { self.rebuild_gpu(); }
+                    11 | 12 => {
+                        // 11: the phone suspended for longer than the broker holds the compositor;
+                        // its streams were ended so a held call cannot block this thread. Draw on
+                        // the computer alone meanwhile, so pictures (screenshots, the agents'
+                        // tools) never depend on the phone. 12: it resumed; draw on it again.
+                        match crate::present::renderer_move(kind, self.gpu.as_ref().map(|g| g.presents())) {
+                            crate::present::RendererMove::Local => {
+                                tracing::info!("executor suspended: rendering on the computer until it resumes");
+                                self.render_locally();
+                            }
+                            crate::present::RendererMove::Phone => self.rebuild_gpu(),
+                            crate::present::RendererMove::Keep => {}
+                        }
                     }
                     6 => {
                         // A retirement for an executor a later ready already superseded is stale.
