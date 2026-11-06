@@ -131,12 +131,13 @@ for case in ${CASES:-phone setids poolids unbatched older}; do
   i=0; until docker logs "$name" 2>&1 | grep -q 'session ready'; do i=$((i + 1)); [ $i -le 150 ] || { docker logs "$name" > "$out/executor-$case.log" 2>&1; fail "$case: executor readiness ($out/executor-$case.log)"; }; sleep 0.2; done
   # The program's output, which Proton's launcher does not pass through, goes to a file: Wine's
   # cmd runs it from a batch file with its output redirected (Z: is the computer's root).
+  docker exec -u caboose "$computer" mkdir -p "$dir/dxvk-$case"
   winpath() { printf 'Z:%s' "$1" | tr '/' '\\'; }
   printf '@echo off\r\n"%s" %%*> "%s" 2>&1\r\n' "$(winpath "$bench/$app")" "$(winpath "$dir/output-$case.txt")" | \
     docker exec -i -u caboose "$computer" sh -c "cat > $dir/run-$case.bat"
   docker exec -u caboose "$computer" sh -c "set -a; . $display; set +a
     CABOOSE_GFXSTREAM_SOCKET=$sockets/gpu-$case/gpu.sock CABOOSE_GFXSTREAM_SURFACE_SOCKET=$sockets/gpu-$case/surface.sock \
-    CABOOSE_READ_PROFILE=1 DXVK_LOG_LEVEL=info DXVK_LOG_PATH=none timeout $((seconds + 300)) flatpak run --filesystem=$sockets --filesystem=${proton%/*}:ro --env=VK_DRIVER_FILES=$dir/icd.json \
+    CABOOSE_READ_PROFILE=1 DXVK_LOG_LEVEL=info DXVK_LOG_PATH=$dir/dxvk-$case timeout $((seconds + 300)) flatpak run --filesystem=$sockets --filesystem=${proton%/*}:ro --env=VK_DRIVER_FILES=$dir/icd.json \
     --env=VK_ICD_FILENAMES=$dir/icd.json '--env=VK_LOADER_LAYERS_DISABLE=*'$app_env --command=sh com.valvesoftware.Steam -c '
     export STEAM_COMPAT_DATA_PATH=$bench/compat/0 STEAM_COMPAT_CLIENT_INSTALL_PATH=$steam
     mkdir -p $bench/compat/0
@@ -160,6 +161,10 @@ for case in ${CASES:-phone setids poolids unbatched older}; do
   docker logs "$name" > "$out/executor-$case.log" 2>&1 || true
   log=$out/$case.log
   docker exec "$computer" cat "$dir/output-$case.txt" >> "$log" 2>/dev/null || true
+  # DXVK's own log files: what it writes to standard error reaches the log above only while
+  # Wine still forwards it (a program whose output a batch file redirects loses its later
+  # lines), so the device and swapchain it reports are read from its files too.
+  docker exec "$computer" sh -c "cat $dir/dxvk-$case/*.log" >> "$log" 2>/dev/null || true
   grep -a -q 'Found device: ' "$log" || fail "$case: DXVK found no Vulkan device ($log)"
   ! grep -a -q 'Skipping: ' "$log" || fail "$case: DXVK skipped the device: $(grep -a -m1 'Skipping: ' "$log")"
   ! grep -a -q -E 'No adapters found|D3D11CreateDevice: Failed' "$log" || fail "$case: DXVK found no adapter ($log)"
