@@ -297,7 +297,10 @@ def install(source: Path, destination: Path, machine: str = os.uname().machine):
     files += [(source / "vm/caboose-gpu-broker.service", etc / "systemd/system/caboose-gpu-broker.service", 0o644),
               (source / "vm/70-caboose-gpu.rules", etc / "udev/rules.d/70-caboose-gpu.rules", 0o644),
               (source / "vm/caboose-gpu-modules.conf", etc / "modules-load.d/caboose-gpu.conf", 0o644),
-              (source / "vm/caboose-gpu-seat-args", libexec / "caboose-gpu-seat-args", 0o755)]
+              (source / "vm/caboose-gpu-seat-args", libexec / "caboose-gpu-seat-args", 0o755),
+              # Drop-ins making the image's display units broker clients, whatever the image.
+              (source / "vm/caboose-display.gpu.conf", etc / "systemd/system/caboose-display.service.d/50-caboose-gpu.conf", 0o644),
+              (source / "vm/caboose-display-agent.gpu.conf", etc / "systemd/system/caboose-display-agent.service.d/50-caboose-gpu.conf", 0o644)]
     # Fail before modifying the install when a component was omitted from a bundle.
     contents = [(src.read_bytes(), dst, mode) for src, dst, mode in files]
     drirc = (source / DRIRC).read_bytes()

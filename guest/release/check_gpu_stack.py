@@ -27,6 +27,8 @@ FILES = ("usr/local/libexec/caboose-gpu-broker", "usr/local/libexec/caboose-gpu/
          # A virtual machine's: the broker service, the seats' options, vgem and its nodes.
          "etc/systemd/system/caboose-gpu-broker.service", "etc/udev/rules.d/70-caboose-gpu.rules",
          "etc/modules-load.d/caboose-gpu.conf", "usr/local/libexec/caboose-gpu-seat-args",
+         "etc/systemd/system/caboose-display.service.d/50-caboose-gpu.conf",
+         "etc/systemd/system/caboose-display-agent.service.d/50-caboose-gpu.conf",
          str(LIVE / "caboose-driver.json"),
          str(HOSTS[0][0] / "lib/gbm/vgem_gbm.so"), str(HOSTS[0][0] / "lib/caboose-gpu-warmup"),
          str(HOSTS[0][0] / "share/drirc.d/caboose-vgem.conf"), str(HOSTS[1][0] / "share/drirc.d/caboose-vgem.conf"))

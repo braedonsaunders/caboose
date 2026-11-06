@@ -52,16 +52,23 @@ class InstalledBrokerTests(unittest.TestCase):
             expected = {"etc/systemd/system/caboose-gpu-broker.service": 0o644,
                         "etc/udev/rules.d/70-caboose-gpu.rules": 0o644,
                         "etc/modules-load.d/caboose-gpu.conf": 0o644,
-                        "usr/local/libexec/caboose-gpu-seat-args": 0o755}
+                        "usr/local/libexec/caboose-gpu-seat-args": 0o755,
+                        "etc/systemd/system/caboose-display.service.d/50-caboose-gpu.conf": 0o644,
+                        "etc/systemd/system/caboose-display-agent.service.d/50-caboose-gpu.conf": 0o644}
             for path, mode in expected.items():
                 self.assertEqual((root / path).stat().st_mode & 0o777, mode, path)
+            for seat, name in (("owner", "caboose-display"), ("agent", "caboose-display-agent")):
+                dropin = (root / f"etc/systemd/system/{name}.service.d/50-caboose-gpu.conf").read_text()
+                self.assertIn("ExecStart=\n", dropin)
+                self.assertIn(f"caboose-gpu-seat-args {seat})", dropin)
+                self.assertIn("After=caboose-gpu-broker.service", dropin)
             unit = (root / "etc/systemd/system/caboose-gpu-broker.service").read_text()
             self.assertIn("--listen 0.0.0.0:14602", unit)
             self.assertIn("ConditionPathExists=/usr/local/lib/caboose-gpu-live/icd.json", unit)
             self.assertIn("User=caboose", unit)
             self.assertEqual((root / "etc/modules-load.d/caboose-gpu.conf").read_text().split()[-1], "vgem")
             rules = (root / "etc/udev/rules.d/70-caboose-gpu.rules").read_text()
-            self.assertIn('DRIVERS=="vgem", GROUP="caboose", MODE="0660"', rules)
+            self.assertIn('DEVPATH=="/devices/platform/vgem/*", GROUP="caboose", MODE="0660"', rules)
             self.assertIn('KERNEL=="userfaultfd", GROUP="caboose", MODE="0660"', rules)
 
     def test_seat_options_name_the_seat_and_need_the_installed_stack(self):
