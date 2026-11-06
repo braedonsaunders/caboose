@@ -6,8 +6,17 @@ import type { AgentGuest } from './agents.js'
  * caboose-release installs a sealed release into a microVM, which has no `docker exec`.
  */
 
-/** Runs "$@" and appends its exit status and its standard error (base64) as a last line. */
-export const EXEC_WRAPPER = 'e=$(mktemp) || exit 125; "$@" 2>"$e"; c=$?; printf "\\n\\036%s %s" "$c" "$(base64 -w0 < "$e")"; rm -f "$e"'
+/**
+ * Runs the command its one argument names (the command and its arguments, NUL-separated, in
+ * base64) and appends its exit status and its standard error (base64) as a last line. The
+ * command reaches the guest only as that argument and is exec'd in place, so no live process
+ * but the command itself carries its arguments: a `pgrep -f PATTERN` sent this way does not
+ * match the shell running it.
+ */
+export const EXEC_WRAPPER = 'e=$(mktemp) || exit 125; python3 -c "import base64, os, sys; a = base64.b64decode(sys.argv[1]).split(b\\"\\\\0\\"); os.execvp(a[0], a)" "$1" 2>"$e"; c=$?; printf "\\n\\036%s %s" "$c" "$(base64 -w0 < "$e")"; rm -f "$e"'
+
+/** The wrapper's one argument for a command and its arguments. */
+export const encodeCommand = (command: string, args: readonly string[]) => Buffer.from([command, ...args].join('\0')).toString('base64')
 
 export interface ExecResult { exitCode: number; stdout: string; stderr: string }
 
@@ -36,7 +45,7 @@ export function parseWrapped(output: string): ExecResult {
 }
 
 export async function execute(guest: AgentGuest, command: string, args: string[], timeoutMs: number): Promise<ExecResult> {
-  return parseWrapped(await guest.run('/bin/sh', ['-c', EXEC_WRAPPER, 'sh', command, ...args], timeoutMs))
+  return parseWrapped(await guest.run('/bin/sh', ['-c', EXEC_WRAPPER, 'sh', encodeCommand(command, args)], timeoutMs))
 }
 
 /** An absolute guest path and an octal mode from a file request's query. */
