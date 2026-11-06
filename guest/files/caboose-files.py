@@ -212,7 +212,12 @@ class Changes:
         self.fd = libc.inotify_init1(os.O_NONBLOCK | os.O_CLOEXEC)
         if self.fd < 0: raise OSError(ctypes.get_errno(), 'inotify_init1')
         self.watches = {}
-        self.scan()
+        self.retry = 2
+        # A home with more directories than the kernel's inotify watch limit leaves the change
+        # feed unavailable (changes() says so) instead of the service down: files, transfers and
+        # the guest events go on, and the scan is retried, backing off to once a minute.
+        try: self.scan()
+        except OSError: self.healthy = False
         threading.Thread(target=self.run, daemon=True).start()
     def scan(self):
         found = {}
@@ -237,13 +242,14 @@ class Changes:
         self.epoch = secrets.token_hex(16); self.sequence = 0; self.events = []
     def run(self):
         while True:
-            ready, _, _ = select.select([self.fd], [], [], None if self.healthy else 2)
+            ready, _, _ = select.select([self.fd], [], [], None if self.healthy else self.retry)
             if not ready:
                 if not self.healthy:
                     try:
                         self.scan()
                         with self.guard: self.healthy = True
-                    except OSError: pass
+                        self.retry = 2
+                    except OSError: self.retry = min(60, self.retry * 2)
                 continue
             data = os.read(self.fd, 1024 * 1024)
             offset = 0; changed = []; invalid = False; rescan = False

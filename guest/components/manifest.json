@@ -3,6 +3,7 @@
   "components/caboose-workloads.slice",
   "components/caboose-no-core-dumps.sysctl",
   "components/caboose-no-core-dumps.conf",
+  "components/caboose-inotify.sysctl",
   "components/caboose-owner-run",
   "template/caboose-template.py",
   "template/caboose-template.target",

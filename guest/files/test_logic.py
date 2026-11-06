@@ -43,4 +43,11 @@ with tempfile.TemporaryDirectory() as root:
             self.assertFalse(changes.changes('test:2')['changed'])
             self.assertEqual(changes.changes('test:1')['events'][0]['path'], 'a')
             self.assertTrue(changes.changes('old:2')['reset'])
+        @unittest.skipUnless(hasattr(os, 'pipe2') and os.path.exists('/proc/self/fd'), 'inotify is Linux')
+        def test_exhausted_watches_leave_the_feed_unavailable_not_the_service_down(self):
+            class Exhausted(fs.Changes):
+                def scan(self): raise OSError(28, 'inotify_add_watch')
+            changes = Exhausted()
+            self.assertFalse(changes.healthy)
+            with self.assertRaises(OSError): changes.changes('x:0')
     unittest.main()

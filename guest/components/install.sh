@@ -94,6 +94,8 @@ else
   install -Dm644 "$root/components/caboose-no-core-dumps.sysctl" /etc/sysctl.d/50-caboose-no-core-dumps.conf
   install -Dm644 "$root/components/caboose-no-core-dumps.conf" /etc/systemd/system.conf.d/50-caboose-no-core-dumps.conf
   install -Dm644 "$root/components/caboose-no-core-dumps.conf" /etc/systemd/user.conf.d/50-caboose-no-core-dumps.conf
+  # Enough inotify watches for the file service to watch a whole home (a container shares the host's).
+  install -Dm644 "$root/components/caboose-inotify.sysctl" /etc/sysctl.d/50-caboose-inotify.conf
   install -Dm755 "$root/components/caboose-owner-run" /usr/local/libexec/caboose-owner-run
   install -Dm755 "$root/template/caboose-template.py" /usr/local/libexec/caboose-template
   install -Dm644 "$root/template/caboose-template.target" /etc/systemd/system/caboose-template.target
@@ -111,6 +113,7 @@ fi
 if [[ "$mode" = vm ]]; then
   systemctl daemon-reload
   sysctl -q -p /etc/sysctl.d/50-caboose-no-core-dumps.conf || :
+  sysctl -q -p /etc/sysctl.d/50-caboose-inotify.conf || :
   systemctl start caboose-memory.service 2>/dev/null || :
   systemctl restart caboose-vsock-services.service
   # The owner's display requires its notification endpoint, so restarting the endpoint would

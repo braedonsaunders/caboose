@@ -22,6 +22,10 @@ Computers keep no core dumps. A microVM's installation sends them nowhere (`kern
 `|/bin/false`, `fs.suid_dumpable` 0) and gives systemd's services and sessions a core limit of 0;
 a container gets `--ulimit core=0` from the host, whose kernel it shares.
 
+A microVM's installation raises the inotify limits (`fs.inotify.max_user_watches` 524288,
+`max_user_instances` 1024): the kernel's default scales with memory, about 62,000 watches at
+8 GB, and the file service watching a lived-in home needs more. A container uses the host's.
+
 VM installations include `caboose-workloads.slice` and the root-invoked
 `caboose-owner-run` launcher. The launcher enters a transient scope in that
 slice before switching to the owner; supported owner service units also use the
