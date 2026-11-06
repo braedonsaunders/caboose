@@ -69,5 +69,11 @@ class RelayTest(unittest.IsolatedAsyncioTestCase):
         finally:
             host.close()
 
+class PortsTest(unittest.TestCase):
+    def test_every_port_the_host_dials_is_relayed(self):
+        """The host dials these over vsock (apps/host/src/driver.ts: the displays, the GPU broker,
+        Files, the terminal, Caboose AI); a port missing here is unreachable in a microVM."""
+        self.assertLessEqual({14600, 14601, 14602, 14700, 14701, 14702}, set(bridge.PORTS))
+
 if __name__ == '__main__':
     unittest.main()

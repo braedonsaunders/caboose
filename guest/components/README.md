@@ -75,8 +75,8 @@ lifecycle units remain managed by their image. Keyring initialization/unlock occ
 the host after the Files service is ready, never inside the installer.
 
 Linux VM images install `caboose-vsock-services.service`, which accepts host CID 2 on
-vsock ports 14600, 14601, 14700 and 14701 and relays each to the corresponding loopback
-TCP service. The bridge bounds concurrent connections and closes both ends on disconnect.
+vsock ports 14600 and 14601 (the displays), 14602 (the GPU broker), 14700 (Files), 14701 (the
+terminal) and 14702 (Caboose AI), and relays each to the corresponding loopback TCP service. The bridge bounds concurrent connections and closes both ends on disconnect.
 Container mode does not install it. At wake the host probes the Files bridge and falls back
 to guest TCP when the bridge is unavailable.
 

@@ -1305,7 +1305,10 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
       })
       return
     }
-    if (!computer.acceptsConnections || gpuReservation) return refuse('409 Conflict')
+    if (!computer.acceptsConnections || gpuReservation) {
+      console.warn(`gpu relay: refused an executor: ${gpuReservation ? 'another executor holds the computer' : `the computer is ${computer.state}`}`)
+      return refuse('409 Conflict')
+    }
     const reservation = {}
     gpuReservation = reservation
     const release = computer.acquire()
@@ -1321,9 +1324,12 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
     void computer.wake().then(async session => {
       if (socket.destroyed) return finish()
       if (!computer.acceptsConnections || session.display.protocol !== 'caboose-display') {
+        console.warn(`gpu relay: refused an executor: ${computer.acceptsConnections ? `the display speaks ${session.display.protocol}` : `the computer is ${computer.state}`}`)
         refuse('409 Conflict'); finish(); return
       }
-      const upstream = await gpuServiceURL(await controller.gpuBrokerUrl?.().catch(() => undefined), controller.displayUrl)
+      const broker = await controller.gpuBrokerUrl?.().catch(() => undefined)
+      const upstream = await gpuServiceURL(broker, controller.displayUrl)
+      console.log(`gpu relay: executor goes to ${upstream === broker ? 'the GPU broker' : broker ? 'the owner display (the GPU broker did not answer)' : 'the owner display'}`)
       if (socket.destroyed) return finish()
       try {
         gpuWss.handleUpgrade(request, socket, head, client => {
