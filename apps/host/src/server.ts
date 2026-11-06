@@ -2003,19 +2003,22 @@ export function createCabooseServer(options: Partial<ComputerPieces> & {
         // Root in a running computer, whatever its runtime: the operator's alone (sealed releases).
         const runtime = runtimes.get(decodeURIComponent(hostComputer[1]))
         if (!runtime || deleting.has(runtime.id)) return json(response, 404, { error: 'computer not found' })
-        const guest = runtime.controller.guest()
-        if (!guest) return json(response, 409, { error: 'The computer is not running' })
-        if (hostComputer[2] === 'exec' && request.method === 'POST') {
-          const { command, args, timeoutMs } = parseExec(await readJson(request))
-          return json(response, 200, await execute(guest, command, args, timeoutMs))
-        }
-        if (hostComputer[2] === 'file' && request.method === 'PUT') {
+        if (!(hostComputer[2] === 'exec' && request.method === 'POST') && !(hostComputer[2] === 'file' && request.method === 'PUT')) return json(response, 405, { error: 'method not allowed' })
+        // The computer stays up for the whole request (no idle park or freeze), thawed if frozen.
+        const release = runtime.computer.acquire()
+        try {
+          if (runtime.computer.state === 'frozen') await runtime.computer.wake('headless')
+          const guest = runtime.controller.guest()
+          if (runtime.computer.state !== 'running' || !guest) return json(response, 409, { error: 'The computer is not running' })
+          if (hostComputer[2] === 'exec') {
+            const { command, args, timeoutMs } = parseExec(await readJson(request))
+            return json(response, 200, await execute(guest, command, args, timeoutMs))
+          }
           const { path: target, mode } = parseFileTarget(new URL(request.url ?? '/', 'http://localhost').searchParams)
           await writeGuestFile(guest, target, mode, await readBody(request, HOST_FILE_LIMIT))
           response.writeHead(204).end()
           return
-        }
-        return json(response, 405, { error: 'method not allowed' })
+        } finally { release() }
       }
       if (path === '/v1/host/settings' && request.method === 'GET') return json(response, 200, hostView())
       if (path === '/v1/host/settings' && request.method === 'PATCH') {
