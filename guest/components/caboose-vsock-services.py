@@ -4,7 +4,8 @@ import asyncio
 import contextlib
 import socket
 
-PORTS = (14600, 14601, 14700, 14701, 14702)
+# The displays, the GPU broker the phone's executor reaches, Files, the terminal and Caboose AI.
+PORTS = (14600, 14601, 14602, 14700, 14701, 14702)
 HOST_CID = 2
 MAX_CONNECTIONS = 128
 
