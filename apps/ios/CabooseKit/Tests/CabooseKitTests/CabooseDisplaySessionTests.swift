@@ -450,6 +450,14 @@ final class MockStream: ByteStream, @unchecked Sendable {
         #expect(stream.take().isEmpty)
     }
 
+    /// The agent seat's hello asks for caboose-display's own default screen, so the phone
+    /// watching the seat never changes its size or density under the agent.
+    @Test func theAgentSeatKeepsTheDisplaysDefaultScreen() {
+        let seat = DisplayInfo(.agentSeat)
+        #expect(seat.width == 1920 && seat.height == 1080)
+        #expect(seat.scale == 1 && seat.refreshHz == 60)
+    }
+
     // MARK: Input
 
     @Test func pointerButtonsAreABitmask() async throws {

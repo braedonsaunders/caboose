@@ -568,7 +568,7 @@ final class AppModel {
             mcp.attach(host)
             documents.requestSync(model: self)
             Task { await desktopFiles.refresh(model: self) }
-            agents.prepareSeat(displayToken: wake.display.token, capabilities: seatCapabilities())
+            agents.prepareSeat(displayToken: wake.display.token, capabilities: .agentSeat)
             Task { await refreshApps() }
             refreshFileSearch()
             Task { try? await refreshComputer() }
@@ -1007,12 +1007,6 @@ final class AppModel {
 
     func presentAgentWindow(_ id: Int) {
         presentedAgentWindowID = id
-    }
-
-    private func seatCapabilities() -> ClientCapabilities {
-        let bounds = UIScreen.main.bounds
-        let side = max(bounds.width, bounds.height) * pixelsPerPoint
-        return ClientCapabilities(desktopWidth: Int(side), desktopHeight: Int(side), dpi: Int(96 * pixelsPerPoint))
     }
 
     // MARK: External display

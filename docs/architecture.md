@@ -3613,7 +3613,9 @@ and `TerminalConnection`, which tracks the output offset); the app holds the vie
   host learns nothing new.
 - **Agent seat.** The Agent space follows the seat with a second `CabooseDisplaySession`
   on `/v1/display?seat=agent` that plays no sound, so there is one stream of sound: the
-  owner's display. The agent seat has no phone GPU, so its windows render on the computer
+  owner's display. Its hello asks for a fixed 1920x1080 display at scale 1, caboose-display's
+  own default, whatever the phone's size or orientation, and watching never configures the
+  seat's windows, so the agent's layout and coordinates stay as it made them. The agent seat has no phone GPU, so its windows render on the computer
   and none is presented: the session carries their list, titles and the owner's input,
   without pictures. Take Over and Hand Back pause and resume tasks.
 - **Settings › Agents** lists the registry (installed agents first): install or update,
