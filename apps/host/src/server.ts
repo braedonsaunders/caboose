@@ -53,7 +53,7 @@ import { appsBusy } from './busy.js'
 import type { ComputerNetwork } from './tailnet.js'
 import { ContainerSpecError, type ContainerSpec, type ContainerSpecStore } from './container-spec.js'
 import { BootProgress, type Boot, type BootReport } from './boot.js'
-import { HostSettings } from './host-settings.js'
+import { HostSettings, phoneHostName } from './host-settings.js'
 import { ComputerCapacityError, PairingCodes, PairingRateLimitError, personName, phoneName, type ComputerAssignment, type ComputerRecord, type ComputerRegistry, type PhoneTokens } from './computers.js'
 import { toNodeHandler } from 'better-auth/node'
 import { IdentityConflictError, IdentityInputError, IdentityNotFoundError, type AdminPrincipal, type Identity } from './identity/service.js'
@@ -65,7 +65,7 @@ import { serveWeb } from './static.js'
 import type { ComputerStorage } from './storage.js'
 import type { SharedStorageStatus } from './shared-storage.js'
 import type { RestoredDisk } from './restore-journal.js'
-import { ReachUnavailableError, type ReachService } from './reach.js'
+import { machineName, ReachUnavailableError, type ReachService } from './reach.js'
 import { DesktopNotifications, NOTIFICATION_ID, parseNotificationResponse, respondToNotification } from './desktop-notifications.js'
 import type { PushService } from './push.js'
 import type { HostInfo, MachineResources } from './host-info.js'
@@ -186,7 +186,7 @@ export function defaultIdentity(profiles: AgentProfiles, changed: () => void): (
 /** The Library's host-wide parts, shared by every computer. */
 export interface Library { flathub?: FlathubIndex; releases?: CraftReleases; depot?: RuntimeDepot; arch?: Architecture; mcp?: { catalog: SmitheryCatalog; hostId: string; request?: import('./smithery.js').Requester } }
 
-function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { registry: AgentRegistry; agentIdleMs?: number; freezeParkMs?: number; admit?: Admission; library?: Library; gpuEnabled: boolean; validateSize: (input: Record<string, unknown>) => Promise<void> }) {
+function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { registry: AgentRegistry; agentIdleMs?: number; freezeParkMs?: number; admit?: Admission; library?: Library; gpuEnabled: boolean; validateSize: (input: Record<string, unknown>) => Promise<void>; /** The name phones label the sign-in by, given this computer's name (`phoneHostName`). */ phoneName: (computerName: string | null) => string }) {
   const { settings, push, activities } = pieces
   const admit = shared.admit
   const tiering = pieces.snapshotPath ? tieredController(pieces.controller, pieces.snapshotPath, pieces.snapshotTier) : undefined
@@ -883,7 +883,8 @@ function createComputerRuntime(id: string, pieces: ComputerPieces, shared: { reg
     }
     if (request.method === 'POST' && path === '/v1/session') {
       const session = await computer.wake()
-      return json(response, 200, { ...session, computer: { ...session.computer, name: settings.get().name } })
+      const name = settings.get().name
+      return json(response, 200, { ...session, computer: { ...session.computer, name }, host: { name: shared.phoneName(name) } })
     }
     if (request.method === 'POST' && path === '/v1/session/park') {
       if (upgrading) throw new ComputerConflictError('Caboose components are updating')
@@ -1549,6 +1550,8 @@ export function createCabooseServer(options: Partial<ComputerPieces> & {
   hostSettings?: HostSettings
   /** The name phones list the host by: its name, or one made from the machine's. */
   displayName?: () => string
+  /** The machine's own name, the last fallback of the name phones label a sign-in by; defaults to its hostname. */
+  machineName?: () => string
   /** What the runtime reports about the host itself, for `GET /v1/health`. */
   hostStats?: () => object
   token: string; webRoot?: string
@@ -1600,6 +1603,7 @@ export function createCabooseServer(options: Partial<ComputerPieces> & {
     ...(options.agentIdleMs !== undefined ? { agentIdleMs: options.agentIdleMs } : {}),
     ...(options.freezeParkMs !== undefined ? { freezeParkMs: options.freezeParkMs } : {}),
     ...(identity ? { admit: (id: string, next?: Pick<ComputerSettings, 'memoryMb' | 'vcpus'>) => admit(id, next, !next) } : {}),
+    phoneName: (computerName: string | null) => phoneHostName(hostSettings.get().name, computerName, options.machineName?.() ?? machineName()),
   }
   const runtimes = new Map<string, ComputerRuntime>()
   // Without a fleet, the host serves the one computer it is given (as the tests do).
@@ -1731,6 +1735,18 @@ export function createCabooseServer(options: Partial<ComputerPieces> & {
       return runtimes.has(phone.computerId) ? { kind: 'phone', phoneId: phone.phoneId, computerId: phone.computerId } : undefined
     }
     return identity && !header ? identity.principal(webHeaders(request)) : undefined
+  }
+
+  /**
+   * Why a request has no principal. A bearer token this host does not know — a phone signed
+   * out from the console, one whose computer was deleted, a replaced owner token — is a
+   * definite answer the phone acts on by forgetting that sign-in (`code: 'sign-in-revoked'`);
+   * a request without one gets the plain refusal.
+   */
+  function unauthorized(request: IncomingMessage): { error: 'unauthorized'; code?: 'sign-in-revoked' } {
+    const header = request.headers.authorization
+    if (!header?.startsWith('Bearer ') || header.length <= 7 || authenticate(header, options.token)) return { error: 'unauthorized' }
+    return options.fleet?.phones.resolve(header.slice(7)) ? { error: 'unauthorized' } : { error: 'unauthorized', code: 'sign-in-revoked' }
   }
 
   /** Whether a principal may manage a computer: the operator any, an administrator their tenants'. */
@@ -1908,7 +1924,7 @@ export function createCabooseServer(options: Partial<ComputerPieces> & {
       if (crossSite(request, principal, { trustedProxies, publicUrl: options.publicUrl })) return json(response, 403, { error: 'cross-site request refused' })
       const locationRoute = /^\/v1\/computers\/([^/]+)\/location$/.exec(path)
       if (options.cluster && request.method === 'GET' && (path === '/v1/location' || locationRoute)) {
-        if (!principal) return json(response, 401, { error: 'unauthorized' })
+        if (!principal) return json(response, 401, unauthorized(request))
         const id = locationRoute?.[1] ?? (principal.kind === 'phone' ? principal.computerId : defaultRuntime()?.id)
         if (!id) return json(response, 404, NO_COMPUTER)
         if (principal.kind === 'phone' ? principal.computerId !== id : !manages(principal, id)) return json(response, 404, { error: 'computer not found' })
@@ -1961,7 +1977,7 @@ export function createCabooseServer(options: Partial<ComputerPieces> & {
       }
       const usageRoute = /^\/v1\/computers\/([^/]+)\/usage(\/storage)?$/.exec(path)
       if (usageRoute) {
-        if (!principal) return json(response, 401, { error: 'unauthorized' })
+        if (!principal) return json(response, 401, unauthorized(request))
         if (principal.kind === 'phone') return json(response, 403, { error: 'forbidden' })
         const runtime = runtimes.get(usageRoute[1]!)
         if (!runtime || deleting.has(runtime.id) || !manages(principal, runtime.id)) return json(response, 404, { error: 'computer not found' })
@@ -1980,7 +1996,7 @@ export function createCabooseServer(options: Partial<ComputerPieces> & {
         return json(response, 405, { error: 'method not allowed' })
       }
       if (tenancy && await tenancyRoute(tenancy, request, response, path, principal) !== NOT_FOUND) return
-      if (!principal) return json(response, 401, { error: 'unauthorized' })
+      if (!principal) return json(response, 401, unauthorized(request))
       const fleetRoute = path === '/v1/computers' || /^\/v1\/computers\/[^/]+(?:\/pairing|\/phones(?:\/[^/]+)?)?$/.test(path)
       if (principal.kind === 'phone' && (fleetRoute || path === '/v1/health' || path === '/v1/host' || path.startsWith('/v1/host/'))) return json(response, 403, { error: 'forbidden' })
       if ((path === '/v1/health' || path === '/v1/host' || path.startsWith('/v1/host/')) && !administers(principal, null)) return json(response, 403, { error: 'Only the operator sees the host' })
@@ -2021,6 +2037,7 @@ export function createCabooseServer(options: Partial<ComputerPieces> & {
           computers: [...runtimes.values()].filter(r => !deleting.has(r.id) && manages(principal, r.id)).map(describe),
           canCreate: !!options.fleet && (!identity || await identity.claimed()), limits: { computers: options.fleet ? MAX_SLOTS : 1, running: options.fleet?.maxRunning ?? null },
           defaultComputer: defaultRuntime()?.id ?? null, sizes: computerSizes(shared.gpuEnabled),
+          host: { name: shared.phoneName(defaultRuntime()?.settings.get().name ?? null) },
         })
       }
       if (path === '/v1/computers' && request.method === 'POST') return json(response, 201, describe(await createComputer(await readJson(request), principal)))

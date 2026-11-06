@@ -148,7 +148,10 @@ it('signs a phone in to one computer only, and signing it out closes what it has
   const phone = minted.token as string
 
   // The phone's own routes are its computer's; host and fleet routes are the owner's alone.
-  expect((await host.call('/v1/session', { method: 'POST', token: phone })).status).toBe(200)
+  const woken = await host.call('/v1/session', { method: 'POST', token: phone })
+  expect(woken.status).toBe(200)
+  // An unnamed host is labelled by the computer the phone reaches.
+  expect((await woken.json()).host).toEqual({ name: 'Kids' })
   expect(host.made.get(kids.id)!.calls).toEqual(['wake'])
   expect(host.made.get(host.first)!.calls).toEqual([])
   for (const path of ['/v1/health', '/v1/computers', `/v1/computers/${kids.id}`, `/v1/computers/${kids.id}/phones`, `/v1/computers/${kids.id}/pairing`, `/v1/computers/${host.first}/computer`]) {
@@ -177,7 +180,11 @@ it('signs a phone in to one computer only, and signing it out closes what it has
   const closed = once(socket, 'close')
   expect((await host.call(`/v1/computers/${kids.id}/phones/${phoneId}`, { method: 'DELETE' })).status).toBe(200)
   await closed
-  expect((await host.call('/v1/computer', { token: phone })).status).toBe(401)
+  // A signed-out phone hears that its sign-in is gone; a request with no token, only the refusal.
+  const refused = await host.call('/v1/computer', { token: phone })
+  expect(refused.status).toBe(401)
+  expect(await refused.json()).toEqual({ error: 'unauthorized', code: 'sign-in-revoked' })
+  expect(await (await fetch(`${host.base}/v1/computer`)).json()).toEqual({ error: 'unauthorized' })
   expect((await (await host.call(`/v1/computers/${kids.id}/devices/push`)).json()).devices).toHaveLength(0)
 })
 
@@ -196,7 +203,7 @@ it('deletes any computer with its disk, files and phones, and moves the default 
   expect(existsSync(dir)).toBe(false)
   expect(host.computers.get(kids.id)).toBeUndefined()
   expect((await host.call(`/v1/computers/${kids.id}`)).status).toBe(404)
-  expect((await host.call('/v1/computer', { token })).status).toBe(401)
+  expect(await (await host.call('/v1/computer', { token })).json()).toEqual({ error: 'unauthorized', code: 'sign-in-revoked' })
   expect((await fetch(`${host.base}/v1/pair`, { method: 'POST', body: JSON.stringify({ code, deviceName: 'Late' }) })).status).toBe(404)
   expect((await (await host.call('/v1/computers')).json()).computers.map((c: { id: string }) => c.id)).toEqual([host.first])
   expect(host.made.get(host.first)!.calls).toEqual([])
@@ -213,7 +220,7 @@ it('deletes any computer with its disk, files and phones, and moves the default 
 
 it('serves a host with no computers, and makes its first computer the default', async () => {
   const host = await startHost(false, false, true)
-  expect(await (await host.call('/v1/computers')).json()).toMatchObject({ computers: [], canCreate: true, defaultComputer: null, sizes: expect.arrayContaining([expect.objectContaining({ id: 'micro' })]) })
+  expect(await (await host.call('/v1/computers')).json()).toMatchObject({ computers: [], canCreate: true, defaultComputer: null, sizes: expect.arrayContaining([expect.objectContaining({ id: 'micro' })]), host: { name: expect.any(String) } })
   for (const path of ['/v1/computer', '/v1/session', '/v1/boot']) {
     const response = await host.call(path, { method: path === '/v1/computer' ? 'GET' : 'POST' })
     expect(response.status, path).toBe(404)
@@ -232,6 +239,7 @@ it('serves a host with no computers, and makes its first computer the default', 
   expect((await host.call('/v1/host/settings', { method: 'PATCH', body: { defaultComputer: 'c-ffffffffff' } })).status).toBe(400)
   expect((await host.call('/v1/host/settings', { method: 'PATCH', body: { color: 'red' } })).status).toBe(400)
   expect(await (await host.call('/v1/host/settings', { method: 'PATCH', body: { name: ' Den ', defaultComputer: second.id } })).json()).toEqual({ name: 'Den', displayName: 'Den', defaultComputer: second.id })
+  expect((await (await host.call('/v1/computers')).json()).host).toEqual({ name: 'Den' })
   expect((await (await host.call('/v1/computer')).json()).settings.name).toBe('Other')
 })
 
