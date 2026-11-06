@@ -2153,7 +2153,7 @@ class SeatTests(unittest.IsolatedAsyncioTestCase):
                 writer.close()
                 return data
             try:
-                with mock.patch('builtins.print'):
+                with mock.patch('builtins.print') as printed:
                     # A refused request is told so, with a status line, then closed.
                     self.assertTrue((await exchange(b'wrong')).startswith(b'HTTP/1.1 401 '))
                     # The host's relay probe: a plain GET /gpu, no token, no upgrade.
@@ -2161,6 +2161,10 @@ class SeatTests(unittest.IsolatedAsyncioTestCase):
                     writer.write(b'GET /gpu HTTP/1.1\r\nHost: x\r\n\r\n'); await writer.drain()
                     probe = await asyncio.wait_for(reader.read(64), 5); writer.close()
                     self.assertRegex(probe, rb'^HTTP/1\.1 [45]\d\d ')
+                    lines = [str(call.args[0]) for call in printed.call_args_list if call.args]
+                    # The probe is noted as one, not as a refused executor session; a wrong token is.
+                    self.assertIn('CABOOSE_GPU_BROKER answered a probe without a token', lines)
+                    self.assertEqual(sum('executor session ended: AdmissionError' in l for l in lines), 1)
                     self.assertTrue((await exchange(b'secret')).startswith(b'HTTP/1.1 101'))
             finally:
                 instance.closing.set()

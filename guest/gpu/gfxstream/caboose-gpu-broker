@@ -1971,6 +1971,11 @@ class Seat:
         self.stale_epochs = set()
 
 
+def probe_has_token(raw):
+    """Whether a request's head carries an Authorization header (a phone, not the relay's probe)."""
+    return any(line.lower().startswith(b'authorization:') for line in raw.split(b'\r\n')[1:])
+
+
 class Broker:
     """`control` is the compositor's channel inherited from it, its parent, and the broker
     ends with it. With `listener` instead the broker runs on its own (supervised beside the
@@ -2627,6 +2632,7 @@ class Broker:
         session = executor = generation = None
         sender = receiver = stop_wait = drain_wait = None
         warmup = None
+        raw = b''
         try:
             detect_dead_peer(stream)
             reader, writer = await asyncio.open_connection(sock=stream, limit=MAX_REQUEST + 4)
@@ -2700,8 +2706,12 @@ class Broker:
             else:
                 for task in done: task.result()
         except (OSError, ValueError, RuntimeError, BufferError, asyncio.TimeoutError, asyncio.IncompleteReadError, asyncio.LimitOverrunError) as error:
-            # Every executor session that is refused or ends abnormally says why.
-            print(f'CABOOSE_GPU_BROKER executor session ended: {type(error).__name__}: {error}', file=sys.stderr, flush=True)
+            # Every executor session that is refused or ends abnormally says why; the host relay's
+            # tokenless probe (a plain GET /gpu, telling a broker from a silent port) is not one.
+            if isinstance(error, AdmissionError) and session is None and not probe_has_token(raw):
+                print('CABOOSE_GPU_BROKER answered a probe without a token', file=sys.stderr, flush=True)
+            else:
+                print(f'CABOOSE_GPU_BROKER executor session ended: {type(error).__name__}: {error}', file=sys.stderr, flush=True)
             # A refused request gets an HTTP status line before the connection closes: the
             # host's relay probes /gpu with a plain GET to tell a broker from a silent port.
             if isinstance(error, AdmissionError) and writer is not None and session is None:

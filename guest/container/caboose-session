@@ -223,6 +223,11 @@ PHONE_GPU_DIR=$XDG_RUNTIME_DIR/caboose-gpu
 GPU_BROKER=/usr/local/libexec/caboose-gpu-broker
 GPU_BROKER_PORT=14602
 phone_gpu() { [ -x "$GPU_BROKER" ] && [ -f /usr/local/lib/caboose-gpu-live/icd.json ]; }
+# Whether systemd runs the computer's broker service (a virtual machine), not this session.
+systemd_broker() {
+  [ -d "${CABOOSE_SYSTEMD_RUN:-/run/systemd/system}" ] &&
+    [ -f "${CABOOSE_SYSTEMD_UNITS:-/etc/systemd/system}/caboose-gpu-broker.service" ]
+}
 shared_broker() { phone_gpu && "$GPU_BROKER" --help 2>/dev/null | grep -q -- '--listen'; }
 # Prints seat SEAT's display options for the phone's GPU.
 phone_gpu_args() {
@@ -243,6 +248,9 @@ phone_gpu_args() {
 start_gpu() {
   shared_broker || return 0
   supervisor_pid caboose-gpu-broker >/dev/null && return
+  # In a virtual machine systemd runs the broker (caboose-gpu-broker.service); a second one
+  # here could not take the port and would restart forever.
+  systemd_broker && return
   install -d -o caboose -g caboose -m 0700 "$PHONE_GPU_DIR"
   local log="$CABOOSE_HOME/.cache/caboose-gpu-broker.log"
   touch "$log" && chown caboose:caboose "$log"
