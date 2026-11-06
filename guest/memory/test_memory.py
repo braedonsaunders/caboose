@@ -261,6 +261,23 @@ class CabooseMemoryTest(unittest.TestCase):
             self.assertEqual(payload['zram']['mem_used_total'], 125829120)
             self.assertGreater(payload['zram']['compression_ratio'], 3.4)
 
+    def test_pressure_reclaim_leaves_a_running_program_alone(self) -> None:
+        """Under host pressure a running computer drops only unmapped clean page cache: no
+        proactive anonymous reclaim into zram, no slab drop, no compaction."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            populate_fake_root(root)
+            compact = root / 'proc/sys/vm/compact_memory'
+            before_compact = compact.read_text() if compact.exists() else None
+            reclaims = [root / 'sys/fs/cgroup/caboose-workloads.slice/memory.reclaim', root / 'sys/fs/cgroup/user.slice/memory.reclaim', root / 'sys/fs/cgroup/memory.reclaim']
+            before_reclaims = [p.read_text() if p.exists() else None for p in reclaims]
+            result = caboose_memory.reclaim(mode='pressure', root=root, sync_fn=lambda: None)
+            self.assertEqual((root / 'proc/sys/vm/drop_caches').read_text().strip(), '1')
+            self.assertEqual(compact.read_text() if compact.exists() else None, before_compact)
+            self.assertEqual([p.read_text() if p.exists() else None for p in reclaims], before_reclaims)
+            self.assertFalse(result['compacted'])
+            self.assertEqual(result['proactive']['requested_bytes'], 0)
+
     def test_graceful_handling_in_restricted_container_environment(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)

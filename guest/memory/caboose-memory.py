@@ -278,7 +278,7 @@ def _proactive_reclaim_anonymous(
     mode: str,
     before_mem: dict[str, int],
 ) -> dict[str, object]:
-    ratio = {'park': 0.50, 'freeze': 0.35, 'pressure': 0.25}.get(mode, 0.35)
+    ratio = {'park': 0.50, 'freeze': 0.35}.get(mode, 0.35)
     anon_bytes = before_mem.get('AnonPages', 0)
     swap_free = before_mem.get('SwapFree', 0)
     requested_bytes = int(anon_bytes * ratio)
@@ -333,11 +333,19 @@ def reclaim(
     except OSError:
         pass
 
-    proactive = _proactive_reclaim_anonymous(root, mode, before_mem)
-
     vm_dir = root / 'proc/sys/vm'
-    dropped_caches = _write_sysfs(vm_dir / 'drop_caches', '3\n')
-    compacted = _write_sysfs(vm_dir / 'compact_memory', '1\n')
+    if mode == 'pressure':
+        # The computer is running, perhaps a game: give back only what nothing uses. Clean page
+        # cache that no process maps is dropped; a program's mapped files (its binaries and
+        # libraries) stay, and its memory is not pushed into zram, nor compacted, either of which
+        # stalls it for seconds.
+        proactive: dict[str, object] = {'requested_bytes': 0, 'cgroup_targets': [], 'mglru_aged': False}
+        dropped_caches = _write_sysfs(vm_dir / 'drop_caches', '1\n')
+        compacted = False
+    else:
+        proactive = _proactive_reclaim_anonymous(root, mode, before_mem)
+        dropped_caches = _write_sysfs(vm_dir / 'drop_caches', '3\n')
+        compacted = _write_sysfs(vm_dir / 'compact_memory', '1\n')
 
     after_mem = parse_meminfo(root)
     after_zram = parse_zram_mm_stat(root)
