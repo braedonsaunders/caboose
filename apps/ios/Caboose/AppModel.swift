@@ -568,7 +568,7 @@ final class AppModel {
             mcp.attach(host)
             documents.requestSync(model: self)
             Task { await desktopFiles.refresh(model: self) }
-            agents.prepareSeat(displayToken: wake.display.token, capabilities: seatCapabilities())
+            agents.prepareSeat(displayToken: wake.display.token, capabilities: .agentSeat)
             Task { await refreshApps() }
             refreshFileSearch()
             Task { try? await refreshComputer() }
@@ -1007,12 +1007,6 @@ final class AppModel {
 
     func presentAgentWindow(_ id: Int) {
         presentedAgentWindowID = id
-    }
-
-    private func seatCapabilities() -> ClientCapabilities {
-        let bounds = UIScreen.main.bounds
-        let side = max(bounds.width, bounds.height) * pixelsPerPoint
-        return ClientCapabilities(desktopWidth: Int(side), desktopHeight: Int(side), dpi: Int(96 * pixelsPerPoint))
     }
 
     // MARK: External display
@@ -1788,7 +1782,14 @@ final class AppModel {
         switch link {
         case .tab(let tab): selectedTab = tab == .terminal && !TerminalSlot.isFilled ? .home : tab
         case .task(let id): notificationTaskID = id
-        case .watch(let id): notificationTaskID = id; watchTaskID = id
+        case .watch(let id):
+            // Watch opens the task's chat, which presents its agent's seat window full screen
+            // as soon as there is one; nothing may be presented over the shell to block it.
+            notificationTaskID = nil
+            presentedWindowID = nil
+            selectedTab = .agents
+            agents.currentChat = id
+            watchTaskID = id
         case .command(let id): notificationCommandID = id
         case .airPlay: selectedTab = .home; airPlay.connect()
         }

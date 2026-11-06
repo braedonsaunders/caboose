@@ -660,8 +660,12 @@ starts (from another sheet or device), the sheet says so and stops, never touchi
 one.
 
 Agents run their GUI apps on the agent seat, a second display of the computer. The app
-connects to it as it does to the owner's display (`/v1/display?seat=agent`, without sound);
-watch its windows from the chat, take over and hand back. A window's `…` menu has **Ask
+connects to it as it does to the owner's display (`/v1/display?seat=agent`, without sound),
+with a fixed 1920x1080 screen at scale 1 (`ClientCapabilities.agentSeat`, caboose-display's
+own default) on every phone and in every orientation. Watch, from the chat or its
+`caboose://task/<id>/watch` link, shows a window full screen as the agent laid it out, scaled
+to fit: it never configures, resizes or focuses the agent's windows, and sends input only
+after **Take Over**; **Hand Back** or closing it gives the seat back. A window's `…` menu has **Ask
 Agent About This Window**, which sends its screenshot, title and app with your request.
 
 On a device paired to a running computer, check: start a chat, then send "how's it going?"

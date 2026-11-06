@@ -73,7 +73,7 @@ struct MainTabs: View {
         .fullScreenCover(isPresented: Binding(
             get: { model.presentedAgentWindowID != nil },
             set: { if !$0 { model.presentedAgentWindowID = nil } })) {
-            AgentWindowScreen().environment(model)
+            AgentWindowScreen(windowID: model.presentedAgentWindowID).environment(model)
         }
         .confirmationDialog("Restart your computer?", isPresented: $model.restartConfirmationPresented, titleVisibility: .visible) {
             Button("Restart", role: .destructive) { Task { await model.restartComputer() } }

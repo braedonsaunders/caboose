@@ -3299,8 +3299,8 @@ one normal display close request, leaving unsaved-change handling to the applica
 keeping the tile until the server removes the window. Releasing a close drag does not
 open the window. A changed session, connection generation or window cancels the drag.
 
-`caboose://task/<id>` opens a task, `caboose://task/<id>/watch` the same with its agent's newest
-seat window full screen once it has one, `caboose://command/<id>` a command (its id is 32
+`caboose://task/<id>` opens a task, `caboose://task/<id>/watch` its chat in Agents with its
+agent's newest seat window full screen once it has one, `caboose://command/<id>` a command (its id is 32
 lowercase hex digits) and `caboose://airplay` runs Home's AirPlay action.
 Pinned and recent apps are kept on the phone per computer.
 
@@ -3613,7 +3613,9 @@ and `TerminalConnection`, which tracks the output offset); the app holds the vie
   host learns nothing new.
 - **Agent seat.** The Agent space follows the seat with a second `CabooseDisplaySession`
   on `/v1/display?seat=agent` that plays no sound, so there is one stream of sound: the
-  owner's display. The agent seat has no phone GPU, so its windows render on the computer
+  owner's display. Its hello asks for a fixed 1920x1080 display at scale 1, caboose-display's
+  own default, whatever the phone's size or orientation, and watching never configures the
+  seat's windows, so the agent's layout and coordinates stay as it made them. The agent seat has no phone GPU, so its windows render on the computer
   and none is presented: the session carries their list, titles and the owner's input,
   without pictures. Take Over and Hand Back pause and resume tasks.
 - **Settings › Agents** lists the registry (installed agents first): install or update,
