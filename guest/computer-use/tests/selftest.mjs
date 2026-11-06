@@ -54,6 +54,7 @@ for (const [name, args, pattern] of [
 // A bad step stops the run and says why, without a crash.
 for (const [steps, pattern] of [
   [[{ key: 'rm -rf /' }], /key must look like/],
+  [[{ key: 'ctrl+z', repeat: 51 }], /repeat must be 1–50/],
   [[{ wait: 10 }, { wait: 0 }], /Did 1 of 2; stopped: wait must be 10–5000 ms/],
   [[{ press: 'x'.repeat(501) }], /at most 500/],
   [[{ fly: 1 }], /unknown step/],
