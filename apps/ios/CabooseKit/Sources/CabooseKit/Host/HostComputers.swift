@@ -86,8 +86,13 @@ public struct HostComputerList: Decodable, Equatable, Sendable {
     public var limits: Limits?
     public var defaultComputer: String?
     public var sizes: [Size]
+    /// The name the host gives itself for phones to label the sign-in by; nil from hosts that
+    /// predate it.
+    public var hostName: String?
 
-    public init(computers: [Computer], canCreate: Bool, limits: Limits? = nil, defaultComputer: String? = nil, sizes: [Size] = []) {
+    public init(computers: [Computer], canCreate: Bool, limits: Limits? = nil, defaultComputer: String? = nil, sizes: [Size] = [],
+                hostName: String? = nil) {
+        self.hostName = hostName
         self.computers = computers
         self.canCreate = canCreate
         self.limits = limits
@@ -95,7 +100,8 @@ public struct HostComputerList: Decodable, Equatable, Sendable {
         self.sizes = sizes
     }
 
-    enum CodingKeys: String, CodingKey { case computers, canCreate, limits, defaultComputer, sizes }
+    enum CodingKeys: String, CodingKey { case computers, canCreate, limits, defaultComputer, sizes, host }
+    private struct Host: Decodable { var name: String? }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -104,6 +110,7 @@ public struct HostComputerList: Decodable, Equatable, Sendable {
         limits = try container.decodeIfPresent(Limits.self, forKey: .limits)
         defaultComputer = try container.decodeIfPresent(String.self, forKey: .defaultComputer)
         sizes = try container.decodeIfPresent([Size].self, forKey: .sizes) ?? []
+        hostName = SignInTitle.cleaned((try? container.decodeIfPresent(Host.self, forKey: .host))?.name)
     }
 
     /// The sizes a new computer can have on this host now.

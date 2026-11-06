@@ -9,5 +9,6 @@ with tempfile.TemporaryDirectory(prefix="caboose-computers-") as directory:
     binary = pathlib.Path(directory) / "test"
     subprocess.run(["xcrun", "swiftc", "-parse-as-library",
                     str(root / "Caboose/Host/Credentials.swift"),
+                    str(root / "CabooseKit/Sources/CabooseKit/Host/SignInPolicy.swift"),
                     str(root / "scripts/test-computer-switcher.swift"), "-o", str(binary)], check=True)
     subprocess.run([str(binary)], check=True)

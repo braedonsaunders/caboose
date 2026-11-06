@@ -1,12 +1,14 @@
 import SwiftUI
 
 /// The saved sign-ins, and for a host sign-in the host's own computers: switch between
-/// them, make another, or sign in to more. A sign-in paired to one computer cannot list the
-/// host's others.
+/// them, make another, sign in to more, or remove one. A sign-in paired to one computer
+/// cannot list the host's others. Each is titled by the name its host gave itself, and by
+/// its address only until the host has answered once.
 struct ComputerSwitcher<Content: View>: View {
     @Environment(AppModel.self) private var model
     @Environment(\.openURL) private var openURL
     @State private var showingManagement = false
+    @State private var removing: Credentials?
     @ViewBuilder var label: () -> Content
 
     var body: some View {
@@ -35,7 +37,7 @@ struct ComputerSwitcher<Content: View>: View {
                             Text(computer.computerName.map { "Host · \($0)" } ?? "Host · every computer")
                         } else {
                             Label(computer.displayName, systemImage: computer.id == model.credentials?.id ? "checkmark.circle.fill" : "desktopcomputer")
-                            Text(computer.hostName)
+                            Text(computer.hostName == computer.displayName ? computer.addressName : computer.hostName)
                         }
                     }
                     .disabled(model.pairing)
@@ -46,6 +48,14 @@ struct ComputerSwitcher<Content: View>: View {
                     .disabled(model.pairing)
             }
             Button("Add Computer", systemImage: "plus") { model.addingComputer = true }
+            if !model.savedComputers.isEmpty {
+                Menu("Remove a Sign-In", systemImage: "minus.circle") {
+                    ForEach(model.savedComputers) { computer in
+                        Button(computer.isHostSignIn ? computer.hostName : computer.displayName, role: .destructive) { removing = computer }
+                    }
+                }
+                .disabled(model.pairing)
+            }
             if model.credentials?.consoleURL != nil {
                 Button("Manage Computers", systemImage: "arrow.up.right.square") { showingManagement = true }
             }
@@ -108,6 +118,14 @@ struct ComputerSwitcher<Content: View>: View {
             }
             .interactiveDismissDisabled(model.pairing)
         }
+        .alert(removalTitle, isPresented: Binding(get: { removing != nil }, set: { if !$0 { removing = nil } }), presenting: removing) { computer in
+            Button("Remove", role: .destructive) { model.remove(computer) }
+            Button("Cancel", role: .cancel) { }
+        } message: { computer in
+            Text(computer.isHostSignIn
+                 ? "This iPhone forgets its sign-in to \(computer.hostName) and what it kept for it. Every computer on the host stays as it is; pair again to use them here."
+                 : "This iPhone forgets its sign-in to \(computer.displayName) and what it kept for it. The computer stays as it is; pair again to use it here.")
+        }
         .alert("Manage Computers", isPresented: $showingManagement) {
             Button("Open Console") {
                 if let url = model.credentials?.consoleURL { openURL(url) }
@@ -116,5 +134,10 @@ struct ComputerSwitcher<Content: View>: View {
         } message: {
             Text("Sign in to the console with an authorized administrator account to provision computers and create pairing codes. Pair each computer here to add it to this menu.")
         }
+    }
+
+    private var removalTitle: String {
+        guard let removing else { return "Remove Sign-In" }
+        return "Remove \(removing.isHostSignIn ? removing.hostName : removing.displayName)?"
     }
 }

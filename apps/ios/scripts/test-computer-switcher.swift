@@ -52,6 +52,33 @@ struct ComputerSwitcherTests {
         precondition(legacy.scope == nil && legacy.routeComputer == nil, "an owner token uses the unscoped routes")
         let reloaded = try JSONDecoder().decode(Credentials.Collection.self, from: JSONEncoder().encode(hosts))
         precondition(reloaded.computers == hosts.computers && reloaded.active?.isHostSignIn == true)
-        print("Computer collection: migration identity, selection, re-pair, host scoping, host sign-ins, serialization and console URL passed")
+
+        // Titles: the name the host gave itself, kept across re-selection, before the address.
+        var named = Credentials.Collection()
+        let unnamed = named.select(Credentials(hostURL: URL(string: "https://lucid-gpu.tailea5249.ts.net")!, token: "host", scope: .host))
+        precondition(unnamed.hostName == "lucid-gpu.tailea5249.ts.net" && unnamed.addressName == "lucid-gpu.tailea5249.ts.net")
+        var learned = unnamed
+        learned.hostLabel = "Den"
+        _ = named.select(learned)
+        let reopened = named.select(unnamed.opening(computer: "c-1", name: "Studio"))
+        precondition(reopened.hostLabel == "Den" && reopened.hostName == "Den" && reopened.displayName == "Studio",
+                     "a learned host name survives opening another computer")
+        let fromBefore = try JSONDecoder().decode(Credentials.self, from: Data(#"{"hostURL":"https://computer.example.com","token":"t","alternateURLs":[]}"#.utf8))
+        precondition(fromBefore.hostLabel == nil && fromBefore.hostName == "computer.example.com", "sign-ins saved before host names decode")
+        let roundTripped = try JSONDecoder().decode(Credentials.self, from: JSONEncoder().encode(reopened))
+        precondition(roundTripped.hostLabel == "Den")
+
+        // Removing: the active one hands over to the first left; another leaves the active alone.
+        var three = Credentials.Collection()
+        let a = three.select(Credentials(hostURL: host, token: "a", computerID: "a"))
+        let b = three.select(Credentials(hostURL: host, token: "b", computerID: "b"))
+        let c = three.select(Credentials(hostURL: host, token: "c", computerID: "c"))
+        three.remove(id: a.id)
+        precondition(three.computers.map(\.id) == [b.id, c.id] && three.activeID == c.id)
+        three.remove(id: c.id)
+        precondition(three.computers.map(\.id) == [b.id] && three.activeID == b.id)
+        three.remove(id: b.id)
+        precondition(three.computers.isEmpty && three.activeID == nil)
+        print("Computer collection: migration identity, selection, re-pair, host scoping, host sign-ins, serialization, console URL, titles and removal passed")
     }
 }

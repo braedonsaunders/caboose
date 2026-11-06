@@ -117,6 +117,9 @@ struct RootView: View {
         .alert("Couldn't sign in", isPresented: Binding(get: { model.pairingFailure != nil }, set: { if !$0 { model.pairingFailure = nil } })) {
             Button("OK", role: .cancel) { model.pairingFailure = nil }
         } message: { Text(model.pairingFailure ?? "") }
+        .alert("Sign-in removed", isPresented: Binding(get: { model.signInNotice != nil }, set: { if !$0 { model.signInNotice = nil } })) {
+            Button("OK", role: .cancel) { model.signInNotice = nil }
+        } message: { Text(model.signInNotice ?? "") }
         .sheet(isPresented: Bindable(model).wallpaperPickerPresented) {
             NavigationStack {
                 BackgroundPicker()

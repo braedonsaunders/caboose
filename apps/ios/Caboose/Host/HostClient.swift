@@ -17,9 +17,16 @@ struct HostClient: Equatable, Sendable {
             var memoryMb: Int
             var vcpus: Int
         }
+        struct Host: Decodable, Sendable {
+            var name: String?
+        }
         var state: String
         var display: Display
         var computer: Computer
+        /// What the host calls itself for this sign-in; absent from hosts that predate it.
+        var host: Host?
+
+        var hostName: String? { SignInTitle.cleaned(host?.name) }
     }
 
     struct App: Codable, Identifiable, Hashable, Sendable {
@@ -120,10 +127,14 @@ struct HostClient: Equatable, Sendable {
         case noComputer
         case server(Int, String?)
         case unreachable(String)
+        /// The host no longer knows this sign-in (`SignInRefusal`): signed out from the
+        /// console, its computer deleted, or a replaced owner token.
+        case revoked
 
         var errorDescription: String? {
             switch self {
             case .unauthorized: "Your computer did not accept this sign-in token."
+            case .revoked: "This iPhone is no longer signed in to the host."
             case .notRunning: "Your computer is not awake."
             case .noComputer: "This host has no computer yet."
             case .server(let status, let message): message ?? "Your computer answered with an error (\(status))."
@@ -221,6 +232,8 @@ struct HostClient: Equatable, Sendable {
         switch status {
         case 200 ..< 300:
             return data
+        case 401 where SignInRefusal.isRevoked(status: status, body: data):
+            throw Failure.revoked
         case 401, 403:
             throw Failure.unauthorized
         case 409 where path.hasPrefix("/v1/agent/profiles") || path.hasPrefix("/v1/agent/routines") || path.hasPrefix("/v1/computer") || path.hasPrefix("/v1/catalog") || path.hasPrefix("/v1/mcp/") || path.hasPrefix("/v1/backup") || path.hasPrefix("/v1/commands") || path.hasPrefix("/v1/running-apps") || path.hasPrefix("/v1/services/") || path == "/v1/session/park":
