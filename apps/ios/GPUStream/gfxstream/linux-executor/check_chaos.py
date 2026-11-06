@@ -33,6 +33,7 @@ Proton. A real picture is neither noise nor one colour (surfaces.content: a repe
 cycle whose apps did not all present.
 """
 import argparse
+import fcntl
 import json
 import os
 import random
@@ -47,7 +48,29 @@ import time
 # turns each crash into a capture of several gigabytes. This process and its children have a
 # core limit of 0; every command run in the computer is started under prlimit with one.
 resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
-NO_CORES = ('prlimit', '--core=0:0', '--')
+os.nice(19)
+NO_CORES = ('prlimit', '--core=0:0', '--', 'nice', '-n', '19')
+PRESSURE = '/proc/pressure/memory'
+# One heavy harness at a time on a host (caboose-release's seal holds the same lock while it
+# runs its checks, and runs this one inside it).
+HEAVY_LOCK = '/tmp/caboose-heavy-check.lock'
+
+
+def wait_for_memory(limit=10.0, quiet=False):
+    """Waits while the host's memory pressure (some or full avg10) is at LIMIT or above: the host
+    is shared, and a check that adds load to a host already stalling on memory hangs it."""
+    while True:
+        try:
+            with open(PRESSURE) as f:
+                averages = [float(line.split('avg10=')[1].split()[0]) for line in f if 'avg10=' in line]
+        except (OSError, IndexError, ValueError):
+            return
+        if not averages or max(averages) < limit:
+            return
+        if not quiet:
+            print(f'memory pressure avg10 {max(averages):.1f}: waiting', flush=True)
+            quiet = True
+        time.sleep(15)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.abspath(os.path.join(HERE, '../../../../..'))
@@ -272,6 +295,9 @@ def now():
 
 
 def main():
+    if os.environ.get('CABOOSE_HEAVY_LOCK_HELD') != '1':
+        heavy = open(HEAVY_LOCK, 'a')
+        fcntl.flock(heavy, fcntl.LOCK_EX)
     parser = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     parser.add_argument('computer')
     parser.add_argument('work')
@@ -432,6 +458,7 @@ def main():
         if any(e not in events for e in forced):
             raise SystemExit(f'unknown event in --events: {o.events}')
         for cycle in range(1, o.cycles + 1):
+            wait_for_memory()  # each cycle starts only while the host is not stalling on memory
             event = forced[(cycle - 1) % len(forced)] if forced else rng.choice(events)
             delay = rng.uniform(0, 3)
             started = time.monotonic()

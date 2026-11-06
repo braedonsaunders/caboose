@@ -15,8 +15,11 @@ class NoCores(unittest.TestCase):
             text = path.read_text()
             with self.subTest(path=path.name):
                 self.assertRegex(text, r"(?m)^ulimit -c 0$")
-                self.assertIn("command docker run --ulimit core=0", text)
-                self.assertIn("prlimit --core=0:0 --", text)
+                self.assertIn("command docker run", text)
+                self.assertIn("--ulimit core=0", text)
+                self.assertIn("prlimit --core=0:0 -- nice -n 19", text)
+                self.assertIn("--cpus 4", text)
+                self.assertIn("--memory 6g", text)
                 # The wrapper comes before the first docker call.
                 first = re.search(r"(?m)^[^#\n]*\bdocker (run|exec)\b", text.split("docker() {", 1)[1].split("\n}\n", 1)[1])
                 self.assertIsNotNone(first)
@@ -28,8 +31,13 @@ class NoCores(unittest.TestCase):
                 self.assertIn("resource.setrlimit(resource.RLIMIT_CORE, (0, 0))", path.read_text())
         chaos = (EXECUTOR / "check_chaos.py").read_text()
         self.assertIn("*NO_CORES, 'sh', '-c'", chaos)
+        self.assertIn("NO_CORES = ('prlimit', '--core=0:0', '--', 'nice', '-n', '19')", chaos)
+        self.assertIn("wait_for_memory()", chaos)
+        self.assertIn("wait_for_memory()", (REPO / "guest/release/caboose-release").read_text())
         for call in re.findall(r"run\('docker', 'run',[^)]*", chaos):
             self.assertIn("'--ulimit', 'core=0'", call)
+            self.assertIn("'--cpus', '4'", call)
+            self.assertRegex(call, r"'--memory', '[1-6]g'")
 
 
 if __name__ == "__main__":

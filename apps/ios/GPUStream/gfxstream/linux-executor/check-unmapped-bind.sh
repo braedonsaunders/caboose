@@ -15,13 +15,21 @@
 # compositor's window for it, and that window's picture to be the client's colour, not black.
 # CPUS defaults to 4.
 set -eu
-# Nothing a check starts leaves a core dump: crashes are expected while the checks end
-# programs, and the host turns each one into a capture of several gigabytes. Every container
-# this script runs gets a core limit of 0, and so does every command it runs in a computer
-# (prlimit, before the command).
+# Nothing a check starts leaves a core dump, and nothing it starts crowds out the rest of the
+# host: crashes are expected while the checks end programs (the host turns each into a capture of
+# several gigabytes), and the host is shared. Every container this script runs gets a core
+# limit of 0 and, unless it sets its own, at most 4 CPUs and 6 GB of memory; every command it
+# runs in a computer runs at the lowest priority with a core limit of 0 (prlimit and nice,
+# before the command).
 ulimit -c 0
+renice -n 19 $$ > /dev/null 2>&1 || :
 docker() {
-  if [ "${1:-}" = run ]; then shift; command docker run --ulimit core=0 "$@"; return; fi
+  if [ "${1:-}" = run ]; then
+    shift
+    case " $* " in *" --cpus "*) set -- --ulimit core=0 "$@" ;; *) set -- --ulimit core=0 --cpus 4 "$@" ;; esac
+    case " $* " in *" --memory "*) ;; *) set -- --memory 6g "$@" ;; esac
+    command docker run "$@"; return
+  fi
   if [ "${1:-}" != exec ]; then command docker "$@"; return; fi
   shift
   _count=$# _seen=0 _state=option
@@ -31,7 +39,7 @@ docker() {
       option) case $_arg in
         -u|-e|-w|--user|--env|--workdir) set -- "$@" "$_arg" "$1"; shift; _seen=$((_seen + 1)) ;;
         -*) set -- "$@" "$_arg" ;;
-        *) set -- "$@" "$_arg" prlimit --core=0:0 --; _state=command ;;
+        *) set -- "$@" "$_arg" prlimit --core=0:0 -- nice -n 19; _state=command ;;
       esac ;;
       command) set -- "$@" "$_arg" ;;
     esac

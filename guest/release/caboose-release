@@ -25,6 +25,7 @@ from url= and token_file= in $CABOOSE_RELEASE_HOST (default /root/.config/caboos
 import base64
 import datetime
 import hashlib
+import fcntl
 import json
 import resource
 import os
@@ -41,6 +42,26 @@ import urllib.request
 # Nothing a seal's checks start leaves a core dump: the host turns each crash into a capture of
 # several gigabytes. The checks' own scripts pass a core limit of 0 into the computer.
 resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+PRESSURE = Path("/proc/pressure/memory")
+# One heavy harness at a time on a host: a seal's checks and a chaos run each hold it.
+HEAVY_LOCK = "/tmp/caboose-heavy-check.lock"
+
+
+def wait_for_memory(limit=10.0):
+    """Waits while the host's memory pressure (some or full avg10) is at LIMIT or above. The host
+    is shared: a heavy check started on a host already stalling on memory hangs it."""
+    told = False
+    while True:
+        try:
+            averages = [float(line.split("avg10=")[1].split()[0]) for line in PRESSURE.read_text().splitlines() if "avg10=" in line]
+        except (OSError, IndexError, ValueError):
+            return
+        if not averages or max(averages) < limit:
+            return
+        if not told:
+            print(f"memory pressure avg10 {max(averages):.1f}: waiting", file=sys.stderr, flush=True)
+            told = True
+        time.sleep(15)
 ROOT = Path(os.environ.get("CABOOSE_RELEASES", "/root/caboose-release"))
 # A game is running when any of these match a process (the game gate).
 GAME = "MCC-Win64|steam_app_[0-9]|AppId=[0-9]"
@@ -172,6 +193,12 @@ def run_check(directory, settings):
     driver = directory / "files" / DRIVER
     if not driver.is_file():
         raise Failure(f"{directory.name} has no driver at /{DRIVER}")
+    # One heavy check at a time, at the lowest priority, started only while the host is not
+    # stalling on memory (and again before chaos, below).
+    os.nice(19)
+    heavy = open(HEAVY_LOCK, "a")
+    fcntl.flock(heavy, fcntl.LOCK_EX)
+    wait_for_memory()
     out = directory / "check"
     shutil.rmtree(out, ignore_errors=True)
     out.mkdir()
@@ -229,11 +256,12 @@ def run_check(directory, settings):
     # running the release's compositor, broker and driver: every app must present real
     # pictures after each.
     home = settings["chaos_home"]
+    wait_for_memory()
     chaos = subprocess.run([
         "python3", str(Path(settings["repo"]) / "apps/ios/GPUStream/gfxstream/linux-executor/check_chaos.py"),
         settings["dxvk_computer"], settings["work"], str(directory), str(out / "chaos"), "--cycles", "50",
         "--steam-home", home, "--triangle", f"{home}/.var/app/com.valvesoftware.Steam/caboose-bench/triangle.exe"],
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env={**os.environ, "CABOOSE_HEAVY_LOCK_HELD": "1"})
     summary += "\n".join(line for line in chaos.stdout.decode(errors="replace").splitlines()
                          if not line.startswith("PASS cycle")) + "\n"
     return chaos.returncode, summary
