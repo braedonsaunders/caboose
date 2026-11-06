@@ -167,6 +167,7 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
     if (!relay) throw new Error('Computer is not running')
     return `${scheme}://${relay.host}:${relay.port}${scheme === 'ws' ? '/' : ''}`
   }
+  let frozen = false
   let displayToken = ''
   let restartWarning: string | null = null
   const paths = vmPaths(config.imageRoot, id, config.vmTemplate)
@@ -367,6 +368,7 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
         ...(nativeMac ? {} : { network: { tapDevice: address.tap, guestAddress: address.guest, ...(paths.template ? { macAddress: mac } : {}) } }),
         ...(paths.template ? { vsockCid: 0x80000000 + slot, strictMemoryRestore: true, memoryRestoreMode: 'copyonwrite' as const, ...(templateOptions ? { template: templateOptions } : {}) } : {}),
       }).catch(error => { if (!nativeMac) invalidateNetwork(slot); throw error })
+      frozen = false
       let recoveryFailed = false
       try {
         try {
@@ -434,10 +436,11 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
     },
     async promote() { await ownerDisplay(); return session() },
     canFreeze: () => Boolean(desk && pausable.canPause?.(id) && pausable.pause),
-    async reclaimMemory() {
-      if (!desk || nativeMac) return
+    async reclaimMemory(mode: 'freeze' | 'pressure' = 'freeze') {
+      // A frozen computer was reclaimed before it froze, and cannot answer until it thaws.
+      if (!desk || nativeMac || frozen) return
       try {
-        await desk.exec({ command: '/usr/local/libexec/caboose-memory', args: ['reclaim', '--mode=freeze', '--json'], timeoutMs: 10_000 })
+        await desk.exec({ command: '/usr/local/libexec/caboose-memory', args: ['reclaim', `--mode=${mode}`, '--json'], timeoutMs: 10_000 })
       } catch {
         // Older guests without caboose-memory or unresponsive guests skip reclamation cleanly.
       }
@@ -445,9 +448,10 @@ export function createController(config: Config, dependencies: DeskPoolDependenc
     async freeze() {
       if (!pausable.pause) throw new Error('Resident pause is unavailable')
       await pausable.pause(id)
+      frozen = true
       if (!nativeMac) void pulseKsmMergeBoost().catch(() => {})
     },
-    async thaw() { desk = await host.resume(id) },
+    async thaw() { desk = await host.resume(id); frozen = false },
     async park() {
       clearHeartbeat()
       await closeRelays()

@@ -23,6 +23,7 @@ import { HostSettings, settleLegacyComputer } from './host-settings.js'
 import { BOOT_STEPS, BootProgress, formatBytes, type BootReport } from './boot.js'
 import { ContainerSpecStore } from './container-spec.js'
 import { MachineSpecStore } from './machine-spec.js'
+import { startPressureReclaim } from './memory-pressure.js'
 import { createContainerController, DEPOT_VOLUME, securityArgs } from './container-driver.js'
 import { containerDepotRunner, RuntimeDepot } from './depot.js'
 import { FlathubIndex } from './flathub.js'
@@ -158,6 +159,7 @@ async function open(record: ComputerRecord, initial?: ComputerSettings): Promise
   const controller = deployment.runtime === 'container'
     ? createContainerController(deployment, { identity, settings: () => settings.get(), spec: () => containerSpec!.get(), progress: boot.report })
     : createController(runtimeConfig, { identity, splitImage, progress: boot.report, depotPath: vmDepot, folders: () => machineSpec?.get().folders ?? [], parkedFilesEnabled: deployment.parkedFiles, ...(desks ? { desks } : {}), settings: () => settings.get() })
+  if (deployment.runtime === 'microvm') microvmControllers.set(record.id, controller)
   const profiles = await AgentProfiles.open(join(dir, 'agent-profiles.json'))
   const serviceMemory = deployment.runtime === 'container' ? await ServiceMemory.open(join(dir, 'services.json')) : undefined
   const commands = await CommandStore.open(join(dir, 'commands'))
@@ -168,6 +170,11 @@ async function open(record: ComputerRecord, initial?: ComputerSettings): Promise
   return { ...(computerStorage ? { storage: computerStorage } : {}), ...(deployment.runtime === 'microvm' ? { snapshotPath, ...(!cluster && tierStore && tierKey ? { snapshotTier: { store: tierStore, key: tierKey, delayMs: 4 * 60 * 60_000 } } : {}) } : {}), settings, profiles, commands, mcpLibraryFile: join(dir, 'mcp-library.json'), libraryFile: join(dir, 'library-apps.json'), ...(serviceMemory ? { serviceMemory } : {}), ...(containerSpec ? { containerSpec } : {}), ...(machineSpec ? { machineSpec } : {}), prepareKeyring: () => prepareKeyring(join(dir, 'keyring-secret'), controller.fileService!()), openToolJournal: dispatch => AgentToolJournal.open(join(dir, 'agent-tool-receipts.json'), dispatch), openRoutines: options => AgentRoutines.open(join(dir, 'agent-routines.json'), options), controller: cluster ? cluster.wrap(record.id, controller) : withImage(controller, image, useSplit), boot, ensureImage: report => waitForImage(image, report, useSplit), ...(push ? { push } : {}), ...(activities ? { activities } : {}) }
 }
 
+// A microVM host short of memory takes back what its running computers can spare.
+const microvmControllers = new Map<string, { reclaimMemory?(mode?: 'freeze' | 'pressure'): Promise<void> }>()
+if (deployment.runtime === 'microvm' && process.platform === 'linux') {
+  startPressureReclaim({ computers: () => [...microvmControllers.values()], log: line => console.log(line) })
+}
 const existing = []
 for (const record of computers.list()) existing.push({ record, pieces: await open(record) })
 const guestArchitecture = process.arch === 'arm64' ? 'arm64' : 'amd64'

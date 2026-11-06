@@ -6,7 +6,7 @@ export interface ComputerDriver<T> {
   wake(mode?: WakeMode): Promise<T>
   promote?(): Promise<T>
   canFreeze?(): boolean
-  reclaimMemory?(): Promise<void>
+  reclaimMemory?(mode?: 'freeze' | 'pressure'): Promise<void>
   freeze?(): Promise<void>
   thaw?(): Promise<void>
   park(): Promise<void>
