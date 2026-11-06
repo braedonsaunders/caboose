@@ -37,10 +37,17 @@ import json
 import os
 import random
 import re
+import resource
 import shlex
 import subprocess
 import sys
 import time
+
+# Nothing a check starts leaves a core dump: the check ends programs on purpose, and the host
+# turns each crash into a capture of several gigabytes. This process and its children have a
+# core limit of 0; every command run in the computer is started under prlimit with one.
+resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+NO_CORES = ('prlimit', '--core=0:0', '--')
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.abspath(os.path.join(HERE, '../../../../..'))
@@ -88,7 +95,8 @@ class Seat:
         self.logs = {}
 
     def sh(self, script, user=None, check=True, detach=False):
-        argv = ['docker', 'exec'] + (['-d'] if detach else []) + (['-u', user] if user else []) + [self.computer, 'sh', '-c', script]
+        # Nothing the check starts in the computer leaves a core dump (NO_CORES).
+        argv = ['docker', 'exec'] + (['-d'] if detach else []) + (['-u', user] if user else []) + [self.computer, *NO_CORES, 'sh', '-c', script]
         return run(*argv, check=check)
 
     def shm(self):
@@ -146,7 +154,7 @@ class Seat:
         pictures = os.path.join(self.o.out, f'pictures-{self.generation}')
         os.makedirs(pictures, exist_ok=True)
         os.chmod(pictures, 0o777)
-        run('docker', 'run', '-d', '--name', name, '--init', '--network', f'container:{self.computer}', '--cpus', '4',
+        run('docker', 'run', '-d', '--ulimit', 'core=0', '--name', name, '--init', '--network', f'container:{self.computer}', '--cpus', '4',
             '--memory', '4g', '-v', f'{self.o.work}/build:/build:ro', '-v', f'{REPO}/guest/gpu:/repo/guest/gpu:ro',
             '-v', f'{HERE}:/repo/apps/ios/GPUStream/gfxstream/linux-executor:ro', '-v', f'{pictures}:/pictures',
             '--entrypoint', 'sh', 'caboose-linux-executor', '-c',
@@ -240,11 +248,11 @@ class Seat:
                 f.write(text)
         # Processes the seat started carry its marker; only they are ended.
         marker = f'CABOOSE_CHAOS_SEAT={os.getpid()}'
-        for signal in ('TERM', 'KILL'):
+        for signal, wait in (('TERM', 10), ('KILL', 2)):
             self.sh(f'for p in $(pgrep -u caboose); do tr "\\0" "\\n" < /proc/$p/environ 2>/dev/null | grep -qx {marker} && kill -{signal} $p; done',
                     user='caboose', check=False)
             self.sh(f"pkill -{signal} -f '{self.dir}/'", check=False)
-            time.sleep(2)
+            time.sleep(wait)
         os.makedirs(os.path.join(self.o.out, 'seat'), exist_ok=True)
         # Ending Steam with signals leaves its Flatpak shared-memory directory behind. A directory
         # made during the run that no process maps or holds open is removed; one in use (another
@@ -318,10 +326,10 @@ def main():
 
     def stop_marked(pattern):
         marker = f'CABOOSE_CHAOS_SEAT={os.getpid()}'
-        for signal in ('TERM', 'KILL'):
+        for signal, wait in (('TERM', 10), ('KILL', 2)):
             seat.sh(f'for p in $(pgrep -u caboose -f "{pattern}"); do tr "\\0" "\\n" < /proc/$p/environ 2>/dev/null | '
                     f'grep -qx {marker} && kill -{signal} $p; done', user='caboose', check=False)
-            time.sleep(2)
+            time.sleep(wait)
 
     def stop_wine():
         # Wine winds down before the next DXVK start, which would otherwise join the running
@@ -356,7 +364,9 @@ def main():
             alive = seat.sh(tree, check=False).split()
             if not alive:
                 return
-            seat.sh(f'kill -{"TERM" if attempt < 5 else "KILL"} {" ".join(alive)} 2>/dev/null', check=False)
+            # TERM first, for 15 s, so Wine and Steam end in order (a killed wineserver leaves its
+            # clients to crash); KILL only what is still left after that.
+            seat.sh(f'kill -{"TERM" if attempt < 15 else "KILL"} {" ".join(alive)} 2>/dev/null', check=False)
             time.sleep(1)
         # What is left cannot be ended (uninterruptible): say where each waits in the kernel.
         stuck = seat.sh(f'for p in $({tree}); do echo "$p $(cat /proc/$p/comm) state=$(cut -d" " -f3 /proc/$p/stat) '

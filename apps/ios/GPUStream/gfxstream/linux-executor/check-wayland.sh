@@ -2,6 +2,29 @@
 # Real packaged compositor + real Linux executor, with one-shot and continuous Wayland Vulkan.
 # IMAGE WORK RELEASE DRIVER WAYLAND_PROBE OUT
 set -eu
+# Nothing a check starts leaves a core dump: crashes are expected while the checks end
+# programs, and the host turns each one into a capture of several gigabytes. Every container
+# this script runs gets a core limit of 0, and so does every command it runs in a computer
+# (prlimit, before the command).
+ulimit -c 0
+docker() {
+  if [ "${1:-}" = run ]; then shift; command docker run --ulimit core=0 "$@"; return; fi
+  if [ "${1:-}" != exec ]; then command docker "$@"; return; fi
+  shift
+  _count=$# _seen=0 _state=option
+  while [ "$_seen" -lt "$_count" ]; do
+    _arg=$1; shift; _seen=$((_seen + 1))
+    case $_state in
+      option) case $_arg in
+        -u|-e|-w|--user|--env|--workdir) set -- "$@" "$_arg" "$1"; shift; _seen=$((_seen + 1)) ;;
+        -*) set -- "$@" "$_arg" ;;
+        *) set -- "$@" "$_arg" prlimit --core=0:0 --; _state=command ;;
+      esac ;;
+      command) set -- "$@" "$_arg" ;;
+    esac
+  done
+  command docker exec "$@"
+}
 [ $# = 6 ] || exit 2
 image=$1; work=$(realpath "$2"); release=$(realpath "$3"); driver=$(realpath "$4"); probe=$(realpath "$5")
 mkdir -p "$6"; out=$(realpath "$6")

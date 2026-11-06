@@ -11,6 +11,29 @@
 # d3d11 triangle.exe in the computer, is copied to the profile's caboose-bench. A home that
 # already has both is left as it is. Only processes running from HOME are ever ended.
 set -eu
+# Nothing a check starts leaves a core dump: crashes are expected while the checks end
+# programs, and the host turns each one into a capture of several gigabytes. Every container
+# this script runs gets a core limit of 0, and so does every command it runs in a computer
+# (prlimit, before the command).
+ulimit -c 0
+docker() {
+  if [ "${1:-}" = run ]; then shift; command docker run --ulimit core=0 "$@"; return; fi
+  if [ "${1:-}" != exec ]; then command docker "$@"; return; fi
+  shift
+  _count=$# _seen=0 _state=option
+  while [ "$_seen" -lt "$_count" ]; do
+    _arg=$1; shift; _seen=$((_seen + 1))
+    case $_state in
+      option) case $_arg in
+        -u|-e|-w|--user|--env|--workdir) set -- "$@" "$_arg" "$1"; shift; _seen=$((_seen + 1)) ;;
+        -*) set -- "$@" "$_arg" ;;
+        *) set -- "$@" "$_arg" prlimit --core=0:0 --; _state=command ;;
+      esac ;;
+      command) set -- "$@" "$_arg" ;;
+    esac
+  done
+  command docker exec "$@"
+}
 [ $# -eq 4 ] || { sed -n '4,13p' "$0" >&2; exit 2; }
 computer=$1 home=$2 triangle=$3 display=$4
 case $home in /var/tmp/?*|/var/lib/?*|/tmp/?*) ;; *) echo "HOME must be a directory of the check's own under /var/tmp, /var/lib or /tmp" >&2; exit 2;; esac

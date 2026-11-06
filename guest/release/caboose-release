@@ -26,6 +26,7 @@ import base64
 import datetime
 import hashlib
 import json
+import resource
 import os
 from pathlib import Path
 import shutil
@@ -37,6 +38,9 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+# Nothing a seal's checks start leaves a core dump: the host turns each crash into a capture of
+# several gigabytes. The checks' own scripts pass a core limit of 0 into the computer.
+resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
 ROOT = Path(os.environ.get("CABOOSE_RELEASES", "/root/caboose-release"))
 # A game is running when any of these match a process (the game gate).
 GAME = "MCC-Win64|steam_app_[0-9]|AppId=[0-9]"

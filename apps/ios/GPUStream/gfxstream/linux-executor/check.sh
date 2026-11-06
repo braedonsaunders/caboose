@@ -17,6 +17,29 @@
 # surfaces report formats beyond lavapipe's two, as the phone does, so the answers before
 # and after a bind differ. Exit status 0 when every step passed.
 set -eu
+# Nothing a check starts leaves a core dump: crashes are expected while the checks end
+# programs, and the host turns each one into a capture of several gigabytes. Every container
+# this script runs gets a core limit of 0, and so does every command it runs in a computer
+# (prlimit, before the command).
+ulimit -c 0
+docker() {
+  if [ "${1:-}" = run ]; then shift; command docker run --ulimit core=0 "$@"; return; fi
+  if [ "${1:-}" != exec ]; then command docker "$@"; return; fi
+  shift
+  _count=$# _seen=0 _state=option
+  while [ "$_seen" -lt "$_count" ]; do
+    _arg=$1; shift; _seen=$((_seen + 1))
+    case $_state in
+      option) case $_arg in
+        -u|-e|-w|--user|--env|--workdir) set -- "$@" "$_arg" "$1"; shift; _seen=$((_seen + 1)) ;;
+        -*) set -- "$@" "$_arg" ;;
+        *) set -- "$@" "$_arg" prlimit --core=0:0 --; _state=command ;;
+      esac ;;
+      command) set -- "$@" "$_arg" ;;
+    esac
+  done
+  command docker exec "$@"
+}
 [ $# -ge 4 ] && [ $# -le 5 ] || { sed -n '4,15p' "$0" >&2; exit 2; }
 image=$1
 work=$(cd "$2" && pwd)
