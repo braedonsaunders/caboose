@@ -64,7 +64,9 @@ def wait_for_memory(limit=10.0):
         time.sleep(15)
 ROOT = Path(os.environ.get("CABOOSE_RELEASES", "/root/caboose-release"))
 # A game is running when any of these match a process (the game gate).
-GAME = "MCC-Win64|steam_app_[0-9]|AppId=[0-9]"
+# Bracketed so a pgrep run through a wrapper whose own arguments hold the pattern (the host's
+# exec route, a shell) never matches that wrapper.
+GAME = "[M]CC-Win64|[s]team_app_[0-9]|[A]ppId=[0-9]"
 MARKER = "/etc/caboose-release"
 # Files of the computer's GPU broker service: a release that changes any of them restarts
 # the service, which otherwise keeps running the old code (it outlives the displays).
@@ -381,7 +383,7 @@ def game_running(container):
 
 
 def steam_running(container):
-    return docker("exec", container, "pgrep", "-f", f"{STEAM}/ubuntu12_64/steamwebhelper|{STEAM}/steamrt64", check=False).returncode == 0
+    return docker("exec", container, "pgrep", "-f", f"{STEAM}/ubuntu12_64/[s]teamwebhelper|{STEAM}/[s]teamrt64", check=False).returncode == 0
 
 
 def install_one(directory, container, marker):
@@ -498,7 +500,7 @@ def install_vm_one(directory, vm, marker):
     game gate is checked first, as for a container."""
     if vm.run("/usr/bin/pgrep", "-f", GAME, check=False).get("exitCode") == 0:
         return False
-    steam = vm.run("/usr/bin/pgrep", "-f", f"{VM_STEAM}/ubuntu12_64/steamwebhelper|{VM_STEAM}/steamrt64", check=False).get("exitCode") == 0
+    steam = vm.run("/usr/bin/pgrep", "-f", f"{VM_STEAM}/ubuntu12_64/[s]teamwebhelper|{VM_STEAM}/[s]teamrt64", check=False).get("exitCode") == 0
     agent = vm.run("/usr/bin/systemctl", "is-active", "--quiet", "caboose-display-agent.service", check=False).get("exitCode") == 0
     paths = []
     files = directory / "files"

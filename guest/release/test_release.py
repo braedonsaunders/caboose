@@ -276,7 +276,7 @@ class Releases(unittest.TestCase):
             self.calls.append(line)
             code = 0
             if command[:2] == ("/usr/bin/pgrep", "-f"):
-                code = 0 if (self.game if "MCC" in command[2] else self.steam) else 1
+                code = 0 if (self.game if command[2] == release.GAME else self.steam) else 1
             elif command[:3] == ("/usr/bin/systemctl", "is-active", "--quiet"):
                 code = 0 if self.agent else 3
             return {"exitCode": code, "stdout": "", "stderr": ""}
@@ -401,6 +401,14 @@ class Releases(unittest.TestCase):
                          "SKIP chaos: approved: does not fit this host\n")
         self.assertIsNone(release.chaos_skipped({"chaos_home": "/h"}))
         self.assertIsNone(release.chaos_skipped({"chaos_skip": "  "}))
+
+    def test_the_game_and_steam_patterns_never_match_their_own_wrapper(self):
+        import re
+        game = re.compile(release.GAME)
+        self.assertTrue(game.search("S:\\steamapps\\common\\Halo\\MCC-Win64-Shipping.exe"))
+        self.assertTrue(game.search("reaper SteamLaunch AppId=976730"))
+        # A wrapper holding the pattern in its arguments (sh -c ... pgrep -f PATTERN).
+        self.assertFalse(game.search(f"sh -c exec \"$@\" sh /usr/bin/pgrep -f {release.GAME}"))
 
     def test_paths_must_be_absolute_and_ids_plain(self):
         release.main(["new", "r1"])
