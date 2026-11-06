@@ -1037,7 +1037,7 @@ of one is reachable from another. microVM computers share one appkit-desk host, 
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `GET` | `/v1/computers` | `{ computers: [{ id, createdAt, …management status }], canCreate, limits: { computers, running }, defaultComputer, sizes }`. `computers` may be empty. `createdAt` is null for a legacy computer made before the host recorded it; `running` is null for the container runtime; `defaultComputer` is the host's default computer or null; `sizes` are the presets `size` accepts, each `{ id, name, memoryMb, vcpus, available }` |
+| `GET` | `/v1/computers` | `{ computers: [{ id, createdAt, …management status }], canCreate, limits: { computers, running }, defaultComputer, sizes, host: { name } }`. `computers` may be empty. `host.name` is what phones title a host sign-in by: the host's `name`, else the default computer's name, else the machine's hostname. `createdAt` is null for a legacy computer made before the host recorded it; `running` is null for the container runtime; `defaultComputer` is the host's default computer or null; `sizes` are the presets `size` accepts, each `{ id, name, memoryMb, vcpus, available }` |
 | `POST` | `/v1/computers` | `{ name, size? \| memoryMb? vcpus?, idleMs?, start? }` → 201 with the new computer, parked. Unset values come from `CABOOSE_MEMORY_MB`, `CABOOSE_VCPUS` and `CABOOSE_IDLE_MS`. `start: true` begins starting it at once, as `POST /v1/computers/:id/boot` does. The host's first computer, or the first made while it has no default, becomes its default computer. 409 when all computer slots are taken |
 | `GET` | `/v1/computers/:id` | One computer, as listed |
 | `DELETE` | `/v1/computers/:id` | `{ "confirm": true }` (required) → `{ deleted: true }`. Waits for queued work and for a components upgrade the host started, then closes the computer's sockets, ends its tasks and deletes its disk, snapshot, files, network, phones and pairing codes. 409 while a catalog operation, Craft job or command someone started runs on it (the message says which; retry when it finishes) |
@@ -1400,7 +1400,7 @@ most 64 KiB (15 MiB for task start and reply, 16 MiB for `POST /v1/files`). Erro
 | Status | Meaning |
 | --- | --- |
 | 400 | Invalid input, including unknown fields where a route rejects them |
-| 401 | Missing or unknown token or session |
+| 401 | Missing or unknown token or session. A bearer token the host does not know — a phone signed out, a deleted computer's phone, a replaced owner token — answers `{ "error": "unauthorized", "code": "sign-in-revoked" }`; a request without one, `{ "error": "unauthorized" }` |
 | 403 | A phone, or an administrator who is not the operator, on a route that is not theirs; or a session cookie sent by a page on another site |
 | 404 | Unknown route, task, agent, element or device |
 | 409 | The computer is not running (or is restarting, or being deleted), its display is not ready, a conflicting operation is in progress, or a tenant's quota would be exceeded |
@@ -1416,7 +1416,7 @@ guest answer 409 while it is not running.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `POST` | `/v1/session` | **Wakes.** → `{ state: "running", display: { path: "/v1/display", token, protocol: "caboose-display" }, computer: { name, image, memoryMb, vcpus } }`. `image` is `"Debian 13"`, or `"Debian 13 · GPU"` for a container with a GPU |
+| `POST` | `/v1/session` | **Wakes.** → `{ state: "running", display: { path: "/v1/display", token, protocol: "caboose-display" }, computer: { name, image, memoryMb, vcpus }, host: { name } }`. `image` is `"Debian 13"`, or `"Debian 13 · GPU"` for a container with a GPU. `host.name` is what phones title the sign-in by: the host's `name`, else this computer's name, else the machine's hostname |
 | `POST` | `/v1/session/park` | Park now → `{ state }`. 409 while a catalog operation, Craft job or command runs |
 | `GET` | `/v1/display` | **WebSocket**, subprotocol `binary` (required). Relay to the owner's display, port 14600 |
 | `GET` | `/v1/display?seat=agent` | **WebSocket**, subprotocol `binary`. Starts the agent seat if needed, then relays to port 14601; closes with 1011 `agent seat unavailable` if it does not start |
@@ -1430,7 +1430,10 @@ guest answer 409 while it is not running.
 
 A WebSocket upgrade answers 401 without the owner token, 404 for another path, 409 unless
 the computer is running and not restarting, and 400 for `/v1/display` without the `binary`
-subprotocol. Upgrades do not wake the computer; a client calls `/v1/session` first.
+subprotocol. Upgrades do not wake the computer; a client calls `/v1/session` first. An
+upgrade is an HTTP/1.1 request: a proxy in front of the host that also speaks HTTP/2
+(Tailscale Serve, most reverse proxies) cannot upgrade a connection it negotiated as HTTP/2,
+so clients offer only `http/1.1` in TLS for their sockets.
 
 ### The display relay
 
@@ -3099,7 +3102,12 @@ view's bounds, including while a resize stretches the previous picture.
   foreground, or Try Again starts a new series at once; without a network the series
   waits. It stops when the display refuses a fresh token twice, speaks another protocol
   version, or the host answers with an error, and the tab shows Out of Reach. Another
-  device taking the display over (`replaced`) is never retried.
+  device taking the display over (`replaced`) is never retried. A sign-in with a tailnet
+  address (a name under `ts.net`, an address in 100.64.0.0/10 or fd7a:115c:a1e0::/48) asks
+  every address for the host's health answer first, for at most 5 s, so a phone that is not
+  on the tailnet learns it at once instead of waiting out the wake; after two attempts in a
+  row where nothing answered, the app says "Turn on Tailscale on this iPhone to reach
+  <computer> away from home." in place of the error, until the host answers again.
   The session reconnects in place: the same `CabooseDisplaySession`, its windows still on
   screen with their last pictures and their keyboard focus, and a banner that says input
   is paused. When the new hello carries the epoch of the last one, each window the server
@@ -3295,13 +3303,25 @@ The desktop app launcher accepts horizontal swipes as well as its page arrows.
 The name on Home opens a menu of explicitly paired computers, with the active computer
 checked. Home is the only screen that offers computer selection; Desktop, connection
 recovery, and all other screens follow that shared selection without their own switcher.
-Add Computer uses the existing pairing flow and retains the other pairings.
+Add Computer uses the existing pairing flow and retains the other pairings. Each sign-in
+is titled by the name its host gives itself (`host.name` from `/v1/session` and
+`/v1/computers`), kept with the sign-in; a sign-in to one computer by that computer's name;
+the address's host only until the host has answered once. Remove a Sign-In lists every
+saved sign-in and, after confirmation, forgets one: its Keychain entry, its cached app list,
+GPU caches, Home shortcuts and Files location. A sign-in the host answers with
+`sign-in-revoked` is removed the same way, and the app says so; a plain 401, any other
+error, a timeout or an unreachable host never removes one.
 A single shared Keychain record stores the collection and active selection atomically;
 failed writes leave the current connection intact and show an error. The legacy pairing
 migrates with its existing Files/cache identity. Pairing metadata supplies the id and name;
 status updates refresh the saved name. Re-pairing a known id at the same host preserves its
 local identity. Switching fences old wakes and session callbacks, disconnects the old
 computer, and resets its in-memory state before connecting the selected pairing.
+Every WebSocket the app opens — display, GPU, control, terminal and on-device AI — is
+built on Network.framework with TLS offering only `http/1.1` (`HTTP1Upgrade`): the display
+on Network.framework's own WebSocket protocol, the others on `HTTP1WebSocket`, a client
+that performs the upgrade and framing itself so it can report the host's HTTP status when
+an upgrade is refused. URLSession offers no way to keep its WebSocket tasks off HTTP/2.
 Manage Computers opens the host console without a bearer in the URL. Console administrators
 provision computers and create pairing codes after web sign-in. A phone token cannot list
 the host's computers or authorize a different computer; this menu is a local collection,

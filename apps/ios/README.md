@@ -90,6 +90,25 @@ share and widget extensions compile that file directly, since they do not link C
 Each computer a host sign-in opens has its own Files domain, caches, shortcuts and window
 layouts (`fileDomainIdentifier` is the sign-in's identity and the computer's id).
 
+A sign-in keeps the name its host gives itself (`host.name` in `POST /v1/session` and
+`GET /v1/computers`) and is titled by it everywhere, a sign-in to one computer by that
+computer's name; only until the host first answers does the title fall back to the address.
+A sign-in is removed when its host answers `401` with `code: "sign-in-revoked"` (the phone
+was signed out, its computer deleted, or the owner token replaced), and the app says so;
+nothing else removes one on its own. A sign-in with a tailnet address (`*.ts.net`,
+100.64.0.0/10, fd7a:115c:a1e0::/48) probes its addresses before waking, and after two
+attempts in a row with no answer says to turn on Tailscale on the iPhone. The decisions are
+in `CabooseKit/Sources/CabooseKit/Host/SignInPolicy.swift`, which the extensions compile
+directly like `ComputerRoute.swift`, and are unit-tested in `SignInPolicyTests`.
+
+Every WebSocket the app opens offers only `http/1.1` in TLS (`HTTP1Upgrade` in
+`CabooseKit/Sources/CabooseKit/Protocol/HTTP1WebSocket.swift`), so a host behind a proxy that
+also speaks HTTP/2, such as Tailscale Serve, can still upgrade it. The display uses
+Network.framework's WebSocket protocol (`WebSocketStream`); the GPU, control, terminal and
+on-device AI sockets use `HTTP1WebSocket`, which does the upgrade and framing itself and
+reports the HTTP status of a refused upgrade. `HTTP1WebSocketTests` cover the handshake,
+framing and fragmentation, and run the client against a loopback server.
+
 ## A host with no computer
 
 A host may have no computer at all: after the first host sign-in on a new server, or once
@@ -215,7 +234,7 @@ character of a segment encoded, 1-based search pages and where paging stops), it
 
 The terminal's protocol, keys and connection are unit-tested over a fake transport. Against
 a real host, `CABOOSE_HOST_URL=… CABOOSE_HOST_TOKEN=… swift test --filter LiveTerminal`
-opens a terminal over URLSession as the app does, runs a command, resizes, reattaches from
+opens a terminal over `HTTP1WebSocket` as the app does, runs a command, resizes, reattaches from
 its offset, is replaced by a second connection, exits, and checks the closes that follow.
 
 ## Native surface geometry
@@ -520,7 +539,7 @@ around it.
   `rate` (restart: `requested_rate`) is the requested playback speed; `observed_rate` and
   `rendered` are asynchronous synchronizer observations and never drive recovery.
   These diagnostics contain no packet payloads and do not distinguish wire latency from
-  URLSession delivery delay before the app's callback. Test aggregation without a renderer
+  the socket's delivery delay before the app's callback. Test aggregation without a renderer
   or real-time waits using `swift test --filter AudioTimingTests` in `CabooseKit`.
 - **One device at a time.** The computer's display shows on one device. When another takes
   it, this one gets `bye { reason: "replaced" }`, says it is showing on another device, and
@@ -1324,7 +1343,9 @@ must not leave the initial cascade frame surrounded by wallpaper.
 
 Tap the name and chevron on Home to select a saved computer or Add Computer. Computer
 selection is available only on Home; Desktop, retry screens, and other tabs follow it. Adding a
-pairing keeps the others. Manage Computers opens the host console, where an authorized
+pairing keeps the others. Remove a Sign-In lists every saved sign-in; after confirmation it
+forgets one with its Keychain entry and what the phone cached for it, and the next saved
+sign-in opens when it was the open one. Manage Computers opens the host console, where an authorized
 administrator signs in to provision computers and generate pairing codes. With a host
 sign-in the menu also lists the host's computers, with how each is, and Create a Computer;
 a sign-in paired to one computer lists only the pairings made here. Keychain failures appear as sign-in errors and do
@@ -1332,7 +1353,8 @@ not disconnect the current computer.
 
 Run `python3 apps/ios/scripts/test-computer-switcher.py` from the repository root for pure
 collection tests, host sign-ins included (one per host, the open computer kept in it, a Files
-identity per computer). On a signed phone, pair two computers at one host and another on a
+identity per computer), the host's name kept across re-selection and decoded from sign-ins
+saved before it, and removal. On a signed phone, pair two computers at one host and another on a
 second host; switch while waking, reconnecting, searching files, and loading apps. Verify
 names and the selected checkmark, no old frames/apps/tasks after switching, separate Files
 identities, and retained pairings after relaunch. Cancel Add Computer and verify the old
