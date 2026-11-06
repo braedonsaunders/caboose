@@ -38,6 +38,8 @@ public enum WebSocketHandshake {
         case refused(status: Int)
         case badAccept
         case unexpectedSubprotocol(String?)
+        /// The server named extensions though none were offered.
+        case unexpectedExtensions(String)
 
         public var errorDescription: String? {
             switch self {
@@ -47,6 +49,7 @@ public enum WebSocketHandshake {
             case .refused(let status): "The host refused the connection (HTTP \(status))."
             case .badAccept: "The host's answer to the connection did not match the request."
             case .unexpectedSubprotocol(let name): "The host chose an unexpected protocol (\(name ?? "none"))."
+            case .unexpectedExtensions(let names): "The host chose extensions that were not offered (\(names))."
             }
         }
     }
@@ -160,6 +163,10 @@ public enum WebSocketHandshake {
               }) == true else { throw Failure.malformedResponse }
         guard response.value("Sec-WebSocket-Accept") == accept(for: key) else { throw Failure.badAccept }
         if let chosen = response.subprotocol, !subprotocols.contains(chosen) { throw Failure.unexpectedSubprotocol(chosen) }
+        // This client offers no extensions, so the server may name none.
+        if let extensions = response.value("Sec-WebSocket-Extensions"), !extensions.trimmingCharacters(in: .whitespaces).isEmpty {
+            throw Failure.unexpectedExtensions(extensions)
+        }
     }
 }
 
@@ -296,7 +303,8 @@ public struct WebSocketReader: Sendable {
     public mutating func append(_ data: Data) {
         // Drop what was read once per append, never per frame.
         if offset > 0 {
-            buffer = offset == buffer.count ? Data() : Data(buffer[(buffer.startIndex + offset)...])
+            if offset == buffer.count { buffer.removeAll(keepingCapacity: true) }
+            else { buffer.removeSubrange(buffer.startIndex..<(buffer.startIndex + offset)) }
             offset = 0
         }
         buffer.append(data)
@@ -313,13 +321,20 @@ public struct WebSocketReader: Sendable {
                 default:
                     guard payload.count != 1 else { throw Failure.protocolError("a close frame of one byte") }
                     let code = payload.count >= 2 ? Int(payload[payload.startIndex]) << 8 | Int(payload[payload.startIndex + 1]) : nil
-                    let reason = payload.count > 2 ? String(data: payload.dropFirst(2), encoding: .utf8) : nil
+                    if let code, WebSocketFrame.sendableCode(code) != code { throw Failure.protocolError("a close code that may not be sent (\(code))") }
+                    var reason: String?
+                    if payload.count > 2 {
+                        guard let text = String(data: payload.dropFirst(2), encoding: .utf8) else { throw Failure.invalidText }
+                        reason = text
+                    }
                     return .close(code: code, reason: reason)
                 }
             }
             if opcode == .continuation {
                 guard var gathered = fragments, let first = fragmentOpcode else { throw Failure.protocolError("a continuation with no message") }
                 guard gathered.count + payload.count <= maximumMessageSize else { throw Failure.tooLarge }
+                // Let go of the stored copy first, so appending does not copy the whole message.
+                fragments = nil
                 gathered.append(payload)
                 if !fin { fragments = gathered; continue }
                 fragments = nil
@@ -432,7 +447,9 @@ public final class HTTP1WebSocket: @unchecked Sendable {
     private var pausedFlag = false
     private var paused: Bool { pauseLock.withLock { pausedFlag } }
     private var reading = false
-    private var pongs: [@Sendable (Error?) -> Void] = []
+    /// Pings awaiting their pong, by payload, oldest first.
+    private var pongs: [(payload: Data, answer: @Sendable (Error?) -> Void)] = []
+    private var pingCount: UInt32 = 0
 
     /// `timeout` bounds connecting and the upgrade; `headers` go with the upgrade request.
     public init(url: URL, subprotocols: [String] = [], headers: [(name: String, value: String)] = [],
@@ -508,8 +525,10 @@ public final class HTTP1WebSocket: @unchecked Sendable {
     public func ping(_ pong: @escaping @Sendable (Error?) -> Void) {
         queue.async { [self] in
             guard opened, !ended, let connection else { return pong(Close(failure: "The connection is not open.")) }
-            pongs.append(pong)
-            connection.send(content: WebSocketFrame.encode(.ping, payload: Data(), mask: WebSocketFrame.randomMask()),
+            pingCount &+= 1
+            let payload = withUnsafeBytes(of: pingCount.bigEndian) { Data($0) }
+            pongs.append((payload, pong))
+            connection.send(content: WebSocketFrame.encode(.ping, payload: payload, mask: WebSocketFrame.randomMask()),
                             completion: .contentProcessed { _ in })
         }
     }
@@ -595,14 +614,40 @@ public final class HTTP1WebSocket: @unchecked Sendable {
             case .ping(let payload):
                 connection?.send(content: WebSocketFrame.encode(.pong, payload: payload, mask: WebSocketFrame.randomMask()),
                                  completion: .contentProcessed { _ in })
-            case .pong:
-                if !pongs.isEmpty { pongs.removeFirst()(nil) }
+            case .pong(let payload):
+                // A pong answers its own ping and every one before it; an unsolicited one, none.
+                if let index = pongs.firstIndex(where: { $0.payload == payload }) {
+                    let answered = pongs[...index]
+                    pongs.removeFirst(index + 1)
+                    for ping in answered { ping.answer(nil) }
+                }
             case .close(let code, let reason):
                 // Answer with the same code, then go.
                 let echo = code.map { WebSocketFrame.sendableCode($0, echo: true) } ?? 1000
                 return finish(Close(code: code, reason: reason), sending: WebSocketFrame.closePayload(code: echo))
             }
         }
+    }
+
+    /// How long a closing socket reads on for the peer's close before it cancels anyway.
+    static let closeDrainLimit: TimeInterval = 2
+
+    /// Reads until the peer's close frame, EOF or an error, then cancels.
+    private func drain(_ connection: NWConnection, reader: WebSocketReader) {
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { [self] content, _, complete, error in
+            var reader = reader
+            if let content { reader.append(content) }
+            var closed = complete || error != nil
+            while !closed, let event = try? reader.next() {
+                if case .close = event { closed = true }
+            }
+            if closed { connection.cancel() } else { drain(connection, reader: reader) }
+        }
+    }
+
+    deinit {
+        // A socket dropped without `close()` must not leave its connection open.
+        connection?.cancel()
     }
 
     /// Ends the socket once: a close frame with `payload` first when given, then the
@@ -612,13 +657,20 @@ public final class HTTP1WebSocket: @unchecked Sendable {
         ended = true
         let waiting = pongs
         pongs = []
-        for pong in waiting { pong(close) }
+        for ping in waiting { ping.answer(close) }
         if let connection {
             connection.stateUpdateHandler = nil
             if let payload {
+                // Cancelling with unread bytes can reset the connection and lose the close frame
+                // (a suspended GPU socket's 4001), so read on until the peer's close or EOF.
                 let frame = WebSocketFrame.encode(.close, payload: payload, mask: WebSocketFrame.randomMask())
-                connection.send(content: frame, completion: .contentProcessed { _ in connection.cancel() })
-                queue.asyncAfter(deadline: .now() + 1) { connection.cancel() }
+                // The socket stays alive until the drain ends, even once its owner lets it go.
+                let limit = reader.maximumMessageSize
+                connection.send(content: frame, completion: .contentProcessed { [self] error in
+                    guard error == nil else { return connection.cancel() }
+                    drain(connection, reader: WebSocketReader(maximumMessageSize: limit))
+                })
+                queue.asyncAfter(deadline: .now() + Self.closeDrainLimit) { connection.cancel() }
             } else {
                 connection.cancel()
             }

@@ -134,8 +134,12 @@ struct HTTP1WebSocketTests {
         socket.send(.data(big))
         guard case .message(.data(let echoed)) = await iterator.next() else { Issue.record("no echo"); return }
         #expect(echoed == big)
+        // The server answers a ping first with an unsolicited pong, then 300 ms later with the
+        // real one: only the real one completes it.
+        let pinged = Date()
         let ponged = await withCheckedContinuation { continuation in socket.ping { continuation.resume(returning: $0 == nil) } }
         #expect(ponged)
+        #expect(Date().timeIntervalSince(pinged) >= 0.25)
         socket.send(.string("close"))
         guard case .closed(let close) = await iterator.next() else { Issue.record("not closed"); return }
         #expect(close.code == 4001 && close.reason == "bye" && close.failure == nil)
@@ -252,6 +256,48 @@ struct HTTP1WebSocketTests {
         for _ in 0..<200 where server.closeCode == nil { try await Task.sleep(for: .milliseconds(50)) }
         #expect(server.closeCode == 4001)
     }
+
+    @Test func refusesExtensionsItDidNotOffer() throws {
+        let key = "dGhlIHNhbXBsZSBub25jZQ=="
+        let response = WebSocketHandshake.Response(status: 101, headers: [
+            "upgrade": "websocket", "connection": "Upgrade", "sec-websocket-accept": WebSocketHandshake.accept(for: key),
+            "sec-websocket-extensions": "permessage-deflate",
+        ])
+        #expect(throws: WebSocketHandshake.Failure.unexpectedExtensions("permessage-deflate")) {
+            try WebSocketHandshake.validate(response, key: key, subprotocols: [])
+        }
+    }
+
+    @Test func refusesCloseFramesThatMayNotBeSent() {
+        func failure(_ bytes: [UInt8]) -> WebSocketReader.Failure? {
+            var reader = WebSocketReader(maximumMessageSize: 1024)
+            reader.append(Data(bytes))
+            do { _ = try reader.next(); return nil } catch { return error as? WebSocketReader.Failure }
+        }
+        #expect(failure([0x88, 2, 0x03, 0xed])?.closeCode == 1002) // 1005
+        #expect(failure([0x88, 2, 0x03, 0xee])?.closeCode == 1002) // 1006
+        #expect(failure([0x88, 2, 0x03, 0xf7])?.closeCode == 1002) // 1015
+        #expect(failure([0x88, 2, 0x03, 0xe7])?.closeCode == 1002) // 999
+        #expect(failure([0x88, 4, 0x03, 0xe8, 0xff, 0xfe])?.closeCode == 1007) // reason not UTF-8
+        #expect(failure([0x88, 2, 0x11, 0x3a]) == nil) // 4410
+        #expect(failure([0x88, 0]) == nil) // no code at all
+    }
+
+    @Test func aDroppedSocketClosesItsConnection() async throws {
+        let server = try LoopbackWebSocketServer()
+        defer { server.stop() }
+        let port = try await server.ready()
+        let lock = NSLock()
+        nonisolated(unsafe) var opened = false
+        do {
+            let socket = HTTP1WebSocket(url: URL(string: "ws://127.0.0.1:\(port)/echo")!, subprotocols: ["binary"], timeout: 5)
+            socket.open { event in if case .opened = event { lock.withLock { opened = true } } }
+            for _ in 0..<200 where !lock.withLock({ opened }) { try await Task.sleep(for: .milliseconds(50)) }
+            #expect(lock.withLock { opened })
+        }
+        for _ in 0..<200 where server.disconnects == 0 { try await Task.sleep(for: .milliseconds(50)) }
+        #expect(server.disconnects == 1)
+    }
 }
 
 /// Just enough of a WebSocket server for `talksToAServer`: answers `/gone` with 410, greets with
@@ -262,6 +308,9 @@ private final class LoopbackWebSocketServer: @unchecked Sendable {
     private let lock = NSLock()
     private var request = ""
     private var receivedClose: Int?
+    private var ended = 0
+    /// Connections that reached EOF or an error after their upgrade.
+    var disconnects: Int { lock.withLock { ended } }
     var lastRequest: String { lock.withLock { request } }
     /// The code of the last close frame a client sent.
     var closeCode: Int? { lock.withLock { receivedClose } }
@@ -318,7 +367,11 @@ private final class LoopbackWebSocketServer: @unchecked Sendable {
                 buffer.removeFirst(used)
                 switch opcode {
                 case 0x2: connection.send(content: Self.frame(0x2, payload), completion: .contentProcessed { _ in })
-                case 0x9: connection.send(content: Self.frame(0xA, payload), completion: .contentProcessed { _ in })
+                case 0x9:
+                    connection.send(content: Self.frame(0xA, Data("unsolicited".utf8)), completion: .contentProcessed { _ in })
+                    queue.asyncAfter(deadline: .now() + 0.3) {
+                        connection.send(content: Self.frame(0xA, payload), completion: .contentProcessed { _ in })
+                    }
                 case 0x1 where payload == Data("burst".utf8):
                     var frames = Data()
                     for index in 0..<Self.burst { frames.append(Self.frame(0x2, Data([UInt8(index & 0xff)]))) }
@@ -332,7 +385,10 @@ private final class LoopbackWebSocketServer: @unchecked Sendable {
                 }
             }
             connection.receive(minimumIncompleteLength: 1, maximumLength: 1 << 20) { data, _, complete, error in
-                guard error == nil, !complete || data != nil else { connection.cancel(); return }
+                guard error == nil, !complete || data != nil else {
+                    self.lock.withLock { self.ended += 1 }
+                    connection.cancel(); return
+                }
                 if let data { buffer.append(data) }
                 readFrames()
             }
