@@ -1,0 +1,6 @@
+# The file service watches every directory of the home, beside editors, Steam and the agents'
+# own watchers. A lived-in home holds tens of thousands of directories, more than the kernel's
+# default limit, which scales with memory (about 62,000 at 8 GB). A watch costs memory only
+# while it exists.
+fs.inotify.max_user_watches = 524288
+fs.inotify.max_user_instances = 1024

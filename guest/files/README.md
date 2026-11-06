@@ -12,7 +12,9 @@ protocol is in [`docs/architecture.md`](../../docs/architecture.md) § Files.
   through directory file descriptors with `O_NOFOLLOW`, so a symbolic link never leads
   outside the home.
 - **Changes.** `/changes` reports changes from Linux inotify through a bounded, per-process
-  journal.
+  journal. It watches every directory of the home; when the kernel's watch limit runs out,
+  `/changes` reports the feed unavailable while the rest of the service goes on, and the scan
+  is retried with backoff up to once a minute.
 - **Transfer area.** `PUT /transfer?id=&name=` streams a file the phone hands to Linux
   applications (a copy, a drop) into `~/.cache/caboose/transfers/<id>/<name>` and answers
   `201 { path, size }` with the home-relative path; `DELETE /transfer?id=` removes a
