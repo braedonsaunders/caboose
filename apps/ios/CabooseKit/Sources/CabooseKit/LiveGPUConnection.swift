@@ -225,9 +225,11 @@ public final class LiveGPUConnection: LiveGPUResumeSocket, @unchecked Sendable {
     var resumeCredential: String? { credentialLock.withLock { credential } }
     var queuedMessages: Int { budget.retained.count }
     /// Seconds since the host was last heard, counting time the phone slept (a locked screen).
+    /// Time the session holds receiving back is not silence: nothing is read then, pongs
+    /// included, and the clock starts again when receiving resumes.
     var silence: TimeInterval {
-        let heard = credentialLock.withLock { heardAt }
-        return Double(Self.clock() &- heard) / 1e9
+        let (heard, paused) = credentialLock.withLock { (heardAt, receivePaused) }
+        return paused ? 0 : Double(Self.clock() &- heard) / 1e9
     }
     private var heardAt = LiveGPUConnection.clock() // under credentialLock
     private func heard() { credentialLock.withLock { heardAt = Self.clock() } }
@@ -290,7 +292,7 @@ public final class LiveGPUConnection: LiveGPUResumeSocket, @unchecked Sendable {
 
     /// The upgrade as `HTTP1WebSocket` sends it: the request's headers, its subprotocol
     /// offered as one, over HTTP/1.1.
-    static func socket(for request: URLRequest) -> HTTP1WebSocket? {
+    static func socket(for request: URLRequest, queue: DispatchQueue? = nil) -> HTTP1WebSocket? {
         guard let url = request.url else { return nil }
         let subprotocols = request.value(forHTTPHeaderField: "Sec-WebSocket-Protocol").map { [$0] } ?? []
         let headers = (request.allHTTPHeaderFields ?? [:])
@@ -299,7 +301,7 @@ public final class LiveGPUConnection: LiveGPUResumeSocket, @unchecked Sendable {
             .map { (name: $0.key, value: $0.value) }
         return HTTP1WebSocket(url: url, subprotocols: subprotocols, headers: headers,
                               maximumMessageSize: LiveGPUBudget.messageLimit, timeout: request.timeoutInterval,
-                              label: "caboose.gpu.socket")
+                              label: "caboose.gpu.socket", queue: queue)
     }
 
     public func open(_ event: @escaping @Sendable (LiveGPUTransportEvent) -> Void) {
@@ -307,15 +309,18 @@ public final class LiveGPUConnection: LiveGPUResumeSocket, @unchecked Sendable {
             guard !started, !ended else { return }
             started = true; self.event = event
             guard budget.active else { finish(LiveGPUError.closed); return }
-            guard let socket = Self.socket(for: request) else { finish(LiveGPUError.invalidEndpoint); return }
+            // The socket runs on this queue and hands each message over synchronously, so a pause
+            // the session decides while taking one stops the next before it is delivered.
+            guard let socket = Self.socket(for: request, queue: queue) else { finish(LiveGPUError.invalidEndpoint); return }
+            let paused = credentialLock.withLock { () -> Bool in
+                flowSocket = socket
+                return receivePaused
+            }
             self.socket = socket
-            if receivePaused { socket.setReceivingPaused(true) }
+            if paused { socket.setReceivingPaused(true) }
             socket.open { [weak self, weak socket] incoming in
-                guard let self else { return }
-                self.queue.async { [self] in
-                    guard let socket, socket === self.socket else { return }
-                    self.handle(incoming, from: socket)
-                }
+                guard let self, let socket, socket === self.socket else { return }
+                self.handle(incoming, from: socket)
             }
             if resuming {
                 queue.asyncAfter(deadline: .now() + Self.resumeTimeout) { [weak self] in
@@ -372,15 +377,21 @@ public final class LiveGPUConnection: LiveGPUResumeSocket, @unchecked Sendable {
         }
     }
 
-    /// Receiving held back by the session (on `queue`).
+    /// Receiving held back by the session, and the socket that pauses with it (under
+    /// `credentialLock`): set synchronously from whichever thread decides it, so a paused
+    /// socket delivers at most the message it already holds.
     private var receivePaused = false
+    private var flowSocket: HTTP1WebSocket?
 
     func setReceivingPaused(_ paused: Bool) {
-        queue.async { [self] in
-            guard receivePaused != paused else { return }
+        let socket = credentialLock.withLock { () -> HTTP1WebSocket? in
+            guard receivePaused != paused else { return nil }
             receivePaused = paused
-            socket?.setReceivingPaused(paused)
+            // Silence is counted again from now, not from before the pause.
+            if !paused { heardAt = Self.clock() }
+            return flowSocket
         }
+        socket?.setReceivingPaused(paused)
     }
 
     private func handle(_ incoming: HTTP1WebSocket.Event, from socket: HTTP1WebSocket) {
@@ -437,6 +448,7 @@ public final class LiveGPUConnection: LiveGPUResumeSocket, @unchecked Sendable {
         outbound.discardPending()
         socket?.close(code: error == nil ? closeCode : 1008)
         socket = nil
+        credentialLock.withLock { flowSocket = nil }
         event?(.closed(error)); event = nil
     }
 }

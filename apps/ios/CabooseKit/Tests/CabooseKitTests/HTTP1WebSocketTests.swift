@@ -147,6 +147,79 @@ struct HTTP1WebSocketTests {
         #expect(ended.refusedStatus == 410)
     }
 
+    /// The GPU session pauses while it takes a message; the socket must not hand it another,
+    /// however many it has already read.
+    @Test func aPauseInsideTheHandlerStopsTheNextMessage() async throws {
+        let server = try LoopbackWebSocketServer()
+        defer { server.stop() }
+        let port = try await server.ready()
+        let socket = HTTP1WebSocket(url: URL(string: "ws://127.0.0.1:\(port)/echo")!, subprotocols: ["binary"], timeout: 5)
+        let lock = NSLock()
+        nonisolated(unsafe) var frames = 0
+        nonisolated(unsafe) var opened = false
+        socket.open { event in
+            switch event {
+            case .opened: lock.withLock { opened = true }
+            case .message(.data):
+                let first = lock.withLock { () -> Bool in frames += 1; return frames == 1 }
+                if first { socket.setReceivingPaused(true) }
+            default: break
+            }
+        }
+        for _ in 0..<200 where !lock.withLock({ opened }) { try await Task.sleep(for: .milliseconds(50)) }
+        // 500 one-byte frames in one write: they arrive together, in one read.
+        socket.send(.string("burst"))
+        for _ in 0..<200 where lock.withLock({ frames }) == 0 { try await Task.sleep(for: .milliseconds(50)) }
+        try await Task.sleep(for: .milliseconds(500))
+        #expect(lock.withLock { frames } == 1)
+        socket.setReceivingPaused(false)
+        for _ in 0..<200 where lock.withLock({ frames }) < LoopbackWebSocketServer.burst { try await Task.sleep(for: .milliseconds(50)) }
+        #expect(lock.withLock { frames } == LoopbackWebSocketServer.burst)
+        socket.close()
+    }
+
+    @Test func readsManyFramesFromOneAppendInOrder() throws {
+        var reader = WebSocketReader(maximumMessageSize: 1024)
+        var bytes = Data()
+        for index in 0..<20_000 { bytes.append(contentsOf: [0x82, 2, UInt8(index >> 8 & 0xff), UInt8(index & 0xff)]) }
+        // A partial frame left over is kept for the next append.
+        reader.append(bytes + Data([0x82, 2, 0xaa]))
+        var count = 0
+        while let event = try reader.next() {
+            #expect(event == .binary(Data([UInt8(count >> 8 & 0xff), UInt8(count & 0xff)])))
+            count += 1
+        }
+        #expect(count == 20_000)
+        #expect(reader.buffered == 3)
+        reader.append(Data([0xbb]))
+        #expect(try reader.next() == .binary(Data([0xaa, 0xbb])))
+        #expect(reader.buffered == 0)
+    }
+
+    @Test func closeFramesCarryOnlyCodesThatMayBeSent() {
+        let reason = String(repeating: "a", count: 122) + "é"
+        let payload = WebSocketFrame.closePayload(code: 1000, reason: reason)
+        #expect(payload.count == 2 + 122)
+        #expect(String(data: payload.dropFirst(2), encoding: .utf8) != nil)
+        #expect(WebSocketFrame.closePayload(code: 4001).prefix(2) == Data([0x0f, 0xa1]))
+        for code in [0, 999, 1004, 1005, 1006, 1015, 2000, 5000] {
+            #expect(WebSocketFrame.sendableCode(code) == 1002, "\(code)")
+            #expect(WebSocketFrame.sendableCode(code, echo: true) == 1000, "\(code)")
+        }
+        for code in [1000, 1001, 1002, 1008, 1011, 3000, 4001, 4410] { #expect(WebSocketFrame.sendableCode(code) == code) }
+        #expect(WebSocketFrame.closePayload(code: 1005).prefix(2) == Data([0x03, 0xea]))
+    }
+
+    @Test func encodesAnIPv6ZoneInTheHostHeader() throws {
+        #expect(WebSocketHandshake.zoneEncoded("fe80::1%en0") == "fe80::1%25en0")
+        #expect(WebSocketHandshake.zoneEncoded("fe80::1%25en0") == "fe80::1%25en0")
+        #expect(WebSocketHandshake.zoneEncoded("fd7a:115c:a1e0::1") == "fd7a:115c:a1e0::1")
+        if let url = URL(string: "ws://[fe80::1%25en0]:7310/v1/ai") {
+            let text = String(decoding: try WebSocketHandshake.request(url: url, key: "k"), as: UTF8.self)
+            #expect(text.contains("Host: [fe80::1%25en0]:7310\r\n"))
+        }
+    }
+
     @Test func holdsBackMessagesWhilePaused() async throws {
         let server = try LoopbackWebSocketServer()
         defer { server.stop() }
@@ -246,6 +319,10 @@ private final class LoopbackWebSocketServer: @unchecked Sendable {
                 switch opcode {
                 case 0x2: connection.send(content: Self.frame(0x2, payload), completion: .contentProcessed { _ in })
                 case 0x9: connection.send(content: Self.frame(0xA, payload), completion: .contentProcessed { _ in })
+                case 0x1 where payload == Data("burst".utf8):
+                    var frames = Data()
+                    for index in 0..<Self.burst { frames.append(Self.frame(0x2, Data([UInt8(index & 0xff)]))) }
+                    connection.send(content: frames, completion: .contentProcessed { _ in })
                 case 0x1 where payload == Data("close".utf8):
                     connection.send(content: Self.frame(0x8, Data([0x0f, 0xa1]) + Data("bye".utf8)), completion: .contentProcessed { _ in })
                 case 0x8:
@@ -262,6 +339,9 @@ private final class LoopbackWebSocketServer: @unchecked Sendable {
         }
         readHead()
     }
+
+    /// How many frames the text "burst" is answered with, all in one write.
+    static let burst = 500
 
     static func frame(_ opcode: UInt8, _ payload: Data) -> Data {
         var frame = Data([0x80 | opcode])

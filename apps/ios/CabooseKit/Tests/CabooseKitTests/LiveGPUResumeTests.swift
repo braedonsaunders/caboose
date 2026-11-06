@@ -199,6 +199,19 @@ final class LiveGPUResumeTests: XCTestCase {
         XCTAssertEqual(LiveGPUResumeWire.header(factory.sockets[1].sent[0])?.kind, LiveGPUResumeWire.resume)
     }
 
+    /// A socket whose receiving the session holds back reads nothing, pongs included: that is
+    /// buffering, not silence, and must not end the executor.
+    func testPausedReceivingIsNotSilence() throws {
+        let request = try LiveGPUConnection.makeRequest(hostURL: URL(string: "https://example.com")!, phoneToken: "phone")
+        let connection = LiveGPUConnection(request: request, resumeCredential: nil)
+        Thread.sleep(forTimeInterval: 0.05)
+        XCTAssertGreaterThan(connection.silence, 0.04)
+        connection.setReceivingPaused(true)
+        XCTAssertEqual(connection.silence, 0)
+        connection.setReceivingPaused(false)
+        XCTAssertLessThan(connection.silence, 0.04, "silence counts again from the resume")
+    }
+
     func testCredentialFormatAndResumeRequest() throws {
         XCTAssertTrue(LiveGPUConnection.validCredential(credential))
         XCTAssertFalse(LiveGPUConnection.validCredential(credential + "A"))

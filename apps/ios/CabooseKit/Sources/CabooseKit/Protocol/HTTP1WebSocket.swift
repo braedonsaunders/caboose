@@ -90,7 +90,8 @@ public enum WebSocketHandshake {
             throw Failure.invalidAddress
         }
         let secure = scheme == "wss" || scheme == "https"
-        let bracketed = host.contains(":") && !host.hasPrefix("[") ? "[\(host)]" : host
+        let bare = host.hasPrefix("[") && host.hasSuffix("]") ? String(host.dropFirst().dropLast()) : host
+        let bracketed = bare.contains(":") ? "[\(zoneEncoded(bare))]" : bare
         let authority = components.port.map { port in
             (secure && port == 443) || (!secure && port == 80) ? bracketed : "\(bracketed):\(port)"
         } ?? bracketed
@@ -112,6 +113,14 @@ public enum WebSocketHandshake {
             lines.append("\(header.name): \(header.value)")
         }
         return Data((lines.joined(separator: "\r\n") + "\r\n\r\n").utf8)
+    }
+
+    /// An IPv6 literal with its zone id's `%` written as `%25` (RFC 6874), as a Host header needs.
+    static func zoneEncoded(_ host: String) -> String {
+        guard let percent = host.firstIndex(of: "%") else { return host }
+        let zone = host[host.index(after: percent)...]
+        if zone.hasPrefix("25") { return host }
+        return host[..<percent] + "%25" + zone
     }
 
     /// The answer's head once `buffer` holds all of it, with the bytes it took; nil while more
@@ -190,9 +199,27 @@ public enum WebSocketFrame {
 
     /// A close frame's payload: the code, and a reason cut to fit a control frame.
     public static func closePayload(code: Int, reason: String? = nil) -> Data {
+        let code = sendableCode(code)
         var payload = Data([UInt8((code >> 8) & 0xff), UInt8(code & 0xff)])
-        if let reason { payload.append(Data(reason.utf8).prefix(123)) }
+        if let reason {
+            // At most 123 bytes, never ending inside a character.
+            var kept = 0
+            for scalar in reason.unicodeScalars {
+                let size = String(scalar).utf8.count
+                if kept + size > 123 { break }
+                kept += size
+            }
+            payload.append(Data(reason.utf8).prefix(kept))
+        }
         return payload
+    }
+
+    /// A close code a frame may carry (RFC 6455 §7.4): 1005, 1006 and 1015 are only ever
+    /// reported, never sent, and nothing below 1000 or past 4999 is defined; those become
+    /// 1002 (protocol error), and an echo of a peer's such code becomes 1000.
+    public static func sendableCode(_ code: Int, echo: Bool = false) -> Int {
+        let forbidden = code < 1000 || code > 4999 || [1004, 1005, 1006, 1015].contains(code) || (1016...2999).contains(code)
+        return forbidden ? (echo ? 1000 : 1002) : code
     }
 
     /// XORs `bytes` with the repeating 4-byte `mask`, a word at a time.
@@ -253,7 +280,9 @@ public struct WebSocketReader: Sendable {
     }
 
     public let maximumMessageSize: Int
+    /// Bytes received; frames before `offset` are already read.
     private var buffer = Data()
+    private var offset = 0
     private var fragments: Data?
     private var fragmentOpcode: WebSocketFrame.Opcode?
 
@@ -262,9 +291,14 @@ public struct WebSocketReader: Sendable {
     }
 
     /// Bytes held for frames not yet complete.
-    public var buffered: Int { buffer.count }
+    public var buffered: Int { buffer.count - offset }
 
     public mutating func append(_ data: Data) {
+        // Drop what was read once per append, never per frame.
+        if offset > 0 {
+            buffer = offset == buffer.count ? Data() : Data(buffer[(buffer.startIndex + offset)...])
+            offset = 0
+        }
         buffer.append(data)
     }
 
@@ -311,9 +345,9 @@ public struct WebSocketReader: Sendable {
     }
 
     private mutating func nextFrame() throws -> (Bool, WebSocketFrame.Opcode, Data)? {
-        let count = buffer.count
+        let count = buffer.count - offset
         guard count >= 2 else { return nil }
-        let start = buffer.startIndex
+        let start = buffer.startIndex + offset
         let first = buffer[start], second = buffer[start + 1]
         guard first & 0x70 == 0 else { throw Failure.protocolError("reserved bits set") }
         guard let opcode = WebSocketFrame.Opcode(rawValue: first & 0x0f) else { throw Failure.protocolError("an unknown opcode") }
@@ -339,11 +373,7 @@ public struct WebSocketReader: Sendable {
         let total = header + Int(length)
         guard count >= total else { return nil }
         let payload = Data(buffer[(start + header)..<(start + total)])
-        if total == count {
-            buffer = Data()
-        } else {
-            buffer.removeSubrange(start..<(start + total))
-        }
+        offset += total
         return (fin, opcode, payload)
     }
 }
@@ -397,19 +427,23 @@ public final class HTTP1WebSocket: @unchecked Sendable {
     private var head = Data()
     private var opened = false
     private var ended = false
-    private var paused = false
+    /// Receiving held back (`setReceivingPaused`); set from any thread, read before each message.
+    private let pauseLock = NSLock()
+    private var pausedFlag = false
+    private var paused: Bool { pauseLock.withLock { pausedFlag } }
     private var reading = false
     private var pongs: [@Sendable (Error?) -> Void] = []
 
     /// `timeout` bounds connecting and the upgrade; `headers` go with the upgrade request.
     public init(url: URL, subprotocols: [String] = [], headers: [(name: String, value: String)] = [],
-                maximumMessageSize: Int = 16 * 1024 * 1024, timeout: TimeInterval = 20, label: String = "caboose.websocket") {
+                maximumMessageSize: Int = 16 * 1024 * 1024, timeout: TimeInterval = 20, label: String = "caboose.websocket",
+                queue: DispatchQueue? = nil) {
         self.url = url
         self.subprotocols = subprotocols
         self.headers = headers
         self.timeout = timeout
         self.reader = WebSocketReader(maximumMessageSize: maximumMessageSize)
-        self.queue = DispatchQueue(label: label)
+        self.queue = queue ?? DispatchQueue(label: label)
     }
 
     /// Connects and upgrades; `handler` hears every event, on the socket's queue, until `.closed` or `close()`.
@@ -490,12 +524,20 @@ public final class HTTP1WebSocket: @unchecked Sendable {
         }
     }
 
-    /// Holds back reading and delivering messages while paused; the upgrade itself is always read.
+    /// Holds back reading and delivering messages while paused; the upgrade itself is always
+    /// read. Pausing takes effect at once, from any thread: a handler that pauses while it
+    /// handles a message gets no other until it resumes, and the socket reads no more from
+    /// the network meanwhile, so TCP pushes back on the host.
     public func setReceivingPaused(_ paused: Bool) {
+        let changed = pauseLock.withLock { () -> Bool in
+            guard pausedFlag != paused else { return false }
+            pausedFlag = paused
+            return true
+        }
+        guard changed, !paused else { return }
         queue.async { [self] in
-            guard self.paused != paused else { return }
-            self.paused = paused
-            if !paused { deliver(); read() }
+            deliver()
+            read()
         }
     }
 
@@ -557,7 +599,8 @@ public final class HTTP1WebSocket: @unchecked Sendable {
                 if !pongs.isEmpty { pongs.removeFirst()(nil) }
             case .close(let code, let reason):
                 // Answer with the same code, then go.
-                return finish(Close(code: code, reason: reason), sending: code.map { WebSocketFrame.closePayload(code: $0) } ?? Data())
+                let echo = code.map { WebSocketFrame.sendableCode($0, echo: true) } ?? 1000
+                return finish(Close(code: code, reason: reason), sending: WebSocketFrame.closePayload(code: echo))
             }
         }
     }
