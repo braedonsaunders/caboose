@@ -23,6 +23,8 @@ class Host(BaseHTTPRequestHandler):
     requests = []
     files = {}
     answer = {"exitCode": 0, "stdout": "", "stderr": ""}
+    # A job's state as the polls see it: how many polls still find it running.
+    pending = 0
 
     def log_message(self, *args):
         pass
@@ -34,7 +36,15 @@ class Host(BaseHTTPRequestHandler):
         assert self.headers["Authorization"] == "Bearer secret"
         request = json.loads(self.body())
         Host.requests.append(("exec", self.path, request))
-        data = json.dumps(Host.answer).encode()
+        script = request["args"][1] if request["args"][:1] == ["-c"] else ""
+        if script.startswith("test -f ") and script.endswith(".rc"):
+            Host.pending -= 1
+            answer = {"exitCode": 1 if Host.pending >= 0 else 0, "stdout": "", "stderr": ""}
+        elif script.startswith("setsid "):
+            answer = {"exitCode": 0, "stdout": "", "stderr": ""}
+        else:
+            answer = Host.answer
+        data = json.dumps(answer).encode()
         self.send_response(200)
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
@@ -67,12 +77,20 @@ class Computer(unittest.TestCase):
         Host.requests.clear()
         Host.files.clear()
         Host.answer = {"exitCode": 0, "stdout": "", "stderr": ""}
+        Host.pending = 0
+
+    def scripts(self):
+        found = []
+        for kind, path, request in Host.requests:
+            if kind == "exec":
+                self.assertEqual(path, "/v1/host/computers/c-1/exec")
+                self.assertEqual(request["command"], "/bin/sh")
+                found.append(request["args"][1])
+        return found
 
     def script(self):
-        kind, path, request = Host.requests[-1]
-        self.assertEqual((kind, path), ("exec", "/v1/host/computers/c-1/exec"))
-        self.assertEqual(request["command"], "/bin/sh")
-        return request["args"][1]
+        """The command a check ran: the job started (or the detached command)."""
+        return next(s for s in self.scripts() if s.startswith("setsid "))
 
     def test_an_exec_runs_as_the_user_in_the_capped_slice_and_returns_its_status(self):
         Host.answer = {"exitCode": 3, "stdout": "out", "stderr": ""}
@@ -95,8 +113,19 @@ class Computer(unittest.TestCase):
         self.assertIn(f"< {path}", script)
         self.assertIn(f"rm -f {path}", script)
 
+    def test_a_long_command_runs_as_a_job_polled_to_its_end(self):
+        Host.pending = 3
+        Host.answer = {"exitCode": 7, "stdout": "done\n", "stderr": "warn\n"}
+        self.assertEqual(computer.run_exec(["vm:c-1", "sleep", "60"]), 7)
+        scripts = self.scripts()
+        self.assertTrue(scripts[0].startswith("setsid /bin/sh -c "))
+        self.assertIn(".part; mv ", scripts[0])
+        self.assertEqual(sum(1 for s in scripts if s.startswith("test -f ")), 4)
+        self.assertIn("status=$(cat ", scripts[-1])
+
     def test_a_detached_command_is_left_running_in_its_own_session(self):
         computer.run_exec(["-d", "-u", "caboose", "vm:c-1", "sleep", "60"])
+        self.assertEqual(len(self.scripts()), 1)
         script = self.script()
         self.assertTrue(script.startswith("setsid /bin/sh -c "))
         self.assertTrue(script.endswith("< /dev/null > /dev/null 2>&1 &"))
@@ -109,7 +138,7 @@ class Computer(unittest.TestCase):
         (path, (data, _)), = Host.files.items()
         with tarfile.open(fileobj=io.BytesIO(data)) as tar:
             self.assertIn("tree/sub/f", tar.getnames())
-        script = self.script()
+        script = self.scripts()[-1]
         self.assertIn("t=/srv/repo;", script)
         self.assertIn(f"tar -C \"$t\" --no-same-owner -xf {path}", script)
         self.assertIn(f"rm -f {path}", script)

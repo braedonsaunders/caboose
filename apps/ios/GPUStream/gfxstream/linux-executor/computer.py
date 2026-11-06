@@ -27,6 +27,7 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import time
 import uuid
 
 HERE = Path(__file__).resolve().parent
@@ -113,14 +114,34 @@ def run_exec(args, stdin=None):
         machine.put(stdin_path, data, 0o644)
     command = in_check_slice(guest_command(argv, user=user, env=env, workdir=workdir, stdin_path=stdin_path))
     if detach:
-        command = f"setsid /bin/sh -c {shlex.quote(command)} < /dev/null > /dev/null 2>&1 &"
-    elif stdin_path:
+        result = machine.run("/bin/sh", "-c", f"setsid /bin/sh -c {shlex.quote(command)} < /dev/null > /dev/null 2>&1 &",
+                             timeout=60, check=False)
+        return int(result.get("exitCode", 1))
+    if stdin_path:
         command = f"{command}; status=$?; rm -f {shlex.quote(stdin_path)}; exit $status"
-    result = machine.run("/bin/sh", "-c", command, timeout=3600, check=False)
-    sys.stdout.write(result.get("stdout", ""))
+    status, out, err = run_as_job(machine, command)
+    sys.stdout.write(out)
     sys.stdout.flush()
-    sys.stderr.write(result.get("stderr", ""))
-    return int(result.get("exitCode", 1))
+    sys.stderr.write(err)
+    return status
+
+
+def run_as_job(machine, command):
+    """Runs COMMAND in the guest as a job of its own, polled to its end: the host's exec route
+    serves one guest command at a time, so a long one (a program the check runs for a minute)
+    held directly would hold every other command of the checks behind it. Its exit status,
+    standard output and error."""
+    job = shlex.quote(f"/var/tmp/caboose-check-job-{uuid.uuid4().hex}")
+    machine.run("/bin/sh", "-c",
+                f"setsid /bin/sh -c {shlex.quote(f'({command}) > {job}.out 2> {job}.err; echo $? > {job}.part; mv {job}.part {job}.rc')} "
+                f"< /dev/null > /dev/null 2>&1 &", timeout=60)
+    delay = 0.05
+    while machine.run("/bin/sh", "-c", f"test -f {job}.rc", timeout=60, check=False).get("exitCode") != 0:
+        time.sleep(delay)
+        delay = min(delay * 2, 1.0)
+    result = machine.run("/bin/sh", "-c", f"cat {job}.out; cat {job}.err >&2; status=$(cat {job}.rc); "
+                         f"rm -f {job}.out {job}.err {job}.rc; exit $status", timeout=120, check=False)
+    return int(result.get("exitCode", 1)), result.get("stdout", ""), result.get("stderr", "")
 
 
 def run_cp(args):
