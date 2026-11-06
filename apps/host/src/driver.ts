@@ -29,8 +29,12 @@ import { LEGACY_COMPUTER } from './computers.js'
 import type { HostFolder } from './container-spec.js'
 import { folderTag } from './machine-spec.js'
 
-/** Mounts virtio-fs tag $1 at $2 with option $3 (ro or rw), unless something is mounted there already. */
-export const MOUNT_FOLDER = 'mkdir -p "$2" && { mountpoint -q "$2" || mount -t virtiofs -o "$3" "$1" "$2"; }'
+/**
+ * Mounts virtio-fs tag $1 at $2 with option $3 (ro or rw), unless something is mounted there
+ * already. Directories it makes on the way are owned as their nearest existing ancestor is, so
+ * a folder inside the home leaves the directories above it the owner's.
+ */
+export const MOUNT_FOLDER = 'set -e; t=$2; p=$t; while [ ! -e "$p" ]; do p=${p%/*}; [ -n "$p" ] || p=/; done; o=$(stat -c %u:%g "$p"); mkdir -p "$t"; d=$t; while [ -n "$d" ] && [ "$d" != "$p" ]; do chown "$o" "$d"; d=${d%/*}; done; mountpoint -q "$t" || mount -t virtiofs -o "$3" "$1" "$t"'
 
 /** Verify the Files service through vsock before choosing it for this guest. */
 export async function probeServiceVsock(desk: DeskHandle, timeoutMs = 2_000): Promise<boolean> {

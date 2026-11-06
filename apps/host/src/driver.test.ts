@@ -338,3 +338,19 @@ it('selects vsock for a guest that answers the service probe and closes relays o
     await expect(fetch(endpoint.replace('ws:', 'http:'))).rejects.toThrow()
   } finally { await rm(root, { recursive: true, force: true }) }
 })
+
+it.skipIf(process.platform !== 'linux')('mounts a folder after making its missing parents, owned as the nearest existing one', async () => {
+  const { execFileSync } = await import('node:child_process')
+  const { stat, chmod } = await import('node:fs/promises')
+  const root = await mkdtemp(join(tmpdir(), 'caboose-mount-folder-'))
+  try {
+    const bin = join(root, 'bin'); await mkdir(bin)
+    await writeFile(join(bin, 'mountpoint'), '#!/bin/sh\nexit 1\n'); await chmod(join(bin, 'mountpoint'), 0o755)
+    await writeFile(join(bin, 'mount'), `#!/bin/sh\nprintf '%s\\n' "$@" > ${join(root, 'mounted')}\n`); await chmod(join(bin, 'mount'), 0o755)
+    const home = join(root, 'home'); await mkdir(home)
+    const target = join(home, '.var/app/Some Game/data')
+    execFileSync('/bin/sh', ['-c', MOUNT_FOLDER, 'sh', 'caboose-folder-3', target, 'rw'], { env: { ...process.env, PATH: `${bin}:${process.env.PATH}` } })
+    expect((await readFile(join(root, 'mounted'), 'utf8')).split('\n').filter(Boolean)).toEqual(['-t', 'virtiofs', '-o', 'rw', 'caboose-folder-3', target])
+    for (const made of [join(home, '.var'), join(home, '.var/app'), target]) expect((await stat(made)).uid).toBe((await stat(home)).uid)
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
