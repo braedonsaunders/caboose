@@ -237,6 +237,34 @@ class Releases(unittest.TestCase):
         for name in ("MANIFEST", "MANIFEST.sig", "notes", "sbom.spdx.json", "check"):
             self.assertFalse((directory / name).exists(), name)
 
+    def install_calls(self, paths):
+        """The docker commands installing a release with files at PATHS runs, in order."""
+        directory = Path(self.tmp.name) / "r-install"
+        for path in paths:
+            target = directory / "files" / path.lstrip("/")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(b"x")
+        calls = []
+        saved = release.docker, release.game_running, release.steam_running
+        release.docker = lambda *args, input_=None, check=True: calls.append(args) or subprocess.CompletedProcess(args, 0, b"", b"")
+        release.game_running = lambda container: False
+        release.steam_running = lambda container: False
+        try:
+            self.assertTrue(release.install_one(directory, "caboose-c-test", "r\n"))
+        finally:
+            release.docker, release.game_running, release.steam_running = saved
+        return [" ".join(a for a in call if isinstance(a, str)) for call in calls]
+
+    def test_an_install_that_changes_the_broker_restarts_the_gpu_service(self):
+        calls = self.install_calls(["/usr/local/libexec/caboose-gpu/broker.py", "/usr/local/bin/caboose-display"])
+        stop = calls.index("exec caboose-c-test caboose-session stop-gpu")
+        self.assertLess(calls.index("exec caboose-c-test caboose-session stop-display"), stop)
+        self.assertLess(stop, next(i for i, c in enumerate(calls) if "caboose-session start" in c))
+
+    def test_an_install_without_broker_files_leaves_the_gpu_service_running(self):
+        calls = self.install_calls(["/usr/local/bin/caboose-display"])
+        self.assertNotIn("exec caboose-c-test caboose-session stop-gpu", calls)
+
     def test_paths_must_be_absolute_and_ids_plain(self):
         release.main(["new", "r1"])
         for path in ("relative/x", "/usr/../etc/x"):

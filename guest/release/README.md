@@ -138,7 +138,12 @@ computers a game holds are tried again every 30 s for up to `S` seconds. Otherwi
 release's files are copied in (owned by root, with the manifest's modes), its removals and
 packages applied, Steam asked to quit if it runs, the owner's display restarted through
 `caboose-session`, Steam started again if it ran, and `/etc/caboose-release` written: the
-release id, the manifest's SHA-256 and the notes.
+release id, the manifest's SHA-256 and the notes. When the release changes the GPU broker
+service's files (`/usr/local/libexec/caboose-gpu-broker`, `/usr/local/libexec/caboose-gpu/`
+or `caboose-session`), the service is stopped too (`caboose-session stop-gpu`) and started
+again with the display, so the computer runs the release's broker: the service outlives the
+displays and would otherwise keep the old code. No game runs then, so no phone session is
+lost; both seats' displays connect to it again.
 
 Run `python3 -m unittest guest/release/test_release.py` for the release format, signature
 and SBOM tests, and the executor check's, with the check itself stood in. They need OpenSSL with Ed25519 (1.1.1 or later), and no Docker or root.

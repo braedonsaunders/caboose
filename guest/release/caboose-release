@@ -34,6 +34,14 @@ ROOT = Path(os.environ.get("CABOOSE_RELEASES", "/root/caboose-release"))
 # A game is running when any of these match a process (the game gate).
 GAME = "MCC-Win64|steam_app_[0-9]|AppId=[0-9]"
 MARKER = "/etc/caboose-release"
+# Files of the computer's GPU broker service: a release that changes any of them restarts
+# the service, which otherwise keeps running the old code (it outlives the displays).
+GPU_SERVICE = ("/usr/local/libexec/caboose-gpu-broker", "/usr/local/libexec/caboose-gpu/", "/usr/local/bin/caboose-session")
+
+
+def restarts_gpu_service(paths):
+    """Whether installing PATHS changes the GPU broker service's code."""
+    return any(p == g or (g.endswith("/") and p.startswith(g)) for p in paths for g in GPU_SERVICE)
 STEAM = "/home/caboose/.var/app/com.valvesoftware.Steam/.local/share/Steam"
 KEY = Path(os.environ.get("CABOOSE_RELEASE_KEY", "/root/.config/caboose-release/release-ed25519.key.pem"))
 PUBLIC_NAME = "caboose-release.pub.pem"
@@ -332,6 +340,7 @@ def install_one(directory, container, marker):
         return False
     steam = steam_running(container)
     files = directory / "files"
+    paths = []
     if files.is_dir():
         tar = subprocess.run(["tar", "-C", str(files), "-cf", "-", "."], capture_output=True, check=True).stdout
         docker("exec", "-i", container, "tar", "-C", "/", "-xf", "-", "--no-same-owner", input_=tar)
@@ -351,6 +360,10 @@ def install_one(directory, container, marker):
     # The display and its supervisor stop together, so the supervisor does not start the
     # old display again while the new session starts its own.
     docker("exec", container, "caboose-session", "stop-display")
+    # The broker service outlives the display; started again by `caboose-session start`
+    # below, it runs the release's broker. No game runs, so no phone session is lost.
+    if restarts_gpu_service(paths):
+        docker("exec", container, "caboose-session", "stop-gpu")
     docker("exec", container, "sh", "-c", "caboose-session start >/dev/null && caboose-session ready >/dev/null")
     if steam:
         docker("exec", "-d", "-u", "caboose", container, "sh", "-c",

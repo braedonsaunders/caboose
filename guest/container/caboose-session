@@ -181,6 +181,17 @@ stop_display() {
   pkill -KILL -u caboose -f -- "caboose-display --env-file /run/caboose/$2" || :
 }
 
+# Stops the computer's GPU broker service and its supervisor: SIGTERM, then SIGKILL after 30 s.
+# Its displays are its clients and connect again when `start` brings it back.
+stop_gpu() {
+  local pid
+  if pid=$(supervisor_pid caboose-gpu-broker); then kill "$pid"; fi
+  rm -f /run/caboose/caboose-gpu-broker.supervisor
+  pkill -TERM -u caboose -f -- "$GPU_BROKER --listen" || return 0
+  for _ in $(seq 30); do pgrep -u caboose -f -- "$GPU_BROKER --listen" >/dev/null || return 0; sleep 1; done
+  pkill -KILL -u caboose -f -- "$GPU_BROKER --listen" || :
+}
+
 # A seat's notification endpoint: NAME BUS SCRIPT [ARGUMENT...].
 notification_endpoint() {
   local name=$1 bus=$2 script=$3; shift 3
@@ -295,6 +306,7 @@ case ${1:-} in
   ready) seat_ready 14600 /run/caboose/display.env "$XDG_RUNTIME_DIR/bus" ;;
   start-agent) start_agent; seat_ready 14601 /run/caboose/agent-display.env "$XDG_RUNTIME_DIR/agent-bus" ;;
   stop-display) stop_display caboose-display display.env ;;
+  stop-gpu) stop_gpu ;;
   start-files)
     start-stop-daemon --start --oknodo --background --make-pidfile --pidfile /run/caboose/files.pid \
       --chuid caboose:caboose --exec /usr/bin/python3 -- /opt/caboose/files/caboose-files.py
@@ -302,5 +314,5 @@ case ${1:-} in
     for _ in $(seq 1 60); do grep -Eq '^ *[0-9]+: [0-9A-F]+:396C [0-9A-F]+:[0-9A-F]+ 0A ' /proc/net/tcp /proc/net/tcp6 2>/dev/null && exit 0; sleep 1; done
     echo 'File service did not become ready' >&2; exit 1
     ;;
-  *) echo 'Usage: caboose-session start | ready | stop-display | start-agent | start-files' >&2; exit 2 ;;
+  *) echo 'Usage: caboose-session start | ready | stop-display | stop-gpu | start-agent | start-files' >&2; exit 2 ;;
 esac
