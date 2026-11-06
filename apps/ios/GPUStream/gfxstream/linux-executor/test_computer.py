@@ -174,6 +174,42 @@ class Computer(unittest.TestCase):
         finally:
             del os.environ["CABOOSE_VM_ADDRESS"]
 
+    def test_a_hold_keeps_a_control_connection_open_and_answers_its_pings(self):
+        import socket
+        server = socket.socket()
+        server.bind(("127.0.0.1", 0))
+        server.listen(1)
+        seen = {}
+
+        def serve():
+            conn, _ = server.accept()
+            request = b""
+            while b"\r\n\r\n" not in request:
+                request += conn.recv(4096)
+            seen["request"] = request.decode()
+            conn.sendall(b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n")
+            conn.sendall(bytes([0x89, 4]) + b"ping")
+            frame = conn.recv(64)
+            mask = frame[2:6]
+            seen["pong"] = (frame[0], bytes(b ^ mask[i % 4] for i, b in enumerate(frame[6:6 + (frame[1] & 0x7F)])))
+            conn.sendall(bytes([0x88, 0]))
+            conn.close()
+
+        thread = threading.Thread(target=serve, daemon=True)
+        thread.start()
+        saved = os.environ["CABOOSE_HOST_URL"]
+        os.environ["CABOOSE_HOST_URL"] = f"http://127.0.0.1:{server.getsockname()[1]}"
+        try:
+            self.assertEqual(computer.hold("vm:c-1", rounds=1), 0)
+        finally:
+            os.environ["CABOOSE_HOST_URL"] = saved
+            server.close()
+        thread.join(5)
+        self.assertTrue(seen["request"].startswith("GET /v1/control HTTP/1.1"))
+        self.assertIn("Authorization: Bearer secret", seen["request"])
+        self.assertEqual(seen["pong"], (0x8A, b"ping"))
+        self.assertEqual(computer.hold("caboose-c-1"), 0)
+
     def test_the_docker_shim_passes_anything_else_to_docker(self):
         fake = Path(self.tmp.name) / "bin"
         fake.mkdir(exist_ok=True)

@@ -6,6 +6,12 @@
   computer.py docker ARGS...   the subset of `docker` the checks use: `exec [-d] [-i] [-u USER]
                                [-e K=V] [-w DIR] TARGET COMMAND...` and `cp [-q] SOURCE TARGET:PATH`.
                                With a vm: target they run in the guest, anything else is Docker's.
+  computer.py hold TARGET      keeps a virtual machine awake until ended: the host freezes a
+                               computer 3 s after its last lease goes, and an exec holds one only
+                               for its own request, so a check's program between two commands
+                               would be frozen. A control connection (/v1/control) holds a lease
+                               for as long as it is open; it reconnects if the host closes it.
+                               For a container it returns at once.
   computer.py net TARGET       how an executor container on this host reaches a server the checks
                                start in TARGET, as three words: the `docker run --network` value,
                                the address to connect to and the address that server listens on.
@@ -17,6 +23,7 @@ The checks' shell scripts route their `docker` calls through `docker` here when 
 is vm:ID, so they read the same for both; check_chaos.py calls it directly. A detached command
 (-d) is started in its own session and left running; standard input (-i) is written to a file
 in the guest first. Commands run as root unless -u names a user (runuser)."""
+import base64
 import importlib.machinery
 import importlib.util
 import io
@@ -24,10 +31,12 @@ import os
 from pathlib import Path
 import shlex
 import shutil
+import socket
 import subprocess
 import sys
 import tarfile
 import time
+import urllib.parse
 import uuid
 
 HERE = Path(__file__).resolve().parent
@@ -190,7 +199,89 @@ def network(target):
     return "host", address, "0.0.0.0"
 
 
+def hold(target, rounds=None):
+    """Holds a control connection to the host (a lease on its computer) until killed; ROUNDS
+    connections at most, for tests."""
+    if not target.startswith("vm:"):
+        return 0
+    machine = vm(target)
+    url = urllib.parse.urlsplit(machine.url)
+    host, port = url.hostname, url.port or (443 if url.scheme == "https" else 80)
+    path = (url.path.rstrip("/") or "") + "/v1/control"
+    count = 0
+    while rounds is None or count < rounds:
+        count += 1
+        try:
+            with socket.create_connection((host, port), timeout=30) as sock:
+                key = base64.b64encode(os.urandom(16)).decode()
+                sock.sendall((f"GET {path} HTTP/1.1\r\nHost: {host}:{port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+                              f"Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n"
+                              f"Authorization: Bearer {machine.token}\r\n\r\n").encode())
+                head = b""
+                while b"\r\n\r\n" not in head:
+                    data = sock.recv(4096)
+                    if not data:
+                        raise ConnectionError("closed during the upgrade")
+                    head += data
+                if not head.startswith(b"HTTP/1.1 101"):
+                    raise ConnectionError(head.split(b"\r\n", 1)[0].decode(errors="replace"))
+                print(f"holding {target}", flush=True)
+                sock.settimeout(None)
+                buffer = head.split(b"\r\n\r\n", 1)[1]
+                while True:
+                    frame = read_frame(sock, buffer)
+                    if frame is None:
+                        break
+                    opcode, payload, buffer = frame
+                    if opcode == 0x9:  # ping: answer, or the host drops the lease
+                        sock.sendall(client_frame(0xA, payload))
+                    elif opcode == 0x8:
+                        break
+        except OSError as error:
+            print(f"hold {target}: {error}", file=sys.stderr, flush=True)
+        if rounds is None or count < rounds:
+            time.sleep(2)
+    return 0
+
+
+def read_frame(sock, buffer):
+    """One WebSocket frame from SOCK (after BUFFER): (opcode, payload, rest), or None at its end."""
+    def need(n):
+        nonlocal buffer
+        while len(buffer) < n:
+            data = sock.recv(65536)
+            if not data:
+                return False
+            buffer += data
+        return True
+    if not need(2):
+        return None
+    opcode, length = buffer[0] & 0x0F, buffer[1] & 0x7F
+    offset = 2
+    if length == 126:
+        if not need(4):
+            return None
+        length, offset = int.from_bytes(buffer[2:4], "big"), 4
+    elif length == 127:
+        if not need(10):
+            return None
+        length, offset = int.from_bytes(buffer[2:10], "big"), 10
+    if buffer[1] & 0x80:
+        offset += 4
+    if not need(offset + length):
+        return None
+    return opcode, buffer[offset:offset + length], buffer[offset + length:]
+
+
+def client_frame(opcode, payload):
+    """A masked client frame (final) carrying PAYLOAD (under 126 bytes, as control frames are)."""
+    mask = os.urandom(4)
+    return bytes([0x80 | opcode, 0x80 | len(payload)]) + mask + bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
+
+
 def main(argv):
+    if argv[:1] == ["hold"] and len(argv) == 2:
+        return hold(argv[1])
     if argv[:1] == ["net"] and len(argv) == 2:
         print(*network(argv[1]))
         return 0
