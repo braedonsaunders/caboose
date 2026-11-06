@@ -148,8 +148,13 @@ struct AgentSeatCard: View {
                     Spacer()
                     Label("Watch", systemImage: "arrow.up.right").font(.caption.weight(.semibold)).foregroundStyle(Brand.amber)
                 }
+                // The window's own shape, as the agent laid it out: never stretched or cut.
                 AgentSeatPreview(seat: seat, window: window)
-                    .frame(height: 168).clipped().clipShape(.rect(cornerRadius: 10))
+                    .aspectRatio(window.frame.width > 0 && window.frame.height > 0 ? window.frame.size : CGSize(width: 16, height: 9),
+                                 contentMode: .fit)
+                    .frame(maxHeight: 168)
+                    .clipShape(.rect(cornerRadius: 10))
+                    .frame(maxWidth: .infinity)
                     .allowsHitTesting(false).accessibilityHidden(true)
                 Text(window.title.isEmpty ? "Shared agent seat" : window.title)
                     .font(.caption2).foregroundStyle(.secondary).lineLimit(1)

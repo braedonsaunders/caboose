@@ -411,42 +411,70 @@ enum Markdown {
 }
 
 /// An agent-seat window full screen: watch the agent work, or take over with touch and keyboard.
+///
+/// Watching is passive. The window keeps the geometry the agent's seat gave it: the screen
+/// scales its picture to fit and never configures, resizes or focuses it, so the agent's
+/// own coordinates stay true while the owner watches. Only Take Over sends input.
 struct AgentWindowScreen: View {
     @Environment(AppModel.self) private var model
+    /// The window this screen shows. Kept through dismissal, so the screen slides away with
+    /// its picture and controls rather than going blank first.
+    @State private var windowID: Int?
+
+    init(windowID: Int?) { _windowID = State(initialValue: windowID) }
 
     var body: some View {
-        ZStack(alignment: .top) {
-            Color.black.ignoresSafeArea()
-            if let seat = model.agents.seat, let id = model.presentedAgentWindowID, let window = seat.windows[id] {
-                GeometryReader { proxy in
-                    AgentSeatCanvas(seat: seat, window: window, pixelsPerPoint: model.pixelsPerPoint,
-                                    interactive: model.agents.tookOver)
-                        .frame(width: proxy.size.width, height: proxy.size.height)
-                        .onAppear {
-                            let frame = CGRect(x: 0, y: 0, width: proxy.size.width * model.pixelsPerPoint,
-                                               height: proxy.size.height * model.pixelsPerPoint).integral
-                            if window.frame != frame { seat.configure(window, frame: frame) }
-                        }
+        let seat = model.agents.seat
+        let window = windowID.flatMap { seat?.windows[$0] }
+        VStack(spacing: 0) {
+            // The way out is always there, also when the window has closed or the seat is
+            // reconnecting, so the screen can never trap the owner on black.
+            HStack {
+                Button { model.presentedAgentWindowID = nil } label: {
+                    Image(systemName: "chevron.down").frame(width: 40, height: 40).contentShape(.circle)
                 }
-                .padding(.top, 52)
-                HStack {
-                    Button { model.presentedAgentWindowID = nil } label: {
-                        Image(systemName: "chevron.down").frame(width: 40, height: 40)
-                    }
-                    .glassEffect(.regular.interactive(), in: .circle)
+                .glassEffect(.regular.interactive(), in: .circle)
+                .accessibilityLabel("Close")
+                if let window {
                     Label(window.title.isEmpty ? "Agent window" : window.title, systemImage: "sparkle")
                         .font(.subheadline.weight(.semibold))
                         .lineLimit(1)
                         .padding(.horizontal, 14).frame(height: 40)
                         .glassEffect(.regular, in: .capsule)
-                    Spacer()
-                    takeOverButton
                 }
-                .padding(.horizontal, 12).padding(.top, 4)
+                Spacer()
+                if window != nil { takeOverButton }
+            }
+            .padding(.horizontal, 12).padding(.vertical, 4)
+            if let seat, let window, window.frame.width > 0, window.frame.height > 0 {
+                GeometryReader { proxy in
+                    let fitted = Self.fit(window.frame.size, in: proxy.size)
+                    AgentSeatCanvas(seat: seat, window: window,
+                                    pixelsPerPoint: max(1, window.frame.width / max(1, fitted.width)),
+                                    interactive: model.agents.tookOver)
+                        .frame(width: fitted.width, height: fitted.height)
+                        .frame(width: proxy.size.width, height: proxy.size.height)
+                }
+            } else {
+                ContentUnavailableView(window == nil ? "Window Closed" : "Waiting for the Window", systemImage: "sparkle",
+                                       description: Text(window == nil ? "The agent's window is no longer open."
+                                                                       : "The agent's window has not been laid out yet."))
+                    .frame(maxHeight: .infinity)
             }
         }
+        .background(Color.black.ignoresSafeArea())
+        // A Watch link or button for another window while this screen is up shows that one.
+        .onChange(of: model.presentedAgentWindowID) { _, id in if let id { windowID = id } }
         // Leaving the window always hands control back to the agent.
         .onDisappear { Task { await model.agents.handBack() } }
+    }
+
+    /// The largest size with `content`'s shape inside `bounds`: the picture is never stretched,
+    /// and touches map to the window's own pixels.
+    private static func fit(_ content: CGSize, in bounds: CGSize) -> CGSize {
+        guard content.width > 0, content.height > 0, bounds.width > 0, bounds.height > 0 else { return .zero }
+        let scale = min(bounds.width / content.width, bounds.height / content.height)
+        return CGSize(width: (content.width * scale).rounded(.down), height: (content.height * scale).rounded(.down))
     }
 
     /// Watching is the default; taking over stops the agent until it is handed back.
@@ -474,11 +502,15 @@ struct AgentSeatCanvas: UIViewRepresentable {
         let view = RemoteWindowView(session: seat, window: window)
         view.pixelsPerPoint = pixelsPerPoint
         view.isInteractive = interactive
+        // The full-screen view owns the window's live picture while input stays off until
+        // Take Over, as the desktop's views do; the chat's card shows its snapshots.
+        view.hostsGame = true
         return view
     }
 
     func updateUIView(_ view: RemoteWindowView, context: Context) {
         if view.remoteWindow?.id != window.id { view.attach(window) }
+        view.pixelsPerPoint = pixelsPerPoint
         view.isInteractive = interactive
     }
 }
