@@ -3,7 +3,8 @@
 #
 #   sh apps/ios/GPUStream/gfxstream/linux-executor/check-dxvk.sh COMPUTER WORK DRIVER BENCH_DIR [OUT]
 #
-# COMPUTER is a running computer with the Steam Flatpak and a Proton (PROTON, default
+# COMPUTER is a running computer (a container's name, or vm:ID for a virtual machine, reached
+# through the host's operator routes) with the Steam Flatpak and a Proton (PROTON, default
 # /opt/caboose-games/GE-Proton11-11/proton). BENCH_DIR, inside Steam's Flatpak data (for
 # example /home/caboose/.var/app/com.valvesoftware.Steam/caboose-bench), holds triangle.exe,
 # DXVK's d3d11 triangle test. A broker from this checkout (broker_host.py, every bind granted)
@@ -63,7 +64,7 @@ docker() {
   done
   command docker exec "$@"
 }
-[ $# -ge 4 ] && [ $# -le 5 ] || { sed -n '4,29p' "$0" >&2; exit 2; }
+[ $# -ge 4 ] && [ $# -le 5 ] || { sed -n '4,30p' "$0" >&2; exit 2; }
 computer=$1
 work=$(cd "$2" && pwd)
 driver=$(realpath "$3")
@@ -72,6 +73,12 @@ out=${5:-./linux-executor-dxvk}
 mkdir -p "$out"; out=$(cd "$out" && pwd)
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$(cd "$here/../../../../.." && pwd)
+# A virtual machine (vm:ID) is reached through the host (computer.py): its `docker exec` and
+# `docker cp` go there, and the executor reaches its broker at the guest's address.
+case $computer in vm:*) PATH="$here/computer-bin:$PATH" ;; esac
+read -r net_mode connect_host listen_host <<EOF
+$(python3 "$here/computer.py" net "$computer")
+EOF
 proton=${PROTON:-/opt/caboose-games/GE-Proton11-11/proton}
 # Steam inside its Flatpak (STEAM_ROOT), beside BENCH_DIR in the Flatpak data by default.
 steam=${STEAM_ROOT:-$(dirname "$bench")/.local/share/Steam}
@@ -128,13 +135,13 @@ for case in ${CASES:-phone setids poolids unbatched older}; do
   docker exec "$computer" pkill -TERM -f "$dir/repo/" > /dev/null 2>&1 || true
   docker rm -f "$name" > /dev/null 2>&1 || true
   docker exec -d -u caboose "$computer" sh -c "env HOME=/tmp python3 -u $dir/repo/apps/ios/GPUStream/gfxstream/linux-executor/broker_host.py \
-    --directory $sockets/gpu-$case --listen 127.0.0.1:$port > $dir/broker-$case.log 2>&1"
+    --directory $sockets/gpu-$case --listen $listen_host:$port > $dir/broker-$case.log 2>&1"
   i=0; until docker exec "$computer" grep -q 'listening on' "$dir/broker-$case.log" 2>/dev/null; do i=$((i + 1)); [ $i -le 100 ] || fail "$case: broker"; sleep 0.2; done
   token=$(docker exec "$computer" cat "$sockets/gpu-$case/token")
-  docker run -d --name "$name" --init --network "container:$computer" --cpus 4 --memory 3g \
+  docker run -d --name "$name" --init --network "$net_mode" --cpus 4 --memory 3g \
     -v "$work/build:/build:ro" -v "$repo/guest/gpu:/repo/guest/gpu:ro" -v "$here:/repo/apps/ios/GPUStream/gfxstream/linux-executor:ro" \
     --entrypoint sh caboose-linux-executor -c "printf %s '$token' > /tmp/token; exec python3 -u \
-    /repo/apps/ios/GPUStream/gfxstream/linux-executor/executor.py --connect 127.0.0.1:$port --token-file /tmp/token \
+    /repo/apps/ios/GPUStream/gfxstream/linux-executor/executor.py --connect $connect_host:$port --token-file /tmp/token \
     --library /build/libcaboose_gpu_executor.so --features $features --no-checksums" > /dev/null
   i=0; until docker logs "$name" 2>&1 | grep -q 'session ready'; do i=$((i + 1)); [ $i -le 150 ] || { docker logs "$name" > "$out/executor-$case.log" 2>&1; fail "$case: executor readiness ($out/executor-$case.log)"; }; sleep 0.2; done
   # The program's output, which Proton's launcher does not pass through, goes to a file: Wine's

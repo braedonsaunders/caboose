@@ -1,0 +1,3 @@
+#!/bin/sh
+# `docker` for the checks: a vm: computer through the host, anything else Docker (computer.py).
+exec python3 "$(dirname "$(readlink -f "$0")")/../computer.py" docker "$@"

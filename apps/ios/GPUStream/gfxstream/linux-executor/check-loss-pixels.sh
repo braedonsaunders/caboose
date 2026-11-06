@@ -4,7 +4,7 @@
 #
 #   sh apps/ios/GPUStream/gfxstream/linux-executor/check-loss-pixels.sh COMPUTER WORK DRIVER [OUT]
 #
-# COMPUTER is a running computer with Chromium (/usr/bin/chromium). The check makes a seat of
+# COMPUTER is a running computer (a container, or vm:ID through the host) with Chromium (/usr/bin/chromium). The check makes a seat of
 # its own there: a caboose-display on its own port, token, Wayland socket, X display and
 # private GPU sockets (none of the computer's own session is used), with DRIVER (the guest
 # driver under test) for the compositor and its clients, the real Linux executor (WORK/build)
@@ -56,6 +56,12 @@ out=${4:-./linux-executor-loss-pixels}
 mkdir -p "$out"; out=$(cd "$out" && pwd)
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$(cd "$here/../../../../.." && pwd)
+# A virtual machine (vm:ID) is reached through the host (computer.py): its `docker exec` and
+# `docker cp` go there, and the executor reaches the seat's display at the guest's address.
+case $computer in vm:*) PATH="$here/computer-bin:$PATH" ;; esac
+read -r net_mode connect_host listen_host <<EOF
+$(python3 "$here/computer.py" net "$computer")
+EOF
 seconds=${SECONDS_RUNNING:-25}
 min_repeat=${MIN_REPEAT:-0.3}
 port=14690
@@ -88,17 +94,17 @@ export GALLIUM_DRIVER=zink LIBGL_KOPPER_DRI2=1 MESA_GL_VERSION_OVERRIDE=4.5COMPA
 export CABOOSE_GAME_SOCKET=$dir/run/game.sock
 ENV
 chown caboose $dir/env"
-docker exec -d -u caboose "$computer" sh -c ". $dir/env; exec caboose-display --listen 127.0.0.1:$port --token-file $dir/token \
+docker exec -d -u caboose "$computer" sh -c ". $dir/env; exec caboose-display --listen $listen_host:$port --token-file $dir/token \
   --socket wayland-loss-pixels --x-display $xdisplay --no-audio --no-devices --private-gpu-stream-socket $dir/run/gpu/gpu.sock \
   --private-gpu-surface-socket $dir/run/gpu/surface.sock --private-gpu-indexed --env-file $dir/display.env \
   --display 1280x800@60x1 > $dir/display.log 2>&1"
 i=0; until seat "test -s $dir/display.env"; do i=$((i + 1)); [ $i -le 150 ] || fail 'the seat did not start'; sleep 0.2; done
 token=$(seat "cat $dir/token")
 start_executor() {
-  docker run -d --name "$name-$1" --init --network "container:$computer" --cpus 4 --memory 4g \
+  docker run -d --name "$name-$1" --init --network "$net_mode" --cpus 4 --memory 4g \
     -v "$work/build:/build:ro" -v "$repo/guest/gpu:/repo/guest/gpu:ro" -v "$here:/repo/apps/ios/GPUStream/gfxstream/linux-executor:ro" \
     -v "$out/$1:/pictures" --entrypoint sh caboose-linux-executor -c "printf %s '$token' > /tmp/token; exec python3 -u \
-    /repo/apps/ios/GPUStream/gfxstream/linux-executor/executor.py --connect 127.0.0.1:$port --token-file /tmp/token \
+    /repo/apps/ios/GPUStream/gfxstream/linux-executor/executor.py --connect $connect_host:$port --token-file /tmp/token \
     --library /build/libcaboose_gpu_executor.so --features $phone --pictures /pictures --display 1280x800" > /dev/null
   i=0; until docker logs "$name-$1" 2>&1 | grep -q 'session ready'; do i=$((i + 1)); [ $i -le 150 ] || fail "$1 executor readiness"; sleep 0.2; done
 }

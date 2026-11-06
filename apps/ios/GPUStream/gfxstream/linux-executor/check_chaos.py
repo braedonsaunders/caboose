@@ -5,7 +5,10 @@ are lost, replaced, stalled and reconnected at random points.
     python3 apps/ios/GPUStream/gfxstream/linux-executor/check_chaos.py COMPUTER WORK RELEASE OUT
         [--cycles 50] [--seed N] [--steam-home DIR] [--triangle PATH]
 
-COMPUTER is a running computer with Chromium, mesa-utils and, for the CEF and DXVK apps, the
+COMPUTER is a running computer (a container's name, or vm:ID for a virtual machine reached through
+the host's operator routes with computer.py: every command the seat runs there is then capped in
+the guest's checks slice, so the seat can never take the owner's memory) with Chromium, mesa-utils
+and, for the CEF and DXVK apps, the
 Steam Flatpak and a Proton. The check makes a seat of its own there (its own caboose-display,
 port, token, Wayland socket, X display, runtime directory and private GPU sockets; nothing of
 the computer's own session is used) running RELEASE's compositor, GPU broker and guest driver
@@ -73,6 +76,8 @@ def wait_for_memory(limit=10.0, quiet=False):
         time.sleep(15)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+import computer  # noqa: E402  (beside this script)
 REPO = os.path.abspath(os.path.join(HERE, '../../../../..'))
 PHONE = ('guest-handles,guest-handle-arrays,completion-feed,ordered-present,guest-images,guest-query-pools,'
          'executor-resume,zstd-stream,guest-buffer-views,batched-descriptor-sets-inline,guest-set-ids,completion-payloads,'
@@ -111,6 +116,9 @@ class Seat:
     def __init__(self, options):
         self.o = options
         self.computer = options.computer
+        # How the executor container reaches the seat's display: the container's own network, or
+        # the virtual machine's address (computer.py net).
+        self.network, self.connect, self.listen = computer.network(self.computer)
         self.dir = f'/tmp/caboose-chaos-{os.getpid()}'
         self.name = f'caboose-chaos-{os.getpid()}'
         self.generation = 0
@@ -150,7 +158,7 @@ class Seat:
             f'export CABOOSE_GAME_SOCKET={d}/run/game.sock CABOOSE_CHAOS_SEAT={os.getpid()}', ''])
         self.sh(f"printf '%s' {shlex.quote(icd)} > {d}/icd.json && printf '%s' {shlex.quote(icd32)} > {d}/icd32.json && "
                 f"printf '%s' {shlex.quote(env)} > {d}/env && chown -R caboose {d}")
-        self.sh(f'. {d}/env; CABOOSE_GPU_BROKER={d}/libexec/caboose-gpu-broker exec {d}/bin/caboose-display --listen 127.0.0.1:{PORT} --token-file {d}/token --socket wayland-chaos '
+        self.sh(f'. {d}/env; CABOOSE_GPU_BROKER={d}/libexec/caboose-gpu-broker exec {d}/bin/caboose-display --listen {self.listen}:{PORT} --token-file {d}/token --socket wayland-chaos '
                 f'--x-display {XDISPLAY} --no-audio --no-devices --private-gpu-stream-socket {d}/run/gpu/gpu.sock '
                 f'--private-gpu-surface-socket {d}/run/gpu/surface.sock --private-gpu-indexed --env-file {d}/display.env '
                 f'--display 1280x800@60x1 > {d}/display.log 2>&1', user='caboose', detach=True)
@@ -177,12 +185,12 @@ class Seat:
         pictures = os.path.join(self.o.out, f'pictures-{self.generation}')
         os.makedirs(pictures, exist_ok=True)
         os.chmod(pictures, 0o777)
-        run('docker', 'run', '-d', '--ulimit', 'core=0', '--name', name, '--init', '--network', f'container:{self.computer}', '--cpus', '4',
+        run('docker', 'run', '-d', '--ulimit', 'core=0', '--name', name, '--init', '--network', self.network, '--cpus', '4',
             '--memory', '4g', '-v', f'{self.o.work}/build:/build:ro', '-v', f'{REPO}/guest/gpu:/repo/guest/gpu:ro',
             '-v', f'{HERE}:/repo/apps/ios/GPUStream/gfxstream/linux-executor:ro', '-v', f'{pictures}:/pictures',
             '--entrypoint', 'sh', 'caboose-linux-executor', '-c',
             f"printf %s '{self.token}' > /tmp/token; exec python3 -u /repo/apps/ios/GPUStream/gfxstream/linux-executor/executor.py "
-            f"--connect 127.0.0.1:{PORT} --token-file /tmp/token --library /build/libcaboose_gpu_executor.so --features {PHONE} "
+            f"--connect {self.connect}:{PORT} --token-file /tmp/token --library /build/libcaboose_gpu_executor.so --features {PHONE} "
             f"--pictures /pictures --display 1280x800")
         self.executors.append(name)
         if self.o.gdb:
@@ -215,8 +223,8 @@ class Seat:
         except RuntimeError:
             # Where the broker waits, in the display log, before the seat goes.
             self.sh(f"pkill -USR1 -f '{self.dir}/libexec/caboose-gpu-broker'", check=False)
-            if self.o.gdb:
-                # And the compositor's native stacks, on the host.
+            if self.o.gdb and not self.computer.startswith('vm:'):
+                # And the compositor's native stacks, on the host (a container's processes only).
                 for pid in run('pgrep', '-f', f'{self.dir}/bin/caboose-display --listen', check=False).split():
                     with open(os.path.join(self.o.out, f'gdb-compositor-{pid}.txt'), 'w') as trace:
                         subprocess.run(['timeout', '60', 'gdb', '-p', pid, '-batch', '-ex', f'set sysroot /proc/{pid}/root',
@@ -312,6 +320,9 @@ def main():
     parser.add_argument('--proton', default='/opt/caboose-games/GE-Proton11-11/proton')
     parser.add_argument('--gdb', action='store_true', help="attach gdb to each executor; a fault's stacks go to OUT/gdb-N.txt")
     o = parser.parse_args()
+    if o.computer.startswith('vm:'):
+        # `docker exec` and `docker cp` into a virtual machine go through the host (computer.py).
+        os.environ['PATH'] = os.path.join(HERE, 'computer-bin') + os.pathsep + os.environ.get('PATH', '')
     o.work, o.release = os.path.abspath(o.work), os.path.abspath(o.release)
     os.makedirs(o.out, exist_ok=True)
     o.out = os.path.abspath(o.out)

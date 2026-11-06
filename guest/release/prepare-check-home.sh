@@ -44,6 +44,8 @@ docker() {
 }
 [ $# -eq 4 ] || { sed -n '4,13p' "$0" >&2; exit 2; }
 computer=$1 home=$2 triangle=$3 display=$4
+# A virtual machine (vm:ID) is reached through the host (linux-executor/computer.py).
+case $computer in vm:*) PATH="$(cd "$(dirname "$0")/../../apps/ios/GPUStream/gfxstream/linux-executor" && pwd)/computer-bin:$PATH" ;; esac
 case $home in /var/tmp/?*|/var/lib/?*|/tmp/?*) ;; *) echo "HOME must be a directory of the check's own under /var/tmp, /var/lib or /tmp" >&2; exit 2;; esac
 app=$home/.var/app/com.valvesoftware.Steam
 helper=$app/.local/share/Steam/ubuntu12_64/steamwebhelper
