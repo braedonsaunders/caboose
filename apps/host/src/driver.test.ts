@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { expect, it, vi } from 'vitest'
 import type { DeskBackend } from '@braedonsaunders/appkit-desk'
 import { DISPLAY_ENV } from './display.test.js'
-import { createController } from './driver.js'
+import { MOUNT_FOLDER, createController } from './driver.js'
 import { ParkedFilesJournal } from './parked-files-journal.js'
 
 it('resumes old resources but cold-restarts with saved settings and preserves the disk', async () => {
@@ -269,6 +269,28 @@ it('attaches a host depot read-only and starts its guest mount', async () => {
     await controller.wake()
     expect(starts[0].shares).toEqual([{ tag: 'caboose-depot', path: depot, readOnly: true }])
     expect(commands).toContain('/bin/systemctl start var-lib-caboose-depot.mount')
+    await controller.destroy!()
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+it('shares a computer\'s folders after the depot and mounts each at its target, read-write unless read-only', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'caboose-vm-folders-'))
+  try {
+    const depot = join(root, 'depot'); await mkdir(depot)
+    for (const name of ['base.raw', 'vmlinux', 'initrd']) await writeFile(join(root, name), '')
+    const starts: any[] = [], commands: string[][] = []
+    const desks = { stats: () => ({}), start: async (options: any) => { starts.push(options); return { exec: async ({ command, args }: any) => { commands.push([command, ...args]); return { exitCode: 0, stdout: command === '/bin/cat' ? DISPLAY_ENV : '', stderr: '', truncated: false } }, renewLease: () => {} } }, destroy: async () => {} }
+    const config = { token: 'owner', host: '127.0.0.1', port: 7310, idleMs: 1000, imageRoot: root, memoryMb: 512, vcpus: 1, vmmPath: process.execPath, runtime: 'microvm' as const, containerImage: '', baseImage: null, databaseUrl: null, containerName: '', containerHome: '', containerArgs: [], gpu: 'auto' as const, agentRegistryUrl: '', agentIdleMs: 1000, maxRunning: 4, publicUrl: null, mdns: false, trustedProxies: [] }
+    const folders = [{ source: '/srv/steam/common/Game', target: '/mnt/games/Game', readOnly: false }, { source: '/srv/tools', target: '/opt/tools', readOnly: true }]
+    const controller = createController(config, { desks: desks as any, backend: { hypervisor: 'cloud-hypervisor' } as any, deviceExists: () => true, network: async () => {}, removeNetwork: async () => {}, depotPath: depot, folders: () => folders })
+    await controller.wake()
+    expect(starts[0].shares).toEqual([
+      { tag: 'caboose-depot', path: depot, readOnly: true },
+      { tag: 'caboose-folder-0', path: '/srv/steam/common/Game', readOnly: false },
+      { tag: 'caboose-folder-1', path: '/srv/tools', readOnly: true },
+    ])
+    const mounts = commands.filter(command => command[0] === '/bin/sh' && command[2] === MOUNT_FOLDER).map(command => command.slice(4))
+    expect(mounts).toEqual([['caboose-folder-0', '/mnt/games/Game', 'rw'], ['caboose-folder-1', '/opt/tools', 'ro']])
     await controller.destroy!()
   } finally { await rm(root, { recursive: true, force: true }) }
 })
