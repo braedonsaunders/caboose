@@ -120,8 +120,9 @@ export async function serveParkedFiles(view: ParkedFilesView, request: IncomingM
     const deadline = Date.now() + 60_000
     if (request.aborted || response.destroyed) return true
     const parts = pathParts(url.searchParams.get('path') ?? '')
-    // The standard guest mounts .cache as tmpfs, which is absent from the disk
-    // clone. Never expose its underlying directory or include it in a home listing.
+    // .cache is the running computer's (queues and transfers in flight; a tmpfs, absent
+    // from the disk clone, on a computer not yet updated). Never expose it or include it
+    // in a home listing.
     if (parts[0] === '.cache' || (url.pathname === '/v1/fs/list' && !parts.length)) return false
     const path = ROOT + (parts.length ? '/' + parts.join('/') : '')
     appliance = new ParkedAppliance(view.image)

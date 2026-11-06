@@ -99,6 +99,10 @@ else
   install -Dm644 "$root/template/caboose-template.target" /etc/systemd/system/caboose-template.target
   install -Dm755 "$root/components/caboose-vsock-services.py" /opt/caboose/vsock/caboose-vsock-services.py
   install -Dm644 "$root/components/caboose-vsock-services.service" /etc/systemd/system/caboose-vsock-services.service
+  # ~/.cache is on the disk: a computer whose image mounted a 512 MiB tmpfs there (which a
+  # cache of shaders or downloads fills, ENOSPC) drops it, and from its next cold boot uses the
+  # disk.
+  sed -i '\#^tmpfs /home/caboose/\.cache #d' /etc/fstab
   mkdir -p /var/lib/systemd/linger
   touch /var/lib/systemd/linger/caboose
   systemctl enable caboose-memory.service caboose-vsock-services.service caboose-files.service caboose-terminal.service caboose-ai.service caboose-bridge.service var-lib-caboose-depot.mount

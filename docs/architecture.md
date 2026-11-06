@@ -145,8 +145,9 @@ The image contains:
 - **Guest agent.** The appkit-desk guest agent (vsock 5252), which runs as root with
   root's home.
 
-`/home/caboose/.cache` is a 512 MiB tmpfs in the microVM, so the queues under
-`~/.cache/caboose` do not survive a cold boot.
+`/home/caboose/.cache` is on the computer's disk with the rest of the home, in both runtimes,
+so application caches (shaders, package and runtime downloads) and the queues under
+`~/.cache/caboose` survive a cold boot.
 
 ### Published images
 
@@ -3718,9 +3719,8 @@ across moves, signals the working set when the app receives `fs.changed`, and
 re-enumerates after an expired anchor. The system generates previews for downloaded files;
 there are no server-side thumbnails. On an opted-in supported Linux microVM, Files can
 read a sealed parked view through one network-disabled, read-only libguestfs appliance per request. Metadata and bounded content chunks share that appliance. The reader parses the guest Python MIME tables as literal data without executing guest code. Unsupported paths,
-metadata, change feeds and all mutations wake the computer. The guest's `.cache`
-tmpfs is absent from the disk view, so `.cache` access and home-root listings also
-wake rather than exposing the underlying mountpoint. An unreachable host is
+metadata, change feeds and all mutations wake the computer. `.cache` belongs to the
+running computer, so `.cache` access and home-root listings also wake. An unreachable host is
 reported to Files as unreachable.
 
 ### Backups
