@@ -80,6 +80,7 @@ describe('createContainerController', () => {
     const run = computerRuns(fake.calls)[0]!
     expect(run.join(' ')).toContain('--device /dev/fuse --cap-add SYS_ADMIN')
     expect(run.join(' ')).toContain('-v caboose-owner-flatpak:/var/lib/flatpak')
+    expect(run.join(' ')).toContain('--ulimit core=0')
     await controller.destroy!()
     expect(fake.calls).toContainEqual(['volume', 'rm', '-f', 'caboose-owner-flatpak'])
   })
