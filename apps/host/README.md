@@ -218,7 +218,7 @@ each image pulls anonymously before it attaches the bundles.
 | `CABOOSE_VM_TEMPLATE` | `off` | `on` opts new Linux microVM computers into a sterile shared memory template. Existing computers keep their disks and snapshots. Requires Cloud Hypervisor v54.0 and a golden image with the current complete guest component bundle; cannot be combined with the microVM depot. |
 | `CABOOSE_VM_RESTORE_MODE` | `copy` | Linux Cloud Hypervisor snapshot restore: `copy`, `copyonwrite`, or `ondemand`. On-demand requires access to Linux userfaultfd and fails rather than falling back if unavailable. It cannot be combined with templates or the microVM depot. |
 | `CABOOSE_VM_COW` | `off` | `on` selects copy-on-write restore; conflicts with a different explicit restore mode. |
-| `CABOOSE_VM_FREE_PAGE_REPORTING` | `off` | `on` enables a zero-size virtio-balloon with free-page reporting on new Cloud Hypervisor boots. |
+| `CABOOSE_VM_FREE_PAGE_REPORTING` | `on` (microVM hosts) | A zero-size virtio-balloon with free-page reporting on new Cloud Hypervisor boots, so memory the guest frees returns to the host; `off` turns it off. |
 | `CABOOSE_SHARED_STORAGE` | `off` | `on` shares identical blocks across parked microVM disks (Linux, image root on XFS with reflink or Btrfs, `caboose-disk` installed); startup fails if either is missing. Totals appear in `/v1/health` as `sharedStorage`. |
 | `CABOOSE_SHARED_STORAGE_DELAY_MS` | `1800000` | How long a computer stays parked before its disk is passed. |
 | `CABOOSE_DISK_HELPER` | `caboose-disk` on `PATH` | The helper for shared storage and phone backups. The image and Linux bundles include it. Phone backups are offered when the helper is present and `CABOOSE_PARKED_FILES=on`. |
