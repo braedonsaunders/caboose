@@ -19,6 +19,11 @@ COPY computer-use/wine /wine
 RUN mkdir -p /out/wine && x86_64-w64-mingw32-gcc -O2 -municode -o /out/wine/caboose-msaa.exe /wine/caboose-msaa.c \
       -loleacc -loleaut32 -lole32 -luuid -luser32
 
+# Debian's Flatpak, rebuilt with the patches in flatpak/package (guest/flatpak/README.md).
+FROM debian:trixie-slim AS flatpak
+COPY flatpak/package /package
+RUN /package/build-in-debian.sh /out/flatpak
+
 FROM debian:trixie-slim
 RUN apt-get update && apt-get install -y --no-install-recommends debootstrap eatmydata util-linux fdisk e2fsprogs erofs-utils btrfs-progs ca-certificates curl && rm -rf /var/lib/apt/lists/*
 COPY image/build-inside.sh image/configure-guest.sh image/apps.sh image/desktop-apps.sh image/desktop-apps.tsv image/make-system-image.sh image/storage-layout.sh /builder/
@@ -41,6 +46,7 @@ COPY phone /builder/phone
 COPY devices /builder/devices
 COPY bridge /builder/bridge
 COPY flatpak /builder/flatpak
+COPY --from=flatpak /out/flatpak /builder/flatpak/debs/
 COPY game /builder/game
 COPY gpu /builder/gpu
 COPY ai /builder/ai
