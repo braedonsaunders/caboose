@@ -190,5 +190,22 @@ class ReleaseStack(unittest.TestCase):
             self.assertTrue(guarded, f'{needle} is installed whatever release the computer has')
 
 
+class CacheOnDisk(unittest.TestCase):
+    def test_a_vm_drops_the_cache_tmpfs_from_its_fstab(self):
+        """~/.cache is on the disk: the installer removes an older image's .cache tmpfs from
+        /etc/fstab and keeps every other entry."""
+        [line] = [line.strip() for line in INSTALLER.read_text().splitlines() if '/etc/fstab' in line and line.strip().startswith('sed ')]
+        with tempfile.TemporaryDirectory() as work:
+            fstab = Path(work, 'fstab')
+            fstab.write_text('LABEL=caboose / btrfs compress-force=zstd:1,discard=async,noatime 0 0\n'
+                             'tmpfs /home/caboose/.cache tmpfs rw,nosuid,nodev,noatime,size=512M,uid=1000,gid=1000,mode=0700 0 0\n'
+                             'tmpfs /home/caboose/.cache-keep tmpfs rw 0 0\n')
+            subprocess.run(['bash', '-c', line.replace('/etc/fstab', '"$1"'), 'sh', str(fstab)], check=True)
+            self.assertEqual(fstab.read_text(), 'LABEL=caboose / btrfs compress-force=zstd:1,discard=async,noatime 0 0\n'
+                             'tmpfs /home/caboose/.cache-keep tmpfs rw 0 0\n')
+            subprocess.run(['bash', '-c', line.replace('/etc/fstab', '"$1"'), 'sh', str(fstab)], check=True)
+            self.assertIn('.cache-keep', fstab.read_text())
+
+
 if __name__ == '__main__':
     unittest.main()

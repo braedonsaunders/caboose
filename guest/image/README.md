@@ -56,8 +56,7 @@ mounted with `compress-force=zstd:1,discard=async,noatime`. Existing ext4 comput
 retain their filesystem. Compression savings vary with the workload; sparse logical
 capacity is not a reservation of physical host storage. Discard reclamation requires
 support throughout the runtime and backing filesystem.
-`/home/caboose/.cache` is a 512 MiB tmpfs, shared by application caches and cleared at every
-cold boot. Keep the base and overlays on XFS with reflink or on Btrfs. A computer's overlay
+`/home/caboose/.cache` is on the disk with the rest of the home. Keep the base and overlays on XFS with reflink or on Btrfs. A computer's overlay
 and snapshot refer to the base they were made from: do not replace a base underneath an
 existing computer. A new base reaches new computers only; update an existing one from inside
 it (see [Updating a running computer](#updating-a-running-computer)).

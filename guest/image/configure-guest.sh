@@ -100,7 +100,9 @@ mkdir -p /etc/environment.d
 printf 'QT_QPA_PLATFORMTHEME=gtk3\n' > /etc/environment.d/90-caboose.conf
 chown -R caboose:caboose /home/caboose
 printf 'caboose\n' > /etc/hostname
-printf 'LABEL=caboose / btrfs compress-force=zstd:1,discard=async,noatime 0 0\ntmpfs /home/caboose/.cache tmpfs rw,nosuid,nodev,noatime,size=512M,uid=1000,gid=1000,mode=0700 0 0\n' > /etc/fstab
+# Application caches (~/.cache: shader caches, package and runtime downloads, Caboose's own
+# queues) live on the disk with the rest of the home, as in a container computer.
+printf 'LABEL=caboose / btrfs compress-force=zstd:1,discard=async,noatime 0 0\n' > /etc/fstab
 printf 'virtio_blk\nvirtio_pci\nvirtio_net\nbtrfs\next4\n' >> /etc/initramfs-tools/modules
 if [[ $arch == arm64 ]]; then printf 'virtio_mmio\n' >> /etc/initramfs-tools/modules; fi
 update-initramfs -u
