@@ -2,7 +2,9 @@
 Description=Caboose Display (owner seat): headless Wayland compositor and window stream on :14600
 Documentation=https://github.com/braedonsaunders/caboose/blob/main/docs/display.md
 Requires=user@1000.service caboose-notification-daemon.service
-After=network.target user@1000.service caboose-notification-daemon.service
+# The phone's GPU, where the GPU stack is installed (its unit is conditional on it).
+Wants=caboose-gpu-broker.service
+After=network.target user@1000.service caboose-notification-daemon.service caboose-gpu-broker.service
 
 [Service]
 Type=simple
@@ -20,7 +22,8 @@ Environment=QT_LINUX_ACCESSIBILITY_ALWAYS_ON=1
 ExecStartPre=+/usr/bin/install -d -o caboose -g caboose -m 0700 /run/user/1000
 ExecStartPre=+/usr/bin/install -d -m 0755 /run/caboose
 ExecStartPre=+/usr/bin/install -o caboose -g caboose -m 0644 /dev/null /run/caboose/display.env
-ExecStart=/usr/local/bin/caboose-display --env-file /run/caboose/display.env
+# The seat's GPU broker options (guest/gpu/vm/caboose-gpu-seat-args), none without the GPU stack.
+ExecStart=/bin/sh -c 'exec /usr/local/bin/caboose-display --env-file /run/caboose/display.env $$([ -x /usr/local/libexec/caboose-gpu-seat-args ] && /usr/local/libexec/caboose-gpu-seat-args owner)'
 # Start Xwayland's accessibility bus before any app, so every X11 app on it joins that bus.
 ExecStartPost=-/bin/sh -c 'caboose-display-ready 60 14600 && set -a && . /run/caboose/display.env && exec /usr/libexec/caboose/a11y bus --display "$DISPLAY" --wait 30'
 Restart=on-failure

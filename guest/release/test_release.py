@@ -265,6 +265,74 @@ class Releases(unittest.TestCase):
         calls = self.install_calls(["/usr/local/bin/caboose-display"])
         self.assertNotIn("exec caboose-c-test caboose-session stop-gpu", calls)
 
+    class FakeVM:
+        """A virtual machine as caboose-release sees it through the host: what it ran and wrote."""
+        def __init__(self, game=False, steam=False, agent=False):
+            self.name, self.calls, self.files = "vm-test", [], {}
+            self.game, self.steam, self.agent = game, steam, agent
+
+        def run(self, *command, timeout=600, check=True):
+            line = " ".join(command)
+            self.calls.append(line)
+            code = 0
+            if command[:2] == ("pgrep", "-f"):
+                code = 0 if (self.game if "MCC" in command[2] else self.steam) else 1
+            elif command[:3] == ("systemctl", "is-active", "--quiet"):
+                code = 0 if self.agent else 3
+            return {"exitCode": code, "stdout": "", "stderr": ""}
+
+        def put(self, path, data, mode=0o600):
+            self.calls.append(f"put {path}")
+            self.files[path] = data
+
+    def vm_release(self, paths):
+        directory = Path(self.tmp.name) / "r-vm"
+        for path in paths:
+            target = directory / "files" / path.lstrip("/")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(b"x")
+        return directory
+
+    def test_a_virtual_machine_install_restarts_the_broker_service_then_the_displays(self):
+        vm = self.FakeVM(agent=True)
+        directory = self.vm_release(["/usr/local/libexec/caboose-gpu/broker.py", "/etc/systemd/system/caboose-gpu-broker.service"])
+        self.assertTrue(release.install_vm_one(directory, vm, "r5.x\n"))
+        calls = vm.calls
+        self.assertIn("/usr/local/libexec/caboose-gpu/broker.py", vm.files["/var/tmp/caboose-release.paths"].decode())
+        reload = next(i for i, c in enumerate(calls) if "systemctl daemon-reload" in c and "udevadm trigger" in c)
+        stop = calls.index("systemctl stop caboose-display-agent.service caboose-display.service")
+        broker = calls.index("systemctl restart caboose-gpu-broker.service")
+        owner = next(i for i, c in enumerate(calls) if "systemctl start caboose-display.service" in c)
+        seat = next(i for i, c in enumerate(calls) if "systemctl start caboose-display-agent.service" in c)
+        self.assertLess(reload, stop)
+        self.assertLess(stop, broker)
+        self.assertLess(broker, owner)
+        self.assertLess(owner, seat)
+        self.assertEqual(vm.files[release.MARKER], b"r5.x\n")
+        self.assertEqual(calls[-1], f"put {release.MARKER}")
+
+    def test_a_virtual_machine_install_without_broker_files_keeps_the_service(self):
+        vm = self.FakeVM()
+        self.assertTrue(release.install_vm_one(self.vm_release(["/usr/local/bin/caboose-display"]), vm, "r\n"))
+        self.assertNotIn("systemctl restart caboose-gpu-broker.service", vm.calls)
+        self.assertFalse(any("caboose-display-agent.service &&" in c for c in vm.calls))
+
+    def test_a_game_on_a_virtual_machine_holds_its_install(self):
+        vm = self.FakeVM(game=True)
+        self.assertFalse(release.install_vm_one(self.vm_release(["/usr/local/bin/caboose-display"]), vm, "r\n"))
+        self.assertEqual(vm.files, {})
+        self.assertEqual(len(vm.calls), 1)
+
+    def test_vm_targets_need_the_host(self):
+        saved = {k: os.environ.pop(k, None) for k in ("CABOOSE_HOST_URL", "CABOOSE_HOST_TOKEN_FILE")}
+        try:
+            with self.assertRaises(release.Failure):
+                release.VirtualMachine("c")
+        finally:
+            for k, v in saved.items():
+                if v is not None:
+                    os.environ[k] = v
+
     def test_paths_must_be_absolute_and_ids_plain(self):
         release.main(["new", "r1"])
         for path in ("relative/x", "/usr/../etc/x"):

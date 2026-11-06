@@ -290,6 +290,14 @@ def install(source: Path, destination: Path, machine: str = os.uname().machine):
               (source / "broker/live_protocol.py", private / "live_protocol.py", 0o644),
               (source / "gfxstream/caboose-gpu-broker", private / "broker.py", 0o644),
               (source / "caboose-gpu-broker-launcher", libexec / "caboose-gpu-broker", 0o755)]
+    # A virtual machine's share (vm/): the broker service and the displays' seat options for
+    # systemd, vgem loaded at boot and its nodes and /dev/userfaultfd the session user's. A
+    # container uses caboose-session for these instead, and ignores them.
+    etc = destination / "etc"
+    files += [(source / "vm/caboose-gpu-broker.service", etc / "systemd/system/caboose-gpu-broker.service", 0o644),
+              (source / "vm/70-caboose-gpu.rules", etc / "udev/rules.d/70-caboose-gpu.rules", 0o644),
+              (source / "vm/caboose-gpu-modules.conf", etc / "modules-load.d/caboose-gpu.conf", 0o644),
+              (source / "vm/caboose-gpu-seat-args", libexec / "caboose-gpu-seat-args", 0o755)]
     # Fail before modifying the install when a component was omitted from a bundle.
     contents = [(src.read_bytes(), dst, mode) for src, dst, mode in files]
     drirc = (source / DRIRC).read_bytes()
@@ -297,6 +305,7 @@ def install(source: Path, destination: Path, machine: str = os.uname().machine):
         raise ValueError("broker install directories must not be symlinks")
     private.mkdir(mode=0o755, parents=True, exist_ok=True)
     for data, destination_file, mode in contents:
+        destination_file.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
         write_atomically(destination_file, data, mode)
     install_drirc(drirc, destination, machine)
 

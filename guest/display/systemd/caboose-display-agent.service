@@ -2,7 +2,9 @@
 Description=Caboose Display (agent seat): the agents' own display, streamed on :14601
 Documentation=https://github.com/braedonsaunders/caboose/blob/main/docs/display.md
 Requires=user@1000.service caboose-agent-bus.service caboose-agent-notification-daemon.service
-After=network.target user@1000.service caboose-agent-bus.service caboose-agent-notification-daemon.service
+# Its picture reaches the phone (Watch) through the computer's GPU broker, as the owner's does.
+Wants=caboose-gpu-broker.service
+After=network.target user@1000.service caboose-agent-bus.service caboose-agent-notification-daemon.service caboose-gpu-broker.service
 
 [Service]
 Type=simple
@@ -21,7 +23,7 @@ ExecStartPre=+/usr/bin/install -d -m 0755 /run/caboose
 ExecStartPre=+/usr/bin/install -o caboose -g caboose -m 0644 /dev/null /run/caboose/agent-display.env
 # Agents see and drive its apps, Wayland and X11 alike, through its control socket. It
 # plays no sound.
-ExecStart=/usr/libexec/caboose/agent-profile exec /usr/local/bin/caboose-display --listen 0.0.0.0:14601 --socket wayland-caboose-agent --x-display 101 --no-audio --no-games --no-devices --env-file /run/caboose/agent-display.env
+ExecStart=/bin/sh -c 'exec /usr/libexec/caboose/agent-profile exec /usr/local/bin/caboose-display --listen 0.0.0.0:14601 --socket wayland-caboose-agent --x-display 101 --no-audio --no-games --no-devices --env-file /run/caboose/agent-display.env $$([ -x /usr/local/libexec/caboose-gpu-seat-args ] && /usr/local/libexec/caboose-gpu-seat-args agent)'
 # Start the seat's accessibility bus before any app, so every app on it joins that bus.
 ExecStartPost=-/bin/sh -c 'caboose-display-ready 60 14601 && set -a && . /run/caboose/agent-display.env && exec /usr/libexec/caboose/a11y bus --display "$DISPLAY" --wait 30'
 Restart=on-failure

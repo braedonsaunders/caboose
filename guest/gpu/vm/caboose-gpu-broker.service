@@ -1,0 +1,25 @@
+[Unit]
+Description=Caboose GPU broker: the phone's GPU for both seats, on :14602 (docs/gpu-live.md)
+Documentation=https://github.com/braedonsaunders/caboose/blob/main/docs/gpu-live.md
+# Only with the GPU stack installed (a release, or the components' bundle).
+ConditionPathExists=/usr/local/lib/caboose-gpu-live/icd.json
+Requires=user@1000.service
+After=network.target user@1000.service
+Before=caboose-display.service caboose-display-agent.service
+
+[Service]
+Type=simple
+Slice=caboose-workloads.slice
+User=caboose
+Group=caboose
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+ExecStartPre=+/usr/bin/install -d -o caboose -g caboose -m 0700 /run/user/1000
+ExecStartPre=+/usr/bin/install -d -o caboose -g caboose -m 0700 /run/user/1000/caboose-gpu
+# The host writes the wake's token to /run/caboose/display-token; the broker reads it at each
+# executor's admission. Each display joins it on its seat's control socket.
+ExecStart=/usr/local/libexec/caboose-gpu-broker --listen 0.0.0.0:14602 --token-file /run/caboose/display-token --dir /run/user/1000/caboose-gpu --private-indexed
+Restart=on-failure
+RestartSec=1
+
+[Install]
+WantedBy=multi-user.target

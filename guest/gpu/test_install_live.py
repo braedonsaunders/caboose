@@ -45,6 +45,37 @@ class InstalledBrokerTests(unittest.TestCase):
                 self.assertEqual(module.read_bytes(), (source / "gfxstream" / name).read_bytes())
                 self.assertEqual(module.stat().st_mode & 0o777, 0o644)
 
+    def test_a_virtual_machine_gets_the_broker_service_and_the_seats_options(self):
+        with tempfile.TemporaryDirectory(prefix="caboose-gpu-install-") as temporary:
+            root = Path(temporary)
+            installer.install(HERE, root)
+            expected = {"etc/systemd/system/caboose-gpu-broker.service": 0o644,
+                        "etc/udev/rules.d/70-caboose-gpu.rules": 0o644,
+                        "etc/modules-load.d/caboose-gpu.conf": 0o644,
+                        "usr/local/libexec/caboose-gpu-seat-args": 0o755}
+            for path, mode in expected.items():
+                self.assertEqual((root / path).stat().st_mode & 0o777, mode, path)
+            unit = (root / "etc/systemd/system/caboose-gpu-broker.service").read_text()
+            self.assertIn("--listen 0.0.0.0:14602", unit)
+            self.assertIn("ConditionPathExists=/usr/local/lib/caboose-gpu-live/icd.json", unit)
+            self.assertIn("User=caboose", unit)
+            self.assertEqual((root / "etc/modules-load.d/caboose-gpu.conf").read_text().split()[-1], "vgem")
+            rules = (root / "etc/udev/rules.d/70-caboose-gpu.rules").read_text()
+            self.assertIn('DRIVERS=="vgem", GROUP="caboose", MODE="0660"', rules)
+            self.assertIn('KERNEL=="userfaultfd", GROUP="caboose", MODE="0660"', rules)
+
+    def test_seat_options_name_the_seat_and_need_the_installed_stack(self):
+        script = HERE / "vm/caboose-gpu-seat-args"
+        installed = Path("/usr/local/lib/caboose-gpu-live/icd.json").is_file() and Path("/usr/local/libexec/caboose-gpu-broker").is_file()
+        out = subprocess.run(["sh", str(script), "agent"], capture_output=True, text=True, env={"XDG_RUNTIME_DIR": "/run/user/1000", "PATH": os.environ["PATH"]})
+        self.assertEqual(out.returncode, 0)
+        if installed:
+            self.assertIn("--private-gpu-broker /run/user/1000/caboose-gpu/agent/control.sock", out.stdout)
+        else:
+            self.assertEqual(out.stdout, "")
+        bad = subprocess.run(["sh", str(script), "other"], capture_output=True, text=True)
+        self.assertEqual(bad.returncode, 2)
+
     def test_incomplete_bundle_does_not_install_entrypoint(self):
         with tempfile.TemporaryDirectory(prefix="caboose-gpu-incomplete-") as temporary:
             base = Path(temporary)

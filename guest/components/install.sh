@@ -97,6 +97,10 @@ else
 fi
 if [[ "$mode" = vm ]]; then
   systemctl daemon-reload
+  # The phone GPU's device rules and vgem (gpu/vm), now as at every boot.
+  udevadm control --reload 2>/dev/null || :
+  modprobe vgem 2>/dev/null || :
+  udevadm trigger --subsystem-match=drm --subsystem-match=misc 2>/dev/null || :
   systemctl start caboose-memory.service 2>/dev/null || :
   systemctl restart caboose-vsock-services.service
   # The owner's display requires its notification endpoint, so restarting the endpoint would

@@ -1,0 +1,5 @@
+# The phone's GPU (docs/gpu-buffers.md, docs/gpu-live.md): the vgem nodes are the computer's
+# render node for shared buffers, and the guest driver tracks stores to mapped memory through
+# /dev/userfaultfd. Both are the session user's, as caboose-session makes them in a container.
+SUBSYSTEM=="drm", KERNEL=="card[0-9]*|renderD[0-9]*", DRIVERS=="vgem", GROUP="caboose", MODE="0660"
+KERNEL=="userfaultfd", GROUP="caboose", MODE="0660"

@@ -145,5 +145,19 @@ again with the display, so the computer runs the release's broker: the service o
 displays and would otherwise keep the old code. No game runs then, so no phone session is
 lost; both seats' displays connect to it again.
 
+A computer named `vm:NAME` is a virtual machine. The host alone runs root commands in a guest
+(over vsock), so the install goes through the host's operator API: `$CABOOSE_HOST_URL`, with
+the token in `$CABOOSE_HOST_TOKEN_FILE`. It uses `POST /v1/host/computers/NAME/exec` (a root
+command and its result) and `PUT /v1/host/computers/NAME/file?path=…&mode=…` (a file written
+into the guest). The game gate is the same. The release's files go in as one archive. The
+install then:
+
+1. tells systemd and udev and loads `vgem`;
+2. stops both displays;
+3. restarts `caboose-gpu-broker.service` when the release changes it;
+4. starts the owner's display, and the agent seat's if it ran;
+5. starts Steam again if it ran;
+6. writes `/etc/caboose-release`.
+
 Run `python3 -m unittest guest/release/test_release.py` for the release format, signature
 and SBOM tests, and the executor check's, with the check itself stood in. They need OpenSSL with Ed25519 (1.1.1 or later), and no Docker or root.

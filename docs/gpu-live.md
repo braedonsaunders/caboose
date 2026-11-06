@@ -1323,6 +1323,22 @@ the agent seat's screenshots and computer use never depend on the phone. The age
 applications always draw on the computer; only its compositor's picture uses the broker. The
 agent seat may take only `DIR/agent`, and the owner seat never takes it.
 
+A container computer starts the broker and passes each display its seat's options through
+`caboose-session`. A virtual machine computer does it with systemd, from files the GPU stack
+installs (`guest/gpu/vm`, placed by `install-live.py` with the rest of the stack):
+
+- `caboose-gpu-broker.service` runs the broker as `caboose` with the options above. It runs only
+  where the stack is installed (`/usr/local/lib/caboose-gpu-live/icd.json`), and both display
+  units want it and start after it.
+- Each display unit appends `caboose-gpu-seat-args SEAT`, which prints that seat's
+  `--private-gpu-*` options, or nothing without the stack.
+- `vgem` is loaded at boot (`/etc/modules-load.d/caboose-gpu.conf`). A udev rule gives its
+  card and render nodes and `/dev/userfaultfd` to the `caboose` group, mode 0660.
+
+A virtual machine has no server GPU: the phone is its only GPU, and `CABOOSE_GPU` is unset. The
+host relays the phone's `GET /gpu` to port 14602 at the machine's address, as it does for a
+container.
+
 ## Surface records
 
 Every surface payload starts with the same 40-byte identity: 16 nonzero compositor

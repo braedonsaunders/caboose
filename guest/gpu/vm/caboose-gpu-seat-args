@@ -1,0 +1,11 @@
+#!/bin/sh
+# Prints the options that make seat SEAT's display (owner or agent) a client of the computer's
+# GPU broker service (caboose-gpu-broker.service), or nothing without the GPU stack: the VM's
+# display units append them, as caboose-session's phone_gpu_args does in a container.
+set -eu
+seat=${1:?expected owner or agent}
+case "$seat" in owner|agent) ;; *) echo "unknown seat $seat" >&2; exit 2 ;; esac
+[ -f /usr/local/lib/caboose-gpu-live/icd.json ] && [ -x /usr/local/libexec/caboose-gpu-broker ] || exit 0
+dir=${XDG_RUNTIME_DIR:-/run/user/1000}/caboose-gpu/$seat
+echo --private-gpu-broker "$dir/control.sock" --private-gpu-stream-socket "$dir/gpu.sock" \
+  --private-gpu-surface-socket "$dir/surface.sock" --private-gpu-indexed
