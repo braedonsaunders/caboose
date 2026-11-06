@@ -4,6 +4,16 @@
 set -eu
 here=$(dirname "$0")
 mode=${1:?expected image-vm, image-container, vm or container}
+# The computers' Flatpak (package/, README.md): Debian's, rebuilt with the retry the depot over
+# virtio-fs needs. An image build stages it in debs/; it never replaces a newer Debian version.
+for deb in "$here"/debs/flatpak_*.deb; do
+  [ -f "$deb" ] || break
+  staged=$(dpkg-deb -f "$deb" Version)
+  installed=$(dpkg-query -W -f='${Version}' flatpak 2>/dev/null || :)
+  if [ -z "$installed" ] || dpkg --compare-versions "$staged" gt "$installed"; then
+    apt-get install -y -q --no-install-recommends "$here"/debs/*.deb >/dev/null
+  fi
+done
 install -Dm644 "$here/flathub.flatpakrepo" /usr/share/caboose/flathub.flatpakrepo
 # The pinned repository file carries Flathub's signing key; nothing is fetched to trust it.
 flatpak remote-add --system --if-not-exists flathub /usr/share/caboose/flathub.flatpakrepo

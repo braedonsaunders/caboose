@@ -34,6 +34,11 @@ COPY xwayland /xwayland
 ARG XWAYLAND_BUILD_JOBS=2
 RUN apt-get update && XWAYLAND_JOBS="$XWAYLAND_BUILD_JOBS" /xwayland/build.sh /out/xwayland && rm -rf /var/lib/apt/lists/*
 
+# Debian's Flatpak, rebuilt with the patches in flatpak/package (guest/flatpak/README.md).
+FROM debian:trixie-slim AS flatpak
+COPY flatpak/package /package
+RUN /package/build-in-debian.sh /out/flatpak
+
 FROM debian:trixie-slim
 ENV DEBIAN_FRONTEND=noninteractive
 # This disposable image build can safely skip per-package fsync on WSL's HDD.
@@ -77,6 +82,7 @@ COPY phone /tmp/bundle/phone
 COPY devices /tmp/bundle/devices
 COPY bridge /tmp/bundle/bridge
 COPY flatpak /tmp/bundle/flatpak
+COPY --from=flatpak /out/flatpak /tmp/bundle/flatpak/debs/
 COPY game /tmp/bundle/game
 COPY gpu /tmp/bundle/gpu
 COPY apps/install.sh apps/caboose-app apps/appcore.py apps/net.py apps/remote.py apps/page.js apps/world.js apps/guide.md apps/apps-mcp.mjs /tmp/bundle/apps/

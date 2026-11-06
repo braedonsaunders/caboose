@@ -1,0 +1,23 @@
+Description: Retry openat2 on EAGAIN when chasing paths
+ Flatpak 1.16 resolves an extension's merge-dirs with openat2(RESOLVE_BENEATH), which fails
+ with EAGAIN when a mount or rename happens anywhere during the lookup. Flatpak then refuses
+ to start: "Extension ... has invalid merge-dirs". Upstream libglnx retries (Flatpak 1.18.2
+ and later carry it).
+Origin: upstream, https://gitlab.gnome.org/GNOME/libglnx/-/commit/eef7f14c344723cb20bebd04dcc79be77363c3be
+---
+diff --git a/subprojects/libglnx/glnx-chase.c b/subprojects/libglnx/glnx-chase.c
+index 2251cb71..49e606a3 100644
+--- a/subprojects/libglnx/glnx-chase.c
++++ b/subprojects/libglnx/glnx-chase.c
+@@ -684,7 +684,10 @@ glnx_chaseat_full (int                 dirfd,
+         .resolve = openat2_resolve,
+       };
+ 
+-      fd = openat2 (dirfd, path, &how, sizeof (how));
++      do
++        fd = openat2 (dirfd, path, &how, sizeof (how));
++      while (fd < 0 && errno == EAGAIN);
++
+       if (fd < 0)
+         {
+           /* If the syscall is not implemented (ENOSYS) or blocked by
