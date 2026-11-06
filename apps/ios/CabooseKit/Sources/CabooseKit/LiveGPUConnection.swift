@@ -5,6 +5,8 @@ public enum LiveGPUError: Error, Equatable, Sendable {
     case notOpen, closed, missingNativeBinding, drainTimedOut
     /// The host holds no executor for the resume credential (HTTP 410).
     case resumeRefused
+    /// The host ended the executor (close 4410): it is gone, and nothing resumes it.
+    case executorEnded
     /// No pong from the host for longer than the relay's own silence limit.
     case silent
     /// Native cleanup had not returned in time; it goes on, and the executor counts as ended.
@@ -407,11 +409,22 @@ public final class LiveGPUConnection: LiveGPUResumeSocket, @unchecked Sendable {
             catch { finish(error) }
         case .closed(let close):
             LiveGPUResumableTransport.log("socket closed ready=\(ready ? 1 : 0) status=\(close.refusedStatus ?? 0) code=\(close.code ?? 0) failure=\(close.failure ?? "none")")
-            if !ready, close.refusedStatus == 410 { finish(LiveGPUError.resumeRefused); return }
-            // Only the host's own close frame with code 1000 is a normal close: anything else
-            // cannot release an executor lease.
-            finish(close.refusedStatus == nil && close.failure == nil && close.code == 1000 ? nil : LiveGPUError.closed)
+            finish(Self.outcome(of: close, ready: ready))
         }
+    }
+
+    /// The host's close code for an executor it has ended (`GPU_EXECUTOR_ENDED_CLOSE`).
+    static let executorEndedCloseCode = 4410
+
+    /// What a closed socket means for the executor: nil for the host's normal close, an
+    /// ended executor for a refused resume (410) or the host's 4410, else a lost socket that
+    /// a resumable executor may resume.
+    static func outcome(of close: HTTP1WebSocket.Close, ready: Bool) -> LiveGPUError? {
+        if !ready, close.refusedStatus == 410 { return .resumeRefused }
+        if close.failure == nil, close.code == executorEndedCloseCode { return .executorEnded }
+        // Only the host's own close frame with code 1000 is a normal close: anything else
+        // cannot release an executor lease.
+        return close.refusedStatus == nil && close.failure == nil && close.code == 1000 ? nil : .closed
     }
 
     private func opened(_ response: WebSocketHandshake.Response, socket: HTTP1WebSocket) {

@@ -186,6 +186,22 @@ final class LiveGPUResumeTests: XCTestCase {
         XCTAssertGreaterThan(expiring.sockets.count, 3)
     }
 
+    /// The host's 4410 ends the executor as a refused resume does: no reconnect follows.
+    func testExecutorEndedCloseEndsTheExecutor() throws {
+        let ended = HTTP1WebSocket.Close(code: LiveGPUConnection.executorEndedCloseCode, reason: "executor ended")
+        XCTAssertEqual(LiveGPUConnection.outcome(of: ended, ready: true), .executorEnded)
+        XCTAssertEqual(LiveGPUConnection.outcome(of: HTTP1WebSocket.Close(refusedStatus: 410), ready: false), .resumeRefused)
+        XCTAssertNil(LiveGPUConnection.outcome(of: HTTP1WebSocket.Close(code: 1000), ready: true))
+        XCTAssertEqual(LiveGPUConnection.outcome(of: HTTP1WebSocket.Close(code: 1001), ready: true), .closed)
+        XCTAssertEqual(LiveGPUConnection.outcome(of: HTTP1WebSocket.Close(failure: "reset"), ready: true), .closed)
+
+        let (transport, factory, inbox) = try resumable()
+        factory.sockets[0].emit(.closed(LiveGPUError.executorEnded))
+        withExtendedLifetime(transport) {}
+        XCTAssertEqual(inbox.closes, 1)
+        XCTAssertEqual(factory.sockets.count, 1, "an ended executor is not resumed")
+    }
+
     func testSuspendedTransportClosesWith4001AndResumesOnRequest() throws {
         let (transport, factory, inbox) = try resumable()
         transport.suspendTransport()

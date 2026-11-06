@@ -327,7 +327,7 @@ final class LiveGPUResumableTransport: LiveGPUTransport, LiveGPUReceiveFlow, @un
             socket = nil
             Self.log("closed mode=\(mode) link=\(link) error=\(error.map { String(describing: $0) } ?? "none")")
             if mode == .resumable, error != nil {
-                if let refusal = error as? LiveGPUError, refusal == .resumeRefused {
+                if let refusal = error as? LiveGPUError, refusal == .resumeRefused || refusal == .executorEnded {
                     ended = true; condition.broadcast()
                     deliveries.append(.closed(error))
                 } else {
