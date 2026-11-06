@@ -337,6 +337,9 @@ export function createContainerController(config: Config, dependencies: { docker
       ...(attempt ? ['--label', `caboose.port-attempt=${attempt}`] : []),
       '--label', `caboose.memory-mb=${size.memoryMb}`, '--label', `caboose.vcpus=${size.vcpus}`,
       '--memory', `${size.memoryMb}m`, '--cpus', String(size.vcpus), '--shm-size', '2g',
+      // No core dumps: a computer shares the host's kernel, whose crash handler (WSL's among them)
+      // would otherwise keep every crashing program's memory on the host's disk.
+      '--ulimit', 'core=0',
       ...([['files', FILES_PORT], ['terminal', TERMINAL_PORT], ['display', OWNER_DISPLAY_PORT], ['agent', AGENT_DISPLAY_PORT]] as const).flatMap(([key, port]) => ['-p', `127.0.0.1:${place.ports[key] || ''}:${port}`]),
       ...providedArgs(),
       ...securityArgs([...config.containerArgs, ...(spec().securityOpt ?? []).flatMap(option => ['--security-opt', option])]),

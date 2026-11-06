@@ -388,7 +388,9 @@ owner display with `docker exec … caboose-display --pad-link`
 an existing container, so a container created without these options has no gamepads until
 it is recreated.
 
-The container is created with `--init`, `--restart no`, `--shm-size 2g`, the computer's
+The container is created with `--init`, `--restart no`, `--shm-size 2g`, `--ulimit core=0`
+(no core dumps: the container shares the host's kernel, whose crash handler would keep a
+crashing program's memory on the host's disk; WSL's collects them on Windows' C: drive), the computer's
 memory and CPU limits, DNS `1.1.1.1` and `9.9.9.9`, its home at `/home/caboose` from
 `CABOOSE_CONTAINER_HOME` (a named volume or an absolute host path, `caboose-home` by
 default), and any extra `CABOOSE_CONTAINER_ARGS`. It publishes ports 14600, 14601, 14700
