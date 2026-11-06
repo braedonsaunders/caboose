@@ -114,7 +114,8 @@ final class AppModel {
     private(set) var pairing = false
     /// Why the last pairing code did not sign this phone in.
     var pairingFailure: String?
-    /// A saved sign-in the app removed because its host no longer knows it.
+    /// A host's answer that it no longer knows a saved sign-in: why the app removed it, or why
+    /// it kept one whose answer came from an address it could not verify.
     var signInNotice: String?
     /// Whether the sign-in's host has gone unreached in a way only Tailscale on this phone fixes.
     private var tailnetAdvice = TailnetAdvice()
@@ -497,9 +498,18 @@ final class AppModel {
         if let next = savedComputers.first { connect(with: next) }
     }
 
-    /// The host said this sign-in is gone (`SignInRefusal`): it is removed, with a word why.
-    private func signInRevoked() {
+    /// The host said this sign-in is gone (`SignInRefusal`). Answered at the sign-in's own
+    /// https address it is removed, with a word why; answered anywhere else (a LAN or plain-http
+    /// address another machine could hold) it is kept, and the person is told.
+    private func signInRevoked(answeredBy url: URL) {
         guard let credentials else { return }
+        guard SignInRefusal.mayRemove(answeredBy: url, canonical: credentials.hostURL) else {
+            link.stop()
+            let reason = "\(url.host ?? "The host") says this iPhone is no longer signed in to \(credentials.displayName)."
+            phase = .failed(reason)
+            signInNotice = reason + " If that is right, remove it from Paired Computers and pair again."
+            return
+        }
         remove(credentials, notice: "\(credentials.displayName) no longer accepts this iPhone, so it was removed from Paired Computers. Pair it again to use it here.")
     }
 
@@ -665,7 +675,10 @@ final class AppModel {
     /// A host that cannot be reached is tried again on the link's schedule; one that answers
     /// with an error has said what is wrong, and retrying will not change it.
     private func wakeFailed(_ error: Error, quiet: Bool) {
-        if case HostClient.Failure.revoked = error { signInRevoked(); return }
+        if case HostClient.Failure.revoked = error {
+            if let credentials { signInRevoked(answeredBy: activeHostURL ?? credentials.hostURL) }
+            return
+        }
         let reason = tailscaleNotice ?? error.localizedDescription
         let unreachable: Bool = switch error {
         case HostClient.Failure.unreachable: true

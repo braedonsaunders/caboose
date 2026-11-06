@@ -3309,8 +3309,10 @@ is titled by the name its host gives itself (`host.name` from `/v1/session` and
 the address's host only until the host has answered once. Remove a Sign-In lists every
 saved sign-in and, after confirmation, forgets one: its Keychain entry, its cached app list,
 GPU caches, Home shortcuts and Files location. A sign-in the host answers with
-`sign-in-revoked` is removed the same way, and the app says so; a plain 401, any other
-error, a timeout or an unreachable host never removes one.
+`sign-in-revoked` at the sign-in's own address over https (TLS proves which host
+answered) is removed the same way, and the app says so; the same answer from another of
+its addresses, or over plain http, only shows what the host said and keeps the sign-in.
+A plain 401, any other error, a timeout or an unreachable host never removes one.
 A single shared Keychain record stores the collection and active selection atomically;
 failed writes leave the current connection intact and show an error. The legacy pairing
 migrates with its existing Files/cache identity. Pairing metadata supplies the id and name;

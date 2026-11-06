@@ -94,8 +94,10 @@ A sign-in keeps the name its host gives itself (`host.name` in `POST /v1/session
 `GET /v1/computers`) and is titled by it everywhere, a sign-in to one computer by that
 computer's name; only until the host first answers does the title fall back to the address.
 A sign-in is removed when its host answers `401` with `code: "sign-in-revoked"` (the phone
-was signed out, its computer deleted, or the owner token replaced), and the app says so;
-nothing else removes one on its own. A sign-in with a tailnet address (`*.ts.net`,
+was signed out, its computer deleted, or the owner token replaced) at the sign-in's own
+address over https, and the app says so. From a probed LAN or VPN address, or over plain
+http, where another machine could be answering, the app only says what it heard and keeps
+the sign-in. Nothing else removes one on its own. A sign-in with a tailnet address (`*.ts.net`,
 100.64.0.0/10, fd7a:115c:a1e0::/48) probes its addresses before waking, and after two
 attempts in a row with no answer says to turn on Tailscale on the iPhone. The decisions are
 in `CabooseKit/Sources/CabooseKit/Host/SignInPolicy.swift`, which the extensions compile

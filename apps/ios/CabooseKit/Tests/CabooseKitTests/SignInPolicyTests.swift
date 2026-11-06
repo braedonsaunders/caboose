@@ -41,6 +41,18 @@ struct SignInPolicyTests {
         #expect(!SignInRefusal.isRevoked(status: 0, body: Data()))
     }
 
+    @Test func removesOnlyOnAnAnswerFromTheVerifiedAddress() {
+        let canonical = URL(string: "https://lucid-gpu.tailea5249.ts.net")!
+        #expect(SignInRefusal.mayRemove(answeredBy: canonical, canonical: canonical))
+        #expect(SignInRefusal.mayRemove(answeredBy: URL(string: "https://LUCID-GPU.tailea5249.ts.net:443")!, canonical: canonical))
+        // A probed LAN or VPN address, another port, or plain http could be another machine.
+        #expect(!SignInRefusal.mayRemove(answeredBy: URL(string: "http://192.168.1.20:7310")!, canonical: canonical))
+        #expect(!SignInRefusal.mayRemove(answeredBy: URL(string: "https://100.88.1.2")!, canonical: canonical))
+        #expect(!SignInRefusal.mayRemove(answeredBy: URL(string: "https://lucid-gpu.tailea5249.ts.net:8443")!, canonical: canonical))
+        let plain = URL(string: "http://192.168.1.20:7310")!
+        #expect(!SignInRefusal.mayRemove(answeredBy: plain, canonical: plain))
+    }
+
     @Test func recognisesTailnetAddresses() {
         for host in ["lucid-gpu.tailea5249.ts.net", "LUCID.TAILEA5249.TS.NET.", "100.64.0.1", "100.101.102.103", "100.127.255.255",
                      "fd7a:115c:a1e0::1", "[fd7a:115c:a1e0:ab12:4843:cd96:6258:b240]", "FD7A:115C:A1E0:0:0:0:0:9"] {

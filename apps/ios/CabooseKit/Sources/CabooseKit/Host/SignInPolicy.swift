@@ -33,8 +33,20 @@ public enum SignInTitle {
 /// signed out from the console, a deleted computer's phone, a replaced owner token). Nothing
 /// else removes a sign-in on its own: not a plain 401, another status, a timeout or an
 /// unreachable host.
+///
+/// The answer removes a sign-in only when it came from an address whose identity TLS
+/// proved: the sign-in's own address, over https. A LAN or VPN address the app probed, or
+/// any plain-http one, could be another machine that has taken that address, which does
+/// not know the token either; there the app only says what the host answered.
 public enum SignInRefusal {
     public static let revokedCode = "sign-in-revoked"
+
+    /// Whether a revoked answer from `answeredBy` may remove the sign-in saved at `canonical`.
+    public static func mayRemove(answeredBy url: URL, canonical: URL) -> Bool {
+        guard url.scheme?.lowercased() == "https", canonical.scheme?.lowercased() == "https",
+              let host = url.host?.lowercased(), !host.isEmpty, host == canonical.host?.lowercased() else { return false }
+        return (url.port ?? 443) == (canonical.port ?? 443)
+    }
 
     public static func isRevoked(status: Int, body: Data) -> Bool {
         guard status == 401,
