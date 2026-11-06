@@ -396,6 +396,12 @@ class Releases(unittest.TestCase):
                 if v is not None:
                     os.environ[k] = v
 
+    def test_a_skipped_chaos_gate_is_recorded_with_its_reason(self):
+        self.assertEqual(release.chaos_skipped({"chaos_skip": "approved: does not fit this host"}),
+                         "SKIP chaos: approved: does not fit this host\n")
+        self.assertIsNone(release.chaos_skipped({"chaos_home": "/h"}))
+        self.assertIsNone(release.chaos_skipped({"chaos_skip": "  "}))
+
     def test_paths_must_be_absolute_and_ids_plain(self):
         release.main(["new", "r1"])
         for path in ("relative/x", "/usr/../etc/x"):

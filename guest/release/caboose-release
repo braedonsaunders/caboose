@@ -186,6 +186,12 @@ def check_settings(path=None):
     return settings
 
 
+def chaos_skipped(settings):
+    """The check result's line for an approved chaos skip (chaos_skip=REASON), or None."""
+    reason = settings.get("chaos_skip", "").strip()
+    return f"SKIP chaos: {reason}\n" if reason else None
+
+
 def run_check(directory, settings):
     """Runs the Linux executor check (the synchronization probe, then vkcube's frames)
     against the release's driver; its logs go to check/ in the release. The exit status and
@@ -255,6 +261,11 @@ def run_check(directory, settings):
     # Fifty random executor losses, replacements, stalls and viewer reconnects through a seat
     # running the release's compositor, broker and driver: every app must present real
     # pictures after each.
+    # An approved, recorded skip (chaos_skip=REASON in the check settings): the summary and
+    # so the release's check result say so, with the reason.
+    skipped = chaos_skipped(settings)
+    if skipped:
+        return 0, summary + skipped
     home = settings["chaos_home"]
     wait_for_memory()
     chaos = subprocess.run([

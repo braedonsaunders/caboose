@@ -98,6 +98,7 @@ in the release, and the manifest covers them. The settings are `key=value` lines
 | `dxvk_bench` | The directory in that computer's Steam Flatpak data holding DXVK's `triangle.exe` |
 | `dxvk_stress` | Optional: `SECONDS THREADS DRAWS` for `d3d11_stress.exe` (built from [`d3d11-stress.cpp`](../../apps/ios/GPUStream/gfxstream/linux-executor/d3d11-stress.cpp)) in `dxvk_bench`, run after the triangle |
 | `chaos_home` | A home in that computer of the check's own (never its owner's) with a Steam Flatpak profile, and DXVK's `triangle.exe` in its Flatpak data's `caboose-bench`; [`prepare-check-home.sh`](prepare-check-home.sh) makes it when it is missing |
+| `chaos_skip` | Optional: skips the chaos gate, recording `SKIP chaos: REASON` in the check result; only with an approved reason |
 
 ### The check's home
 
