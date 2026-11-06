@@ -186,6 +186,22 @@ final class LiveGPUResumeTests: XCTestCase {
         XCTAssertGreaterThan(expiring.sockets.count, 3)
     }
 
+    /// The host's 4410 ends the executor as a refused resume does: no reconnect follows.
+    func testExecutorEndedCloseEndsTheExecutor() throws {
+        let ended = HTTP1WebSocket.Close(code: LiveGPUConnection.executorEndedCloseCode, reason: "executor ended")
+        XCTAssertEqual(LiveGPUConnection.outcome(of: ended, ready: true), .executorEnded)
+        XCTAssertEqual(LiveGPUConnection.outcome(of: HTTP1WebSocket.Close(refusedStatus: 410), ready: false), .resumeRefused)
+        XCTAssertNil(LiveGPUConnection.outcome(of: HTTP1WebSocket.Close(code: 1000), ready: true))
+        XCTAssertEqual(LiveGPUConnection.outcome(of: HTTP1WebSocket.Close(code: 1001), ready: true), .closed)
+        XCTAssertEqual(LiveGPUConnection.outcome(of: HTTP1WebSocket.Close(failure: "reset"), ready: true), .closed)
+
+        let (transport, factory, inbox) = try resumable()
+        factory.sockets[0].emit(.closed(LiveGPUError.executorEnded))
+        withExtendedLifetime(transport) {}
+        XCTAssertEqual(inbox.closes, 1)
+        XCTAssertEqual(factory.sockets.count, 1, "an ended executor is not resumed")
+    }
+
     func testSuspendedTransportClosesWith4001AndResumesOnRequest() throws {
         let (transport, factory, inbox) = try resumable()
         transport.suspendTransport()
@@ -199,11 +215,24 @@ final class LiveGPUResumeTests: XCTestCase {
         XCTAssertEqual(LiveGPUResumeWire.header(factory.sockets[1].sent[0])?.kind, LiveGPUResumeWire.resume)
     }
 
+    /// A socket whose receiving the session holds back reads nothing, pongs included: that is
+    /// buffering, not silence, and must not end the executor.
+    func testPausedReceivingIsNotSilence() throws {
+        let request = try LiveGPUConnection.makeRequest(hostURL: URL(string: "https://example.com")!, phoneToken: "phone")
+        let connection = LiveGPUConnection(request: request, resumeCredential: nil)
+        Thread.sleep(forTimeInterval: 0.05)
+        XCTAssertGreaterThan(connection.silence, 0.04)
+        connection.setReceivingPaused(true)
+        XCTAssertEqual(connection.silence, 0)
+        connection.setReceivingPaused(false)
+        XCTAssertLessThan(connection.silence, 0.04, "silence counts again from the resume")
+    }
+
     func testCredentialFormatAndResumeRequest() throws {
         XCTAssertTrue(LiveGPUConnection.validCredential(credential))
         XCTAssertFalse(LiveGPUConnection.validCredential(credential + "A"))
         XCTAssertFalse(LiveGPUConnection.validCredential(String(repeating: "+", count: 43)))
-        XCTAssertNotNil(URLSessionWebSocketTask.CloseCode(rawValue: 4001))
+        XCTAssertEqual(LiveGPUConnection.suspendedCloseCode, 4001)
         let request = try LiveGPUConnection.makeRequest(hostURL: URL(string: "https://example.com")!, phoneToken: "phone")
         XCTAssertTrue(request.value(forHTTPHeaderField: "X-Caboose-GPU-Features")!.hasSuffix(",executor-resume,zstd-stream,upload-cache,guest-buffer-views,batched-descriptor-sets"))
         XCTAssertNil(request.value(forHTTPHeaderField: "X-Caboose-GPU-Resume"))

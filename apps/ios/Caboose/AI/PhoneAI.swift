@@ -23,7 +23,7 @@ final class PhoneAI {
     private(set) var models: [AIRelay.Model] = []
 
     @ObservationIgnored private var host: HostClient?
-    @ObservationIgnored private var socket: URLSessionWebSocketTask?
+    @ObservationIgnored private var socket: HTTP1WebSocket?
     @ObservationIgnored private var generation = 0
     @ObservationIgnored private var tasks: [String: Task<Void, Never>] = [:]
     /// The open-weight models downloaded to this phone.
@@ -69,26 +69,21 @@ final class PhoneAI {
         if models.isEmpty { status = .unavailable(runner.unavailableReason ?? "No models are on this iPhone."); return }
         generation += 1
         let current = generation
-        var request = URLRequest(url: host.socketURL("/v1/ai"))
-        request.setValue("Bearer \(host.token)", forHTTPHeaderField: "Authorization")
-        let task = URLSession.shared.webSocketTask(with: request)
-        task.maximumMessageSize = 40 * 1024 * 1024
+        let task = HTTP1WebSocket(url: host.socketURL("/v1/ai"), headers: [("Authorization", "Bearer \(host.token)")],
+                                  maximumMessageSize: 40 * 1024 * 1024, label: "caboose.ai.socket")
         socket = task
         status = .connecting
-        task.resume()
-        send(AIRelay.hello(models), on: task)
-        task.sendPing { [weak self] error in
-            Task { @MainActor in
-                guard let self, error == nil, self.generation == current, self.socket === task else { return }
-                self.status = .serving
+        task.open { [weak self] event in
+            // In order, on the main queue.
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated { self?.socketEvent(event, on: task, generation: current) }
             }
         }
-        receive(on: task, generation: current)
     }
 
     private func close() {
         generation += 1
-        socket?.cancel(with: .goingAway, reason: nil)
+        socket?.close(code: 1001)
         socket = nil
         for task in tasks.values { task.cancel() }
         tasks = [:]
@@ -96,34 +91,37 @@ final class PhoneAI {
         runner.cancelAll()
     }
 
-    private func send(_ text: String, on task: URLSessionWebSocketTask) {
-        task.send(.string(text)) { _ in }
+    private func send(_ text: String, on task: HTTP1WebSocket) {
+        task.send(.string(text))
     }
 
-    private func receive(on task: URLSessionWebSocketTask, generation current: Int) {
-        task.receive { [weak self] result in
-            Task { @MainActor in
-                guard let self, self.generation == current, self.socket === task else { return }
-                switch result {
-                case .failure:
-                    self.close()
-                    self.status = .connecting
-                    try? await Task.sleep(for: .seconds(3))
-                    guard self.generation == current + 1, self.host != nil else { return }
-                    self.connect()
-                case .success(let message):
-                    switch message {
-                    case .string(let text): self.handle(text, on: task)
-                    case .data(let data): self.handle(String(decoding: data, as: UTF8.self), on: task)
-                    @unknown default: break
+    private func socketEvent(_ event: HTTP1WebSocket.Event, on task: HTTP1WebSocket, generation current: Int) {
+        guard generation == current, socket === task else { return }
+        switch event {
+        case .opened:
+            send(AIRelay.hello(models), on: task)
+            task.ping { [weak self] error in
+                DispatchQueue.main.async {
+                    MainActor.assumeIsolated {
+                        guard let self, error == nil, self.generation == current, self.socket === task else { return }
+                        self.status = .serving
                     }
-                    self.receive(on: task, generation: current)
                 }
+            }
+        case .message(.string(let text)): handle(text, on: task)
+        case .message(.data(let data)): handle(String(decoding: data, as: UTF8.self), on: task)
+        case .closed:
+            close()
+            status = .connecting
+            Task { [weak self] in
+                try? await Task.sleep(for: .seconds(3))
+                guard let self, self.generation == current + 1, self.host != nil else { return }
+                self.connect()
             }
         }
     }
 
-    private func handle(_ text: String, on task: URLSessionWebSocketTask) {
+    private func handle(_ text: String, on task: HTTP1WebSocket) {
         let message: AIRelay.Incoming
         do {
             message = try AIRelay.incoming(text)

@@ -23,7 +23,7 @@ struct LiveTerminalTests {
         private var end: TerminalEnd?
 
         init(_ url: URL, token: String) {
-            connection = TerminalConnection(transport: URLSessionTerminalTransport(url: url, token: token))
+            connection = TerminalConnection(transport: WebSocketTerminalTransport(url: url, token: token))
             connection.start { [self] event in
                 lock.withLock {
                     switch event {

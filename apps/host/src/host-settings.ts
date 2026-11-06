@@ -24,6 +24,19 @@ function computerId(value: unknown): string | null {
   return value
 }
 
+/**
+ * The name a phone labels its sign-in to this host by: the host's own name, else the name of
+ * the computer the sign-in reaches, else the machine's. Always something a person can read,
+ * never an address.
+ */
+export function phoneHostName(hostName: string | null, computerName: string | null | undefined, machine: string): string {
+  for (const candidate of [hostName, computerName, machine]) {
+    const name = candidate?.trim()
+    if (name) return name.slice(0, 80)
+  }
+  return 'Caboose'
+}
+
 export class HostSettings {
   private pending: Promise<void> = Promise.resolve()
   private constructor(private path: string | null, private value: HostSettingsValue) {}

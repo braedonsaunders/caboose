@@ -4,7 +4,17 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { ComputerRegistry, LEGACY_COMPUTER } from './computers.js'
-import { HostSettings, settleLegacyComputer } from './host-settings.js'
+import { HostSettings, phoneHostName, settleLegacyComputer } from './host-settings.js'
+
+describe('phoneHostName', () => {
+  it("names a host by its own name, else its computer's, else the machine's", () => {
+    expect(phoneHostName('Den', 'Kids', 'lucid-gpu')).toBe('Den')
+    expect(phoneHostName(null, 'Kids', 'lucid-gpu')).toBe('Kids')
+    expect(phoneHostName(null, '  ', 'lucid-gpu')).toBe('lucid-gpu')
+    expect(phoneHostName(null, undefined, 'lucid-gpu')).toBe('lucid-gpu')
+    expect(phoneHostName(null, null, '')).toBe('Caboose')
+  })
+})
 
 const roots: string[] = []
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }) })

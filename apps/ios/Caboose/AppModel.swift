@@ -116,6 +116,17 @@ final class AppModel {
     private(set) var pairing = false
     /// Why the last pairing code did not sign this phone in.
     var pairingFailure: String?
+    /// A host's answer that it no longer knows a saved sign-in: why the app removed it, or why
+    /// it kept one whose answer came from an address it could not verify.
+    var signInNotice: String?
+    /// Whether the sign-in's host has gone unreached in a way only Tailscale on this phone fixes.
+    private var tailnetAdvice = TailnetAdvice()
+    /// "Turn on Tailscale on this iPhone to reach …" while a sign-in only a tailnet reaches
+    /// cannot be reached; nil otherwise.
+    var tailscaleNotice: String? {
+        guard let credentials, tailnetAdvice.needsTailscale(addresses: credentials.candidates) else { return nil }
+        return TailnetAdvice.message(name: credentials.displayName)
+    }
     /// The shell's selected tab.
     var selectedTab: ShellTab = .home
     /// Home's pinned and recently opened apps, kept on the phone for this computer.
@@ -345,6 +356,7 @@ final class AppModel {
         let client = HostClient(credentials: credentials, baseURL: activeHostURL ?? credentials.hostURL)
         guard let list = try? await client.computers(), revision == connectionRevision else { return }
         hostComputers = list
+        learnHostName(list.hostName)
     }
 
     /// Begins making a computer: in place on the first-computer screen, or in the switcher's
@@ -438,6 +450,7 @@ final class AppModel {
         filesRegistering = false
         filesRegistrationError = nil
         activeHostURL = nil
+        tailnetAdvice = TailnetAdvice()
         parking = false
         creation?.stop()
         creation = nil
@@ -455,12 +468,27 @@ final class AppModel {
     }
 
     func signOut() {
-        let oldPairing = credentials?.fileDomainIdentifier
-        do { try Credentials.clear() }
+        guard let credentials else { return }
+        remove(credentials)
+    }
+
+    /// Forgets a saved sign-in: its Keychain entry, and what this phone kept for it (cached
+    /// apps, GPU caches, Home's shortcuts, its Files location). The one open closes and the
+    /// next saved sign-in opens, or setup when none is left. `notice` says why, when the app
+    /// removed it rather than the person.
+    func remove(_ signIn: Credentials, notice: String? = nil) {
+        let active = signIn.id == credentials?.id
+        do { try Credentials.remove(id: signIn.id) }
         catch { pairingFailure = error.localizedDescription; return }
-        if let oldPairing {
-            Task { await appListCache.remove(pairing: oldPairing) }
-            LiveGPUCacheRoot.remove(pairing: oldPairing)
+        let pairing = signIn.fileDomainIdentifier
+        Task { await appListCache.remove(pairing: pairing) }
+        LiveGPUCacheRoot.remove(pairing: pairing)
+        UserDefaults.standard.removeObject(forKey: Self.shortcutsKey(signIn))
+        signInNotice = notice
+        guard active else {
+            FileDomains.remove(signIn)
+            savedComputers = (try? Credentials.loadCollection().computers) ?? savedComputers.filter { $0.id != signIn.id }
+            return
         }
         AgentAppPages.shared.endAll()
         resetConnection()
@@ -470,6 +498,31 @@ final class AppModel {
         shortcuts = AppShortcuts()
         phase = .needsSetup
         if let next = savedComputers.first { connect(with: next) }
+    }
+
+    /// The host said this sign-in is gone (`SignInRefusal`). Answered at the sign-in's own
+    /// https address it is removed, with a word why; answered anywhere else (a LAN or plain-http
+    /// address another machine could hold) it is kept, and the person is told.
+    private func signInRevoked(answeredBy url: URL) {
+        guard let credentials else { return }
+        guard SignInRefusal.mayRemove(answeredBy: url, canonical: credentials.hostURL) else {
+            link.stop()
+            let reason = "\(url.host ?? "The host") says this iPhone is no longer signed in to \(credentials.displayName)."
+            phase = .failed(reason)
+            signInNotice = reason + " If that is right, remove it from Paired Computers and pair again."
+            return
+        }
+        remove(credentials, notice: "\(credentials.displayName) no longer accepts this iPhone, so it was removed from Paired Computers. Pair it again to use it here.")
+    }
+
+    /// Keeps the name the host gives itself with the sign-in, for the switcher and every title.
+    private func learnHostName(_ name: String?) {
+        guard let name, var credentials, credentials.hostLabel != name else { return }
+        credentials.hostLabel = name
+        do {
+            self.credentials = try credentials.save()
+            savedComputers = (try? Credentials.loadCollection().computers) ?? savedComputers
+        } catch { pairingFailure = error.localizedDescription }
     }
 
     /// Advertise the paired computer without depending on its host or display being online.
@@ -520,7 +573,22 @@ final class AppModel {
     /// Every change after a suspension first checks `ticket`: a wake for a computer the app
     /// has since left, or one superseded by sign-out, closing or backgrounding, changes nothing.
     private func performWake(_ credentials: Credentials, ticket: WakeFence.Ticket, quiet: Bool) async {
-        let reached = await credentials.reachableURL()
+        let reached: URL
+        if credentials.usesTailnet {
+            // An address only a tailnet reaches is asked first, so a phone without Tailscale on
+            // learns it in seconds instead of waiting out the wake's own timeout.
+            let probe = await credentials.probe(timeout: 5)
+            guard wakes.isCurrent(ticket) else { return }
+            if probe == .silent {
+                tailnetAdvice.unreached()
+                wakeFailed(HostClient.Failure.unreachable("None of its addresses answered."), quiet: quiet)
+                return
+            }
+            tailnetAdvice.reached()
+            if case .host(let url) = probe { reached = url } else { reached = credentials.hostURL }
+        } else {
+            reached = await credentials.reachableURL()
+        }
         guard wakes.isCurrent(ticket) else { return }
         if reached != activeHostURL { activeHostURL = reached }
         let host = HostClient(credentials: credentials, baseURL: reached)
@@ -532,6 +600,7 @@ final class AppModel {
                 let list = try await host.computers()
                 guard wakes.isCurrent(ticket) else { return }
                 hostComputers = list
+                learnHostName(list.hostName)
                 if let chosen = list.preferred(selected: nil) {
                     connect(with: credentials.opening(computer: chosen.id, name: chosen.name))
                 } else {
@@ -556,6 +625,7 @@ final class AppModel {
             // Do not attach a computer the app has left, or open a display in the background.
             guard wakes.isCurrent(ticket), sceneActive else { return }
             computer = wake.computer
+            learnHostName(wake.hostName)
             registerFiles(name: wake.computer.name)
             if !quiet { phase = .connecting }
             openDisplay(host: host, display: wake.display, identity: identity)
@@ -607,7 +677,11 @@ final class AppModel {
     /// A host that cannot be reached is tried again on the link's schedule; one that answers
     /// with an error has said what is wrong, and retrying will not change it.
     private func wakeFailed(_ error: Error, quiet: Bool) {
-        let reason = error.localizedDescription
+        if case HostClient.Failure.revoked = error {
+            if let credentials { signInRevoked(answeredBy: activeHostURL ?? credentials.hostURL) }
+            return
+        }
+        let reason = tailscaleNotice ?? error.localizedDescription
         let unreachable: Bool = switch error {
         case HostClient.Failure.unreachable: true
         case is URLError: true

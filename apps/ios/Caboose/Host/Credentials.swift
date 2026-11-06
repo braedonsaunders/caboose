@@ -1,3 +1,6 @@
+#if CABOOSE_APP
+import CabooseKit
+#endif
 import Foundation
 import Security
 import CryptoKit
@@ -27,6 +30,9 @@ struct Credentials: Equatable, Codable, Identifiable {
     var scope: Scope?
     var computerID: String?
     var computerName: String?
+    /// The name the host gave itself (`host.name`) when it last answered; absent from sign-ins
+    /// saved before hosts sent one, and until the host first answers.
+    var hostLabel: String?
     private var storedIdentity: String?
     /// The sign-in, the same whichever of a host's computers it has open.
     var id: String {
@@ -37,9 +43,12 @@ struct Credentials: Equatable, Codable, Identifiable {
     var isHostSignIn: Bool { scope == .host }
     /// The computer a host sign-in reaches through scoped routes; nil for the unscoped routes.
     var routeComputer: String? { isHostSignIn ? computerID : nil }
-    /// The host's name as its address shows it.
-    var hostName: String { hostURL.host ?? "Caboose" }
-    var displayName: String { computerName.flatMap { $0.isEmpty ? nil : $0 } ?? hostName }
+    /// The host's name: the one it gave itself, else its address's host.
+    var hostName: String { SignInTitle.host(learned: hostLabel, address: hostURL) }
+    /// The computer this sign-in opens: its own name, else the host's.
+    var displayName: String { SignInTitle.computer(name: computerName, learned: hostLabel, address: hostURL) }
+    /// The address's host, for where the address itself is what matters.
+    var addressName: String { hostURL.host ?? hostURL.absoluteString }
     /// Console authentication uses its own browser session; never put a phone token in a URL.
     var consoleURL: URL? { Self.normalizedAddress(hostURL.absoluteString) }
 
@@ -75,6 +84,13 @@ struct Credentials: Equatable, Codable, Identifiable {
         var activeID: String?
         var active: Credentials? { computers.first { $0.id == activeID } }
 
+        /// Removes a sign-in; when it was the active one, the first remaining becomes active.
+        mutating func remove(id: String?) {
+            guard let id else { return }
+            computers.removeAll { $0.id == id }
+            if activeID == id || !computers.contains(where: { $0.id == activeID }) { activeID = computers.first?.id }
+        }
+
         mutating func select(_ incoming: Credentials) -> Credentials {
             var value = incoming
             // Server ids are scoped to a host; names and tokens are never computer ids. A host
@@ -94,6 +110,7 @@ struct Credentials: Equatable, Codable, Identifiable {
                 // A new host sign-in keeps the computer the old one had open.
                 if value.isHostSignIn && value.computerID == nil && old.isHostSignIn { value.computerID = old.computerID }
                 if value.computerName == nil && value.computerID == old.computerID { value.computerName = old.computerName }
+                if value.hostLabel == nil { value.hostLabel = old.hostLabel }
                 computers[index] = value
             } else {
                 value.storedIdentity = value.id
@@ -178,6 +195,12 @@ struct Credentials: Equatable, Codable, Identifiable {
 
     /// Forget the selected pairing without deleting any other explicitly paired computer.
     static func clear() throws {
+        let collection = try loadCollection()
+        try remove(id: collection.activeID)
+    }
+
+    /// Forget one saved sign-in, its token with it; another becomes active when it was.
+    static func remove(id removedID: String?) throws {
         var collection = try loadCollection()
         // The canonical collection already contains the migrated pairing. Erase the old
         // storage too, so Forget cannot leave its pre-migration bearer behind.
@@ -187,9 +210,7 @@ struct Credentials: Equatable, Codable, Identifiable {
         }
         UserDefaults.standard.removeObject(forKey: hostKey)
         UserDefaults.standard.removeObject(forKey: alternatesKey)
-        let removedID = collection.activeID
-        collection.computers.removeAll { $0.id == removedID }
-        collection.activeID = collection.computers.first?.id
+        collection.remove(id: removedID)
         try saveCollection(collection)
     }
 
@@ -213,34 +234,55 @@ struct Credentials: Equatable, Codable, Identifiable {
         self.alternateURLs = alternateURLs
     }
 
+    /// Whether an address of this sign-in is one only a tailnet reaches (`TailnetAddress`).
+    var usesTailnet: Bool { candidates.contains(where: TailnetAddress.contains) }
+
+    /// What probing a sign-in's addresses found.
+    enum Probe: Equatable {
+        /// The host answered at this address.
+        case host(URL)
+        /// Something answered over HTTP, but not as the host does (a captive portal, a proxy).
+        case other
+        /// Nothing answered at any address.
+        case silent
+    }
+
     /// The first address that answers, tried together: on the home network the LAN address
     /// normally wins, away from it only the VPN address answers. The anonymous health
     /// response filters captive portals, but does not authenticate the host.
     func reachableURL(timeout: TimeInterval = 2.5) async -> URL {
+        guard candidates.count > 1, case .host(let url) = await probe(timeout: timeout) else { return hostURL }
+        return url
+    }
+
+    /// Asks every address for the host's anonymous health answer at once.
+    func probe(timeout: TimeInterval) async -> Probe {
         let candidates = candidates
-        guard candidates.count > 1 else { return hostURL }
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = timeout
         configuration.waitsForConnectivity = false
         let session = URLSession(configuration: configuration, delegate: NoProbeRedirects(), delegateQueue: nil)
         defer { session.invalidateAndCancel() }
-        return await withTaskGroup(of: URL?.self) { group in
+        return await withTaskGroup(of: Probe.self) { group in
             for url in candidates {
                 group.addTask {
                     let probe = URLRequest(url: url.appendingPathComponent("v1/health"), timeoutInterval: timeout)
                     guard let (data, response) = try? await session.data(for: probe),
-                          let http = response as? HTTPURLResponse,
-                          Self.isHealthResponse(status: http.statusCode, data: data) else { return nil }
-                    return url
+                          let http = response as? HTTPURLResponse else { return .silent }
+                    return Self.isHealthResponse(status: http.statusCode, data: data) ? .host(url) : .other
                 }
             }
-            for await url in group {
-                if let url {
+            var found = Probe.silent
+            for await answer in group {
+                switch answer {
+                case .host:
                     group.cancelAll()
-                    return url
+                    return answer
+                case .other: found = .other
+                case .silent: break
                 }
             }
-            return hostURL
+            return found
         }
     }
 

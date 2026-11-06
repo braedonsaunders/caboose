@@ -118,7 +118,7 @@ final class TerminalModel {
         retry = nil
         connection?.close()
         let url = TerminalProtocol.url(base: host.baseURL, route: host.route, columns: size.columns, rows: size.rows, session: sessionID, offset: sessionID == nil ? nil : offset, wake: wake)
-        let connection = TerminalConnection(transport: URLSessionTerminalTransport(url: url, token: host.token))
+        let connection = TerminalConnection(transport: WebSocketTerminalTransport(url: url, token: host.token))
         self.connection = connection
         let view = view
         connection.start { [weak self, weak connection] event in
