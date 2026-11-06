@@ -37,6 +37,7 @@ import sys
 import tarfile
 import time
 import urllib.parse
+import urllib.request
 import uuid
 
 HERE = Path(__file__).resolve().parent
@@ -223,6 +224,10 @@ def hold(target, rounds=None):
                     if not data:
                         raise ConnectionError("closed during the upgrade")
                     head += data
+                if head.startswith(b"HTTP/1.1 409"):
+                    # Parked: booted (POST /v1/computers/ID/boot), then held again.
+                    boot(machine)
+                    raise ConnectionError("parked; booting it")
                 if not head.startswith(b"HTTP/1.1 101"):
                     raise ConnectionError(head.split(b"\r\n", 1)[0].decode(errors="replace"))
                 print(f"holding {target}", flush=True)
@@ -242,6 +247,17 @@ def hold(target, rounds=None):
         if rounds is None or count < rounds:
             time.sleep(2)
     return 0
+
+
+def boot(machine):
+    """Boots a parked virtual machine through the host."""
+    request = urllib.request.Request(f"{machine.url}/v1/computers/{urllib.parse.quote(machine.name)}/boot", data=b"{}",
+                                     method="POST", headers={"Authorization": f"Bearer {machine.token}",
+                                                             "Content-Type": "application/json"})
+    try:
+        urllib.request.urlopen(request, timeout=300).read()
+    except OSError as error:
+        print(f"boot {machine.name}: {error}", file=sys.stderr, flush=True)
 
 
 def read_frame(sock, buffer):
