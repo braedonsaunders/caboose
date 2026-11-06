@@ -145,11 +145,15 @@ again with the display, so the computer runs the release's broker: the service o
 displays and would otherwise keep the old code. No game runs then, so no phone session is
 lost; both seats' displays connect to it again.
 
-A computer named `vm:NAME` is a virtual machine. The host alone runs root commands in a guest
-(over vsock), so the install goes through the host's operator API: `$CABOOSE_HOST_URL`, with
-the token in `$CABOOSE_HOST_TOKEN_FILE`. It uses `POST /v1/host/computers/NAME/exec` (a root
-command and its result) and `PUT /v1/host/computers/NAME/file?path=…&mode=…` (a file written
-into the guest). The game gate is the same. The release's files go in as one archive. The
+A computer named `vm:ID` (for example `vm:c-e1e0cf1705`) is a virtual machine. The host alone
+runs root commands in a guest (over vsock), so the install goes through the host's operator
+API. It uses `POST /v1/host/computers/ID/exec` (an absolute command, its arguments and a
+timeout of 1 s to 1 h; the answer is its exit code and output) and
+`PUT /v1/host/computers/ID/file?path=…&mode=…` (a file up to 2 GiB written into the guest), with
+the operator token as a bearer token. The host's URL and the file holding the token come from
+`$CABOOSE_HOST_URL` and `$CABOOSE_HOST_TOKEN_FILE`, or else from `url=` and `token_file=` lines
+in `$CABOOSE_RELEASE_HOST` (default `/root/.config/caboose-release/host.conf`). A parked
+machine (the host answers 409) waits, as a computer with a game running does. The game gate is the same. The release's files go in as one archive. The
 install then:
 
 1. tells systemd and udev and loads `vgem`;

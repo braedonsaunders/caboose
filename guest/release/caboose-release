@@ -19,8 +19,9 @@ The signing key is $CABOOSE_RELEASE_KEY (default /root/.config/caboose-release/r
 installs verify with $CABOOSE_RELEASE_PUB (default caboose-release.pub.pem beside this program,
 then /usr/local/share/caboose-release/caboose-release.pub.pem). Sealing runs the Linux
 executor check configured in $CABOOSE_RELEASE_CHECK (default /root/.config/caboose-release/check.conf).
-A virtual machine computer is reached through the host's operator API at $CABOOSE_HOST_URL with the
-token in $CABOOSE_HOST_TOKEN_FILE."""
+A virtual machine computer (vm:ID) is reached through the host's operator API: its URL and the
+file holding the operator token come from $CABOOSE_HOST_URL and $CABOOSE_HOST_TOKEN_FILE, or else
+from url= and token_file= in $CABOOSE_RELEASE_HOST (default /root/.config/caboose-release/host.conf)."""
 import base64
 import datetime
 import hashlib
@@ -32,6 +33,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -378,19 +380,35 @@ def install_one(directory, container, marker):
     return True
 
 
+class Parked(Exception):
+    """The host has the virtual machine parked (asleep): it runs no command until it wakes."""
+
+
+def host_settings():
+    """url= and token_file= from the host settings file, if it exists."""
+    path = Path(os.environ.get("CABOOSE_RELEASE_HOST", "/root/.config/caboose-release/host.conf"))
+    settings = {}
+    for line in lines_of(path):
+        key, sep, value = line.partition("=")
+        if sep and not key.strip().startswith("#"):
+            settings[key.strip()] = value.strip()
+    return settings
+
+
 class VirtualMachine:
     """A virtual machine computer, reached through the host (it alone runs root commands in a
     guest, over vsock): POST /v1/host/computers/NAME/exec and PUT /v1/host/computers/NAME/file."""
 
     def __init__(self, name, url=None, token=None):
         self.name = name
-        self.url = (url or os.environ.get("CABOOSE_HOST_URL") or "").rstrip("/")
+        settings = host_settings()
+        self.url = (url or os.environ.get("CABOOSE_HOST_URL") or settings.get("url") or "").rstrip("/")
         if not self.url:
-            raise Failure("set CABOOSE_HOST_URL to the host to install on a virtual machine")
+            raise Failure("set the host's URL (CABOOSE_HOST_URL, or url= in the host settings) to install on a virtual machine")
         if token is None:
-            path = os.environ.get("CABOOSE_HOST_TOKEN_FILE")
+            path = os.environ.get("CABOOSE_HOST_TOKEN_FILE") or settings.get("token_file")
             if not path:
-                raise Failure("set CABOOSE_HOST_TOKEN_FILE to the host's operator token")
+                raise Failure("set the host's operator token file (CABOOSE_HOST_TOKEN_FILE, or token_file= in the host settings)")
             token = Path(path).read_text().strip()
         self.token = token
 
@@ -398,13 +416,20 @@ class VirtualMachine:
         request = urllib.request.Request(f"{self.url}/v1/host/computers/{urllib.parse.quote(self.name)}/{path}",
                                          data=body, method=method,
                                          headers={"Authorization": f"Bearer {self.token}", "Content-Type": content_type})
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            return response.read()
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                return response.read()
+        except urllib.error.HTTPError as error:
+            if error.code == 409:
+                raise Parked(self.name) from error
+            raise Failure(f"{self.name}: host answered {error.code} to {method} {path.split('?')[0]}") from error
 
     def run(self, *command, timeout=600, check=True):
-        """Runs COMMAND as root in the guest; its exit code, standard output and error."""
-        body = json.dumps({"command": command[0], "args": list(command[1:]), "timeoutMs": int(timeout * 1000)}).encode()
-        result = json.loads(self._request("POST", "exec", body, "application/json", timeout + 30))
+        """Runs COMMAND (an absolute path) as root in the guest; its exit code, standard output
+        and error. The host takes 1 s to 1 h."""
+        milliseconds = min(max(int(timeout * 1000), 1000), 3_600_000)
+        body = json.dumps({"command": command[0], "args": list(command[1:]), "timeoutMs": milliseconds}).encode()
+        result = json.loads(self._request("POST", "exec", body, "application/json", milliseconds / 1000 + 30))
         if check and result.get("exitCode") != 0:
             raise Failure(f"{self.name}: {' '.join(command[:3])}: {result.get('stderr', '').strip() or result.get('exitCode')}")
         return result
@@ -428,10 +453,10 @@ def install_vm_one(directory, vm, marker):
     told, the GPU broker service restarted when the release changes it, the owner's display (and
     the agent seat's, if it ran) restarted, Steam with it if it ran, and the marker written. The
     game gate is checked first, as for a container."""
-    if vm.run("pgrep", "-f", GAME, check=False).get("exitCode") == 0:
+    if vm.run("/usr/bin/pgrep", "-f", GAME, check=False).get("exitCode") == 0:
         return False
-    steam = vm.run("pgrep", "-f", f"{VM_STEAM}/ubuntu12_64/steamwebhelper|{VM_STEAM}/steamrt64", check=False).get("exitCode") == 0
-    agent = vm.run("systemctl", "is-active", "--quiet", "caboose-display-agent.service", check=False).get("exitCode") == 0
+    steam = vm.run("/usr/bin/pgrep", "-f", f"{VM_STEAM}/ubuntu12_64/steamwebhelper|{VM_STEAM}/steamrt64", check=False).get("exitCode") == 0
+    agent = vm.run("/usr/bin/systemctl", "is-active", "--quiet", "caboose-display-agent.service", check=False).get("exitCode") == 0
     paths = []
     files = directory / "files"
     if files.is_dir():
@@ -443,7 +468,7 @@ def install_vm_one(directory, vm, marker):
         vm.run(*shell("tar -C / -xf /var/tmp/caboose-release.tar --no-same-owner && xargs -d '\\n' chown root:root < /var/tmp/caboose-release.paths; "
                       "status=$?; rm -f /var/tmp/caboose-release.tar /var/tmp/caboose-release.paths; exit $status"))
     for path in lines_of(directory / "remove"):
-        vm.run("rm", "-rf", "--", path)
+        vm.run("/usr/bin/rm", "-rf", "--", path)
     debs = sorted((directory / "debs").glob("*.deb")) if (directory / "debs").is_dir() else []
     for deb in debs:
         vm.put("/var/tmp/caboose-release.deb", deb.read_bytes())
@@ -452,17 +477,17 @@ def install_vm_one(directory, vm, marker):
     vm.run(*shell("systemctl daemon-reload && udevadm control --reload && "
                   "{ modprobe vgem 2>/dev/null || :; } && udevadm trigger --subsystem-match=drm --subsystem-match=misc"))
     if steam:
-        vm.run("runuser", "-u", "caboose", "--", "env", *VM_OWNER_ENV, *shell(
+        vm.run("/usr/sbin/runuser", "-u", "caboose", "--", "env", *VM_OWNER_ENV, *shell(
             "set -a; . /run/caboose/display.env; set +a; timeout 20 flatpak run com.valvesoftware.Steam -shutdown >/dev/null 2>&1"), check=False)
-    vm.run("systemctl", "stop", "caboose-display-agent.service", "caboose-display.service")
+    vm.run("/usr/bin/systemctl", "stop", "caboose-display-agent.service", "caboose-display.service")
     # The broker service outlives the displays: restarted, it runs the release's broker.
     if restarts_gpu_service(paths):
-        vm.run("systemctl", "restart", "caboose-gpu-broker.service")
+        vm.run("/usr/bin/systemctl", "restart", "caboose-gpu-broker.service")
     vm.run(*shell("systemctl start caboose-display.service && caboose-display-ready 60 14600 >/dev/null"), timeout=240)
     if agent:
         vm.run(*shell("systemctl start caboose-display-agent.service && caboose-display-ready 60 14601 >/dev/null"), timeout=240)
     if steam:
-        vm.run("systemd-run", "--uid=caboose", "--gid=caboose", "--collect", *(f"--setenv={e}" for e in VM_OWNER_ENV),
+        vm.run("/usr/bin/systemd-run", "--uid=caboose", "--gid=caboose", "--collect", *(f"--setenv={e}" for e in VM_OWNER_ENV),
                *shell("set -a; . /run/caboose/display.env; set +a; exec flatpak run com.valvesoftware.Steam >/tmp/steam-launch.log 2>&1"),
                check=False)
     vm.put(MARKER, marker.encode(), 0o644)
@@ -470,8 +495,12 @@ def install_vm_one(directory, vm, marker):
 
 
 def install_target(directory, target, marker):
+    """Whether TARGET took the release now: a running game, or a parked virtual machine, holds it."""
     if target.startswith("vm:"):
-        return install_vm_one(directory, VirtualMachine(target[3:]), marker)
+        try:
+            return install_vm_one(directory, VirtualMachine(target[3:]), marker)
+        except Parked:
+            return False
     return install_one(directory, target, marker)
 
 
@@ -493,7 +522,7 @@ def install(id_, wait, targets):
                 print(f"{container}: {id_} installed", flush=True)
                 pending.remove(container)
             else:
-                print(f"{container}: a game is running; waiting", flush=True)
+                print(f"{container}: a game is running (or it is parked); waiting", flush=True)
         if not pending or time.monotonic() >= deadline:
             break
         time.sleep(30)

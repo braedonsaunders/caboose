@@ -23,7 +23,7 @@ import time
 
 import buffer_presentation as buffers
 from executor_lease import ExecutorLease, MAX_QUEUED_BYTES, MAX_QUEUED_FRAMES, MAX_QUEUED_MESSAGES
-from gpu_admission import MAX_REQUEST, MAX_TOKEN, admit, declared as admission_declared, features as admission_features, forwarded as admission_forwarded
+from gpu_admission import MAX_REQUEST, MAX_TOKEN, AdmissionError, admit, declared as admission_declared, features as admission_features, forwarded as admission_forwarded
 from gpu_websocket import Decoder as WebSocketDecoder, server_frame
 from ipc_handoff import receive_record
 import control_protocol
@@ -2702,6 +2702,13 @@ class Broker:
         except (OSError, ValueError, RuntimeError, BufferError, asyncio.TimeoutError, asyncio.IncompleteReadError, asyncio.LimitOverrunError) as error:
             # Every executor session that is refused or ends abnormally says why.
             print(f'CABOOSE_GPU_BROKER executor session ended: {type(error).__name__}: {error}', file=sys.stderr, flush=True)
+            # A refused request gets an HTTP status line before the connection closes: the
+            # host's relay probes /gpu with a plain GET to tell a broker from a silent port.
+            if isinstance(error, AdmissionError) and writer is not None and session is None:
+                status = b'401 Unauthorized' if 'authentication' in str(error) else b'400 Bad Request'
+                with contextlib.suppress(OSError, ConnectionError):
+                    writer.write(b'HTTP/1.1 ' + status + b'\r\nConnection: close\r\nContent-Length: 0\r\n\r\n')
+                    await asyncio.wait_for(writer.drain(), 2)
         finally:
             stop_warmup(warmup)
             if sockets is not None:

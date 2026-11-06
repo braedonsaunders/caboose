@@ -1337,7 +1337,10 @@ installs (`guest/gpu/vm`, placed by `install-live.py` with the rest of the stack
 
 A virtual machine has no server GPU: the phone is its only GPU, and `CABOOSE_GPU` is unset. The
 host relays the phone's `GET /gpu` to port 14602 at the machine's address, as it does for a
-container.
+container. The relay tells a broker from a silent port with a plain `GET /gpu`: the broker answers a
+refused request (no token, a wrong token, or no WebSocket upgrade) with an HTTP status line, `401`
+for authentication and `400` otherwise, before it closes the connection. Debian trixie's kernel
+(6.12) has vgem as a module and udmabuf, userfaultfd and virtio-fs built in.
 
 ## Surface records
 

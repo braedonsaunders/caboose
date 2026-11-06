@@ -2154,7 +2154,13 @@ class SeatTests(unittest.IsolatedAsyncioTestCase):
                 return data
             try:
                 with mock.patch('builtins.print'):
-                    self.assertEqual(await exchange(b'wrong'), b'')
+                    # A refused request is told so, with a status line, then closed.
+                    self.assertTrue((await exchange(b'wrong')).startswith(b'HTTP/1.1 401 '))
+                    # The host's relay probe: a plain GET /gpu, no token, no upgrade.
+                    reader, writer = await asyncio.open_connection('127.0.0.1', port)
+                    writer.write(b'GET /gpu HTTP/1.1\r\nHost: x\r\n\r\n'); await writer.drain()
+                    probe = await asyncio.wait_for(reader.read(64), 5); writer.close()
+                    self.assertRegex(probe, rb'^HTTP/1\.1 [45]\d\d ')
                     self.assertTrue((await exchange(b'secret')).startswith(b'HTTP/1.1 101'))
             finally:
                 instance.closing.set()

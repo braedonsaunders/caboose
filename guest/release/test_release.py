@@ -275,9 +275,9 @@ class Releases(unittest.TestCase):
             line = " ".join(command)
             self.calls.append(line)
             code = 0
-            if command[:2] == ("pgrep", "-f"):
+            if command[:2] == ("/usr/bin/pgrep", "-f"):
                 code = 0 if (self.game if "MCC" in command[2] else self.steam) else 1
-            elif command[:3] == ("systemctl", "is-active", "--quiet"):
+            elif command[:3] == ("/usr/bin/systemctl", "is-active", "--quiet"):
                 code = 0 if self.agent else 3
             return {"exitCode": code, "stdout": "", "stderr": ""}
 
@@ -300,8 +300,8 @@ class Releases(unittest.TestCase):
         calls = vm.calls
         self.assertIn("/usr/local/libexec/caboose-gpu/broker.py", vm.files["/var/tmp/caboose-release.paths"].decode())
         reload = next(i for i, c in enumerate(calls) if "systemctl daemon-reload" in c and "udevadm trigger" in c)
-        stop = calls.index("systemctl stop caboose-display-agent.service caboose-display.service")
-        broker = calls.index("systemctl restart caboose-gpu-broker.service")
+        stop = calls.index("/usr/bin/systemctl stop caboose-display-agent.service caboose-display.service")
+        broker = calls.index("/usr/bin/systemctl restart caboose-gpu-broker.service")
         owner = next(i for i, c in enumerate(calls) if "systemctl start caboose-display.service" in c)
         seat = next(i for i, c in enumerate(calls) if "systemctl start caboose-display-agent.service" in c)
         self.assertLess(reload, stop)
@@ -314,7 +314,7 @@ class Releases(unittest.TestCase):
     def test_a_virtual_machine_install_without_broker_files_keeps_the_service(self):
         vm = self.FakeVM()
         self.assertTrue(release.install_vm_one(self.vm_release(["/usr/local/bin/caboose-display"]), vm, "r\n"))
-        self.assertNotIn("systemctl restart caboose-gpu-broker.service", vm.calls)
+        self.assertNotIn("/usr/bin/systemctl restart caboose-gpu-broker.service", vm.calls)
         self.assertFalse(any("caboose-display-agent.service &&" in c for c in vm.calls))
 
     def test_a_game_on_a_virtual_machine_holds_its_install(self):
@@ -323,12 +323,75 @@ class Releases(unittest.TestCase):
         self.assertEqual(vm.files, {})
         self.assertEqual(len(vm.calls), 1)
 
+    def test_the_vm_client_speaks_the_hosts_operator_api(self):
+        import http.server, threading
+        seen = []
+        class Host(http.server.BaseHTTPRequestHandler):
+            parked = False
+            def log_message(self, *args): pass
+            def do_POST(self):
+                body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                seen.append(("POST", self.path, self.headers["Authorization"], body))
+                if Host.parked:
+                    self.send_response(409); self.end_headers(); return
+                reply = json.dumps({"exitCode": 3, "stdout": "out", "stderr": "err"}).encode()
+                self.send_response(200); self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(reply))); self.end_headers(); self.wfile.write(reply)
+            def do_PUT(self):
+                data = self.rfile.read(int(self.headers["Content-Length"]))
+                seen.append(("PUT", self.path, self.headers["Authorization"], data))
+                self.send_response(204); self.end_headers()
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Host)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            token = Path(self.tmp.name) / "operator-token"
+            token.write_text("op-token\n")
+            settings = Path(self.tmp.name) / "host.conf"
+            settings.write_text(f"# the host\nurl=http://127.0.0.1:{server.server_address[1]}/\ntoken_file={token}\n")
+            saved = {k: os.environ.pop(k, None) for k in ("CABOOSE_HOST_URL", "CABOOSE_HOST_TOKEN_FILE")}
+            os.environ["CABOOSE_RELEASE_HOST"] = str(settings)
+            try:
+                vm = release.VirtualMachine("c-e1e0cf1705")
+                result = vm.run("/usr/bin/pgrep", "-f", "x", timeout=0.1, check=False)
+                self.assertEqual(result, {"exitCode": 3, "stdout": "out", "stderr": "err"})
+                with self.assertRaises(release.Failure):
+                    vm.run("/usr/bin/false")
+                vm.put("/var/tmp/a b", b"\x00data", 0o600)
+                Host.parked = True
+                with self.assertRaises(release.Parked):
+                    vm.run("/usr/bin/true")
+            finally:
+                os.environ.pop("CABOOSE_RELEASE_HOST", None)
+                for k, v in saved.items():
+                    if v is not None: os.environ[k] = v
+        finally:
+            server.shutdown()
+        method, path, auth, body = seen[0]
+        self.assertEqual((method, path, auth), ("POST", "/v1/host/computers/c-e1e0cf1705/exec", "Bearer op-token"))
+        self.assertEqual(body, {"command": "/usr/bin/pgrep", "args": ["-f", "x"], "timeoutMs": 1000})
+        put = next(entry for entry in seen if entry[0] == "PUT")
+        self.assertEqual(put[1], "/v1/host/computers/c-e1e0cf1705/file?path=%2Fvar%2Ftmp%2Fa+b&mode=0600")
+        self.assertEqual(put[3], b"\x00data")
+
+    def test_a_parked_virtual_machine_waits_like_a_running_game(self):
+        saved = release.install_vm_one
+        release.install_vm_one = lambda directory, vm, marker: (_ for _ in ()).throw(release.Parked(vm.name))
+        os.environ["CABOOSE_HOST_URL"] = "http://127.0.0.1:9"
+        os.environ["CABOOSE_HOST_TOKEN_FILE"] = str(self.source)
+        try:
+            self.assertFalse(release.install_target(Path(self.tmp.name), "vm:c-x", "r\n"))
+        finally:
+            release.install_vm_one = saved
+            os.environ.pop("CABOOSE_HOST_URL"); os.environ.pop("CABOOSE_HOST_TOKEN_FILE")
+
     def test_vm_targets_need_the_host(self):
         saved = {k: os.environ.pop(k, None) for k in ("CABOOSE_HOST_URL", "CABOOSE_HOST_TOKEN_FILE")}
+        os.environ["CABOOSE_RELEASE_HOST"] = str(Path(self.tmp.name) / "no-host.conf")
         try:
             with self.assertRaises(release.Failure):
                 release.VirtualMachine("c")
         finally:
+            os.environ.pop("CABOOSE_RELEASE_HOST", None)
             for k, v in saved.items():
                 if v is not None:
                     os.environ[k] = v
