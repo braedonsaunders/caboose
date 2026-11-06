@@ -25,6 +25,9 @@ class Host(BaseHTTPRequestHandler):
     answer = {"exitCode": 0, "stdout": "", "stderr": ""}
     # A job's state as the polls see it: how many polls still find it running.
     pending = 0
+    # What the poll answers once the job is no longer running: 0 (it wrote its status) or 2
+    # (its runner is gone without one).
+    ended = 0
 
     def log_message(self, *args):
         pass
@@ -37,9 +40,9 @@ class Host(BaseHTTPRequestHandler):
         request = json.loads(self.body())
         Host.requests.append(("exec", self.path, request))
         script = request["args"][1] if request["args"][:1] == ["-c"] else ""
-        if script.startswith("test -f ") and script.endswith(".rc"):
+        if script.startswith("test -f ") and ".rc && exit 0" in script:
             Host.pending -= 1
-            answer = {"exitCode": 1 if Host.pending >= 0 else 0, "stdout": "", "stderr": ""}
+            answer = {"exitCode": 1 if Host.pending >= 0 else Host.ended, "stdout": "", "stderr": ""}
         elif script.startswith("setsid "):
             answer = {"exitCode": 0, "stdout": "", "stderr": ""}
         else:
@@ -78,6 +81,7 @@ class Computer(unittest.TestCase):
         Host.files.clear()
         Host.answer = {"exitCode": 0, "stdout": "", "stderr": ""}
         Host.pending = 0
+        Host.ended = 0
 
     def scripts(self):
         found = []
@@ -92,26 +96,36 @@ class Computer(unittest.TestCase):
         """The command a check ran: the job started (or the detached command)."""
         return next(s for s in self.scripts() if s.startswith("setsid "))
 
+    def job_command(self):
+        """The command a check ran, as the job's script file holds it."""
+        (data, mode), = [v for k, v in Host.files.items() if k.endswith(".sh")]
+        self.assertEqual(mode, "0644")
+        return data.decode()
+
     def test_an_exec_runs_as_the_user_in_the_capped_slice_and_returns_its_status(self):
         Host.answer = {"exitCode": 3, "stdout": "out", "stderr": ""}
         status = computer.run_exec(["-u", "caboose", "-e", "A=b c", "-w", "/tmp", "vm:c-1", "sh", "-c", "echo $A"])
         self.assertEqual(status, 3)
-        script = self.script()
-        self.assertIn("systemd-run --quiet --scope --collect --slice=caboose-check.slice", script)
-        self.assertIn("MemoryMax=4G", script)
-        self.assertIn("prlimit --core=0:0 -- nice -n 19", script)
-        self.assertIn("runuser -u caboose --", script)
-        self.assertIn("cd /tmp", script)
-        self.assertIn("'A=b c'", script)
+        runner = self.script()
+        self.assertIn("systemd-run --quiet --scope --collect --slice=caboose-check.slice", runner)
+        self.assertIn("MemoryMax=4G", runner)
+        self.assertIn("prlimit --core=0:0 -- nice -n 19 runuser -u caboose -- /bin/sh /var/tmp/caboose-check-job-", runner)
+        command = self.job_command()
+        self.assertIn("cd /tmp", command)
+        self.assertIn("'A=b c'", command)
+
+    def test_the_command_never_appears_on_a_command_line(self):
+        computer.run_exec(["vm:c-1", "pkill", "-TERM", "-f", "/home/x/.check-1/repo/"])
+        self.assertIn("pkill -TERM -f /home/x/.check-1/repo/", self.job_command())
+        for script in self.scripts():
+            self.assertNotIn(".check-1", script)
 
     def test_standard_input_is_written_to_the_guest_first_and_removed(self):
         computer.run_exec(["-i", "vm:c-1", "sh", "-c", "cat > /x"], stdin=io.BytesIO(b"bat\r\n"))
-        (path, (data, mode)), = Host.files.items()
-        self.assertTrue(path.startswith("/var/tmp/caboose-check-stdin-"))
-        self.assertEqual((data, mode), (b"bat\r\n", "0644"))
-        script = self.script()
-        self.assertIn(f"< {path}", script)
-        self.assertIn(f"rm -f {path}", script)
+        path, = [k for k in Host.files if k.endswith(".in")]
+        self.assertEqual(Host.files[path], (b"bat\r\n", "0644"))
+        self.assertIn(f"< {path}", self.job_command())
+        self.assertIn("rm -f /var/tmp/caboose-check-job-", self.scripts()[-1])
 
     def test_a_long_command_runs_as_a_job_polled_to_its_end(self):
         Host.pending = 3
@@ -123,12 +137,19 @@ class Computer(unittest.TestCase):
         self.assertEqual(sum(1 for s in scripts if s.startswith("test -f ")), 4)
         self.assertIn("status=$(cat ", scripts[-1])
 
+    def test_a_job_whose_runner_ended_is_not_waited_for_forever(self):
+        Host.pending, Host.ended = 1, 2
+        Host.answer = {"exitCode": 137, "stdout": "", "stderr": ""}
+        self.assertEqual(computer.run_exec(["vm:c-1", "true"]), 137)
+        self.assertIn("|| echo 137", self.scripts()[-1])
+
     def test_a_detached_command_is_left_running_in_its_own_session(self):
         computer.run_exec(["-d", "-u", "caboose", "vm:c-1", "sleep", "60"])
         self.assertEqual(len(self.scripts()), 1)
         script = self.script()
         self.assertTrue(script.startswith("setsid /bin/sh -c "))
         self.assertTrue(script.endswith("< /dev/null > /dev/null 2>&1 &"))
+        self.assertIn("rm -f /var/tmp/caboose-check-job-", script)
 
     def test_a_copy_sends_a_tar_and_unpacks_it_into_a_directory_or_as_the_path(self):
         source = Path(self.tmp.name) / "tree"

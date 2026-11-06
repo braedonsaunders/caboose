@@ -64,23 +64,29 @@ CHECK_SLICE = "caboose-check.slice"
 CHECK_LIMITS = os.environ.get("CABOOSE_CHECK_LIMITS", "MemoryMax=4G MemorySwapMax=0 CPUQuota=400% CPUWeight=1")
 
 
-def in_check_slice(command):
-    """COMMAND (shell) run in the checks' capped slice, at the lowest priority, without core dumps."""
-    return (f"systemctl set-property --runtime {CHECK_SLICE} {CHECK_LIMITS} > /dev/null 2>&1; "
-            f"exec systemd-run --quiet --scope --collect --slice={CHECK_SLICE} -- "
-            f"prlimit --core=0:0 -- nice -n 19 /bin/sh -c {shlex.quote(command)}")
-
-
-def guest_command(argv, user=None, env=(), workdir=None, stdin_path=None):
-    """The shell command running ARGV in the guest as `docker exec` would."""
+def guest_command(argv, env=(), workdir=None, stdin_path=None):
+    """The shell command running ARGV in the guest as `docker exec` would (its user aside)."""
     command = shlex.join(["env", *env, *argv]) if env else shlex.join(argv)
     if workdir:
         command = f"cd {shlex.quote(workdir)} && {command}"
     if stdin_path:
         command = f"{command} < {shlex.quote(stdin_path)}"
-    if user:
-        command = shlex.join(["runuser", "-u", user, "--", "/bin/sh", "-c", command])
     return command
+
+
+def runner(job, user=None, detach=False):
+    """The shell that runs job JOB's command (JOB.sh) in the checks' capped slice, at the lowest
+    priority, without core dumps, as USER if given. Only the job's file names appear on any
+    command line, never the command: a check's `pkill -f PATTERN` would otherwise match the
+    wrapper running it and end itself. It records its pid (JOB.pid) and, unless detached, the
+    command's output (JOB.out, JOB.err) and exit status (JOB.rc, written last)."""
+    as_user = f"runuser -u {shlex.quote(user)} -- " if user else ""
+    run = (f"systemd-run --quiet --scope --collect --slice={CHECK_SLICE} -- prlimit --core=0:0 -- nice -n 19 "
+           f"{as_user}/bin/sh {job}.sh")
+    head = f"echo $$ > {job}.pid; systemctl set-property --runtime {CHECK_SLICE} {CHECK_LIMITS} > /dev/null 2>&1; "
+    if detach:
+        return head + f"{run} < /dev/null > /dev/null 2>&1; rm -f {job}.sh {job}.pid"
+    return head + f"{run} < /dev/null > {job}.out 2> {job}.err; echo $? > {job}.part; mv {job}.part {job}.rc"
 
 
 def run_exec(args, stdin=None):
@@ -107,40 +113,41 @@ def run_exec(args, stdin=None):
         i += 1
     target, argv = args[i], args[i + 1:]
     machine = vm(target)
+    job = f"/var/tmp/caboose-check-job-{uuid.uuid4().hex}"
     stdin_path = None
     if interactive and not detach:
         data = (stdin if stdin is not None else sys.stdin.buffer).read()
-        stdin_path = f"/var/tmp/caboose-check-stdin-{uuid.uuid4().hex}"
+        stdin_path = f"{job}.in"
         machine.put(stdin_path, data, 0o644)
-    command = in_check_slice(guest_command(argv, user=user, env=env, workdir=workdir, stdin_path=stdin_path))
+    command = guest_command(argv, env=env, workdir=workdir, stdin_path=stdin_path)
+    machine.put(f"{job}.sh", f"{command}\n".encode(), 0o644)
+    machine.run("/bin/sh", "-c", f"setsid /bin/sh -c {shlex.quote(runner(job, user, detach))} < /dev/null > /dev/null 2>&1 &",
+                timeout=60)
     if detach:
-        result = machine.run("/bin/sh", "-c", f"setsid /bin/sh -c {shlex.quote(command)} < /dev/null > /dev/null 2>&1 &",
-                             timeout=60, check=False)
-        return int(result.get("exitCode", 1))
-    if stdin_path:
-        command = f"{command}; status=$?; rm -f {shlex.quote(stdin_path)}; exit $status"
-    status, out, err = run_as_job(machine, command)
+        return 0
+    status, out, err = wait_for_job(machine, job)
     sys.stdout.write(out)
     sys.stdout.flush()
     sys.stderr.write(err)
     return status
 
 
-def run_as_job(machine, command):
-    """Runs COMMAND in the guest as a job of its own, polled to its end: the host's exec route
-    serves one guest command at a time, so a long one (a program the check runs for a minute)
-    held directly would hold every other command of the checks behind it. Its exit status,
-    standard output and error."""
-    job = shlex.quote(f"/var/tmp/caboose-check-job-{uuid.uuid4().hex}")
-    machine.run("/bin/sh", "-c",
-                f"setsid /bin/sh -c {shlex.quote(f'({command}) > {job}.out 2> {job}.err; echo $? > {job}.part; mv {job}.part {job}.rc')} "
-                f"< /dev/null > /dev/null 2>&1 &", timeout=60)
+def wait_for_job(machine, job):
+    """Polls job JOB to its end: the host's exec route serves one guest command at a time, so a
+    long one (a program a check runs for a minute) held directly would hold every other command
+    of the checks behind it. Its exit status (137 if the job's runner itself was ended),
+    standard output and error; its files are removed."""
     delay = 0.05
-    while machine.run("/bin/sh", "-c", f"test -f {job}.rc", timeout=60, check=False).get("exitCode") != 0:
+    while True:
+        state = machine.run("/bin/sh", "-c", f"test -f {job}.rc && exit 0; p=$(cat {job}.pid 2>/dev/null) || exit 1; "
+                            f"kill -0 \"$p\" 2>/dev/null && exit 1; exit 2", timeout=60, check=False).get("exitCode")
+        if state in (0, 2):
+            break
         time.sleep(delay)
         delay = min(delay * 2, 1.0)
-    result = machine.run("/bin/sh", "-c", f"cat {job}.out; cat {job}.err >&2; status=$(cat {job}.rc); "
-                         f"rm -f {job}.out {job}.err {job}.rc; exit $status", timeout=120, check=False)
+    result = machine.run("/bin/sh", "-c", f"[ ! -f {job}.out ] || cat {job}.out; [ ! -f {job}.err ] || cat {job}.err >&2; "
+                         f"status=$(cat {job}.rc 2>/dev/null || echo 137); rm -f {job}.*; exit $status",
+                         timeout=120, check=False)
     return int(result.get("exitCode", 1)), result.get("stdout", ""), result.get("stderr", "")
 
 
