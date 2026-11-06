@@ -30,6 +30,7 @@ describe('the operator\'s root access to a computer', () => {
     // pgrep never matches itself: nothing else may carry the pattern.
     expect((await execute(guest as never, '/usr/bin/pgrep', ['-f', 'caboose-no-such-process-4f1c'], 5000)).exitCode).toBe(1)
     expect(EXEC_WRAPPER).toContain('os.execvp')
+  })
 
   it('writes a file in chunks beside its target, then renames it into place', async () => {
     const runs: string[][] = []
