@@ -2633,7 +2633,7 @@ for applications, on its own display, which the owner can watch from the chat; t
 | `act` | `steps: object[]` (1–30), `observe?: boolean` | `Done.` or `Did N of M; stopped: reason`, then what changed: windows opened, closed, retitled or focused, controls added (`+`), changed (`~`) or removed (`-`) |
 | `screenshot` | `window?: integer`, `marks?: boolean` | A PNG of the seat or one window, in the seat's logical pixels; `marks` numbers the controls on it and lists each mark's id, role, name and centre |
 
-A step is one of `{"press": id}`, `{"set": id, "text": t}`, `{"key": "ctrl+s"}`,
+A step is one of `{"press": id}`, `{"set": id, "text": t}`, `{"key": "ctrl+s", "repeat": n}`,
 `{"type": t}`, `{"click": [x, y], "button": 1-3, "count": 1-3}`, `{"scroll": [x, y], "dx": n,
 "dy": n}`, `{"drag": [x1, y1, x2, y2]}`, `{"focus": window}`, `{"wait": ms}` (10–5000),
 `{"launch": "command"}` and `{"tool": name, "args": {...}}`. A control is given by the short

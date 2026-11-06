@@ -1219,6 +1219,20 @@ class Tree:
         except Exception:
             return None
 
+    def field_text(self, node):
+        """A field's text as a control's value: at most MAX_NAME characters, and when there are more,
+        a note of how many, so a cut value never reads as the field's whole text."""
+        value = self.text(node, MAX_NAME)
+        if not value:
+            return value
+        try:
+            count = self.Atspi.Text.get_character_count(node)
+        except Exception:
+            return value
+        if count <= MAX_NAME:
+            return value
+        return f"{value}… ({count - MAX_NAME} more characters; look with text reads them all)"
+
     def name(self, node, role, states):
         try:
             name = node.get_name() or ""
@@ -1252,7 +1266,7 @@ class Tree:
         numeric = role in _roles(self.Atspi, "SPIN_BUTTON", "SLIDER")
         combo = role in _roles(self.Atspi, "COMBO_BOX")
         if self.has(states, "EDITABLE") or role in _roles(self.Atspi, "ENTRY", "AUTOCOMPLETE", "EDITBAR") or numeric or combo:
-            value = self.text(node, MAX_NAME)
+            value = self.field_text(node)
             if value:
                 return value
             try:

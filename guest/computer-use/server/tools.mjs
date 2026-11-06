@@ -14,7 +14,10 @@ import { pixelFallback, unreadWords, windowWords } from './pixels.mjs'
 export const INSTRUCTIONS = 'These tools see and drive applications on the agent seat, your own display on the computer '
   + '(the owner can watch it live). Read it with look, act on controls by id, and batch the steps you know in one act; '
   + 'each act replies with what changed. Prefer an app\'s direct tools and page tools to its GUI. Start an app with '
-  + 'an act step {"launch":"command"}; use screenshot only for what the controls do not tell.'
+  + 'an act step {"launch":"command"}; use screenshot only for what the controls do not tell. Act replies with the window '
+  + 'as its steps left it: never run look alongside an act, which can read the window before the steps. Coordinates are '
+  + 'seat pixels as the latest screenshot or look with windows showed them; prefer ids, and to add to a field\'s text, '
+  + 'key ctrl+End then type instead of clicking into it.'
 
 export const TOOLS = [
   {
@@ -30,7 +33,7 @@ export const TOOLS = [
     description: 'Run steps in order, stopping at the first failure; then reply with what changed (+ added, ~ changed, - removed '
       + 'controls; windows opened or closed). Put every step you already know in one call; a control in a dialog that an earlier '
       + 'step opens can be named instead of given by id ({"name":"Save","role":"button"}). A step is one of: {"press":id} '
-      + '{"set":id,"text":t} replaces a field\'s text (plain; type keeps formatting), {"key":"ctrl+s"}, {"type":t}, {"click":[x,y],"button":1-3,"count":1-3}, '
+      + '{"set":id,"text":t} replaces a field\'s text (plain; type keeps formatting), {"key":"ctrl+s","repeat":n}, {"type":t}, {"click":[x,y],"button":1-3,"count":1-3}, '
       + '{"scroll":[x,y],"dy":n}, {"drag":[x1,y1,x2,y2]}, {"focus":window}, {"launch":"command"}, '
       + '{"tool":name,"args":{...}} calls a page tool or a direct tool (look lists the app\'s; files.list|read|write|copy|'
       + 'move|mkdir|trash|extract in the home always work). Direct tools skip the GUI: prefer them. Steps wait for the app to react; {"wait":ms} is rarely needed.',

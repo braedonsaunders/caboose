@@ -78,7 +78,7 @@ Three tools, with short definitions: they go to the model on every turn.
 
 A step is an object with one verb: `{"press": id}` (the control's AT-SPI action, else a
 click at its centre), `{"set": id, "text": t}` (replace a field's text; a number for a spin
-button or slider goes in through its Value), `{"key": "ctrl+s"}`, `{"type": t}`,
+button or slider goes in through its Value), `{"key": "ctrl+s", "repeat": n}` (n 1–50, default 1), `{"type": t}`,
 `{"click": [x, y], "button": 1-3, "count": 1-3}`, `{"scroll": [x, y], "dx": n, "dy": n}`,
 `{"drag": [x1, y1, x2, y2]}`, `{"focus": window}`, `{"wait": ms}` (10–5000: until the windows
 stop drawing, then at most 200 ms more, never longer than `ms`; every step already waits for
@@ -205,7 +205,8 @@ application can run a shortcut's command after the key event (LibreOffice's ctrl
 typed next would otherwise arrive first. A press, key or click that changes nothing waits up to
 2.5 s for a new window, which a busy application may still be building.
 
-Control lines include an optional value (up to 200 characters) for editable fields, selected
+Control lines include an optional value (up to 200 characters, then a note of how many more
+there are, which look with text reads) for editable fields, selected
 options and numeric controls. Password and sensitive fields omit values. Values never
 contribute to ID fingerprints. `screenshot` with `marks` numbers the focused window's
 visible controls on the picture and lists each mark with its short id, role, name and centre

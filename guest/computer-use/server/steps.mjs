@@ -117,7 +117,9 @@ export async function step(s) {
   markInput()
   if ('key' in s) {
     if (typeof s.key !== 'string' || !/^[A-Za-z0-9_+]+$/.test(s.key)) throw new Error('key must look like "ctrl+s" or "Return"')
-    await seat('key', '--', s.key)
+    const repeat = s.repeat ?? 1
+    if (!Number.isInteger(repeat) || repeat < 1 || repeat > 50) throw new Error('repeat must be 1–50')
+    for (let i = 0; i < repeat; i++) await seat('key', '--', s.key)
   } else if ('type' in s) {
     if (typeof s.type !== 'string') throw new Error('type must be a string')
     await type(s.type)
